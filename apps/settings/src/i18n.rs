@@ -8,10 +8,12 @@
 ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// The pages' and settings' names, shared with the desktop palette
-/// ([`settings_store::index`]).
+/// ([`settings_store::index`]). Every window offers them, so they ride along
+/// in its language instead of deciding it.
 static INDEX: ui::i18n::EmbeddedCatalog = {
     let catalog = ui::i18n::EmbeddedCatalog::new("en-US", settings_store::index::CATALOGUES)
-        .with_system_locale();
+        .with_system_locale()
+        .as_shared();
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");
     catalog

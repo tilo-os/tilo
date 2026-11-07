@@ -7,17 +7,22 @@ use tilo_actions::ActionAddress;
 use crate::{Error, Session, mount, surfaces};
 
 impl Session {
-    /// Put the view of the shell's window menu up while the reading says one
-    /// is up, and stop it when the reading says none is: the view the person
-    /// bound to the slot, or the one the session ships with. Many a machine
-    /// has no such view installed, or another one bound in its place: the
-    /// menu is a reading either way, and this only puts it on the screen.
+    /// Put up the view that draws the shell's window menu, and show it while
+    /// the reading says a menu is up: the view the person bound to the slot,
+    /// or the one the session ships with. Many a machine has no such view
+    /// installed, or another one bound in its place: the menu is a reading
+    /// either way, and this only puts it on the screen.
+    ///
+    /// The view runs for the session's life, standing hidden over the desk
+    /// between openings: an app takes a moment to start and connect, and a
+    /// menu that waits for that is a menu the person pressed for and did not
+    /// see. Showing the surface it already stands on costs no start.
     ///
     /// A binding whose app is a tilolang package runs here, over the reading
     /// the session publishes for the slot; any other is a program of its own.
     ///
-    /// Rebinding the slot while the menu is up starts the view bound to it
-    /// now, on the next pass, over the reading it already drew.
+    /// Rebinding the slot starts the view bound to it now, on the next pass,
+    /// hidden or over the reading it already drew.
     pub(crate) fn follow_window_menu(&mut self) {
         use mount::slots::{Mount, View};
 
@@ -26,58 +31,64 @@ impl Session {
         /// The app whose view the session shows the menu through until the
         /// person binds another.
         const SHIPPED: (&str, &str) = ("so.tilo.window-menu", "window-menu");
-        let reading = self.read(mount::shell::WINDOW_MENU);
-        let for_a_window = reading
-            .as_ref()
-            .is_some_and(|reading| reading.get("tab").is_some_and(|tab| !tab.is_null()));
-        let has_rows = reading.as_ref().is_some_and(|reading| {
-            reading
-                .get("rows")
-                .and_then(serde_json::Value::as_array)
-                .is_some_and(|rows| !rows.is_empty())
-        });
+        // Nothing to draw or to watch until the session publishes the menu.
+        let Some(reading) = self.read(mount::shell::WINDOW_MENU) else {
+            return;
+        };
+        let for_a_window = reading.get("tab").is_some_and(|tab| !tab.is_null());
+        let has_rows = reading
+            .get("rows")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|rows| !rows.is_empty());
         // A menu belongs to its window: one the reading holds for a window
         // that is gone — closed under it, or offering nothing any more —
         // closes, as it does when its row is chosen, rather than standing
         // over the desk with nothing to say and holding the keyboard.
         if for_a_window && !has_rows {
             self.close_window_menu();
-            return;
         }
         let up = for_a_window && has_rows;
-        // A slot the person is not looking at is nobody's to draw: the
-        // binding is read while the part is up, and once more when it goes,
-        // rather than on every pass of a menu that is down.
-        if !up && self.slots.running(VIEW).is_none() {
-            return;
-        }
         // The view drawing the slot is a program of its own, and one can end:
         // a record of it that outlives the process would leave the next menu
         // up with nobody to draw it.
         if self.slots.running(VIEW).is_some() && !self.slot_view_runs(VIEW) {
             self.slots.forget(VIEW);
         }
-        let settings = self.read(mount::slots::BINDINGS);
-        match self.slots.follow(VIEW, SHIPPED, up, settings.as_ref()) {
-            Mount::Nothing => {}
-            Mount::Stop => self.stop_slot_view(VIEW),
-            Mount::Start { view, restart } => {
-                if restart {
-                    // The person bound another view: the one that drew the
-                    // slot goes before the new one takes it.
-                    self.stop_slot_view(VIEW);
-                }
-                match view {
-                    View::Program(program) => self.start_program_slot(VIEW, program, restart),
-                    View::Package { dir, app, view } => {
-                        self.start_package_slot(VIEW, dir, app, view, reading.as_ref());
+        // The view is put up once, with the session, and shown or hidden as
+        // the reading opens and closes the menu. One that ended is started
+        // again when a menu next opens, rather than on every pass of a menu
+        // that is down: an app that will not stay up then costs one start an
+        // opening, and not the session.
+        if up || !self.slots.stood(VIEW) {
+            let settings = self.read(mount::slots::BINDINGS);
+            match self.slots.follow(VIEW, SHIPPED, settings.as_ref()) {
+                Mount::Nothing => {}
+                Mount::Stop => self.stop_slot_view(VIEW),
+                Mount::Start { view, restart } => {
+                    if restart {
+                        // The person bound another view: the one that drew the
+                        // slot goes before the new one takes it.
+                        self.stop_slot_view(VIEW);
+                    }
+                    match view {
+                        View::Program(program) => self.start_program_slot(VIEW, program, restart),
+                        View::Package { dir, app, view } => {
+                            self.start_package_slot(VIEW, dir, app, view, Some(&reading));
+                        }
                     }
                 }
             }
         }
         // What the view reads is what the session publishes for the slot now.
-        if let (Some(reading), true) = (reading.as_ref(), self.slot_views.running(VIEW)) {
-            self.slot_views.publish(VIEW, reading);
+        if self.slot_views.running(VIEW) {
+            self.slot_views.publish(VIEW, &reading);
+        }
+        // The view stands over the desk only while the reading says a menu is
+        // up: hidden, its surface draws nothing, takes no input and keeps no
+        // room, and the opening that shows it costs nothing.
+        let namespace = surfaces::namespace(VIEW);
+        if self.compositor.layer_shown(&namespace) != Some(up) {
+            self.compositor.show_layer(&namespace, up);
         }
     }
 

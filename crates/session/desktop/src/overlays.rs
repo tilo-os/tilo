@@ -18,9 +18,10 @@
 //! either one's modality.
 //!
 //! The slots the desktop's own chrome still draws (`Slot::is_chrome`) are
-//! mirrored from the widgets that own their state, and keep their own
-//! dismissal until each moves behind a view of its own; the two the session
-//! puts up itself (the window menu and quick settings) declare
+//! mirrored from the widgets that own their state; a press outside one closes
+//! it here where the widget says where it stands, and through the widget that
+//! holds the press when the press is the chrome's. The two the session puts up
+//! itself (the window menu and quick settings) declare
 //! [`Slot::session_closes`] and are closed by the session's own verbs.
 
 use std::cell::RefCell;
@@ -497,6 +498,9 @@ struct SlotState {
     /// Where this opening put it; the slot's own anchor while the verb named
     /// none.
     anchor: Option<Anchor>,
+    /// Where the widget drawing it says it stands, while it is up: a menu is
+    /// as big as its rows, which the slot's anchor cannot say.
+    stands: Option<Rect>,
     /// Whether a press outside last closed it: it does not open again for
     /// that press, which is still being delivered.
     dismissed: bool,
@@ -663,6 +667,21 @@ impl Overlays {
         }
     }
 
+    /// Say where the widget drawing `slot` paints it, while it is up.
+    ///
+    /// A surface the session places is judged by the rect its anchor and size
+    /// settle; the chrome's own menus hang off the bar as big as their rows,
+    /// which only the widget knows. `None` takes back the last answer, as a
+    /// surface going down does.
+    pub fn stands(&self, slot: Slot, stands: Option<Rect>) {
+        let mut stack = self.0.borrow_mut();
+        match stack.slots.get_mut(&slot) {
+            Some(state) => state.stands = stands,
+            None if stands.is_some() => stack.slots.entry(slot).or_default().stands = stands,
+            None => {}
+        }
+    }
+
     /// A press outside `slot` closed it: it stays down for that press, which
     /// is still being delivered.
     pub fn dismiss(&self, slot: Slot) {
@@ -753,19 +772,26 @@ impl Overlays {
     }
 
     /// The surface a press at this point closes, by the dismissal table: the
-    /// topmost popup standing where the point is not. A surface its own view
-    /// places has no rect the session can judge, so its view closes it.
+    /// topmost popup standing where the point is not. What the session placed
+    /// is judged by the rect its anchor settles; a surface its own widget
+    /// draws says where it stands, and one that says neither is its view's to
+    /// close.
     #[must_use]
     pub fn press_outside(&self, x: f64, y: f64) -> Option<Slot> {
         let stack = self.0.borrow();
         Slot::ALL.into_iter().find(|slot| {
-            if !slot.session_closes() || !slot.role().closes_on_press_outside() {
+            if !slot.role().closes_on_press_outside() {
                 return false;
             }
-            stack
-                .entry(*slot)
-                .and_then(|entry| entry.place)
-                .is_some_and(|place| !place.contains(Point::new(x, y)))
+            let Some(state) = stack.slots.get(slot).filter(|state| state.open) else {
+                return false;
+            };
+            let place = match state.stands {
+                Some(place) => Some(place),
+                None if slot.session_closes() => stack.entry(*slot).and_then(|entry| entry.place),
+                None => None,
+            };
+            place.is_some_and(|place| !place.contains(Point::new(x, y)))
         })
     }
 }
@@ -1086,6 +1112,42 @@ mod tests {
         assert!(
             !overlays.dismissed_recently(Slot::QuickSettings),
             "opened again, it is nobody's dismissed surface"
+        );
+    }
+
+    #[test]
+    fn a_surface_that_says_where_it_stands_is_closed_by_a_press_that_misses_it() {
+        let overlays = overlays();
+        let panel = Rect::new(52.0, 40.0, 289.0, 240.0);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "nothing is up, so the press is the desk's"
+        );
+        overlays.open(Slot::WorkspaceMenu, None);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "an anchor alone does not say where a menu as big as its rows stands"
+        );
+
+        overlays.stands(Slot::WorkspaceMenu, Some(panel));
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            Some(Slot::WorkspaceMenu),
+            "a press on the desk misses the panel"
+        );
+        assert_eq!(
+            overlays.press_outside(panel.center().x, panel.center().y),
+            None,
+            "a press on the panel is the menu's own"
+        );
+
+        overlays.stands(Slot::WorkspaceMenu, None);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "the widget takes its word back when the menu goes"
         );
     }
 

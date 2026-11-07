@@ -22,7 +22,7 @@ impl Messages for ThreadCatalogue {
 
 /// Run `read` with a reader in this thread's locale and catalogues.
 pub fn with_reader<T>(read: impl FnOnce(&Reader<'_>) -> T) -> T {
-    let reader = Reader::new(&I18nManager::current_locale())
+    let reader = Reader::new(&I18nManager::window_locale())
         .with_app(&ThreadCatalogue)
         .with_labels(&ThreadLabels);
     read(&reader)
@@ -70,7 +70,7 @@ pub fn step_title(entry: &ActionContext) -> Option<String> {
     bare.what = Some(tilo_actions::Did::Verb(verb));
     bare.resource = None;
     bare.item = None;
-    let reader = Reader::new(&I18nManager::current_locale()).with_labels(&ThreadLabels);
+    let reader = Reader::new(&I18nManager::window_locale()).with_labels(&ThreadLabels);
     Some(reader.sentence(&bare))
 }
 

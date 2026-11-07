@@ -20,7 +20,6 @@ use tilo_sort::CompactSort as _;
 
 use collab_types::caps::{Access, CapOverride, Effect, Expiry, Principal, Scope, Subject};
 use collab_types::role::Role as CapRole;
-use tilo_desktop_model::service_member::{ServiceMember, service_purpose};
 use tilo_desktop_model::{UserId, Workspace};
 
 pub mod agent_access;
@@ -30,14 +29,9 @@ pub use default_apps::{
     DefaultAppChoice, default_app_choices, default_apps_status, next_user_default,
     next_workspace_default,
 };
-mod agents_pane;
 pub mod emoji_pane;
 pub mod people;
 mod people_pane;
-
-pub use agents_pane::{
-    AgentPreset, AgentSummary, admit_agent, agent_authority_preset, agent_status, agent_summaries,
-};
 
 pub use people_pane::member_row_offers;
 
@@ -916,39 +910,6 @@ pub fn members_authority_note(is_owner: bool) -> Option<String> {
     (!is_owner).then(|| t("workspace-settings-owner-only"))
 }
 
-/// One line on what a service member may do in the workspace and for how long.
-fn service_member_detail(service: &ServiceMember) -> String {
-    use tilo_action_policy::ActionKind;
-    let access = if service.kinds.contains(ActionKind::Outside) {
-        "admin"
-    } else if service.kinds.contains(ActionKind::Undoable) {
-        "write"
-    } else {
-        "read"
-    };
-    let until = service.expires_at.map_or_else(
-        || t("workspace-settings-service-until-removed"),
-        |deadline| {
-            let remaining = deadline.saturating_sub(tilo_clock::unix_now());
-            match remaining {
-                0..60 => t("workspace-settings-service-ends-soon"),
-                60..3_600 => t_args(
-                    "workspace-settings-service-ends-minutes",
-                    &[("minutes", (remaining / 60).into())],
-                ),
-                _ => t_args(
-                    "workspace-settings-service-ends-hours",
-                    &[("hours", (remaining / 3_600).into())],
-                ),
-            }
-        },
-    );
-    t_args(
-        "workspace-settings-service-member",
-        &[("access", access.into()), ("until", until.into())],
-    )
-}
-
 /// What a bot says under its name: whether it runs yet, and from which
 /// version. One fact per line, never joined.
 pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
@@ -1405,8 +1366,8 @@ mod members_tests {
 
 #[cfg(test)]
 mod agents_tests {
-    //! An agent is admitted with the grants of its preset and holds nothing
-    //! ambient: its authority reads back from those grants, per subject.
+    //! An agent is a permission subject like any other: what it may do reads
+    //! back from the workspace's grants naming it, per subject.
 
     use super::*;
     use crate::authority::WorkspaceAuthority as _;
@@ -1419,10 +1380,14 @@ mod agents_tests {
     fn ws_with_agent() -> Workspace {
         let mut ws = Workspace::new(WorkspaceSlot::from(17), "agents-test");
         ws.set_owner(OWNER);
-        assert!(
-            !admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer).is_empty(),
-            "owner admits agent"
-        );
+        ws.grant(Grant::new(
+            format!("agent-member:{AGENT}"),
+            tilo_action_policy::Subject::agent(AGENT),
+            ws.node(),
+            KindSet::READ,
+            Answer::Allow,
+            tilo_action_policy::Subject::person(OWNER),
+        ));
         let notes = Grant::new(
             "scribe-notes",
             tilo_action_policy::Subject::agent(AGENT),
@@ -1454,27 +1419,27 @@ mod agents_tests {
     fn agents_are_scoped_permission_subjects_presented_honestly() {
         {
             let ws = ws_with_agent();
-            let summaries = agent_summaries(&ws);
-            assert_eq!(summaries.len(), 1);
-            assert_eq!(summaries[0].agent, AGENT);
-            assert!(!summaries[0].service, "an agent, not a service");
-            assert_eq!(summaries[0].detail, agent_status(&ws, AGENT));
             let members = ws.agent_members_at(tilo_clock::unix_now());
             assert_eq!(members.len(), 1, "listed with the workspace's agents");
             assert_eq!(members[0].0, AGENT);
-            assert_eq!(members[0].1, KindSet::READ);
-            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
+            assert_eq!(
+                members[0].1,
+                KindSet::READ,
+                "the workspace grant admits it; app grants are its own"
+            );
         }
 
         {
             let mut ws = Workspace::new(WorkspaceSlot::from(18), "profile-test");
             ws.set_owner(OWNER);
-            let edit = admit_agent(&mut ws, &OWNER.to_string(), AGENT, AgentPreset::Observer);
-            assert_eq!(
-                edit.granted.len(),
-                2,
-                "reading the workspace, and no governing it"
-            );
+            ws.grant(Grant::new(
+                format!("agent-member:{AGENT}"),
+                tilo_action_policy::Subject::agent(AGENT),
+                ws.node(),
+                KindSet::READ,
+                Answer::Allow,
+                tilo_action_policy::Subject::person(OWNER),
+            ));
             assert_eq!(
                 ws.agent_members_at(tilo_clock::unix_now()),
                 vec![(AGENT.to_string(), KindSet::READ)]
@@ -1486,9 +1451,8 @@ mod agents_tests {
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),
                 Answer::Deny,
-                "an Observer reads; it never changes anything"
+                "reading the workspace is no license to change it"
             );
-            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
 
             ws.grant_as(
                 &OWNER.to_string(),
@@ -1499,21 +1463,6 @@ mod agents_tests {
                 ),
             )
             .expect("owner grants one selected file");
-            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Observer);
-        }
-
-        {
-            let mut ws = ws_with_agent();
-            ws.grant_as(
-                &OWNER.to_string(),
-                CapOverride::grant(
-                    Subject::agent(AGENT),
-                    Scope::NetHost("*".into()),
-                    Access::Read,
-                ),
-            )
-            .expect("owner grants network access for the test");
-            assert_eq!(agent_authority_preset(&ws, AGENT), AgentPreset::Custom);
         }
 
         {
@@ -1525,14 +1474,14 @@ mod agents_tests {
             assert_eq!(
                 agent_answer(&ws, "so.tilo.sheets", ActionKind::Undoable),
                 Answer::Deny,
-                "an admission must not become ambient human-role authority",
+                "a grant must not become ambient human-role authority",
             );
         }
 
         {
             let mut ws = ws_with_agent();
             let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-            assert_eq!(edit.revoked.len(), 3, "its admission and its app grant");
+            assert_eq!(edit.revoked.len(), 2, "its workspace grant and its app grant");
             assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),

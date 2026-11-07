@@ -92,11 +92,11 @@ fn two_people_on_two_devices_each_meet_in_one_workspace() {
     // and has it in front: a person who joins a workspace lands in it, so
     // the desk shows that workspace rather than the one it started on.
     for device in [&ada_laptop, &ada_phone, &bob_laptop, &bob_phone] {
-        assert_eq!(
-            device.held().as_slice(),
-            [site.workspace.as_str()],
-            "{} holds the workspace it joined",
-            device.label
+        assert!(
+            device.held().iter().any(|held| held == &site.workspace),
+            "{} holds the workspace it joined, beside the one its own desk made: {:?}",
+            device.label,
+            device.held()
         );
         device.wait_showing(&site.workspace);
         assert_eq!(
@@ -149,8 +149,11 @@ fn a_person_the_workspace_never_admitted_is_refused_and_keeps_nothing() {
         stranger_laptop.log()
     );
     assert!(
-        stranger_laptop.held().is_empty(),
-        "and the device keeps no workspace: {:?}",
+        !stranger_laptop
+            .held()
+            .iter()
+            .any(|held| held == &site.workspace),
+        "and the device keeps nothing of the invitation: {:?}",
         stranger_laptop.held()
     );
 

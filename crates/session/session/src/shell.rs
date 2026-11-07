@@ -1148,6 +1148,7 @@ impl crate::Session {
                             &workspace,
                             tilo_desktop_search::Target::Launch {
                                 app: app.to_owned(),
+                                place: tilo_desktop_search::LaunchPlace::Focus,
                             },
                             &mut |own| {
                                 doors

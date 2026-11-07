@@ -504,6 +504,8 @@ impl TimePicker {
 }
 
 impl Widget for TimePicker {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {

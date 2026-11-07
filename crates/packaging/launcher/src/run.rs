@@ -1868,11 +1868,21 @@ fn splice_cli_setenv(
 
 /// Hand this launch's phase marks to the app
 /// ([`tilo_startup_metrics::LAUNCHER_MARKS_ENV`]), so its startup file also
-/// covers the launcher. Only when the shell asked for startup metrics; the
-/// value is the launcher's own fixed mark names and wall-clock times. The
-/// last mark is taken here, after every check and before the sandbox spawns.
+/// covers the launcher, and the app's startup file path, which the sandbox
+/// would otherwise clear. Only when the shell asked for startup metrics; the
+/// marks are the launcher's own fixed names and wall-clock times. The last
+/// mark is taken here, after every check and before the sandbox spawns.
 fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
     tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
+    splice_cli_setenv(
+        argv,
+        std::env::var_os("TILO_STARTUP_METRICS_PATH").map(|path| {
+            (
+                "TILO_STARTUP_METRICS_PATH".to_string(),
+                path.to_string_lossy().into_owned(),
+            )
+        }),
+    )?;
     splice_cli_setenv(
         argv,
         tilo_startup_metrics::handoff_env_value()
@@ -1972,6 +1982,11 @@ fn splice_app_dir(
     let entry = pop_entry(argv)?;
     crate::appdir::push_app_dir(argv, app_dir);
     crate::appdir::push_person_dir(argv, person_dir);
+    // The font index every app of this build shares, so a launch after the
+    // first reads a database instead of building one.
+    if let Some(index) = crate::appdir::prepare_host_font_index() {
+        crate::appdir::push_font_index(argv, &index);
+    }
     // After `push_app_dir` (which repoints `HOME`): this says where the
     // *user's* home is, only when a grant actually bound it.
     if let Some(user_home) = crate::sandbox::push_user_home(argv, capabilities) {
@@ -2404,27 +2419,9 @@ fn splice_sandbox_shim(
     // This is generated sandbox data, never the host account database.
     argv.extend(["--ro".to_string(), "/etc/passwd".to_string()]);
     push_projection_landlock_rules(argv, opts, ctx.manifest);
-    // Capability-granted paths need matching Landlock rules from the same
+    // Every grant this launch carries needs a matching rule from the same
     // plan, or the bind is visible but every open() returns EACCES.
-    for path in &ctx.capabilities.ro_paths {
-        argv.push("--ro".to_string());
-        argv.push(path.display().to_string());
-    }
-    for path in &ctx.capabilities.rw_paths {
-        argv.push("--rw".to_string());
-        argv.push(path.display().to_string());
-    }
-    // A bound D-Bus socket also needs a Landlock read grant on the
-    // sandbox-side path, or ashpd's connect() surfaces EACCES.
-    if let Some(plan) = ctx.dbus_plan {
-        argv.push("--ro".to_string());
-        argv.push(plan.sandbox_path.display().to_string());
-    }
-    // The control panel's host binaries, configuration and authority
-    // sockets, from the same plan its binds came from.
-    if let Some(plan) = ctx.system_authority {
-        crate::system_authority::push_landlock_rules(argv, plan);
-    }
+    push_grant_landlock_rules(argv, ctx);
     // Wayland needs read+write in Landlock: connect(2) on a unix socket is
     // write-flavoured, so read-only surfaces as EACCES at `wl_display_connect`.
     if let Some(bind) = ctx.wayland_bind {
@@ -2447,6 +2444,8 @@ fn splice_sandbox_shim(
     // And the person's records of it, bound the same way.
     argv.push("--rw".to_string());
     argv.push(crate::appdir::SANDBOX_PERSON_DIR.to_string());
+    // The shared font index is read and written inside the sandbox.
+    crate::appdir::push_font_index_landlock(argv);
     // The documents chosen for it, by their in-sandbox path like the app
     // directory: read and written as each choice allows (the documents
     // filesystem refuses the rest), never executed.
@@ -2481,6 +2480,31 @@ fn splice_sandbox_shim(
     argv.push("--".to_string());
     argv.push(entry);
     Ok(())
+}
+
+/// Landlock rules for every grant the launch carries: the paths a capability
+/// plan granted, a D-Bus socket, the control panel's authority, and the app's
+/// own directories.
+fn push_grant_landlock_rules(argv: &mut Vec<String>, ctx: &ShimSpliceCtx<'_>) {
+    for path in &ctx.capabilities.ro_paths {
+        argv.push("--ro".to_string());
+        argv.push(path.display().to_string());
+    }
+    for path in &ctx.capabilities.rw_paths {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
+    // A bound D-Bus socket also needs a Landlock read grant on the
+    // sandbox-side path, or ashpd's connect() surfaces EACCES.
+    if let Some(plan) = ctx.dbus_plan {
+        argv.push("--ro".to_string());
+        argv.push(plan.sandbox_path.display().to_string());
+    }
+    // The control panel's host binaries, configuration and authority
+    // sockets, from the same plan its binds came from.
+    if let Some(plan) = ctx.system_authority {
+        crate::system_authority::push_landlock_rules(argv, plan);
+    }
 }
 
 fn push_runtime_landlock_rules(argv: &mut Vec<String>, runtime: Option<(&Path, &str)>) {

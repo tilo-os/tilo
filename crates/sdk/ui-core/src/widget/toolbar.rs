@@ -1448,6 +1448,8 @@ impl crate::resources::PublishesResources for Toolbar {
 }
 
 impl Widget for Toolbar {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

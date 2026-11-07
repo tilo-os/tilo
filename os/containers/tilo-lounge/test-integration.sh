@@ -6,9 +6,11 @@
 #
 # Everything the deployment does around the image is here, on this machine:
 # the entrypoint reads production-shaped TILO_ROOMS_* (this test's own ports
-# and addresses), the web entry is served beside it, and the people are real
-# headless Chromium contexts. The programs are the image's own, started as the
-# image's entrypoint starts them, in a jail of the image's files.
+# and addresses), the web entry is served beside it, an ingress publishes the
+# live plane at a host of its own and forwards to the listener, and the people
+# are real headless Chromium contexts. The programs are the image's own,
+# started as the image's entrypoint starts them, in a jail of the image's
+# files.
 #
 # usage: test-integration.sh IMAGE BUNDLE [WORK]
 # IMAGE is an OCI archive (as tools/ci/publish/oci-build.sh writes it) or a
@@ -40,17 +42,20 @@ revision=$(b inspect --type image --format '{{index .OCIv1.Config.Labels "org.op
 # This test's own addresses, beside whatever already listens on this machine.
 # The HTTPS listener is the image's own fixed 9781 (`--web`); the live plane,
 # the plain origin-forwarding listener and the web entry's site take ports of
-# this test's. Pages dial the live plane at the port its origin names, so that
-# origin is the live port itself: an ingress publishes the plane at its own
-# address, and here the address is this machine's. The site's port is fixed so
-# the relay knows the site's origin before the site's workspace exists.
+# this test's. The live plane is published the way a deployment publishes it:
+# at a host and port of its own — an ingress's, here a UDP forwarder — that
+# forwards to the listener, which pages reach only through it, and whose
+# certificate names that host. The site's port is fixed so the relay knows the
+# site's origin before the site's workspace exists.
 http_port=18790
 plain_port=19780
 live_port=19781
 site_port=19782
+ingress_port=19783
 web_port=9781
+live_host=live.localhost
 relay_origin=https://127.0.0.1:$web_port
-live_origin=https://127.0.0.1:$live_port
+live_origin=https://$live_host:$ingress_port
 site_origin=https://127.0.0.1:$site_port
 
 # The web entry's bundle, laid out as the web entry image lays it out: the
@@ -66,12 +71,13 @@ certificate=(req -x509 -newkey rsa:2048 -nodes -days 2 -subj '/CN=127.0.0.1'
 openssl "${certificate[@]}" >/dev/null 2>&1 || fail 'no certificate for the site'
 
 # The image's own files, mounted once.
-containers=() image_pid= site_pid=
+containers=() image_pid= site_pid= ingress_pid=
 container=$(b from --pull=never --quiet "$image")
 containers+=("$container")
 root=$(b mount "$container")
 cleanup() {
   stop_site
+  stop_ingress
   stop_image
   local c
   for c in "${containers[@]}"; do
@@ -171,8 +177,10 @@ start_image() {
     TILO_ROOMS_CHAT_CHANNELS=general \
     /usr/local/bin/tilo-lounge >> "$log" 2>&1 &
   image_pid=$!
+  start_ingress
 }
 stop_image() {
+  stop_ingress
   [[ -n $image_pid ]] || return 0
   end "$image_pid"
   image_pid=
@@ -186,6 +194,29 @@ start_on() {
 }
 still_running() { kill -0 "$image_pid" 2>/dev/null; }
 
+# The ingress before the live plane: pages dial the host and port its origin
+# names, and it forwards each client to the listener, as the deployment's
+# ingress forwards UDP 443 to the pod. The listener is never dialled directly,
+# so the shape a page joins is the deployment's.
+start_ingress() {
+  stop_ingress
+  : > "$work/ingress.log"
+  node "$here/integration/ingress.mjs" "$ingress_port" 127.0.0.1 "$live_port" \
+    >> "$work/ingress.log" 2>&1 &
+  ingress_pid=$!
+  for _ in $(seq 300); do
+    grep -q '"udp"' "$work/ingress.log" 2>/dev/null && return 0
+    kill -0 "$ingress_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  fail "the live ingress did not start at 127.0.0.1:$ingress_port: $(cat "$work/ingress.log")"
+}
+stop_ingress() {
+  [[ -n $ingress_pid ]] || return 0
+  end "$ingress_pid"
+  ingress_pid=
+}
+
 # Ready: the deployment's readiness probe answers that the relay is up, and
 # the image's own revision is what it reports. At most 4 minutes, which a
 # first start that seeds its apps and a start that opens a release's state
@@ -198,6 +229,15 @@ wait_ready() {
     sleep 0.2
   done
   fail 'the Lounge did not reach Ready'
+}
+# Every record the start reads, reads whole: a sealed write the host leaves
+# out of its history, a record it cannot open, or one seeded app that did not
+# settle is the state that serves an empty or unloadable app, and no start may
+# hand it to people as if it worked.
+verify_records_read() {
+  local broken
+  broken=$(grep -E 'writes of its history that do not merge|invalid automerge input|duplicate seq|does not open: |open the chat.s channels|seed(ing)? .* failed' "$log" || true)
+  [[ -z $broken ]] || fail "a record did not read whole: $(head -5 <<< "$broken")"
 }
 # The directory's answer, read: `POST /peer/v1/directory` on the relay.
 directory() { curl -ksS --max-time 20 -X POST "$relay_origin/peer/v1/directory"; }
@@ -263,6 +303,7 @@ fresh=$work/fresh
 mkdir -p "$fresh"
 start_on "$fresh"
 wait_ready || fail "the image did not start on a fresh volume: $(tail -20 "$log")"
+verify_records_read
 [[ $mode == '{"relay":"up","revision":"'* ]] || fail "/mode answered $mode"
 [[ $mode == *"\"revision\":\"$revision\""* ]] || fail "/mode reports $mode, not the image's revision $revision"
 minted=$(cat "$state_root/lounge/room-id" 2>/dev/null) || fail 'the fresh start kept no workspace id'
@@ -278,6 +319,7 @@ stop_image
 : > "$log"
 start_image
 wait_ready || fail "the image did not start again on its own volume: $(tail -20 "$log")"
+verify_records_read
 [[ $(cat "$state_root/lounge/room-id") == "$minted" ]] \
   || fail 'a restart on the same volume served a different workspace'
 verify_directory "$minted"
@@ -291,10 +333,21 @@ start_site "$minted"
 
 # Two people: real browsers on the web entry, each its own person, both
 # joining the Lounge through its door, chatting, sharing a desk and seeing
-# each other present.
+# each other present through the live plane their pages join at the ingress's
+# host.
 node "$here/integration/people.mjs" "$site_url" "$relay_origin" "$relay_origin" "$work/people" \
+  "$live_host" \
   || fail 'two people did not meet in the Lounge'
 echo 'ok: two people joined, chatted, shared a desk and saw each other present'
+
+# The live plane taken away: a page says in its members' place that it cannot
+# reach live presence, and says it once in its console. A page that retried
+# silently would look like a workspace nobody is in.
+stop_ingress
+node "$here/integration/live-note.mjs" "$site_url" "$live_host" "$work/live-note" \
+  || fail 'a page without a live plane said nothing'
+echo 'ok: a page that cannot reach the live plane says so and logs it'
+start_ingress
 
 # The state the previous release wrote: this build brings it up, or refuses it
 # by the format's name and version and ends — never a start that dies without
@@ -306,6 +359,7 @@ base64 -d "$here/integration/previous-state.tar.b64" | tar -xf - -C "$previous" 
   || fail 'the previous release state did not unpack'
 start_on "$previous"
 if wait_ready; then
+  verify_records_read
   # Opened by bringing the record up, which keeps the version it read beside
   # it: the state that would not decode is still there, and the start says
   # which format it came from.

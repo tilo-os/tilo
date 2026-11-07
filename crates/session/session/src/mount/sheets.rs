@@ -1,8 +1,9 @@
 //! The sheets the session lends its seats to: the power menu, a workspace's
 //! settings, the directory, the portal apps open links through, the file
-//! picker, the guide, the display sheet and the questions about the person's
-//! apps — each mounted over the desktop and what it shows, and handed to the
-//! session as the seat it speaks through.
+//! picker, the guide, the display sheet, the questions about the person's
+//! apps and the one deleting a workspace asks — each mounted over the
+//! desktop and what it shows, and handed to the session as the seat it
+//! speaks through.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -10,6 +11,7 @@ use std::rc::Rc;
 use tilo_compositor::Compositor;
 use tilo_sheets::Seat as _;
 use tilo_sheets::add_app::AddSeat;
+use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::displays::DisplaysSeat;
@@ -33,6 +35,7 @@ pub(crate) struct Sheets {
     pub(crate) workspace_settings: Option<WorkspaceSettingsSeat>,
     pub(crate) directory: Option<DirectorySeat>,
     pub(crate) invite: Option<InviteSeat>,
+    pub(crate) delete_workspace: Option<DeleteWorkspaceSeat>,
     pub(crate) portal: Option<PortalSeat>,
     pub(crate) file_picker: Option<FilePickerSeat>,
     pub(crate) display_confirm: Option<ConfirmSeat>,
@@ -102,6 +105,16 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
+    // The question deleting a workspace asks: over whatever the person was
+    // looking at, whichever surface asked it.
+    let delete_workspace = mount_sheet(
+        compositor,
+        doors,
+        tilo_sheets::delete_workspace::definition(),
+        DeleteWorkspaceSeat::default(),
+        who,
+        options,
+    );
     let portal = mount_sheet(
         compositor,
         doors,
@@ -126,8 +139,36 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    // The question about a display change stands on every display: it may
-    // be about the display it would otherwise be put on.
+    let (display_confirm, displays) = mount_displays(compositor, doors, who, options);
+    let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
+    let lock_view = mount_lock_view(compositor, doors, who, options);
+    Sheets {
+        power,
+        workspace_settings,
+        directory,
+        invite,
+        delete_workspace,
+        portal,
+        file_picker,
+        display_confirm,
+        displays,
+        shortcut_guide,
+        add_app,
+        uninstall,
+        lock_view,
+    }
+}
+
+/// The sheets about displays: the question a display change asks, standing
+/// on every display because it may be about the display it would otherwise be
+/// put on, and where the desktop appears, with the layouts and the wireless
+/// displays it streams to.
+fn mount_displays(
+    compositor: &mut Compositor,
+    doors: &mut Doors,
+    who: (&str, &str),
+    options: &Options,
+) -> (Option<ConfirmSeat>, Option<DisplaysSeat>) {
     let display_confirm = mount_sheet(
         compositor,
         doors,
@@ -139,8 +180,6 @@ pub(crate) fn mount_sheets(
     if let Some(confirm) = &display_confirm {
         confirm.presentation().cover_every_display();
     }
-    // Where the desktop appears: the layouts and the wireless displays it
-    // streams to.
     let displays = mount_sheet(
         compositor,
         doors,
@@ -149,22 +188,7 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    let (add_app, uninstall) = mount_app_questions(compositor, doors, who, options);
-    let lock_view = mount_lock_view(compositor, doors, who, options);
-    Sheets {
-        power,
-        workspace_settings,
-        directory,
-        invite,
-        portal,
-        file_picker,
-        display_confirm,
-        displays,
-        shortcut_guide,
-        add_app,
-        uninstall,
-        lock_view,
-    }
+    (display_confirm, displays)
 }
 
 /// The lock screen as a sheet of the session's own: the same view the lock

@@ -858,6 +858,8 @@ impl crate::undo::LocalUndo for WebView {
 }
 
 impl Widget for WebView {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::NativeViewLifecycle,
         dyn crate::undo::LocalUndo,

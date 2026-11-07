@@ -90,17 +90,6 @@ fn lanes(cx: &ViewCx<Tracker>, tracker: &Tracker, filter: &Filter, me: Option<&s
     Box::new(board)
 }
 
-/// What the workspace calls the agent `agent` (`agent:<id>`), whichever way
-/// its roster spells the id; the bare id where the workspace names it not.
-fn agent_name(people: &ui::framework::People, agent: &str) -> String {
-    let bare = agent.trim_start_matches("agent:");
-    [agent, bare]
-        .into_iter()
-        .map(|id| people.name(id))
-        .find(|name| name != agent && name != bare)
-        .unwrap_or_else(|| bare.to_owned())
-}
-
 /// One issue's card: its reference and title, and what it is waiting on.
 fn card(
     cx: &ViewCx<Tracker>,
@@ -115,15 +104,13 @@ fn card(
             .with_role(TextRole::Caption)
             .dimmed(),
     ));
-    if let Some(agent) = issue.assigned_agent() {
-        facts = facts.push(Box::new(
-            Badge::text(agent_name(people, agent)).style(ChipStyle::Tinted(Tone::Info)),
-        ));
-    } else if let Some(person) = issue.assigned_person() {
-        facts = facts.push(Box::new(Badge::text(people.name(person))));
-    }
-    if let Some(run) = &issue.run {
-        facts = facts.push(Box::new(crate::task_chip::chip(cx, id, run)));
+    if let Some(assignee) = &issue.assignee {
+        let who = people.actor(&assignee.0);
+        facts = facts.push(Box::new(if who.agent {
+            Badge::text(who.name).style(ChipStyle::Tinted(Tone::Info))
+        } else {
+            Badge::text(who.name)
+        }));
     }
     let (closed, total) = tracker.progress(id);
     if total > 0 {

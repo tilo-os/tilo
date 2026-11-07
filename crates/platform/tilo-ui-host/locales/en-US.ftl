@@ -44,6 +44,11 @@ tilolang-did-many = changed { $count } { $kind }
 # How one sentence goes on with the next field a change wrote ("… and set priority to High").
 tilolang-did-and = and
 
+# The catch-up a window's change mark opens: what changed since the person last looked, item by
+# item, and the one move that marks it all seen.
+tilolang-since-you-looked = Since you looked
+tilolang-mark-all-seen = Mark all seen
+
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
 tilolang-invocation-suggested = Waiting for approval

@@ -289,6 +289,70 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
     serde_json::from_value(listed).expect("a list of invitations")
 }
 
+/// What a QR scanner reads from the sheet's code, `code`, drawn as the sheet
+/// draws it: the widget's own matrix, rasterised, then read by a decoder that
+/// knows nothing of the widget.
+fn scanned(code: &[u8]) -> Result<Vec<u8>, String> {
+    use ui::widget::QrWidget;
+
+    let px = tilo_sheets::invite::CODE_MODULE_PX;
+    let widget = QrWidget::new(code.to_vec())
+        .with_id("invite-code")
+        .with_module_px(px);
+    if let Some(error) = widget.error() {
+        return Err(format!("the code does not fit: {error}"));
+    }
+    let quiet = widget.quiet_modules();
+    let modules = widget
+        .total_modules()
+        .saturating_sub(quiet.saturating_mul(2));
+    if modules == 0 {
+        return Err("the code draws nothing".to_owned());
+    }
+    // The code is drawn at the width the sheet draws it: a scanner reads it
+    // there or it is unreadable on the screen.
+    let scale = usize::try_from(px).map_err(|_| "no module width".to_owned())?;
+    let side = u32::try_from(widget.total_modules().saturating_mul(scale))
+        .map_err(|_| "the code is too wide to draw".to_owned())?;
+    let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
+    for y in 0..modules {
+        for x in 0..modules {
+            if !widget.module(x, y) {
+                continue;
+            }
+            let left = u32::try_from(x.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
+            let top = u32::try_from(y.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
+            for dy in 0..u32::try_from(scale).unwrap_or(1) {
+                for dx in 0..u32::try_from(scale).unwrap_or(1) {
+                    luma.put_pixel(
+                        left.saturating_add(dx),
+                        top.saturating_add(dy),
+                        image::Luma([0]),
+                    );
+                }
+            }
+        }
+    }
+    let mut prepared = rqrr::PreparedImage::prepare(luma);
+    let grids = prepared.detect_grids();
+    let grid = grids.first().ok_or("a scanner finds no code")?;
+    let mut read = Vec::new();
+    grid.decode_to(&mut read)
+        .map_err(|error| format!("a scanner cannot read the code: {error:?}"))?;
+    Ok(read)
+}
+
+/// The sheet's code for the link it made is the invitation itself, and a
+/// scanner reads it back: what the person hands over as text, the code
+/// carries as the same bytes.
+fn scanned_back(created: &tilo_sheets::invite::Created) -> Result<Vec<u8>, String> {
+    let invitation = tilo_workspace_join::invitation_bytes(&created.link)?;
+    if invitation != created.code {
+        return Err("the code is not the invitation the link spells out".to_owned());
+    }
+    scanned(&created.code)
+}
+
 #[test]
 fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let _settled = ui::motion::testing::settled();
@@ -328,8 +392,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
 
     // They make a link at the part the sheet opens on: the sheet asks, the
     // session makes it through the desk, and the sheet shows the link back.
-    let mut app =
-        HeadlessApp::<InviteApp>::for_person_with_lent("person", seat).expect("the sheet draws");
+    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone())
+        .expect("the sheet draws");
     app.harness()
         .resize((WIDTH as u32, HEIGHT as u32))
         .expect("a screen");
@@ -366,6 +430,43 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "the link is the desk's own invitation"
     );
     capture(&mut session, "invite-sheet");
+
+    // The link is shown as a code to scan, and the code is the invitation
+    // itself: a scanner reads back exactly what the person hands over.
+    let made = session
+        .invite_sheet()
+        .and_then(|seat| seat.invite().created)
+        .expect("the link the sheet made");
+    assert_eq!(
+        scanned_back(&made),
+        Ok(made.code.clone()),
+        "the code is the invitation, read back out of the QR the sheet draws"
+    );
+    // Every part the sheet offers makes a link of its own, and every link's
+    // code is that invitation the same way.
+    for part in 0..seat.invite().roles.len() {
+        app.harness()
+            .perform_named(
+                &format!("invite-role:segment:{part}"),
+                &A11yAction::Activate,
+            )
+            .expect("the part's chip is pressed");
+        app.settle();
+        app.harness()
+            .perform_named("invite-create", &A11yAction::Activate)
+            .expect("the create button is pressed");
+        app.settle();
+        settle(&mut session);
+        let made = session
+            .invite_sheet()
+            .and_then(|seat| seat.invite().created)
+            .expect("a link for the part");
+        assert_eq!(
+            scanned_back(&made),
+            Ok(made.code.clone()),
+            "the code of a link at part {part} is the invitation, read back"
+        );
+    }
 
     // Her own device, of her own person, joins with what was handed to her.
     let her_root = SigningKey::from_bytes(&[0x81; 32]);

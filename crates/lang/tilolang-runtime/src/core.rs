@@ -151,6 +151,9 @@ pub struct Core {
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// What the last catch-up took away, so that undoing it can give it back
+    /// ([`crate::seen::SeenUndo`]).
+    pub seen_undo: RefCell<Option<crate::seen::SeenUndo>>,
     /// What each unit costs while a profile is on, shared with the engine that measures fuel.
     pub(crate) costs: Rc<crate::cost::Recorder>,
     /// The row being rendered, while a view renders one: the rows of the list it is a row
@@ -277,6 +280,7 @@ impl Core {
             rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
+            seen_undo: RefCell::new(None),
             costs,
             row_place: RefCell::new(None),
         });
@@ -365,21 +369,21 @@ impl Core {
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
             ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut,
             MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
-            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
-            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
-            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-            Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq,
+            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows,
+            ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
+            RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+            RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
+            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
+            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
+            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
             WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
@@ -419,7 +423,7 @@ impl Core {
             | MapGetValue | MapKeys | MapKeysValue | RecNew | RecSetI | RecSetF | RecSetH
             | RefLit | RefEq | RefIs | RefId | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody

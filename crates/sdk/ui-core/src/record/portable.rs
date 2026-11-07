@@ -66,10 +66,6 @@ impl RecordSet {
             self.take_from_retired_workspace_in_cache(cache, want)?;
         }
         let value = cache.get(&target).ok_or(RecordOpenError::MissingRecord)?;
-        let actor = value
-            .actor
-            .filter(|actor| !actor.is_empty())
-            .ok_or_else(|| error("missing persistent actor"))?;
         // Complete load: corrupt/truncated cache bytes remain untouched for recovery.
         let mut doc = AutoCommit::load_with_options(
             &value.bytes,
@@ -77,7 +73,15 @@ impl RecordSet {
         )
         .map_err(error)?;
         validate_identity(&doc, want, &self.home)?;
-        doc.set_actor(automerge::ActorId::from(actor));
+        // The row's saved actor is the writer its last save was made by, which
+        // may still be live in another page: a writer identity belongs to one
+        // writer, so this page writes the record under one it mints, as a
+        // record created here does. The row keeps it for the saves that follow.
+        let actor = automerge::ActorId::random();
+        cache
+            .claim(&target, actor.to_bytes().to_vec())
+            .map_err(error)?;
+        doc.set_actor(actor);
         let history = crate::state::UndoLog::new(&mut doc);
         self.open.insert(
             want.id.clone(),
@@ -426,6 +430,56 @@ mod tests {
         assert_eq!(cache.get(&key).unwrap().bytes, vec![1, 2, 3]);
         assert!(cache.pending_writes().is_empty());
     }
+    #[test]
+    fn a_second_page_writing_a_record_never_writes_a_sequence_twice() {
+        let cache = PortableStorage::new("profile", "device").unwrap();
+        let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("note"));
+        let key = key("so.tilo.test", "workspace", &checkout.id);
+        let page = RecordOwners::portable(cache.clone())
+            .open("so.tilo.test", "workspace")
+            .unwrap();
+        page.create_record(&checkout).unwrap();
+        let saved = cache.get(&key).unwrap();
+        // Another page of the same profile opens what the first one saved, and
+        // both write: both carry the change the first one saved, and each
+        // writes its own next one.
+        let other = PortableStorage::new("profile", "device").unwrap();
+        other
+            .hydrate(key.clone(), saved.bytes.clone(), saved.actor.clone())
+            .unwrap();
+        let second = RecordOwners::portable(other.clone())
+            .open("so.tilo.test", "workspace")
+            .unwrap();
+        second.open_existing_record_checked(&checkout).unwrap();
+        let mut written = Vec::new();
+        for store in [&page, &second] {
+            written.push(
+                store
+                    .with_action_state(&checkout.id, |doc, _, _| {
+                        let heads = doc.get_heads();
+                        doc.put(automerge::ROOT, "value", "written").unwrap();
+                        doc.commit();
+                        doc.save_after(&heads)
+                    })
+                    .unwrap(),
+            );
+        }
+        let mut merged = AutoCommit::load(&saved.bytes).unwrap();
+        for change in &written {
+            crate::history_mode::routes::load_incremental(&mut merged, change).unwrap();
+        }
+        let changes = merged.get_changes(&[]);
+        let sequences: std::collections::HashSet<_> = changes
+            .iter()
+            .map(|change| (change.actor_id().to_bytes(), change.seq()))
+            .collect();
+        assert_eq!(
+            sequences.len(),
+            changes.len(),
+            "one change per writer and sequence, whichever page wrote it"
+        );
+    }
+
     #[test]
     fn initializer_cannot_replace_the_reserved_actor() {
         let cache = PortableStorage::new("profile", "device").unwrap();

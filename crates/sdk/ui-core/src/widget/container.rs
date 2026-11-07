@@ -199,6 +199,11 @@ impl Container {
         self.child.take()
     }
 
+    /// Whether it holds a child, without touching it.
+    pub fn has_child(&self) -> bool {
+        self.child.is_some()
+    }
+
     /// Replace the single child after a graph reconcile pass.
     pub fn set_child(&mut self, child: Box<dyn Widget>) {
         self.child = Some(child);

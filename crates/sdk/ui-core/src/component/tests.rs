@@ -174,6 +174,95 @@ fn every_described_widget_builds_from_its_required_props() {
     }
 }
 
+/// Every described widget takes its props where it stands: the adapter reaches it as its own
+/// type ([`crate::described!`]) and sets them, so an instance outlives a change to it and keeps
+/// what the person was doing with it — the focus in a field, a drag under a finger, the menu a
+/// press opened. A widget that answers no type of its own, or refuses every change, is built
+/// again each time its props are told to it.
+const NOT_YET_IN_PLACE: &str = include_str!("not_yet_in_place.txt");
+
+#[test]
+fn every_described_widget_takes_its_props_where_it_stands() {
+    let mut no_type = Vec::new();
+    let mut built_again = Vec::new();
+    for entry in registry() {
+        let description = (entry.describe)();
+        let props: Vec<(&str, Value)> = description
+            .props
+            .iter()
+            .filter(|p| p.required)
+            .map(|p| (p.name.as_str(), sample(&p.ty)))
+            .collect();
+        let mut source = given("k", &props);
+        let Ok(mut widget) = (entry.build)(&mut source) else {
+            continue;
+        };
+        if widget.as_any_mut().is_none() {
+            no_type.push(description.name.clone());
+            continue;
+        }
+        let before = std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref());
+        let mut next = given("k", &props);
+        let taken = (entry.update)(&mut widget, &mut next);
+        if taken != Ok(true) {
+            built_again.push(description.name.clone());
+            continue;
+        }
+        assert_eq!(
+            before,
+            std::ptr::from_ref::<dyn crate::widget::Widget>(widget.as_ref()),
+            "{} is the instance it was",
+            description.name
+        );
+    }
+    assert!(
+        no_type.is_empty(),
+        "these described widgets answer no type of their own, so a change to them builds them \
+         again: declare `described!();` inside their `impl Widget`:\n  {}",
+        no_type.join("\n  ")
+    );
+    let owed = owed_in_place();
+    let paid: Vec<&String> = built_again
+        .iter()
+        .filter(|name| !owed.iter().any(|o| o == *name))
+        .collect();
+    assert!(
+        paid.is_empty(),
+        "these described widgets are built again when their own props are given to them, which \
+         loses the person's focus, press and whatever they opened: take the props in place in \
+         `set_props`:\n  {}",
+        paid.iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+    let settled: Vec<&String> = owed
+        .iter()
+        .filter(|name| !built_again.contains(name))
+        .collect();
+    assert!(
+        settled.is_empty(),
+        "these take their props where they stand now, so remove them from \
+         component/not_yet_in_place.txt:\n  {}",
+        settled
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  ")
+    );
+}
+
+/// The described widgets still built again on a change to their props
+/// ([`NOT_YET_IN_PLACE`]).
+fn owed_in_place() -> Vec<String> {
+    NOT_YET_IN_PLACE
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(str::to_owned)
+        .collect()
+}
+
 #[test]
 fn a_missing_required_prop_or_a_value_of_another_type_is_refused() {
     let mut nothing = given("k", &[]);

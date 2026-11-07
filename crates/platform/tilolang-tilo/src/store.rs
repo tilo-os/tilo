@@ -105,6 +105,9 @@ struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// The collections whose items joined, left or moved, by the document that holds them.
     collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The records the transaction made ([`Inner::create_in`]): a transaction that is rolled
+    /// back takes them out of the index again.
+    created: Vec<String>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
     /// The resources it wrote that are saved to the record, and those their origin derives
@@ -114,9 +117,9 @@ struct TxnState {
     derived: usize,
 }
 
-/// What the record moved on from, when known: the heads of each chunk before, and the versions
-/// its new changes made.
-type Since<'a> = Option<(&'a Stamps, &'a Ends)>;
+/// What the record moved on from, when known: the heads of each chunk before, the versions its
+/// new changes made, and where those changes placed the items they did.
+type Since<'a> = Option<(&'a Stamps, &'a Ends, &'a idx::reflect::Placed)>;
 
 /// The versions changes made, per resource they changed: its first and last, and the last
 /// change of each of its fields ([`idx::reflect::Ends`]).
@@ -278,6 +281,9 @@ pub struct ReadStats {
     pub index: IndexReads,
     /// Items a filter was evaluated on one by one (a filter no column answers).
     pub evaluated: u64,
+    /// Times the versions of every resource were derived from the record's log: what a read
+    /// of a resource's whole history costs, and what a first render reads none of.
+    pub versions: u64,
 }
 
 /// A listing read once in this state of the store: until anything changes, a view's rows read
@@ -323,7 +329,7 @@ mod reading;
 use index_build::AppIndex;
 use reading::{
     collections_by_doc, everything, mirror_of, name_version_changes, note_derived, scan,
-    write_as_a_known_actor,
+    version_fields, write_as_a_known_actor,
 };
 mod outbox;
 mod plan;
@@ -364,6 +370,8 @@ struct Inner {
     doc_reads: std::cell::Cell<DocReads>,
     /// Items filters were evaluated on one by one.
     evaluated: std::cell::Cell<u64>,
+    /// Times the versions of every resource were derived from the log.
+    versions_built: std::cell::Cell<u64>,
     listed: RefCell<Vec<ListedOnce>>,
     /// What each change wrote to the fields of each resource it changed, by the change and the
     /// resource, as [`Store::written`] read it: a change never changes, so it is read once.
@@ -672,6 +680,7 @@ impl TiloStore {
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
+                versions_built: std::cell::Cell::new(0),
                 listed: RefCell::default(),
                 txns: HashMap::new(),
                 next_txn: 1,
@@ -776,6 +785,7 @@ impl TiloStore {
             doc: inner.doc_reads.get(),
             index,
             evaluated: inner.evaluated.get(),
+            versions: inner.versions_built.get(),
         }
     }
 
@@ -786,6 +796,9 @@ impl TiloStore {
             let mut held = self.changing();
             let inner = &mut *held;
             if inner.versions.is_none() {
+                inner
+                    .versions_built
+                    .set(inner.versions_built.get().saturating_add(1));
                 let mut built = versions::Versions::default();
                 for (_, doc) in inner.chunks.docs() {
                     note_versions(
@@ -1151,6 +1164,64 @@ impl TiloStore {
         Ok(crate::action::migrated(mirror, &obj, migration))
     }
 
+    /// Mark the notice `doc` seen, as `person`'s change: what a device writes when its person
+    /// dismisses or opens one, so every device of theirs takes the notification back. The
+    /// change sets the notice's `seen` flag, as a bound control's edit of a field does, and
+    /// waits for the host to commit it (`Host::take_committed`).
+    ///
+    /// # Errors
+    /// The workspace record cannot be had, holds no such notice, or the change cannot be written.
+    pub fn see(&self, doc: &str, person: &str) -> Result<(), StoreError> {
+        self.load_record()?;
+        let mut inner = self.mutate();
+        let Some((app, ty)) = inner.index.get(doc).cloned() else {
+            return Err(not_found(format!("resource {doc}")));
+        };
+        if ty != tilolang::NOTICE_TYPE {
+            return Err(invalid(format!("resource {doc} is no notice")));
+        }
+        let Some(schema) = lookup(&ty) else {
+            return Err(not_found(format!("type {ty}")));
+        };
+        let at = ResourceRef::root(doc.to_owned(), ty.clone());
+        let mutation = Mutation::SetRegister {
+            field: tilolang::NOTICE_SEEN.to_owned(),
+            value: Scalar::Bool(true),
+        };
+        let Planned {
+            edit,
+            touched,
+            items,
+            placed,
+            ..
+        } = inner.plan(&at, &mutation)?;
+        let seed = inner.fresh("seen:").into_bytes();
+        inner.write(&app, edit.clone(), seed, touched, (items, placed))?;
+        let action = DynAction {
+            app: app.clone(),
+            kind: format!("tl.{app}.{}", schema.name),
+            action_id: crate::notices::SEEN_ACTION.to_owned(),
+            args: Json::Object(
+                [
+                    (
+                        "field".to_owned(),
+                        Json::String(tilolang::NOTICE_SEEN.to_owned()),
+                    ),
+                    ("value".to_owned(), Json::Bool(true)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            authorship: Authorship {
+                invoker: person.to_owned(),
+                ..Authorship::default()
+            },
+            edits: vec![edit],
+        };
+        inner.enqueue(action);
+        Ok(())
+    }
+
     /// The ids of the resources of the type `ty` of `app`, in id order.
     #[must_use]
     pub fn resources_of(&self, app: &str, ty: &str) -> Vec<DocId> {
@@ -1429,6 +1500,72 @@ impl TiloStore {
         }
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
+
+    /// Create the record `id` inside the open transaction `txn`: what makes it is the change of
+    /// the action that did, committed with the rest of it and taken back when it fails. What
+    /// creates it writes nothing of an app's own — `notify` writes a notice of the host's
+    /// ([`crate::notify`]) — so the change keeps the app and kind of what else the action wrote.
+    ///
+    /// # Errors
+    /// The type is not registered, the resource already exists, no transaction is open, or the
+    /// record cannot be had.
+    pub fn create_in(
+        &self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        self.load_record()?;
+        let mut inner = self.mutate();
+        if !inner.txns.contains_key(&txn.0) {
+            return Err(invalid("no such transaction"));
+        }
+        if inner.index.contains_key(id) {
+            return Err(invalid(format!("resource {id} exists")));
+        }
+        let schema = lookup(&record.ty)
+            .ok_or_else(|| not_found(format!("type {} is not registered", record.ty)))?;
+        let empty = DynRecord::empty(schema).map_err(backend)?;
+        let edit = DynEdit::Create {
+            id: id.to_owned(),
+            record: empty.to_json(),
+        };
+        let touched = vec![FieldKey {
+            resource: id.to_owned(),
+            field: ANY_FIELD.to_owned(),
+        }];
+        inner
+            .index
+            .insert(id.to_owned(), (record.app.clone(), record.ty.clone()));
+        let written = inner.write(
+            &record.app,
+            edit.clone(),
+            id.as_bytes().to_vec(),
+            touched.clone(),
+            (Vec::new(), Vec::new()),
+        );
+        if let Err(error) = written {
+            inner.index.remove(id);
+            return Err(error);
+        }
+        let state = inner
+            .txns
+            .get_mut(&txn.0)
+            .ok_or_else(|| invalid("no such transaction"))?;
+        if state.app.is_none() {
+            state.app = Some(record.app.clone());
+            state.kind = Some(format!("tl.{}.{}", record.app, schema.name));
+        }
+        state.saved = state.saved.saturating_add(1);
+        state.edits.push(edit);
+        state.created.push(id.to_owned());
+        state
+            .touched
+            .entry(id.to_owned())
+            .or_default()
+            .extend(touched);
+        Ok(ResourceRef::root(id, record.ty.clone()))
+    }
 }
 
 /// The resources the documents the store holds have, by resource: those of each chunk.
@@ -1456,6 +1593,20 @@ fn ends_since(
         ends.extend(idx::reflect::ends_of(&since, doc, docs));
     }
     Some(ends)
+}
+
+/// Where the changes of each chunk since its `stamps` placed the items they placed: what the
+/// items that left a collection are written from when the index never held them.
+fn placed_since(chunks: &Chunks, stamps: &Stamps) -> idx::reflect::Placed {
+    let mut placed = idx::reflect::Placed::new();
+    for (chunk, heads) in stamps {
+        if let Some(doc) = chunks.mirror(*chunk) {
+            placed.extend(idx::reflect::placed_by(
+                &doc.committed_document().get_changes(heads),
+            ));
+        }
+    }
+    placed
 }
 
 impl Inner {
@@ -1550,23 +1701,28 @@ impl Inner {
             let seen = self.chunks.heads();
             let own;
             let docs = &self.index;
-            let ends = match since {
-                Some((from, ends)) if held.heads == *from => ends,
+            let own_placed;
+            let (ends, placed) = match since {
+                Some((from, ends, placed)) if held.heads == *from => (ends, placed),
                 _ => {
                     if !self.chunks.holds(&held.heads) {
                         self.rebuild(&app);
                         continue;
                     }
-                    // The versions of what changed since the index's heads.
+                    // The versions of what changed since the index's heads, and where it put
+                    // the items it placed.
                     own = ends_since(&self.chunks, &held.heads, docs).unwrap_or_default();
-                    &own
+                    own_placed = placed_since(&self.chunks, &held.heads);
+                    (&own, &own_placed)
                 }
             };
             let nested = &self.nested;
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&self.chunks, docs, nested);
+                derive.removed_before(writer, &app, ends, placed)?;
                 derive.changes(writer, &app, reached)?;
                 derive.versions(writer, &app, ends)?;
+                derive.removed(writer, &app, ends)?;
                 writer.set_heads(&seen)?;
                 Ok((derive.reads, derive.moved, derive.wholes, derive.notified))
             });
@@ -1618,6 +1774,9 @@ impl Inner {
                 {
                     tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
                 }
+                if let Some(ends) = &write.versions {
+                    unsaved::derive_removed(&mut derive, &mut sink, &write.app, ends, &write.items);
+                }
             }
         }
         self.overlay = Arc::new(overlay);
@@ -1657,42 +1816,25 @@ impl Inner {
         let mut ends = Ends::new();
         for made in made {
             let resource = made.resource.clone();
-            // A version that made or removed the resource names no fields: it changed every
-            // field the resource was made with, which `changed` reads from the making.
-            let changed = made
-                .fields
-                .iter()
-                .map(|field| idx::reflect::changed_field(field));
-            let fields = std::iter::once(idx::reflect::CREATED.to_owned())
-                .chain(std::iter::once(idx::reflect::UPDATED.to_owned()))
-                .chain(changed);
-            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
-            let touched = reached.entry(doc).or_default();
-            for field in fields {
-                touched.push(FieldKey {
-                    resource: resource.clone(),
-                    field,
-                });
-            }
-            ends.insert(
-                resource,
-                idx::reflect::Ends {
-                    first: stamp.clone(),
-                    last: stamp.clone(),
-                    fields: made
-                        .fields
-                        .iter()
-                        .map(|field| (field.clone(), stamp.clone()))
-                        .collect(),
-                    restored: false,
-                },
+            let end = idx::reflect::Ends::of(
+                &stamp,
+                &made.fields,
+                made.kind,
+                made.kind == tilolang_runtime::store::VersionKind::Removed,
             );
+            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
+            reached
+                .entry(doc)
+                .or_default()
+                .extend(version_fields(&resource, &end));
+            ends.insert(resource, end);
         }
         // Kept with the action's last write, so they go when its writes go.
         let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
             return BTreeMap::new();
         };
         write.versions = Some(ends.clone());
+        let items = write.items.clone();
         if let (true, Some(held)) = (
             self.chunks.has_record(),
             self.apps.get(app).filter(|held| held.ready()),
@@ -1706,6 +1848,7 @@ impl Inner {
             if let Err(error) = derive.versions(&mut sink, app, &ends) {
                 tracing::warn!(app, %error, "a change's versions were not indexed");
             }
+            unsaved::derive_removed(&mut derive, &mut sink, app, &ends, &items);
         }
         self.changed_within(&reached);
         reached
@@ -1902,31 +2045,6 @@ impl Inner {
         )
     }
 
-    /// The version that last changed the field `field` of the resource `at`, as the index keeps
-    /// it; `None` when no index of its package is read from yet. A field no version changed
-    /// since the resource was made was last changed by the one that made it, which set it.
-    fn field_changed(
-        &self,
-        at: &ResourceRef,
-        field: &str,
-    ) -> Option<Result<Option<Version>, StoreError>> {
-        let (app, _) = self.index.get(&at.doc)?;
-        let view = self.view(app)?;
-        let read = |field: &str| {
-            view.field(&at.id_string(), field)
-                .map_err(backend)
-                .map(|held| {
-                    held.as_ref()
-                        .and_then(idx::reflect::Stamp::of_value)
-                        .map(|stamp| stamp.version)
-                })
-        };
-        Some(match read(&idx::reflect::changed_field(field)) {
-            Ok(None) => read(idx::reflect::CREATED),
-            held => held,
-        })
-    }
-
     /// The listing of the collection `field` of `at` (of items of the type `item`), filtered
     /// by `pred` and in `order`, read once in this state of the store.
     fn listed_in(
@@ -2070,6 +2188,15 @@ impl Store for TiloStore {
         Self::create_with_id(self, record, id)
     }
 
+    fn create_in(
+        &mut self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        Self::create_in(self, txn, record, id)
+    }
+
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
@@ -2173,11 +2300,22 @@ impl Store for TiloStore {
             .txns
             .get_mut(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
-        if state.app.as_deref().is_some_and(|held| held != app) {
+        // A change writes one app's resources. The host's are the workspace's own — a notice
+        // rides in the change that told the person, whichever app's action it was
+        // ([`crate::notices`]) — so they join any app's change; the change takes the app of
+        // what else it wrote, and the host's only when that is all it wrote.
+        let own = app.as_str() == tilolang::HOST_APP;
+        if state
+            .app
+            .as_deref()
+            .is_some_and(|held| held != app && held != tilolang::HOST_APP && !own)
+        {
             return Err(invalid("a transaction cannot write resources of two apps"));
         }
-        state.app = Some(app);
-        if state.kind.is_none() {
+        let joining =
+            state.app.is_none() || (state.app.as_deref() == Some(tilolang::HOST_APP) && !own);
+        if joining {
+            state.app = Some(app);
             state.kind = kind;
         }
         // What its origin derives lives in the store's unsaved layer; the rest is the record's.
@@ -2222,8 +2360,13 @@ impl Store for TiloStore {
         });
         // A migration or a trigger that changed nothing still ran: its mark is a change of the
         // record like any other, and the next open or wake reads it instead of asking again.
+        // A trigger whose own record is not among what it wrote — one that only told someone
+        // something, say — ran too, and records it, so it runs no second time for that instant.
+        let own = triggering
+            .as_ref()
+            .is_some_and(|triggering| !state.touched.contains_key(&triggering.doc));
         let mut marked = false;
-        if state.edits.is_empty()
+        if (state.edits.is_empty() || own)
             && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref())
         {
             if !inner.mark(&mut state, txn, &doc, edit)? {
@@ -2260,6 +2403,17 @@ impl Store for TiloStore {
         }
         let versioned = app.clone();
         let (action_id, args) = published_name(note);
+        // A change is one app's, and the record stores each edit under the app its resource is
+        // of: what the change wrote of another — a notice of the host's, riding in the change
+        // that told its person — is addressed to that app, as the store that wrote it read it.
+        let edits: Vec<DynEdit> = state
+            .edits
+            .into_iter()
+            .map(|edit| match inner.index.get(edit.resource()) {
+                Some((held, _)) if *held != app => edit.in_app(held),
+                _ => edit,
+            })
+            .collect();
         let action = DynAction {
             app,
             kind,
@@ -2275,7 +2429,7 @@ impl Store for TiloStore {
                 count: note.count.max(1),
                 invocation: note.invocation.clone(),
             },
-            edits: state.edits,
+            edits,
         };
         let made = action.made();
         inner.enqueue(action);
@@ -2299,6 +2453,11 @@ impl Store for TiloStore {
         if let Some(state) = inner.txns.remove(&txn.0) {
             inner.drop_local_from(state.start);
             inner.reapply();
+            // What it made is not in the record the mirror was put back to, and the index is not
+            // rebuilt from the mirror: it is taken out here.
+            for id in &state.created {
+                inner.index.remove(id);
+            }
             inner.rebuild_overlay();
             inner.changed();
         }
@@ -2420,6 +2579,27 @@ impl Store for TiloStore {
             .collect())
     }
 
+    fn first(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Option<ResourceRef>, StoreError> {
+        let inner = self.held();
+        let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
+        let Some(view) = inner.view(&schema.app) else {
+            return Err(StoreError::Backend(format!(
+                "the index of {} is being built",
+                schema.app
+            )));
+        };
+        let path = view.first(schema, pred, order, &inner.evaluated)?;
+        Ok(path.and_then(|path| {
+            let held = view.type_of(&path).ok().flatten()?;
+            ResourceRef::parse_id(&path, held)
+        }))
+    }
+
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
         Ok(self
             .built_versions()
@@ -2436,6 +2616,27 @@ impl Store for TiloStore {
             .filter(|(resource, _)| *resource == doc || resource.starts_with(&prefix))
             .map(|(resource, versions)| (resource.clone(), versions.clone()))
             .collect())
+    }
+
+    fn newest(&self, at: &ResourceRef) -> Result<Option<Version>, StoreError> {
+        versions::newest(self, at)
+    }
+
+    fn newest_page(
+        &self,
+        doc: &DocId,
+        page: usize,
+    ) -> Result<(Vec<(String, Version)>, bool), StoreError> {
+        versions::newest_page(self, doc, page)
+    }
+
+    fn removed(
+        &self,
+        holder: &ResourceRef,
+        field: &str,
+        item: &TypeId,
+    ) -> Result<Vec<(String, Version)>, StoreError> {
+        versions::removed_in(self, holder, field, item)
     }
 
     fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {

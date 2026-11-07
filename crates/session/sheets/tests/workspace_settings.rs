@@ -42,7 +42,11 @@ fn enabled(app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) -> bool {
 /// The settings a scenario stages, shown through a seat as the shell lends
 /// it.
 fn seated(scenario: &str) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
-    let settings = staged_settings(scenario);
+    seated_with(staged_settings(scenario))
+}
+
+/// `settings` shown through a seat, as the shell lends it.
+fn seated_with(settings: Settings) -> (HeadlessApp<WorkspaceSettingsApp>, WorkspaceSettingsSeat) {
     let seat = WorkspaceSettingsSeat::default();
     seat.show(settings);
     seat.presentation().open(false);
@@ -77,6 +81,21 @@ fn the_general_tab_shows_the_workspace_and_what_the_person_may_change() {
     let mut viewer = staged("general-viewer");
     assert!(says(&mut viewer, "Only admins can rename the workspace."));
     assert!(!enabled(&mut viewer, "Create invitation"));
+}
+
+#[test]
+fn one_device_has_no_order_to_choose_between() {
+    let mut settings = staged_settings("general");
+    settings.general.device_rows.truncate(1);
+    settings.general.move_labels = ["Move earlier".to_owned(), "Move later".to_owned()];
+    let (mut app, _seat) = seated_with(settings);
+
+    assert!(!says(&mut app, "Move earlier"));
+    assert!(!says(&mut app, "Move later"));
+    assert!(
+        says(&mut app, "Laptop (this device)"),
+        "the one device's row is still shown"
+    );
 }
 
 #[test]
@@ -619,4 +638,39 @@ fn only_the_emoji_the_person_may_remove_offer_remove() {
     let mut app = staged("emoji");
     assert!(says(&mut app, "Remove :party-parrot:"));
     assert!(!says(&mut app, "Remove :shipit:"));
+}
+
+#[test]
+fn deleting_the_workspace_asks_first_and_keep_changes_nothing() {
+    let (mut app, seat) = seated("general");
+    press(&mut app, "ws-general-delete");
+    assert!(says(&mut app, "Delete Design studio?"));
+    assert!(says(&mut app, "Everything in this workspace goes with it"));
+    assert!(
+        seat.take_asked().is_empty(),
+        "nothing is asked of the shell yet"
+    );
+    app.harness().key("Escape");
+    app.settle();
+    assert!(seat.take_asked().is_empty(), "keeping changes nothing");
+    assert!(says(&mut app, "At a glance"), "the tab is back");
+    assert!(seat.presentation().is_open());
+}
+
+#[test]
+fn a_confirmed_delete_asks_the_shell_for_the_workspace() {
+    let (mut app, seat) = seated("general");
+    press(&mut app, "ws-general-delete");
+    press(&mut app, "ws-settings-decision.primary");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::DeleteWorkspace]
+    );
+}
+
+#[test]
+fn the_delete_question_renders_for_captures() {
+    let mut app = staged("general-deleting");
+    assert!(says(&mut app, "Delete Design studio?"));
+    assert!(says(&mut app, "Keep"));
 }

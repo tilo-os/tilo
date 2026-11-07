@@ -424,12 +424,7 @@ async fn a_collaborator_still_works() {
             // A collaborator's id is never a task agent's, and a task agent's
             // is never admitted as a collaborator.
             assert!(
-                WorkspaceMembershipCommand::AddAgent {
-                    agent: "task-0123456789ab".into(),
-                    preset: AgentPreset::Observer,
-                }
-                .validate()
-                .is_err()
+                tilo_peer_state::workspace_membership::valid_agent_id("task-0123456789ab").is_err()
             );
             drop(f);
         })

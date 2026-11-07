@@ -4,14 +4,12 @@ use serde::{Deserialize, Serialize};
 use tilo_document::RichText;
 use tilo_resource::{self, Atom, Collection, Id, JsonSchema, Model, Refusal, Set};
 
-use crate::model::run::{Area, Budget, ModelChoice, Run};
+use crate::model::goal::Area;
 
 /// The longest title an issue keeps.
 pub const MAX_TITLE_CHARS: usize = 240;
 /// The longest message a thread keeps.
 pub const MAX_MESSAGE_CHARS: usize = 16 * 1024;
-/// The longest address a run records reading.
-pub const MAX_READ_RESOURCE_CHARS: usize = 2048;
 /// The most labels one issue carries.
 pub const MAX_LABELS: usize = 32;
 
@@ -36,10 +34,9 @@ pub enum Status {
     /// Written down, not planned yet.
     #[default]
     Backlog,
-    /// Planned: the next thing to pick up. An agent's issue waits here for
-    /// a person to approve its run.
+    /// Planned: the next thing to pick up.
     Todo,
-    /// Someone, or an agent's run, is working on it.
+    /// Someone is working on it.
     InProgress,
     /// Done by whoever worked on it, waiting for a person to look.
     InReview,
@@ -65,8 +62,7 @@ impl Status {
     }
 
     /// Whether the issue has left where a task nobody has started waits:
-    /// someone, a person or an agent's run, has taken it up. A to-do is an
-    /// issue that has not.
+    /// someone has taken it up. A to-do is an issue that has not.
     #[must_use]
     pub const fn started(self) -> bool {
         !matches!(self, Self::Backlog | Self::Todo)
@@ -87,25 +83,26 @@ impl Status {
 }
 
 /// What a message in an issue's thread is.
+///
+/// `ToRun`, `FromRun`, `Lookup`, `Step` and `Answer` are what an agent's task
+/// runs posted here, and stay so that a thread written while they ran still
+/// reads as it did. Nothing writes them now: an agent takes part in a
+/// workspace conversation and its work is that conversation.
 #[derive(Model, Default, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     /// Someone said something about the issue.
     #[default]
     Comment,
-    /// A message to the issue's current run: its agent reads it at its next
-    /// step.
+    /// A message to an earlier task run.
     ToRun,
-    /// What the run did or found, posted by its agent.
+    /// What a task run did or found, posted by its agent.
     FromRun,
-    /// A resource the run read, looked up through system search. It reads as
-    /// the read it was, and names the address of what was read.
+    /// A resource a task run read, looked up through system search.
     Lookup,
-    /// A step the run took: a tilolang program it ran and what it answered, in
-    /// [`Message::step`]. The text is the program.
+    /// A step a task run took: a tilolang program it ran and what it
+    /// answered, in [`Message::step`].
     Step,
-    /// The run's answer as a view: the resource that keeps it, in
-    /// [`Message::lookup`], which opens as a window beside what the request was
-    /// about. The text is its title.
+    /// A task run's answer as a view, in [`Message::lookup`].
     Answer,
 }
 
@@ -189,27 +186,9 @@ pub struct Issue {
     /// Whom the issue is assigned to: `person:<id>` or `agent:<id>`
     /// ([`person_assignee`], [`agent_assignee`]). Written whole, so two
     /// people assigning at once keep one of their choices. Only `assign`
-    /// changes it: an agent is not swapped under its own run.
+    /// changes it.
     #[model(readonly)]
     pub assignee: Option<Atom>,
-    /// Model
-    ///
-    /// The model its agent's runs plan with; the one chosen for the agent
-    /// without. Only `choose-model` changes it, never under a run.
-    #[model(readonly)]
-    pub model: Option<ModelChoice>,
-    /// What the issue is about, when it was asked about a selection: the
-    /// resource and the exact place (`tilo_actions::SelectionSubject`). It
-    /// tells its agent where to act and grants nothing.
-    #[model(readonly)]
-    pub subject: Option<serde_json::Value>,
-    /// A quick question
-    ///
-    /// A small task that ends when the agent answers it: its run's success
-    /// closes it as done instead of leaving it in review, so a question put
-    /// and answered does not stay in the lists. Set once, when it is asked.
-    #[model(readonly)]
-    pub quick: bool,
     /// Labels
     pub labels: Set<String>,
     /// Parent
@@ -237,21 +216,6 @@ pub struct Issue {
     /// How urgent it is, from 1 (the most urgent) to 4; None for one nobody
     /// ranked.
     pub priority: Option<u8>,
-    /// Planned cost
-    ///
-    /// The most the issue's work may cost, in the workspace's own currency
-    /// units (`tilo_doc`'s, as every amount is) and including its sub-issues'
-    /// plans. None for an issue nobody budgeted.
-    #[model(readonly)]
-    pub cost_budget: Option<u64>,
-    /// Spend
-    ///
-    /// What its runs spent, in millionths of the same currency unit, with
-    /// its sub-issues' included: what a person reads of the cost, and what
-    /// its budget is measured against. Written by the tracker from its own
-    /// ledger of settled receipts, never taken from an agent's word.
-    #[model(readonly)]
-    pub spend: Option<u64>,
     /// Thread
     ///
     /// Named `comments`, so whoever may comment in the workspace may write
@@ -264,12 +228,6 @@ pub struct Issue {
     pub author: String,
     #[model(readonly)]
     pub created_ms: i64,
-    /// Time ceilings for its agent's runs; the runner's defaults without.
-    #[model(readonly)]
-    pub budget: Option<Budget>,
-    /// The agent run going on, or the last one.
-    #[model(readonly)]
-    pub run: Option<Run>,
 }
 
 impl Issue {
@@ -305,9 +263,6 @@ impl Issue {
         {
             return Err(Refusal::new("a priority is 1 (most urgent) to 4"));
         }
-        if self.cost_budget == Some(0) {
-            return Err(Refusal::new("a cost budget is more than nothing"));
-        }
         Ok(())
     }
 
@@ -327,84 +282,6 @@ impl Issue {
             .as_ref()
             .and_then(|assignee| assignee.0.strip_prefix(PERSON_PREFIX))
     }
-
-    /// The run going on now, if one is.
-    #[must_use]
-    pub fn active_run(&self) -> Option<&Run> {
-        self.run.as_ref().filter(|run| run.phase.active())
-    }
-
-    /// What an agent working on the issue is asked to do: its title and its
-    /// description.
-    #[must_use]
-    pub fn instruction(&self) -> String {
-        let body = self.body.text();
-        let body = body.trim();
-        if body.is_empty() {
-            self.title.trim().to_owned()
-        } else {
-            format!("{}\n\n{body}", self.title.trim())
-        }
-    }
-
-    /// The conversation before run `epoch`, oldest first, as a follow-up run
-    /// is told it: what people said (to a run or about the issue), what the
-    /// agent answered and reported, and a line for each resource it read, each
-    /// step it took and each answer it kept. Read off the thread alone; the
-    /// messages to run `epoch` itself are its directions, not part of this.
-    #[must_use]
-    pub fn conversation_before(&self, epoch: u64) -> Vec<Said> {
-        self.comments
-            .values()
-            .filter(|message| message.kind == MessageKind::Comment || message.run < epoch)
-            .filter_map(|message| {
-                let text = match message.kind {
-                    MessageKind::Comment | MessageKind::ToRun | MessageKind::FromRun => {
-                        message.text.trim().to_owned()
-                    }
-                    MessageKind::Lookup => format!("(read {})", looked_up_label(&message.lookup)),
-                    MessageKind::Step => {
-                        let first = message.text.lines().next().unwrap_or_default().trim();
-                        format!("(ran a step: {first})")
-                    }
-                    MessageKind::Answer => format!("(answered with {})", message.text.trim()),
-                };
-                (!text.is_empty()).then_some(Said {
-                    agent: message.by_agent,
-                    text,
-                })
-            })
-            .collect()
-    }
-
-    /// The messages to run `epoch` its agent has not taken in yet.
-    pub fn messages_for_run(&self, epoch: u64) -> impl Iterator<Item = (&Id, &Message)> {
-        self.comments.iter().filter(move |(_, message)| {
-            message.kind == MessageKind::ToRun && message.run == epoch && !message.incorporated
-        })
-    }
-}
-
-/// One message of an issue's earlier conversation, as a follow-up run reads
-/// it ([`Issue::conversation_before`]).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Said {
-    /// Whether the agent said it, rather than a person.
-    pub agent: bool,
-    pub text: String,
-}
-
-/// The label of the resource a lookup names (a `ResourceAt` as JSON), else
-/// its address as written.
-fn looked_up_label(lookup: &str) -> String {
-    serde_json::from_str::<serde_json::Value>(lookup)
-        .ok()
-        .and_then(|at| {
-            at.pointer("/reference/label")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| lookup.to_owned())
 }
 
 const PERSON_PREFIX: &str = "person:";
@@ -434,42 +311,6 @@ pub fn agent_assignee(id: &str) -> Atom {
     } else {
         Atom(format!("{AGENT_PREFIX}{id}"))
     }
-}
-
-/// What an agent is asked: the issue `ask-agent` makes.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
-pub struct AgentRequest {
-    /// The new issue's id, chosen by the asker so it can follow the issue.
-    pub id: Id,
-    /// What the agent is asked, in a line.
-    pub title: String,
-    /// What the agent is asked, in markdown.
-    #[serde(default)]
-    pub body: Option<String>,
-    /// The agent, as `agent:<id>`.
-    pub agent: String,
-    /// The model its run plans with; the agent's own without.
-    #[serde(default)]
-    pub model: Option<ModelChoice>,
-    /// What the request is about: a `tilo_actions::SelectionSubject`.
-    #[serde(default)]
-    pub subject: Option<serde_json::Value>,
-    /// Whether this is a quick question: a small task that ends when its
-    /// run answers it, rather than one that waits for a person to review
-    /// what came back.
-    #[serde(default)]
-    pub quick: bool,
-    /// Whether it is asked in an agent chat. A chat's runs have no budget
-    /// of their own, as no run does: what bounds them is the limits its
-    /// person sets (`set-execution-budget`).
-    #[serde(default)]
-    pub chat: bool,
-    /// The task delegation the asking device signed for a task agent made
-    /// for this issue, hex (`TaskDelegation::to_hex`). It rides on the run
-    /// beside its starter; the broker verifies it. `None` when a
-    /// collaborator is asked.
-    #[serde(default)]
-    pub delegation: Option<String>,
 }
 
 /// A task kept in the workspace's room before the tracker, as the import

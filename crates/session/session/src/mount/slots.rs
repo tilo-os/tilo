@@ -2,9 +2,10 @@
 //!
 //! A part of the shell is a slot, and the person binds each slot to a view in
 //! `settings:shell-views` — an app and one of the views it publishes. The
-//! session starts that view where it puts the part up, in the place of the
-//! one it ships with, and starts another when the person binds another: the
-//! part is up before and after, and the reading behind it never moves.
+//! session starts that view in the place of the one it ships with, and starts
+//! another when the person binds another: the view runs for the session's
+//! life, drawing the reading the session publishes for the slot, so opening
+//! the part costs no start.
 //!
 //! What a slot's view is bound to is read from the settings resource the
 //! settings service publishes, which is the same reading a person, an agent
@@ -77,11 +78,12 @@ pub enum View {
 /// What the session is to do with a slot this pass.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mount {
-    /// Nothing: the view bound to it is the one it runs, or the part is not up.
+    /// Nothing: the view bound to it is the one it runs.
     Nothing,
     /// Start `view` for the slot, after stopping what ran it (`restart`).
     Start { view: View, restart: bool },
-    /// Stop what runs for the slot: the part is not up any more.
+    /// Stop what runs for the slot: the view bound to it now is not on this
+    /// machine.
     Stop,
 }
 
@@ -95,6 +97,11 @@ pub struct Slots {
     /// the view the session ships with, and the miss is not retried every
     /// pass.
     absent: BTreeSet<Binding>,
+    /// Slots whose view has been put up once in this session. A view runs for
+    /// the session's life, so the part it draws comes up with it already
+    /// there; one whose program is not on this machine is not looked for
+    /// again on every pass while the part is away.
+    stood: BTreeSet<String>,
 }
 
 impl Slots {
@@ -109,21 +116,10 @@ impl Slots {
             })
     }
 
-    /// Follow `slot`: whether its part is `up`, and the view bound to it now.
-    pub fn follow(
-        &mut self,
-        slot: &str,
-        shipped: (&str, &str),
-        up: bool,
-        settings: Option<&Value>,
-    ) -> Mount {
-        if !up {
-            return if self.running.remove(slot).is_some() {
-                Mount::Stop
-            } else {
-                Mount::Nothing
-            };
-        }
+    /// Follow `slot`: the view bound to it now, which runs for the session's
+    /// life so every time the part comes up the view already stands there.
+    pub fn follow(&mut self, slot: &str, shipped: (&str, &str), settings: Option<&Value>) -> Mount {
+        self.stood.insert(slot.to_owned());
         let bound = Self::bound(slot, shipped, settings);
         let shipped = Self::bound(slot, shipped, None);
         // What the person bound runs here; one this machine does not have
@@ -213,6 +209,12 @@ impl Slots {
     #[must_use]
     pub fn running(&self, slot: &str) -> Option<&Binding> {
         self.running.get(slot)
+    }
+
+    /// Whether `slot`'s view has been put up once in this session.
+    #[must_use]
+    pub fn stood(&self, slot: &str) -> bool {
+        self.stood.contains(slot)
     }
 }
 
@@ -318,7 +320,7 @@ mod tests {
         });
         let mut slots = Slots::default();
         assert_eq!(
-            slots.follow("menu", shipped, true, Some(&settings)),
+            slots.follow("menu", shipped, Some(&settings)),
             Mount::Start {
                 view: View::Program(PathBuf::from("/bin/sh")),
                 restart: false,
@@ -327,7 +329,7 @@ mod tests {
         // And it stays that view's: the missing binding is not tried again,
         // so the slot is not started over on every pass.
         assert_eq!(
-            slots.follow("menu", shipped, true, Some(&settings)),
+            slots.follow("menu", shipped, Some(&settings)),
             Mount::Nothing
         );
         assert_eq!(

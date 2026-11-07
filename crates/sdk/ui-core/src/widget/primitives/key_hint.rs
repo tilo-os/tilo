@@ -170,6 +170,8 @@ impl KeyHints {
 }
 
 impl crate::widget::Widget for KeyHints {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

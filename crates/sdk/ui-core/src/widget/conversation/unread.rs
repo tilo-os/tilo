@@ -124,6 +124,8 @@ impl crate::component::Described for UnreadDivider {
 }
 
 impl crate::widget::Widget for UnreadDivider {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

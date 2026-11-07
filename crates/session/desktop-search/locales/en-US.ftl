@@ -99,3 +99,15 @@ search-downloaded-add = Add { $name } to apps
 search-downloaded-uninstall = Uninstall { $name }
 search-downloaded-remove = Remove { $name } from apps
 search-show-all-results = Show all { $count } results
+# What the selected row says a held modifier does with where the app opens.
+search-open-as-tab = Opens as a tab here
+search-open-beside = Opens a window beside
+# What a hit is, where an app keeps something the desk's generic records
+# read poorly: its own section and its own row.
+search-kind-agents = Agents
+search-kind-conversations = Conversations
+search-kind-messages = Messages
+search-row-agent-kept-by = Agent · kept by { $keeper }
+search-row-agent-yours = Agent · kept by you
+search-row-message = { $sender } in { $conversation } · { $age }
+search-row-message-unnamed = In { $conversation } · { $age }

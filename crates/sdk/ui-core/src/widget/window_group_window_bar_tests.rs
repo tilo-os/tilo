@@ -705,3 +705,34 @@ fn a_window_bar_wears_its_workspace_s_temperature_and_the_person_s_colour() {
         "the colour chosen reaches the bar"
     );
 }
+
+/// The bar is part of the window: a pointer resting on a tab's pill names
+/// the whole of its title, which the pill cuts to fit, and a point off the
+/// bar names nothing.
+#[test]
+fn a_pointer_on_a_tabs_pill_names_the_whole_title() {
+    let theme = Theme::dark();
+    let title = "Groceries and the whole week's list";
+    let mut g = WindowGroup::new(
+        10,
+        vec![(
+            TabDescriptor::new(1, title),
+            TileContent::App(Box::new(PageApp(Page { rect: Rect::ZERO }))),
+        )],
+        1,
+        WindowWidth::Normal,
+    );
+    lay_out(&mut g, &theme);
+    let pill = g.bar.tab_rects()[0];
+    assert!(pill.width() > 0.0, "the tab stands in the bar");
+    assert_eq!(
+        g.tooltip_target_at(pill.center()),
+        Some((pill, title.to_owned())),
+        "the tab under the pointer names its whole title"
+    );
+    assert_eq!(
+        g.tooltip_target_at(Point::new(g.rect.x0 - 40.0, g.rect.y0 - 40.0)),
+        None,
+        "a point off the window names nothing"
+    );
+}

@@ -394,6 +394,8 @@ fn geometry(
 }
 
 impl Widget for PictureChoice {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {

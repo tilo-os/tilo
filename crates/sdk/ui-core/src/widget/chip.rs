@@ -1025,6 +1025,8 @@ impl Chip {
 }
 
 impl Widget for Chip {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

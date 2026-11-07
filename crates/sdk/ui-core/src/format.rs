@@ -79,7 +79,7 @@ impl Formats {
         match self.region.number {
             Some(NumberStyle::DecimalPoint) => (",", '.'),
             Some(NumberStyle::DecimalComma) => (".", ','),
-            None => language_separators(&crate::i18n::I18nManager::current_locale()),
+            None => language_separators(&crate::i18n::I18nManager::window_locale()),
         }
     }
 

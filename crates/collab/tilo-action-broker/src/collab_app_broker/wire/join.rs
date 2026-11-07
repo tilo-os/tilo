@@ -220,28 +220,20 @@ impl AppConnection {
                     ));
                 }
                 let participant_handle = participant_handle.to_lowercase();
-                tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RemoveAgent {
-                    agent: participant_handle.clone(),
-                }
-                .validate()
-                .map_err(BrokerError::failed)?;
-                let membership = state.membership.as_ref().ok_or_else(|| {
-                    BrokerError::failed("agent session has no workspace authority".into())
+                tilo_peer_state::workspace_membership::valid_agent_id(&participant_handle)
+                    .map_err(BrokerError::failed)?;
+                let roster = state.services.agents.as_deref().ok_or_else(|| {
+                    BrokerError::failed("agent session has no workspace record to join on".into())
                 })?;
-                let now = state.policy_now_ns().map_err(BrokerError::failed)? / 1_000_000_000;
-                membership
-                    .decide_in_workspace(&route.cluster_id, |workspace| {
-                        admit_agent_delegation_at(
-                            workspace,
-                            &mut verified_identity,
-                            &participant_handle,
-                            now,
-                        )
-                    })
-                    .and_then(std::convert::identity)
-                    .map_err(|error| {
-                        BrokerError::failed(format!("agent collaboration join rejected: {error}"))
-                    })?;
+                admit_kept_agent(
+                    roster,
+                    &route.cluster_id,
+                    &mut verified_identity,
+                    &participant_handle,
+                )
+                .map_err(|error| {
+                    BrokerError::failed(format!("agent collaboration join rejected: {error}"))
+                })?;
             }
         }
         // An app the person opens, launched or restored into a tab, is

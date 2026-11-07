@@ -157,30 +157,53 @@ pub(crate) fn notification(
     desktop_entry: Option<&str>,
     app_icon: Option<&str>,
     pixels: Option<ui::peniko::ImageData>,
+    sender_name: Option<&str>,
 ) -> Option<AppImage> {
-    let mut layers = Vec::with_capacity(4);
-    if let Some(app_id) = app_id.map(str::trim).filter(|id| !id.is_empty()) {
-        // The icon the installed package of that id signed, else the theme
-        // icon named like the id itself — what most Wayland applications
-        // with no desktop entry of their own install.
-        let name = installed_icon(app_id).unwrap_or_else(|| app_id.to_owned());
-        layers.push(Layer::Named(name));
-    }
-    if let Some(name) = desktop_entry
-        .map(str::trim)
-        .filter(|id| !id.is_empty())
-        .and_then(entry_icon)
-    {
-        layers.push(Layer::Named(name));
-    }
-    layers.extend(pixels.map(|image| Layer::Pixels(vec![image])));
-    if let Some(name) = app_icon.map(str::trim).filter(|name| !name.is_empty()) {
-        layers.push(Layer::Named(name.to_owned()));
-    }
+    let layers = notification_layers(app_id, desktop_entry, app_icon, pixels, sender_name);
     if layers.is_empty() {
         return None;
     }
     Some(AppImage::new(Artwork { key, layers }))
+}
+
+/// The layers [`notification`] draws from, in trust order.
+fn notification_layers(
+    app_id: Option<&str>,
+    desktop_entry: Option<&str>,
+    app_icon: Option<&str>,
+    pixels: Option<ui::peniko::ImageData>,
+    sender_name: Option<&str>,
+) -> Vec<Layer> {
+    let mut layers = Vec::with_capacity(4);
+    let attributed = app_id.map(str::trim).filter(|id| !id.is_empty());
+    // The app this is from: the one the launcher proved, else the installed
+    // app a tool the launcher proved none for names itself after.
+    let proven = attributed.filter(|id| !id.starts_with('/'));
+    let named = proven.is_none().then(|| caption_app(sender_name)).flatten();
+    if let Some(app) = proven.map(str::to_owned).or_else(|| named.clone()) {
+        // The icon the installed package of that app signed, else the theme
+        // icon named like its id — what most Wayland applications with no
+        // desktop entry of their own install. An app the theme does not draw
+        // shows the glyph the launcher gives it.
+        let name = installed_icon(&app).unwrap_or(app);
+        layers.push(Layer::Named(name));
+    }
+    // A sender with an app of its own is drawn as that app: what it says it
+    // is stands only for a sender no app answers for.
+    if named.is_none() {
+        if let Some(name) = desktop_entry
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .and_then(entry_icon)
+        {
+            layers.push(Layer::Named(name));
+        }
+        layers.extend(pixels.map(|image| Layer::Pixels(vec![image])));
+        if let Some(name) = app_icon.map(str::trim).filter(|name| !name.is_empty()) {
+            layers.push(Layer::Named(name.to_owned()));
+        }
+    }
+    layers
 }
 
 /// The icon a desktop entry names, for the entry id `desktop_id`.
@@ -196,6 +219,43 @@ fn entry_icon(desktop_id: &str) -> Option<String> {
 /// again, and until then the theme icon named like the id shows.
 fn installed_icon(app_id: &str) -> Option<String> {
     let lists = LISTS.lock_recover().as_ref()?.latest();
+    installed_icon_in(&lists, app_id)
+}
+
+/// The installed app a sender names itself after, for a sender the launcher
+/// proved no app for: a link, a script or a tool posting on an app's behalf.
+fn caption_app(sender_name: Option<&str>) -> Option<String> {
+    let name = sender_name?;
+    let lists = LISTS.lock_recover();
+    let app = named_app(&lists.as_ref()?.latest(), name);
+    drop(lists);
+    app
+}
+
+/// The installed app that shows itself as `name`, as the launcher lists it:
+/// a Tilo package's id, else a host app's desktop-entry icon, else its
+/// desktop id — the launcher's own order of names to draw. `None` when this
+/// device installs no app by that name.
+fn named_app(lists: &AppLists, name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    if let Some(app) = lists
+        .applications
+        .iter()
+        .find(|app| app.title.trim().eq_ignore_ascii_case(name))
+    {
+        return Some(app.id.clone());
+    }
+    lists
+        .host_apps
+        .iter()
+        .find(|app| app.name.trim().eq_ignore_ascii_case(name))
+        .map(|app| entry_icon(&app.desktop_id).unwrap_or_else(|| app.desktop_id.clone()))
+}
+
+fn installed_icon_in(lists: &AppLists, app_id: &str) -> Option<String> {
     let icons = &lists.icons;
     let app = if icons.contains_key(app_id) {
         app_id.to_owned()
@@ -491,8 +551,15 @@ mod tests {
         std::fs::write(&icon, png()).expect("the icon");
         // An absolute path names an icon file itself.
         let key = icon.to_str().expect("a path");
-        let artwork = notification("notification:1:0".to_owned(), None, None, Some(key), None)
-            .expect("named artwork");
+        let artwork = notification(
+            "notification:1:0".to_owned(),
+            None,
+            None,
+            Some(key),
+            None,
+            None,
+        )
+        .expect("named artwork");
         assert_eq!(artwork.key(), "notification:1:0");
         assert!(artwork.pixels(64).is_none(), "not read yet");
 
@@ -528,7 +595,92 @@ mod tests {
 
     #[test]
     fn nothing_that_names_artwork_is_no_artwork() {
-        assert!(notification("notification:2:0".to_owned(), None, None, None, None).is_none());
+        assert!(
+            notification("notification:2:0".to_owned(), None, None, None, None, None).is_none()
+        );
+    }
+
+    /// A program the launcher proved no app for (a tool posting for one) is
+    /// drawn by the installed app its caption names: each app by its own
+    /// name, an app the device does not install by none.
+    #[test]
+    fn an_installed_app_is_found_by_the_name_a_sender_claimed() {
+        let lists = AppLists {
+            applications: vec![
+                tilo_desktop_search::providers::AppEntry {
+                    id: "so.tilo.notes".to_string(),
+                    title: "Notes".to_string(),
+                    category: None,
+                    description: None,
+                },
+                tilo_desktop_search::providers::AppEntry {
+                    id: "so.tilo.chat".to_string(),
+                    title: "Chat".to_string(),
+                    category: None,
+                    description: None,
+                },
+            ],
+            ..AppLists::default()
+        };
+        assert_eq!(
+            named_app(&lists, " notes ").as_deref(),
+            Some("so.tilo.notes"),
+            "a claimed name is matched as the launcher lists it"
+        );
+        assert_eq!(named_app(&lists, "CHAT").as_deref(), Some("so.tilo.chat"));
+        assert_ne!(
+            named_app(&lists, "Notes"),
+            named_app(&lists, "Chat"),
+            "each app answers with its own name"
+        );
+        assert_eq!(
+            named_app(&lists, "Krita"),
+            None,
+            "no installed app of that name answers"
+        );
+    }
+
+    /// A tool posting on an installed app's behalf is drawn by that app: the
+    /// icon name it claimed is no mark for an app. A tool no app answers for
+    /// still shows its own.
+    #[test]
+    fn a_claimed_icon_stands_only_for_a_sender_no_app_answers_for() {
+        set_lists(Lists::fixed(AppLists {
+            applications: vec![tilo_desktop_search::providers::AppEntry {
+                id: "so.tilo.notes".to_string(),
+                title: "Notes".to_string(),
+                category: None,
+                description: None,
+            }],
+            ..AppLists::default()
+        }));
+        let layers = |sender: Option<&str>| {
+            let layers = notification_layers(
+                Some("/usr/bin/notify-send"),
+                None,
+                Some("dialog-information"),
+                None,
+                sender,
+            );
+            layers
+                .into_iter()
+                .map(|layer| match layer {
+                    Layer::Named(name) => Some(name),
+                    Layer::Pixels(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            layers(Some("Notes")),
+            vec![Some("so.tilo.notes".to_string())],
+            "the app's own artwork is the mark, not the icon the tool named"
+        );
+        assert_eq!(
+            layers(Some("Krita")),
+            vec![Some("dialog-information".to_string())],
+            "no app answers for that name: the sender's own icon shows"
+        );
+        assert_eq!(layers(None), vec![Some("dialog-information".to_string())]);
     }
 
     /// An icon an application names for its tray item is read the way a

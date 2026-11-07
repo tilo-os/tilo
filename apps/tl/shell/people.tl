@@ -34,17 +34,13 @@ view people_button(d: Desk) {
     }
 }
 
-/// An agent here, as its presence: a chip that opens its menu. A run's agent is stopped by
-/// its run; one seated at the person's door by ending the connection they admitted.
+/// An agent here, as its presence: a chip that opens its menu. One seated at the person's door
+/// is stopped by ending the connection they admitted.
 view agent_chip(d: Desk, a: Agent) {
     ui.MenuButton(a.name, icon: .bot, role: .bar) {
         if a.seat {
             ui.MenuItem("Stop", icon: .square, destructive: true) {
                 on choose: device.stop_agent(device.desk, agent: a.key)
-            }
-        } else if a.state != "done" {
-            ui.MenuItem("Stop", icon: .square, destructive: true) {
-                on choose: session.stop_run(run(a.key))
             }
         }
     }

@@ -332,6 +332,13 @@ fn ask(
         sheet::WorkspaceSettingsEffect::Delete => {
             intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
         }
+        // The person answered the sheet's own question: the desk deletes the
+        // workspace with everything in it, and tells the session it went.
+        sheet::WorkspaceSettingsEffect::DeleteWorkspace => {
+            intents
+                .borrow_mut()
+                .push(ChromeIntent::DeleteWorkspaceConfirmed);
+        }
         sheet::WorkspaceSettingsEffect::AddEmoji
         | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
         | sheet::WorkspaceSettingsEffect::DismissEmojiNotice => {
@@ -608,24 +615,16 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
     fed.handle.read(|tree| tree.active_workspace().cloned())
 }
 
-/// Make an agent called `name` where the workspace keeps its agents, and
-/// admit it with the grants it works with here: the name and the record are
-/// Chat's, the grants are the workspace's own governance, and both are
-/// decided again on their own paths.
+/// Make an agent called `name` where the workspace keeps its agents: the
+/// record is the agent's admission, and Chat's grants decide who may make
+/// one.
 fn add_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, name: &str) {
     let workspace = workspace_in_front(fed);
-    let id = match fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
-        Ok(id) => id,
-        Err(reason) => return refuse(seat, fed, &reason),
-    };
-    govern(seat, fed, |ws, actor| {
-        Ok(domain::admit_agent(
-            ws,
-            actor,
-            &id,
-            domain::AgentPreset::Contributor,
-        ))
-    });
+    // The record is the admission: the agent works here because Chat's
+    // record names it and this person keeps it.
+    if let Err(reason) = fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
+        refuse(seat, fed, &reason);
+    }
 }
 
 /// Retire the agent `agent`, and take back what the workspace admitted it
@@ -796,6 +795,7 @@ fn general(
             .position(|one| one.slot == workspace.slot)
     });
     let last = tree.workspaces.len().saturating_sub(1);
+    let going = going(tree, engine);
     sheet::General {
         identity: sheet::Group {
             title: t("workspace-settings-identity-title"),
@@ -835,9 +835,77 @@ fn general(
             description: t("workspace-settings-leave-description"),
         },
         leave_label: t("workspace-settings-leave-action"),
-        // The desk keeps the person one workspace, so the last one is not
-        // theirs to leave.
-        leavable: tree.workspaces.len() > 1,
+        leavable: going.leavable,
+        leave_note: going.leave_note.clone(),
+        delete: (going.sole_member && workspace.is_some()).then(|| sheet::Group {
+            title: t("workspace-settings-delete"),
+            description: t("workspace-settings-delete-description"),
+        }),
+        delete_label: t("workspace-settings-delete-action"),
+        delete_note: going.delete_note,
+        delete_decision: going.decision,
+    }
+}
+
+/// What leaving and deleting offer here, and why not when they do not:
+/// deleting is for the person's own workspace alone, one nobody else is in
+/// and no other device of theirs holds, so taking it off here takes it
+/// everywhere. Nobody else in it also makes leaving say nothing — there is
+/// nobody it could stay for — so the two trade places.
+struct Going {
+    sole_member: bool,
+    leavable: bool,
+    leave_note: Option<String>,
+    delete_note: Option<String>,
+    decision: sheet::Decision,
+}
+
+fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
+    let workspace = tree.active_workspace();
+    let sole_member = workspace.is_some_and(|workspace| workspace.roster().len() <= 1);
+    let delete_note = workspace.filter(|_| sole_member).and_then(|workspace| {
+        engine.map_or_else(
+            || Some(t("workspace-settings-delete-not-held")),
+            |engine| engine.not_deletable(workspace.id()).map(not_deletable),
+        )
+    });
+    let leavable = tree.workspaces.len() > 1 && !sole_member;
+    let name = workspace.map(|workspace| workspace.name.clone());
+    let decision = sheet::Decision {
+        title: tilo_sheets::words(
+            "workspace-delete-title",
+            &[("name", name.as_deref().unwrap_or_default())],
+        ),
+        description: tilo_sheets::word("workspace-delete-body"),
+        keep: tilo_sheets::word("workspace-delete-keep"),
+        review: String::new(),
+        confirm: tilo_sheets::word("workspace-delete-confirm"),
+    };
+    Going {
+        sole_member,
+        leavable,
+        leave_note: (!leavable).then(|| {
+            if sole_member {
+                t("workspace-settings-leave-sole-member")
+            } else {
+                // The desk keeps the person one workspace, so the last one is
+                // not theirs to leave.
+                t("workspace-settings-leave-last")
+            }
+        }),
+        delete_note,
+        decision,
+    }
+}
+
+/// Why a workspace is not the person's to delete here, in their words.
+fn not_deletable(reason: crate::engine::NotDeletable) -> String {
+    use crate::engine::NotDeletable;
+    match reason {
+        NotDeletable::NotHeld => t("workspace-settings-delete-not-held"),
+        NotDeletable::OthersInIt => t("workspace-settings-delete-others"),
+        NotDeletable::OtherDevice => t("workspace-settings-delete-elsewhere"),
+        NotDeletable::NotOwner => t("workspace-settings-delete-not-owner"),
     }
 }
 

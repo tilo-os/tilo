@@ -319,7 +319,7 @@ struct SharedGpu {
     /// The device `renderer` renders on.
     device: usize,
     /// The overflows of `renderer`'s bump buffers collected so far: every
-    /// mount repaints whole once after each.
+    /// mount repaints whole once after its scratch changes.
     overflows: ui::render_bump_recovery::Overflows,
 }
 
@@ -332,6 +332,19 @@ impl SharedGpu {
         let mut mounts = self.mounts.lock_recover();
         mounts.retain(|&m| m != id);
         mounts.is_empty()
+    }
+
+    /// The shared renderer's scratch now: one that changed since a target was
+    /// brought up to date means the frames drawn there in between may have
+    /// lost geometry ([`ui::render_bump_recovery::Scratch`]).
+    fn scratch(&self) -> ui::render_bump_recovery::Scratch {
+        self.renderer.as_ref().map_or_else(
+            || ui::render_bump_recovery::Scratch {
+                collected: self.overflows.collected(),
+                bump_bytes: 0,
+            },
+            |renderer| self.overflows.scratch(renderer),
+        )
     }
 }
 
@@ -351,13 +364,14 @@ impl Gpu {
         self.shared.try_borrow().ok().and_then(|s| s.failure())
     }
 
-    /// Whether the target shows a frame drawn before an overflow of the
-    /// shared renderer's bump buffers was collected.
+    /// Whether the target shows a frame drawn while the shared renderer's
+    /// bump buffers were short of it.
     fn shows_lost_frame(&self) -> bool {
         self.shared.try_borrow().is_ok_and(|shared| {
-            self.retained
-                .frames
-                .shows_lost_geometry(shared.overflows.collected())
+            shared.renderer.is_some() && {
+                let scratch = shared.scratch();
+                self.retained.frames.shows_lost_geometry(scratch)
+            }
         })
     }
 }
@@ -1705,17 +1719,34 @@ fn compile_deferred_pipelines_later() {
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
-    vello::Renderer::new_async_deferring_reporting(
-        device,
-        vello::RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-        vello::PipelineDeferral::Unused,
-        &mut || PIPELINES_BUILT.set(PIPELINES_BUILT.get().saturating_add(1)),
-    )
-    .await
-    .map_err(|e| e.to_string())
+    let options = vello::RendererOptions {
+        antialiasing_support: vello::AaSupport::area_only(),
+        ..Default::default()
+    };
+    let mut built = || PIPELINES_BUILT.set(PIPELINES_BUILT.get().saturating_add(1));
+    // Debug builds compare a frame repainted in part with a full render of it
+    // pixel by pixel: two renders of one scene that differ only in the order
+    // the GPU summed their segments would read as a stale frame
+    // (`EnableCanonicalSegmentOrder`), so they sum them in one order here.
+    // Release builds have no such check and keep the faster order.
+    let renderer = if cfg!(debug_assertions) {
+        vello::Renderer::new_async_canonical_reporting(
+            device,
+            options,
+            vello::PipelineDeferral::Unused,
+            &mut built,
+        )
+        .await
+    } else {
+        vello::Renderer::new_async_deferring_reporting(
+            device,
+            options,
+            vello::PipelineDeferral::Unused,
+            &mut built,
+        )
+        .await
+    };
+    renderer.map_err(|e| e.to_string())
 }
 
 /// The shared device and renderer, created with the first surface (or taken
@@ -2134,9 +2165,8 @@ impl Mount {
         // The target may show a frame the renderer drew with geometry
         // missing: this one repaints it whole. It still shows that frame
         // until then, which a skipped frame presents again.
-        gpu.retained
-            .frames
-            .note_overflows(shared.overflows.collected());
+        let scratch = shared.scratch();
+        gpu.retained.frames.note_scratch(scratch);
         // Configuration changes canvas.width/height on WebGPU, clearing its
         // displayed image. Keep configure -> acquire -> submit -> present in
         // this synchronous redraw callback, with no equal-size resize.
@@ -2389,7 +2419,7 @@ impl Mount {
                 backdrop: &ui::backdrop::BackdropFrame::default(),
             },
         );
-        let rasterized = match rasterized {
+        let mut rasterized = match rasterized {
             Ok(pixels) => pixels,
             Err(error) => {
                 // What the target holds after a failed raster is unknown.
@@ -2397,6 +2427,52 @@ impl Mount {
                 return Err(error);
             }
         };
+        let mut repaint = repaint;
+        // This frame's scene whole, for a frame that must be drawn again.
+        let mut whole = None;
+        // A render collects the counters of the frames before it before it
+        // draws, and grows the reservation from them. The frame that learns
+        // an earlier one did not fit is the first drawn with what it needs,
+        // and what the earlier one dropped is on the target already: the
+        // next part-frame would repaint only its damage over it. Draw this
+        // frame whole again, still as the frame being presented.
+        let fit = shared.scratch();
+        if !matches!(repaint, ui::retained_raster::Repaint::Full(_))
+            && (fit.bump_bytes > scratch.bump_bytes || fit.collected != scratch.collected)
+        {
+            let scene = whole.get_or_insert_with(|| {
+                let mut scene = vello::Scene::new();
+                scene.append(frame.scene, Some(key.to_device));
+                scene
+            });
+            if let Ok(pixels) = gpu
+                .retained
+                .raster
+                .rasterize(
+                    (&handle.device, &handle.queue),
+                    shared.renderer.as_mut(),
+                    target,
+                    ui::retained_raster::FrameContent {
+                        scene,
+                        width: viewport.width,
+                        height: viewport.height,
+                        base_color: frame.background,
+                        damage_regions: &[],
+                        scroll_copies: &[],
+                        full_redraw: true,
+                        backdrop: &ui::backdrop::BackdropFrame::default(),
+                    },
+                )
+                .0
+            {
+                // The target is whole at this scratch: the next frame
+                // repaints only what changes again.
+                gpu.retained.frames.note_scratch(fit);
+                rasterized = pixels;
+                repaint =
+                    ui::retained_raster::Repaint::Full(ui::retained_raster::Unknown::LostGeometry);
+            }
+        }
         // How much of the frame was repainted, for the frame metrics.
         // An empty viewport counts as wholly repainted.
         let window = u64::from(viewport.width).saturating_mul(u64::from(viewport.height));
@@ -2432,11 +2508,25 @@ impl Mount {
         }
         gpu.retained.frames.presented(frame.scene, parts, key);
         #[cfg(debug_assertions)]
-        let whole = culled.is_some().then(|| {
-            let mut whole = vello::Scene::new();
-            whole.append(frame.scene, Some(key.to_device));
-            whole
-        });
+        if culled.is_some() && whole.is_none() {
+            let mut scene = vello::Scene::new();
+            scene.append(frame.scene, Some(key.to_device));
+            whole = Some(scene);
+        }
+        #[cfg(debug_assertions)]
+        let drawn = {
+            let scratch = shared.scratch();
+            Drawn {
+                scratch,
+                note: format!(
+                    "frame {} repainting {repaint:?}, after {} overflowing renders collected, target shows lost geometry {}, {rasterized} of {window} pixels repainted, bump reservation {} bytes",
+                    self.frames,
+                    scratch.collected,
+                    gpu.retained.frames.shows_lost_geometry(scratch),
+                    scratch.bump_bytes,
+                ),
+            }
+        };
         #[cfg(debug_assertions)]
         check_retained(
             &mut gpu.retained,
@@ -2446,11 +2536,8 @@ impl Mount {
             whole.as_ref().unwrap_or(&physical),
             key,
             full_redraw,
+            drawn,
         );
-        #[cfg(debug_assertions)]
-        {
-            gpu.retained.repainted = Some(format!("{repaint:?}"));
-        }
         ui::gpu::submit_target_to_surface(
             &handle.device,
             &handle.queue,
@@ -2764,7 +2851,7 @@ pub(crate) mod pointers;
 mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
-use retained::check_retained;
+use retained::{Drawn, check_retained};
 
 /// Take accepted writes for the page to commit (`[{key, bytes, actor,
 /// revision}]`).

@@ -156,3 +156,45 @@ fn every_task_row_is_a_named_item_a_reader_opens_and_finishes() {
         "and the page is the issue that was opened"
     );
 }
+
+/// The issue page a capture shows names the people it shows: the assignee
+/// reads as who they are, the thread's author too, and never as the id the
+/// record spells them by. The fields are one row; the description needs no
+/// heading to be read as one.
+#[test]
+fn a_captured_issue_page_names_its_people() {
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<App>::capture(Some("issue")).expect("the capture opens");
+    app.settle();
+    let labels: Vec<String> = app
+        .harness()
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect();
+    let assignee = labels
+        .iter()
+        .find_map(|label| label.strip_prefix("Assignee: "))
+        .unwrap_or_else(|| panic!("the assignee is named: {labels:?}"))
+        .to_owned();
+    assert!(
+        !assignee.contains("person:"),
+        "the assignee's id is not shown: {assignee}"
+    );
+    assert!(
+        labels.iter().any(|label| label == &assignee),
+        "the thread's author reads the same name: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label.contains("person:")),
+        "no record id is shown: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Status: In progress"),
+        "the status is a field on the same row: {labels:?}"
+    );
+    assert!(
+        !labels.iter().any(|label| label == "Description"),
+        "the description needs no heading: {labels:?}"
+    );
+}

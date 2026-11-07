@@ -273,6 +273,15 @@ impl Spawner {
             if let Ok(file) = std::fs::File::create(&path) {
                 command.stderr(Stdio::from(file));
             }
+            // The app's own startup timeline, one file per app: which of its
+            // steps (loader, fonts, records, first layout) the open was spent
+            // in, and the launcher's marks before it. It is written inside the
+            // app's own directory, the one place the sandbox lets it write; a
+            // measured session reads it from there. An app started any other
+            // way writes none.
+            let timeline =
+                std::path::Path::new(launcher::appdir::SANDBOX_APP_DIR).join("startup.json");
+            command.env("TILO_STARTUP_METRICS_PATH", timeline);
         }
         let gate = match door {
             Some(_) => match launcher::registration_gate::install(&mut command) {

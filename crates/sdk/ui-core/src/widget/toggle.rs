@@ -743,6 +743,8 @@ impl Toggle {
 }
 
 impl Widget for Toggle {
+    crate::described!();
+
     bool_control_widget_methods!("toggle");
 
     fn build_layout(

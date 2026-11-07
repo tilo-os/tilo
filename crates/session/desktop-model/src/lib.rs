@@ -30,7 +30,6 @@ pub mod partition;
 pub mod projection;
 pub mod receipt;
 pub mod serde_ids;
-pub mod service_member;
 pub mod shared_record;
 pub mod shared_surfaces;
 pub mod topology;

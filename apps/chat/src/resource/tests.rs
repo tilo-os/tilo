@@ -279,9 +279,10 @@ fn reviewed_feedback_search_opens_the_report_and_triages_through_the_door() {
 #[test]
 fn search_hits_open_the_channel_message_and_person_they_name() {
     let mut app = TestApp::<ChatShell>::capture(None).unwrap();
-    // The record's entries, and the messages the window holds.
+    // The record's entries, and the messages the parts it holds offer.
     let mut entries = Chat::search(&app.state());
-    entries.extend(app.with_chat(|surface| surface.search_entries()).unwrap());
+    let held = crate::testing::mounted_messages(&mut app);
+    entries.extend(held.parts().iter().flat_map(|(_, part)| part.search()));
     let anchor = |query: &str, field: &str| {
         entries
             .iter()

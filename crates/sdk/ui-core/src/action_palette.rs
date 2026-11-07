@@ -1245,8 +1245,29 @@ impl ActionPalette {
         } else {
             self.picked_filters.push(filter.clone());
         }
-        let query = self.field.value().to_owned();
-        self.rebuild(&query);
+        let typed = self.field.value().to_owned();
+        self.query = self.parsed_query(&typed);
+        if self.hosts_rows() {
+            // The host narrows rows it searched itself: it reads what is
+            // picked and feeds the ones that match, and the chip lights up
+            // where the choice was made.
+            self.structure_dirty = true;
+            return;
+        }
+        self.rebuild(&typed);
+    }
+
+    /// `typed` as the picked chips and the scope make it, before any
+    /// provider's rows are built from it.
+    fn parsed_query(&self, typed: &str) -> SearchQuery {
+        let mut parsed = SearchQuery::parse(typed, &self.facets);
+        for filter in &self.picked_filters {
+            parsed = parsed.with_filter(filter.clone());
+        }
+        if let Some(scope) = &self.scope {
+            parsed = parsed.within(scope.anchor.clone());
+        }
+        parsed
     }
 
     pub fn close(&mut self) {
@@ -2300,13 +2321,7 @@ impl ActionPalette {
             return;
         }
         self.missing_selection = None;
-        let mut parsed = SearchQuery::parse(typed, &self.facets);
-        for filter in &self.picked_filters {
-            parsed = parsed.with_filter(filter.clone());
-        }
-        if let Some(scope) = &self.scope {
-            parsed = parsed.within(scope.anchor.clone());
-        }
+        let parsed = self.parsed_query(typed);
         let text = parsed.text().to_owned();
         let query = text.as_str();
         // Every available action is a candidate row with the text it is

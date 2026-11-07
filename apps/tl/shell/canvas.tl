@@ -116,17 +116,22 @@ fn pin_height(s: ArrangementStrip) -> Int {
     if s.canvas_height > 0 { s.canvas_height } else { 480 }
 }
 
-/// What the person types on the canvas: a search that becomes a place, or a question to the
-/// agent whose conversation stands where they typed (shell.md §8 and §8.1). `session.converse`
-/// is one action: what the text finds stands at the caret as its primary view, one arranging
-/// step of the person's, attributed to them and undone as one step; text that finds nothing is
-/// a question, and the run it starts places its conversation there instead. `x` and `y` are
-/// where the caret was, in canvas pixels.
+/// What the person types on the canvas: a search whose hit stands where they
+/// typed (`shell.md` §8). `session.place_found` is one action: what the text
+/// finds is placed as its primary view at the caret, one arranging step of the
+/// person's, attributed to them and undone as one step. `x` and `y` are where
+/// the caret was, in canvas pixels.
 view canvas_entry(a: Arrangement) {
     state typed: Text = ""
-    ui.TextInput(value: typed, placeholder: "Find something, or ask") {
+    ui.TextInput(value: typed, placeholder: "Find something") {
         on submit: session
-            .conversation(line: typed, x: here_x(a), y: here_y(a))
+            .place_found(
+                text: typed,
+                view: .none,
+                strip: .none,
+                x: .some(here_x(a)),
+                y: .some(here_y(a)),
+            )
             .then(set(typed, ""))
     }
 }

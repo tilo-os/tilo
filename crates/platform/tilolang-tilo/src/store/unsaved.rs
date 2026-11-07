@@ -21,6 +21,9 @@ use tilolang_runtime::store::{ChangeSummary, FieldKey, ListingChange};
 
 use crate::action::apply_edits;
 use crate::chunk::ChunkNo;
+use crate::index::derive::Derive;
+use crate::index::overlay::OverlaySink;
+use crate::index::reflect::Ends;
 use crate::schema::lookup;
 
 use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of};
@@ -84,6 +87,25 @@ pub(super) fn commit_derived(inner: &mut Inner, state: &mut TxnState, by: &str) 
         });
     }
     true
+}
+
+/// Keep what `write` took out of each collection it moved items of, with the version that
+/// removed each, as the overlay `sink` holds it: what its lists show struck until the person
+/// has seen them go ([`crate::index::REMOVED`]).
+pub(super) fn derive_removed(
+    derive: &mut Derive<'_>,
+    sink: &mut OverlaySink<'_>,
+    app: &str,
+    ends: &std::collections::BTreeMap<String, Ends>,
+    items: &[(FieldKey, String)],
+) {
+    let mut moved = ItemTouches::new();
+    for (key, item) in items {
+        moved.entry(key.clone()).or_default().insert(item.clone());
+    }
+    if let Err(error) = derive.removed_of(sink, app, ends, &moved) {
+        tracing::warn!(app, %error, "a removal was not indexed");
+    }
 }
 
 impl Inner {

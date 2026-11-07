@@ -551,6 +551,8 @@ fn token_text_style(theme: &Theme) -> TextStyle {
 }
 
 impl Widget for InputHint {
+    crate::described!();
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.environment.keyboard_family =

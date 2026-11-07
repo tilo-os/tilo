@@ -81,12 +81,13 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // The laptop creates the note's channel and announces itself.
     let route = route();
     let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let scope = collab_types::workspace_scope(WORKSPACE);
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
         Some(laptop_dir.path()),
-        channel,
+        scope,
         Box::new(laptop.key.clone()),
         &vault,
     )
@@ -132,6 +133,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         let (metadata, sealed) = sealer
             .content_keys()
             .unwrap()
+            .for_unit(channel)
             .seal_content(artifact, ContentRetention::Delta, &frame)
             .unwrap();
         let mut op = SignedOp::new_unsigned_with_encryption(
@@ -271,9 +273,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
             // The page asks for the channels of the workspace's other records too.
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
-                if request.channel == channel =>
-            {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 assert_eq!(author, *browser_device.as_bytes());
                 request
                     .verify()
@@ -304,6 +304,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                 let clear = laptop_peer
                     .content_keys()
                     .unwrap()
+                    .for_unit(channel)
                     .open_content(artifact, &metadata, &envelope.payload)
                     .unwrap();
                 browser_edit = Some(clear.to_vec());
@@ -376,7 +377,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         },
     );
     let mut phone_peer =
-        ChannelPeer::waiting(None, channel, Box::new(phone.key.clone()), &vault).unwrap();
+        ChannelPeer::waiting(None, scope, Box::new(phone.key.clone()), &vault).unwrap();
     let phone_request = phone_peer
         .access_request_now(1, false, &vault)
         .unwrap()
@@ -483,12 +484,13 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     .await;
     let route = route();
     let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let scope = collab_types::workspace_scope(WORKSPACE);
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
         Some(laptop_dir.path()),
-        channel,
+        scope,
         Box::new(laptop.key.clone()),
         &vault,
     )
@@ -581,9 +583,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
             // The page asks for the channels of the workspace's other records too.
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
-                if request.channel == channel =>
-            {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 laptop_peer.learn_request(*request, &vault).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
                 for frame in take(&mut laptop_peer, &vault) {
@@ -606,6 +606,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
                 break laptop_peer
                     .content_keys()
                     .unwrap()
+                    .for_unit(channel)
                     .open_content(artifact, &metadata, &envelope.payload)
                     .unwrap()
                     .to_vec();
@@ -641,12 +642,13 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
     .await;
     let route = route();
     let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let scope = collab_types::workspace_scope(WORKSPACE);
     let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
     let vault = VaultKey::new([7; 32]);
     let laptop_dir = tempfile::tempdir().unwrap();
     let mut laptop_peer = ChannelPeer::create_now(
         Some(laptop_dir.path()),
-        channel,
+        scope,
         Box::new(laptop.key.clone()),
         &vault,
     )
@@ -723,11 +725,8 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         }
         match postcard::from_bytes::<NeighbourMsg>(&data) {
             // The page asks for the channels of the workspace's other records too.
-            Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. })
-                if request.channel == channel =>
-            {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) if request.channel == scope => {
                 assert_eq!(author, *browser_device.as_bytes());
-                assert_eq!(request.channel, channel);
                 laptop_peer.learn_request(*request, &vault).unwrap();
                 laptop_peer.reconcile_now(&allowed, &vault).unwrap();
                 for frame in take(&mut laptop_peer, &vault) {
@@ -753,6 +752,7 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
                 break laptop_peer
                     .content_keys()
                     .unwrap()
+                    .for_unit(channel)
                     .open_content(artifact, &metadata, &envelope.payload)
                     .unwrap()
                     .to_vec();

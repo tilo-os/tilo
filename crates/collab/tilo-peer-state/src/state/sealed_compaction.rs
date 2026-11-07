@@ -2,8 +2,8 @@
 //! without the channel key accepts a verified compaction in place of exactly
 //! the writes it covers, and never opens it.
 use super::{
-    DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication, PeerPublicationMut,
-    Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
+    AutoCommit, DocumentMutation, Ed25519PublicKey, NeighbourMsg, OpKind, PeerPublication,
+    PeerPublicationMut, Route, SignedOp, SigningKey, StatePeer, SystemTime, err, peer_handle,
 };
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 
@@ -128,28 +128,37 @@ pub(super) fn merge_sealed(
     // whatever order they were admitted in: a merge per write copied the
     // whole record into the isolate each time.
     let mut history = Vec::new();
-    for write in document.sealed.iter() {
-        match DocumentMutation::decode(&open(write)?).map_err(err)? {
+    let mut writes = Vec::new();
+    for (index, write) in document.sealed.iter().enumerate() {
+        let mutation = DocumentMutation::decode(&open(write)?).map_err(err)?;
+        match &mutation {
             DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
-                history.extend_from_slice(&bytes);
+                history.extend_from_slice(bytes);
+            }
+        }
+        writes.push((index, mutation));
+    }
+    let base = (*document.doc).clone();
+    let mut merged = base.clone();
+    if !history.is_empty() {
+        match crate::document::merge_committed_with_status(
+            &mut merged,
+            &DocumentMutation::Incremental(history),
+        ) {
+            Ok(crate::document::MergeOutcome::Changed(_)) => return Ok(merged.save()),
+            Ok(crate::document::MergeOutcome::MissingDependencies) => {
+                return Err("sealed history does not merge into a complete record".into());
+            }
+            // One pass is the fast path, and a refused one is answered by the
+            // write-by-write merge below.
+            // ignored-failure: the merge below reports a refusal that is real.
+            Err(refused) => {
+                tracing::debug!(error = ?refused, "a sealed history does not merge in one pass");
             }
         }
     }
-    let mut merged = document.doc.clone();
-    if history.is_empty() {
-        return Ok(merged.save());
-    }
-    match crate::document::merge_committed_with_status(
-        &mut merged,
-        &DocumentMutation::Incremental(history),
-    )
-    .map_err(|error| format!("{error:?}"))?
-    {
-        crate::document::MergeOutcome::Changed(_) => Ok(merged.save()),
-        crate::document::MergeOutcome::MissingDependencies => {
-            Err("sealed history does not merge into a complete record".into())
-        }
-    }
+    let (mut merged, _) = merge_writes(base, writes, LeftOut::ForkOnly)?;
+    Ok(merged.save())
 }
 
 /// A sealed record as its channel's key holder reads it
@@ -178,6 +187,11 @@ pub struct UnmergedWrite {
 pub enum UnmergedReason {
     /// It does not open with the keys held, or does not decode.
     Unreadable(String),
+    /// Another change of the same writer already holds one of its sequences:
+    /// one writer wrote a sequence twice, and the record keeps the change that
+    /// reached it first. A replica never adds two changes under one writer's
+    /// sequence; nothing it carries is missing from the record.
+    AlreadyHeld { actor: String, seq: u64 },
     /// A change it builds on is in neither the record nor its history.
     MissingDependencies {
         /// The first missing change hash of each path back, hex.
@@ -185,21 +199,191 @@ pub enum UnmergedReason {
     },
 }
 
-impl std::fmt::Display for UnmergedWrite {
+impl std::fmt::Display for UnmergedReason {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let author = hex::encode(self.author.get(..8).unwrap_or_default());
-        match &self.reason {
-            UnmergedReason::Unreadable(why) => {
-                write!(f, "{author}#{} does not open: {why}", self.seq)
-            }
+        match self {
+            UnmergedReason::Unreadable(why) => write!(f, "does not open: {why}"),
+            UnmergedReason::AlreadyHeld { actor, seq } => write!(
+                f,
+                "writes {actor}#{seq} again, which the record holds already"
+            ),
             UnmergedReason::MissingDependencies { missing } => write!(
                 f,
-                "{author}#{} waits for changes the record lacks: {}",
-                self.seq,
+                "waits for changes the record lacks: {}",
                 missing.join(", ")
             ),
         }
     }
+}
+
+impl std::fmt::Display for UnmergedWrite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let author = hex::encode(self.author.get(..8).unwrap_or_default());
+        write!(f, "{author}#{} {}", self.seq, self.reason)
+    }
+}
+
+/// What one opened write of a sealed history did when merged over the record
+/// as it reads.
+pub(super) enum WriteMerge {
+    /// Its changes are in the record.
+    Applied,
+    /// It builds on changes that are not in the record yet.
+    Waiting,
+    /// Automerge refused it, and another change of the same writer already
+    /// holds its sequence: one writer wrote that sequence twice.
+    AlreadyHeld { actor: String, seq: u64 },
+    /// Automerge refused it for any other reason.
+    Refused(String),
+}
+
+/// Merge one write of a sealed history, opened and decoded, over `record`.
+///
+/// A write is decided on its own: a replica adds a change under a writer's
+/// sequence once, and a write that writes a sequence the record already holds
+/// (a writer that forked, whose two changes share one sequence) is named
+/// rather than failing the whole record. Automerge itself refuses the second
+/// change under a sequence, so that refusal is read as the fork it is.
+pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) -> WriteMerge {
+    match crate::document::merge_committed_with_status(record, mutation) {
+        Ok(crate::document::MergeOutcome::Changed(_)) => WriteMerge::Applied,
+        Ok(crate::document::MergeOutcome::MissingDependencies) => WriteMerge::Waiting,
+        Err(crate::document::MergeError::Invalid(why)) => match already_held(record, mutation) {
+            Some((actor, seq)) => WriteMerge::AlreadyHeld { actor, seq },
+            None => WriteMerge::Refused(why),
+        },
+        // A write is merged between frames and between actions: it is never
+        // handed a record with ops of its own still open.
+        Err(crate::document::MergeError::Busy) => {
+            WriteMerge::Refused("the record has changes of its own open".into())
+        }
+    }
+}
+
+/// The change of `mutation` whose writer and sequence `record` already holds,
+/// when it carries every change of that write: `None` when any of its changes
+/// would be new (then the write is not merely a second one).
+fn already_held(record: &mut AutoCommit, mutation: &DocumentMutation) -> Option<(String, u64)> {
+    let DocumentMutation::Incremental(bytes) = mutation else {
+        return None;
+    };
+    let changes = automerge::Automerge::parse_changes(bytes).ok()?;
+    if changes.is_empty() {
+        return None;
+    }
+    let held = record.get_changes(&[]);
+    let mut found = None;
+    for change in &changes {
+        let is_held = held
+            .iter()
+            .any(|held| held.actor_id() == change.actor_id() && held.seq() == change.seq());
+        if !is_held {
+            return None;
+        }
+        if found.is_none() {
+            found = Some((change.actor_id().to_hex_string(), change.seq()));
+        }
+    }
+    found
+}
+
+/// What a caller does with a write its record cannot take.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum LeftOut {
+    /// Reading a record: leave the write out and name it.
+    Named,
+    /// Compacting one: leave out only a write whose sequences the record
+    /// already holds, and refuse any other. A compaction replaces the writes it
+    /// covers, so one that left anything else out would lose it for good.
+    ForkOnly,
+}
+
+/// Merge the writes of a sealed history, each decided on its own
+/// ([`merge_write`]), over `base`; the writes that wait for changes not here yet
+/// are tried again once the rest are in.
+///
+/// Returns the record and every write it leaves out with why, sorted in history
+/// order. `policy` decides whether a write left out for any reason other than a
+/// fork aborts.
+pub(super) fn merge_writes(
+    mut merged: AutoCommit,
+    writes: Vec<(usize, DocumentMutation)>,
+    policy: LeftOut,
+) -> Result<(AutoCommit, Vec<(usize, UnmergedReason)>), String> {
+    let mut left = Vec::new();
+    let mut waiting = writes;
+    while !waiting.is_empty() {
+        let before = waiting.len();
+        let mut next = Vec::with_capacity(before);
+        for (index, mutation) in waiting {
+            let reason = match merge_write(&mut merged, &mutation) {
+                WriteMerge::Applied => continue,
+                WriteMerge::Waiting => {
+                    next.push((index, mutation));
+                    continue;
+                }
+                WriteMerge::AlreadyHeld { actor, seq } => {
+                    UnmergedReason::AlreadyHeld { actor, seq }
+                }
+                WriteMerge::Refused(why) => UnmergedReason::Unreadable(why),
+            };
+            if policy == LeftOut::ForkOnly && !matches!(reason, UnmergedReason::AlreadyHeld { .. })
+            {
+                return Err(format!(
+                    "a write of the sealed history does not merge: {reason}"
+                ));
+            }
+            left.push((index, reason));
+        }
+        if next.len() == before {
+            let missing = missing_dependencies(&merged, &next)?;
+            for (index, _) in next {
+                let reason = UnmergedReason::MissingDependencies {
+                    missing: missing.clone(),
+                };
+                if policy == LeftOut::ForkOnly {
+                    return Err(format!(
+                        "a write of the sealed history does not merge: {reason}"
+                    ));
+                }
+                left.push((index, reason));
+            }
+            break;
+        }
+        waiting = next;
+    }
+    left.sort_by_key(|(index, _)| *index);
+    Ok((merged, left))
+}
+
+/// The changes the writes left waiting build on that neither the record nor the
+/// writes themselves carry, hex, in the order they are missed.
+fn missing_dependencies(
+    record: &AutoCommit,
+    waiting: &[(usize, DocumentMutation)],
+) -> Result<Vec<String>, String> {
+    let mut history = Vec::new();
+    for (_, mutation) in waiting {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                history.extend_from_slice(bytes);
+            }
+        }
+    }
+    // Their changes queue rather than merge, so the record says what they wait
+    // for; the scratch copy keeps the queue out of the record.
+    let mut scratch = record.clone();
+    tilo_automerge_isolate::apply(
+        &mut scratch,
+        &history,
+        tilo_automerge_isolate::Dependencies::RetainOrphans,
+    )
+    .map_err(err)?;
+    Ok(scratch
+        .get_missing_deps(&[])
+        .iter()
+        .map(ToString::to_string)
+        .collect())
 }
 
 /// [`merge_sealed`] for reading: every write that opens and merges is in the
@@ -210,86 +394,34 @@ pub(super) fn open_sealed(
     document: &super::Document,
     open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
 ) -> Result<OpenedRecord, String> {
-    let mut history = Vec::new();
-    let mut readable = Vec::new();
+    let sealed: Vec<&SignedOp> = document.sealed.iter().collect();
     let mut unmerged = Vec::new();
-    for (index, write) in document.sealed.iter().enumerate() {
-        let opened = open(write).and_then(|plain| DocumentMutation::decode(&plain).map_err(err));
-        match opened {
-            Ok(DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) => {
-                history.extend_from_slice(&bytes);
-                readable.push((index, write, bytes));
-            }
-            Err(why) => unmerged.push((
-                index,
-                UnmergedWrite {
-                    author: *write.author.as_bytes(),
-                    seq: write.seq,
-                    reason: UnmergedReason::Unreadable(why),
-                },
-            )),
+    let mut writes = Vec::new();
+    for (index, write) in sealed.iter().enumerate() {
+        match open(write).and_then(|plain| DocumentMutation::decode(&plain).map_err(err)) {
+            Ok(mutation) => writes.push((index, mutation)),
+            Err(why) => unmerged.push((index, UnmergedReason::Unreadable(why))),
         }
     }
-    let mut merged = document.doc.clone();
-    let complete = history.is_empty()
-        || matches!(
-            crate::document::merge_committed_with_status(
-                &mut merged,
-                &DocumentMutation::Incremental(history.clone()),
-            )
-            .map_err(|error| format!("{error:?}"))?,
-            crate::document::MergeOutcome::Changed(_)
-        );
-    if complete {
-        return Ok(OpenedRecord {
-            document: merged.save(),
-            unmerged: unmerged.into_iter().map(|(_, write)| write).collect(),
-        });
-    }
-    // Some change waits for one the record lacks: merge what applies, the
-    // rest waiting in the document's queue, and name the writes it holds.
-    let mut merged = document.doc.clone();
-    tilo_automerge_isolate::apply(
-        &mut merged,
-        &history,
-        tilo_automerge_isolate::Dependencies::RetainOrphans,
-    )
-    .map_err(err)?;
-    let missing: Vec<String> = merged
-        .get_missing_deps(&[])
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    for (index, write, bytes) in readable {
-        // A snapshot is a whole document: it never waits on anything.
-        let Ok(changes) = automerge::Automerge::parse_changes(&bytes) else {
-            continue;
-        };
-        if changes
-            .iter()
-            .any(|change| merged.get_change_by_hash(&change.hash()).is_none())
-        {
-            unmerged.push((
-                index,
-                UnmergedWrite {
-                    author: *write.author.as_bytes(),
-                    seq: write.seq,
-                    reason: UnmergedReason::MissingDependencies {
-                        missing: missing.clone(),
-                    },
-                },
-            ));
-        }
-    }
+    let (mut merged, left) = merge_writes((*document.doc).clone(), writes, LeftOut::Named)?;
+    unmerged.extend(left);
     unmerged.sort_by_key(|(index, _)| *index);
-    // Saved without the changes still waiting: the record as it reads.
-    let document = merged.save_with_options(automerge::SaveOptions {
-        retain_orphans: false,
-        ..automerge::SaveOptions::default()
-    });
     Ok(OpenedRecord {
-        document,
-        unmerged: unmerged.into_iter().map(|(_, write)| write).collect(),
+        document: merged.save_with_options(automerge::SaveOptions {
+            retain_orphans: false,
+            ..automerge::SaveOptions::default()
+        }),
+        unmerged: unmerged
+            .into_iter()
+            .filter_map(|(index, reason)| {
+                let write = sealed.get(index)?;
+                Some(UnmergedWrite {
+                    author: *write.author.as_bytes(),
+                    seq: write.seq,
+                    reason,
+                })
+            })
+            .collect(),
     })
 }
 

@@ -103,7 +103,8 @@ fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
     ada.sync_with(&mut grace);
     let heard = heard.borrow();
     assert_eq!(heard.len(), 1, "{heard:?}");
-    // The item's text, and the version the edit made of it, which marks and history read.
+    // The item's text, the version the edit made of it, and the marks and the change of that
+    // field a view reads of it, which the edit moved.
     let mut fields = heard[0].fields.clone();
     fields.sort_by(|left, right| left.field.cmp(&right.field));
     let mut expected = vec![
@@ -114,6 +115,18 @@ fn a_peers_edit_of_one_item_reaches_the_runtime_as_that_items_field() {
         FieldKey {
             resource: format!("{root}/{}", ids[1]),
             field: tilolang_runtime::DOC_VERSIONS.to_owned(),
+        },
+        FieldKey {
+            resource: format!("{root}/{}", ids[1]),
+            field: tilolang_runtime::store::Reflected::CREATED.to_owned(),
+        },
+        FieldKey {
+            resource: format!("{root}/{}", ids[1]),
+            field: tilolang_runtime::store::Reflected::UPDATED.to_owned(),
+        },
+        FieldKey {
+            resource: format!("{root}/{}", ids[1]),
+            field: tilolang_runtime::store::changed_field(&field_id(&meta, "Item", "text")),
         },
     ];
     expected.sort_by(|left, right| left.field.cmp(&right.field));

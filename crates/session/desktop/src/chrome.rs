@@ -324,6 +324,12 @@ pub enum ChromeIntent {
     /// Take the active workspace off this device's desktop, leaving it to
     /// the people in it.
     LeaveWorkspace,
+    /// Delete the active workspace, with everything in it: the person
+    /// answers the question first.
+    DeleteWorkspace,
+    /// Delete the active workspace, with everything in it, now: the person
+    /// already answered a question of their own about it.
+    DeleteWorkspaceConfirmed,
     /// Open or close the menu behind the bar's Tilo mark
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].

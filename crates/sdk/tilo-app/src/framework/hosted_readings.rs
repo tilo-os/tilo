@@ -71,7 +71,7 @@ impl Watch {
     fn latest(&self) -> Option<Result<String, String>> {
         self.resource
             .as_ref()
-            .and_then(|resource| resource.latest())
+            .and_then(ui_core::collaboration::SessionResource::latest)
             .or_else(|| {
                 self.newest
                     .lock()

@@ -1,35 +1,54 @@
 //! The browser as a participant device of `channel-crypto` channels.
 //!
-//! Every document route of a workspace is an encrypted channel whose MLS group
-//! holds the workspace's participant devices ([`channel_crypto::peer`]). The
-//! browser takes part through the host:
+//! Every route of a workspace seals its content under the content keys of a
+//! key scope ([`collab_types::workspace_scope`]): the workspace's participants
+//! share one group and one keyring for every record whose readers are the
+//! workspace's, and a record a Read Deny narrows keeps a group of its own.
+//! The page takes part in the scope's group exactly as a native device does:
 //!
-//! - it asks the participants for access to each channel it opens, with a
-//!   request carrying a fresh key package, signed by its device key (which
-//!   stays in page custody), re-asking with backoff until a Welcome arrives
-//!   (with a fresh member key once an answer is long overdue);
+//! - it reads each route's scope and readers off its replica of the
+//!   workspace's governance ([`crate::replica`]), the same decision a device
+//!   makes ([`tilo_peer_state::PeerGovernance::unit_scope`]), and asks that
+//!   group's participants for access, with a request carrying a fresh key
+//!   package, signed by its device key (which stays in page custody), re-asking
+//!   with backoff until a Welcome arrives (with a fresh member key once an
+//!   answer is long overdue);
 //! - it applies the commits any participant writes (Welcome with the key
 //!   history, then commits), keeps of two commits on one epoch the one with
-//!   the lower digest, and hands the session the route's content keys
-//!   whenever they change;
+//!   the lower digest, and hands the session each unit's keys — named for the
+//!   unit, taken from the group carrying it — whenever they change;
 //! - it checks every commit against the workspace's governance as its replica of
 //!   the workspace admits it ([`crate::replica`]): a commit may add only a device
-//!   the governance lets read the channel's record, the workspace's governor or
-//!   this device, and must be signed by one of them, the participants a
-//!   native device admits ([`tilo_peer_state::PeerGovernance::channel_readers`]).
+//!   the governance lets read the group, the workspace's governor or this
+//!   device, and must be signed by one of them, the participants a native
+//!   device admits ([`tilo_peer_state::PeerGovernance::channel_readers`]).
+//!
+//! **One group per channel, created once.** Whoever holds a group's state and
+//! sees no genesis creates it; every other participant waits, asks, and joins
+//! by the Welcome that admits it — a page never creates a group. Two geneses
+//! made at once reconcile like two commits: every device keeps the one with
+//! the lower digest, and a member of the other starts over and joins the
+//! winner ([`channel_crypto::peer`]). A page that already held a group a
+//! record's channel was given before scopes carries the same rules: its
+//! session drops the group for an epoch no participant seals under and joins
+//! the one the workspace carries, whose Welcome brings the older content keys
+//! along.
 //!
 //! The page writes no commits itself: whether a device may read a record
 //! depends on Read grants over that record, which the page does not hold,
 //! so it leaves admitting and removing to the native participants, which
-//! do. Nothing is ever written in the clear: a route's writes are held until
-//! this device holds the route's content keys. The host carries every
-//! message as retained, opaque governance and never holds a key. Channel
-//! state is exported for the profile's durable store, so a reloaded page
-//! keeps its access instead of asking again. It is sealed under a vault key
-//! the store keeps apart from it: in the page, wrapped by a non-extractable
+//! do. Nothing this page writes ever leaves in the clear: a route's writes
+//! are held until this device holds the route's content keys. What a record
+//! held in the clear before it sealed is read as its history, as native
+//! devices read it ([`document_history_admission`]): a page joining after
+//! the seal takes that base in first. The host carries every message as
+//! retained, opaque governance and never holds a key. Channel state is
+//! exported for the profile's durable store, so a reloaded page keeps its
+//! access instead of asking again. It is sealed under a vault key the store
+//! keeps apart from it: in the page, wrapped by a non-extractable
 //! `WebCrypto` key.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use tilo_sort::CompactSort as _;
 
 use channel_crypto::{Access, ChannelContentKeys, ChannelPeer, PeerEvent, VaultKey};
@@ -56,22 +75,40 @@ const REQUEST_FRESH_MS: u64 = 60_000;
 const MAX_UNOPENED_FRAMES: usize = 256;
 /// Channels whose frames are kept before a route opens them.
 const MAX_UNOPENED_CHANNELS: usize = 256;
+/// Routes opened before the workspace's governance could say which group
+/// carries them, kept until it can.
+const MAX_DEFERRED_ROUTES: usize = 256;
 
-/// Who may sign and be added to a route's channel, as the workspace's
-/// governance says now; `None` while this page holds no governance of the
-/// route's workspace.
-pub(crate) type Vouch<'a> = dyn Fn(&DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> + 'a;
+/// What the workspace's governance says now about a route's content: the
+/// group whose content keys carry it and the devices that group admits.
+pub(crate) struct RecordPolicy {
+    /// The route's storage unit: the channel its content is sealed under,
+    /// named for the unit while the keys stay the scope's.
+    pub unit: ChannelId,
+    /// The group whose keys carry the unit: the workspace's key scope, or the
+    /// unit itself when a Read Deny narrows its readers.
+    pub scope: ChannelId,
+    /// The devices that may sign and be added to the group.
+    pub allowed: BTreeSet<Ed25519PublicKey>,
+}
+
+/// `route`'s policy as the workspace's governance says now; `None` while this
+/// page holds no governance of the route's workspace, or none that decides
+/// the route's readers yet.
+pub(crate) type Policy<'a> = dyn Fn(&DocumentRoute) -> Option<RecordPolicy> + 'a;
 
 /// A governance message this device has to sign and send: the device key
 /// is in page custody, so signing happens in the session.
 pub(crate) enum Outgoing {
-    /// Ask the participants for access, naming the record the channel
-    /// carries so they can decide Read on it.
+    /// Ask the participants for access. `route` names the record the group
+    /// carries when the group is the unit's own, so they can decide Read on
+    /// it; a workspace-wide key scope is read by every participant and its
+    /// request names no record.
     Request {
         workspace_id: u64,
         cluster_id: String,
         request: MlsAccessRequestV1,
-        route: collab_types::ChannelRoute,
+        route: Option<collab_types::ChannelRoute>,
     },
 }
 
@@ -121,6 +158,31 @@ pub fn document_admission(
     )
 }
 
+/// [`document_admission`] for an op the host is replaying from a record's
+/// retained history, as a broker decides one with
+/// [`tilo_action_broker::collab_core::BrokerChannels::document_history_allowed`]:
+/// a record's cleartext writes stay the base its sealed writes are changes
+/// over, so a device that joins the record after it sealed reads it by taking
+/// that base in first. Cleartext history is admitted once the workspace's
+/// governance is known, whatever the page holds of the channel; a live
+/// cleartext write is still refused ([`document_admission`]).
+pub fn document_history_admission(
+    gate: Option<channel_crypto::ChannelGate>,
+    governance_known: bool,
+    sealed: bool,
+    route: &DocumentRoute,
+    encryption: Option<&collab_types::EncryptionMetadata>,
+) -> collab_types::inbound::OpAdmission {
+    if encryption.is_none() {
+        return if governance_known {
+            collab_types::inbound::OpAdmission::CleartextAdmitted
+        } else {
+            collab_types::inbound::OpAdmission::Unstated
+        };
+    }
+    document_admission(gate, governance_known, sealed, route, encryption)
+}
+
 /// The page's signer as its channel state sees it: the device key stays in
 /// page custody and signs in the session, and the page writes no commits.
 struct PageCustody([u8; 32]);
@@ -139,9 +201,24 @@ impl channel_crypto::DeviceSigner for PageCustody {
     }
 }
 
-struct Route {
+/// One storage unit whose content a group's keys carry: the route its
+/// content is sealed under, and the epoch last handed to the session.
+struct Unit {
+    document: DocumentRoute,
+    installed_epoch: Option<u64>,
+}
+
+/// One group this page takes part in: a key scope and the units its keys
+/// carry.
+struct Group {
+    /// A route the group carries: its workspace names the channel governance
+    /// the group belongs to, and the policy its frames are checked against.
     document: DocumentRoute,
     workspace_id: u64,
+    /// The record this group is the unit's own for, when a Read Deny narrows
+    /// it: participants then decide Read on it, and the request says so.
+    /// `None` for a workspace-wide scope, read by every participant.
+    route: Option<collab_types::ChannelRoute>,
     peer: ChannelPeer,
     /// Frames refused for a signer the workspace's governance does not admit
     /// yet, applied again when it changes.
@@ -150,7 +227,7 @@ struct Route {
     request: Option<MlsAccessRequestV1>,
     next_request_ms: u64,
     request_delay_ms: u64,
-    installed_epoch: Option<u64>,
+    units: HashMap<ChannelId, Unit>,
 }
 
 /// A channel's state as [`Channels::export_if_changed`] hands it to the
@@ -173,13 +250,20 @@ pub(crate) struct SavedChannels {
 pub(crate) struct Channels {
     device: Ed25519PublicKey,
     vault: VaultKey,
-    routes: HashMap<ChannelId, Route>,
+    /// The groups this page takes part in, by key scope.
+    groups: HashMap<ChannelId, Group>,
+    /// The group each opened unit's content is carried by.
+    scopes: HashMap<ChannelId, ChannelId>,
+    /// Routes opened before the workspace's governance could say which group
+    /// carries them.
+    deferred: Vec<DocumentRoute>,
+    /// Frames kept for a group no route of this page has opened yet.
     unopened: HashMap<ChannelId, Vec<MlsGovernanceFrame>>,
-    /// Restored channel state, waiting for its route to open.
+    /// Restored group state, waiting for its group to open.
     saved: HashMap<ChannelId, SavedMember>,
     saved_requests: HashMap<ChannelId, MlsAccessRequestV1>,
-    /// Content keys a host handed this session for a record whose channel it
-    /// is not admitted to itself ([`Self::install_handed`]).
+    /// Content keys a host handed this session for a record whose group it
+    /// is not admitted to itself ([`Self::install_handed`]), by unit.
     handed: HashMap<ChannelId, ChannelContentKeys>,
     dirty: bool,
 }
@@ -190,7 +274,9 @@ impl Channels {
         Self {
             device: Ed25519PublicKey::from_bytes(device),
             vault: VaultKey::new(vault),
-            routes: HashMap::new(),
+            groups: HashMap::new(),
+            scopes: HashMap::new(),
+            deferred: Vec::new(),
             unopened: HashMap::new(),
             saved: HashMap::new(),
             saved_requests: HashMap::new(),
@@ -222,9 +308,9 @@ impl Channels {
 
     pub(crate) fn pending_requests(&self) -> Vec<MlsAccessRequestV1> {
         let mut requests = self.saved_requests.clone();
-        for (channel, route) in &self.routes {
-            if let Some(request) = &route.request
-                && matches!(route.peer.access(), Access::Waiting)
+        for (channel, group) in &self.groups {
+            if let Some(request) = &group.request
+                && matches!(group.peer.access(), Access::Waiting)
             {
                 requests.insert(*channel, request.clone());
             } else {
@@ -248,8 +334,8 @@ impl Channels {
             return None;
         }
         let mut members: HashMap<ChannelId, SavedMember> = self.saved.clone();
-        for (channel, route) in &self.routes {
-            if let Ok(sealed) = route.peer.export_sealed(&self.vault) {
+        for (channel, group) in &self.groups {
+            if let Ok(sealed) = group.peer.export_sealed(&self.vault) {
                 members.insert(
                     *channel,
                     SavedMember {
@@ -264,128 +350,170 @@ impl Channels {
         Some(SavedChannels { members })
     }
 
+    /// The route's storage unit: the channel its content is sealed under.
+    /// The keys are its key scope's, named for the unit.
     pub(crate) fn channel(route: &DocumentRoute) -> ChannelId {
         collab_types::document_channel_id(&route.app_id, &route.cluster_id, &route.record)
     }
 
-    /// The content keys this device holds for `channel`, once its access is
-    /// ready: what a call on the channel's record is sealed and opened with.
+    /// The content keys this device holds for the unit `channel`, once its
+    /// access is ready: what content sealed for the unit is opened with.
     ///
-    /// Keys a host device handed over for the record are the workspace's own
-    /// and speak first; a channel this device is a member of itself speaks
-    /// when no such keys arrived.
+    /// Keys a host device handed over for the unit are the workspace's own
+    /// and speak first; the group carrying the unit speaks when no such keys
+    /// arrived.
     pub(crate) fn content_keys(&self, channel: ChannelId) -> Option<ChannelContentKeys> {
         self.handed.get(&channel).cloned().or_else(|| {
-            self.routes
-                .get(&channel)
-                .and_then(|route| route.peer.content_keys())
+            let scope = *self.scopes.get(&channel)?;
+            self.groups
+                .get(&scope)?
+                .peer
+                .content_keys()
+                .map(|keys| keys.for_unit(channel))
         })
     }
 
-    /// Hold `keys` for `route`'s channel, as a host device hands them over.
-    /// A group of this page's own that never became a member is dropped: the
-    /// host's keys are the record's, and a second group of the record would
-    /// seal content the workspace's readers do not open.
+    /// Hold `keys` for `route`'s unit, as a host device hands them over: they
+    /// are the workspace's own keys for the record, named for its unit.
     pub(crate) fn install_handed(&mut self, route: &DocumentRoute, keys: ChannelContentKeys) {
-        let channel = Self::channel(route);
-        if self
-            .routes
-            .get(&channel)
-            .is_some_and(|own| !matches!(own.peer.access(), Access::Ready { .. }))
-        {
-            self.routes.remove(&channel);
-            self.dirty = true;
-        }
-        self.handed.insert(channel, keys);
+        self.handed.insert(Self::channel(route), keys);
     }
 
-    /// The verdict on an op for `route` from this page's state for its
-    /// channel ([`document_admission`]).
+    /// The verdict on an op for `route` from this page's state for the group
+    /// carrying it ([`document_admission`], or [`document_history_admission`]
+    /// for what the host replays).
     pub(crate) fn admission(
         &self,
         route: &DocumentRoute,
         (governance_known, sealed): (bool, bool),
+        retained: bool,
         encryption: Option<&collab_types::EncryptionMetadata>,
     ) -> collab_types::inbound::OpAdmission {
         let gate = self
-            .routes
+            .scopes
             .get(&Self::channel(route))
-            .map(|route| route.peer.gate());
-        document_admission(gate, governance_known, sealed, route, encryption)
+            .and_then(|scope| self.groups.get(scope))
+            .map(|group| group.peer.gate())
+            .or_else(|| {
+                self.groups
+                    .get(&Self::channel(route))
+                    .map(|group| group.peer.gate())
+            });
+        if retained {
+            document_history_admission(gate, governance_known, sealed, route, encryption)
+        } else {
+            document_admission(gate, governance_known, sealed, route, encryption)
+        }
     }
 
-    /// Apply again the frames held for a signer the workspace's governance did
-    /// not admit yet, now that it changed.
-    pub(crate) fn retry_early(&mut self, vouch: &Vouch<'_>, now_ms: u64) -> Changes {
+    /// Open what waited for the workspace's governance to name its group, and
+    /// apply again the frames held for a signer it does not admit yet.
+    pub(crate) fn retry(&mut self, policy: &Policy<'_>, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
-        let channels: Vec<ChannelId> = self
-            .routes
+        for route in std::mem::take(&mut self.deferred) {
+            changes.extend(self.open(&route, policy, now_ms));
+        }
+        let scopes: Vec<ChannelId> = self
+            .groups
             .iter()
-            .filter(|(_, route)| !route.early.is_empty())
-            .map(|(channel, _)| *channel)
+            .filter(|(_, group)| !group.early.is_empty())
+            .map(|(scope, _)| *scope)
             .collect();
-        for channel in channels {
+        for scope in scopes {
             let early = self
-                .routes
-                .get_mut(&channel)
-                .map(|route| std::mem::take(&mut route.early))
+                .groups
+                .get_mut(&scope)
+                .map(|group| std::mem::take(&mut group.early))
                 .unwrap_or_default();
             for frame in early {
-                self.apply(channel, frame, vouch, now_ms, &mut changes);
+                self.apply(scope, frame, policy, now_ms, &mut changes);
             }
         }
         changes
     }
 
-    /// Take part in `route`'s channel from now on.
+    /// Take part in the group carrying `route`'s content from now on.
     pub(crate) fn open(
         &mut self,
         route: &DocumentRoute,
-        vouch: &Vouch<'_>,
+        policy: &Policy<'_>,
         now_ms: u64,
     ) -> Changes {
         let mut changes = Changes::default();
-        let channel = Self::channel(route);
-        // A record whose keys a host handed over needs no group of its own.
-        if self.routes.contains_key(&channel) || self.handed.contains_key(&channel) {
-            return changes;
-        }
         let Ok(workspace_id) = route.workspace_id() else {
             return changes;
         };
+        let Some(decided) = policy(route) else {
+            // Which group carries the route, and who reads it, is unknown
+            // until the workspace's governance arrives: asking then could ask
+            // for a group no participant seals under.
+            if !self.deferred.contains(route) && self.deferred.len() < MAX_DEFERRED_ROUTES {
+                self.deferred.push(route.clone());
+            }
+            return changes;
+        };
+        let (unit, scope) = (decided.unit, decided.scope);
+        // A record whose keys a host handed over needs no group of this
+        // page's own.
+        if self.handed.contains_key(&unit) {
+            return changes;
+        }
+        self.scopes.insert(unit, scope);
+        if self.groups.contains_key(&scope) {
+            if let Some(group) = self.groups.get_mut(&scope) {
+                group.units.entry(unit).or_insert_with(|| Unit {
+                    document: route.clone(),
+                    installed_epoch: None,
+                });
+            }
+            self.after(scope, None, now_ms, &mut changes);
+            return changes;
+        }
         let signer = || Box::new(PageCustody(*self.device.as_bytes()));
-        let restored = self.saved.remove(&channel).and_then(|saved| {
-            ChannelPeer::restore(channel, signer(), &saved.sealed, &self.vault).ok()
+        let restored = self.saved.remove(&scope).and_then(|saved| {
+            ChannelPeer::restore(scope, signer(), &saved.sealed, &self.vault).ok()
         });
         let request = restored
             .as_ref()
             .filter(|peer| matches!(peer.access(), Access::Waiting))
-            .and_then(|_| self.saved_requests.remove(&channel));
+            .and_then(|_| self.saved_requests.remove(&scope));
         let peer = match restored {
             Some(peer) => peer,
-            None => match ChannelPeer::waiting(None, channel, signer(), &self.vault) {
+            None => match ChannelPeer::waiting(None, scope, signer(), &self.vault) {
                 Ok(peer) => peer,
                 Err(_) => return changes,
             },
         };
-        self.routes.insert(
-            channel,
-            Route {
+        let mut units = HashMap::new();
+        units.insert(
+            unit,
+            Unit {
+                document: route.clone(),
+                installed_epoch: None,
+            },
+        );
+        self.groups.insert(
+            scope,
+            Group {
                 document: route.clone(),
                 workspace_id,
+                route: (scope == unit).then(|| {
+                    collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str())
+                }),
                 peer,
                 early: Vec::new(),
                 request,
                 next_request_ms: now_ms,
                 request_delay_ms: REQUEST_FIRST_MS,
-                installed_epoch: None,
+                units,
             },
         );
+        self.deferred.retain(|waiting| waiting != route);
         self.dirty = true;
-        for frame in self.unopened.remove(&channel).unwrap_or_default() {
-            self.apply(channel, frame, vouch, now_ms, &mut changes);
+        for frame in self.unopened.remove(&scope).unwrap_or_default() {
+            self.apply(scope, frame, policy, now_ms, &mut changes);
         }
-        self.after(channel, None, now_ms, &mut changes);
+        self.after(scope, None, now_ms, &mut changes);
         changes
     }
 
@@ -394,12 +522,12 @@ impl Channels {
         &mut self,
         workspace: &str,
         frame: MlsGovernanceFrame,
-        vouch: &Vouch<'_>,
+        policy: &Policy<'_>,
         now_ms: u64,
     ) -> Changes {
         let mut changes = Changes::default();
         let channel = frame.channel;
-        if !self.routes.contains_key(&channel) {
+        if !self.groups.contains_key(&channel) {
             if self.unopened.len() < MAX_UNOPENED_CHANNELS || self.unopened.contains_key(&channel) {
                 let frames = self.unopened.entry(channel).or_default();
                 if frames.len() < MAX_UNOPENED_FRAMES {
@@ -409,11 +537,11 @@ impl Channels {
             return changes;
         }
         if self
-            .routes
+            .groups
             .get(&channel)
-            .is_some_and(|route| route.document.cluster_id == workspace)
+            .is_some_and(|group| group.document.cluster_id == workspace)
         {
-            self.apply(channel, frame, vouch, now_ms, &mut changes);
+            self.apply(channel, frame, policy, now_ms, &mut changes);
         }
         changes
     }
@@ -422,55 +550,75 @@ impl Channels {
         &mut self,
         channel: ChannelId,
         frame: MlsGovernanceFrame,
-        vouch: &Vouch<'_>,
+        policy: &Policy<'_>,
         now_ms: u64,
         changes: &mut Changes,
     ) {
-        let Some(route) = self.routes.get_mut(&channel) else {
+        let Some(group) = self.groups.get_mut(&channel) else {
             return;
         };
         // A commit of a workspace whose governance this page does not hold yet,
-        // or naming a device that governance does not admit yet, waits for
-        // the governance to change.
-        let Some(allowed) = vouch(&route.document) else {
-            if route.early.len() < MAX_UNOPENED_FRAMES {
-                route.early.push(frame);
+        // or one naming a device that governance does not admit yet, waits for
+        // the governance to change. A group the governance no longer carries
+        // for this route waits too: the route's group is another one now.
+        let decided = policy(&group.document).filter(|decided| decided.scope == channel);
+        let Some(decided) = decided else {
+            if group.early.len() < MAX_UNOPENED_FRAMES {
+                group.early.push(frame);
             }
             return;
         };
+        let allowed = decided.allowed;
         let unknown = std::iter::once(&frame.signed_by)
             .chain(frame.added())
             .any(|device| !allowed.contains(device));
-        match route.peer.receive(frame.clone(), &allowed, &self.vault) {
+        match group.peer.receive(frame.clone(), &allowed, &self.vault) {
             Ok(event) => self.after(channel, Some(event), now_ms, changes),
             Err(_) if unknown => {
-                if route.early.len() < MAX_UNOPENED_FRAMES {
-                    route.early.push(frame);
+                if group.early.len() < MAX_UNOPENED_FRAMES {
+                    group.early.push(frame);
                 }
             }
             Err(_) => {}
         }
     }
 
-    /// One line per route for diagnostics: where each route's membership
-    /// stands.
+    /// One line per group for diagnostics: where each group's membership
+    /// stands and the units its keys carry.
     pub(crate) fn describe(&self) -> String {
         let mut lines = Vec::new();
-        for (channel, route) in &self.routes {
-            let access = match route.peer.access() {
+        for (channel, group) in &self.groups {
+            let access = match group.peer.access() {
                 Access::Ready { .. } => "ready".to_owned(),
                 other => format!("{other:?}"),
             };
+            let units: Vec<String> = group
+                .units
+                .iter()
+                .filter(|(unit, _)| !self.handed.contains_key(unit))
+                .map(|(_, unit)| format!("{}/{}", unit.document.app_id, unit.document.record))
+                .collect();
             lines.push(format!(
-                "route {}/{} ({channel:?}): {access}; request {}; early {}",
-                route.document.app_id,
-                route.document.record,
-                route.request.is_some(),
-                route.early.len()
+                "group {channel:?} ({}): {access}; request {}; early {}; units {}",
+                group.document.cluster_id,
+                group.request.is_some(),
+                group.early.len(),
+                units.join(", ")
             ));
+            // Each unit's own line: a route's state is what a reader of the
+            // status looks for, whatever group carries it.
+            for unit in group.units.values() {
+                lines.push(format!(
+                    "route {}/{} {channel:?}: {access};",
+                    unit.document.app_id, unit.document.record
+                ));
+            }
         }
         for (channel, frames) in &self.unopened {
             lines.push(format!("unopened {channel:?}: {} frames", frames.len()));
+        }
+        if !self.deferred.is_empty() {
+            lines.push(format!("deferred: {} routes", self.deferred.len()));
         }
         lines.join("\n")
     }
@@ -478,7 +626,7 @@ impl Channels {
     /// Ask again where an answer is overdue.
     pub(crate) fn tick(&mut self, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
-        let channels: Vec<ChannelId> = self.routes.keys().copied().collect();
+        let channels: Vec<ChannelId> = self.groups.keys().copied().collect();
         for channel in channels {
             self.request_if_due(channel, now_ms, &mut changes);
         }
@@ -492,14 +640,14 @@ impl Channels {
     pub(crate) fn ask_now(&mut self, workspace_id: u64, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
         let channels: Vec<ChannelId> = self
-            .routes
+            .groups
             .iter()
-            .filter(|(_, route)| route.workspace_id == workspace_id)
+            .filter(|(_, group)| group.workspace_id == workspace_id)
             .map(|(channel, _)| *channel)
             .collect();
         for channel in channels {
-            if let Some(route) = self.routes.get_mut(&channel) {
-                route.next_request_ms = now_ms;
+            if let Some(group) = self.groups.get_mut(&channel) {
+                group.next_request_ms = now_ms;
             }
             self.request_if_due(channel, now_ms, &mut changes);
         }
@@ -513,7 +661,8 @@ impl Channels {
         now_ms: u64,
         changes: &mut Changes,
     ) {
-        let Some(route) = self.routes.get_mut(&channel) else {
+        let handed: HashSet<ChannelId> = self.handed.keys().copied().collect();
+        let Some(group) = self.groups.get_mut(&channel) else {
             return;
         };
         if event.is_some_and(|event| !matches!(event, PeerEvent::Duplicate | PeerEvent::Ignored)) {
@@ -523,55 +672,56 @@ impl Channels {
         // answered with a Welcome this device cannot open, by an admission
         // since replaced, or this device was removed.
         if matches!(event, Some(PeerEvent::Desynchronised | PeerEvent::Removed)) {
-            route.request = None;
-            route.next_request_ms = now_ms;
-            route.request_delay_ms = REQUEST_FIRST_MS;
+            group.request = None;
+            group.next_request_ms = now_ms;
+            group.request_delay_ms = REQUEST_FIRST_MS;
         }
-        if !self.handed.contains_key(&channel)
-            && let Some(keys) = route.peer.content_keys()
-            && route.installed_epoch != Some(keys.epoch())
-        {
-            route.installed_epoch = Some(keys.epoch());
-            changes.keys.push((route.document.clone(), keys));
+        if let Some(keys) = group.peer.content_keys() {
+            for (unit, entry) in &mut group.units {
+                if handed.contains(unit) || entry.installed_epoch == Some(keys.epoch()) {
+                    continue;
+                }
+                entry.installed_epoch = Some(keys.epoch());
+                changes
+                    .keys
+                    .push((entry.document.clone(), keys.clone().for_unit(*unit)));
+            }
         }
         self.request_if_due(channel, now_ms, changes);
     }
 
     fn request_if_due(&mut self, channel: ChannelId, now_ms: u64, changes: &mut Changes) {
-        let Some(route) = self.routes.get_mut(&channel) else {
+        let Some(group) = self.groups.get_mut(&channel) else {
             return;
         };
-        if matches!(route.peer.access(), Access::Ready { .. }) || now_ms < route.next_request_ms {
+        if matches!(group.peer.access(), Access::Ready { .. }) || now_ms < group.next_request_ms {
             return;
         }
-        let fresh = route.request_delay_ms >= REQUEST_FRESH_MS;
+        let fresh = group.request_delay_ms >= REQUEST_FRESH_MS;
         if fresh {
-            route.request = None;
+            group.request = None;
         }
-        if route.request.is_none() {
-            route.request = route
+        if group.request.is_none() {
+            group.request = group
                 .peer
                 .unsigned_access_request(now_ms / 1000, fresh, &self.vault)
                 .ok()
                 .flatten();
             self.dirty = true;
         }
-        let Some(request) = route.request.clone() else {
+        let Some(request) = group.request.clone() else {
             return;
         };
-        route.next_request_ms = now_ms.saturating_add(route.request_delay_ms);
-        route.request_delay_ms = route
+        group.next_request_ms = now_ms.saturating_add(group.request_delay_ms);
+        group.request_delay_ms = group
             .request_delay_ms
             .saturating_mul(2)
             .min(REQUEST_LONGEST_MS);
         changes.outgoing.push(Outgoing::Request {
-            workspace_id: route.workspace_id,
-            cluster_id: route.document.cluster_id.clone(),
+            workspace_id: group.workspace_id,
+            cluster_id: group.document.cluster_id.clone(),
             request,
-            route: collab_types::ChannelRoute::new(
-                route.document.app_id.as_str(),
-                route.document.record.as_str(),
-            ),
+            route: group.route.clone(),
         });
     }
 }
@@ -583,12 +733,25 @@ mod tests {
 
     const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 
-    /// The workspace's governance admitting exactly `devices`.
+    /// The group carrying `route`: the workspace's scope unless the test's
+    /// policy narrows the record to its own.
+    fn scope(route: &DocumentRoute) -> ChannelId {
+        collab_types::workspace_scope(&route.cluster_id)
+    }
+
+    /// The workspace's governance admitting exactly `devices`, every route
+    /// carried by the workspace's key scope.
     fn admitting(
         devices: &[&SigningKey],
-    ) -> impl Fn(&DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> + use<> {
+    ) -> impl Fn(&DocumentRoute) -> Option<RecordPolicy> + use<> {
         let devices: BTreeSet<_> = devices.iter().map(|key| public(key)).collect();
-        move |_| Some(devices.clone())
+        move |route| {
+            Some(RecordPolicy {
+                unit: Channels::channel(route),
+                scope: scope(route),
+                allowed: devices.clone(),
+            })
+        }
     }
 
     fn route(record: &str) -> DocumentRoute {
@@ -622,11 +785,11 @@ mod tests {
         request
     }
 
-    /// A native participant that created `route`'s channel.
+    /// A native participant that created the group carrying `route`.
     fn laptop(key: &SigningKey, route: &DocumentRoute) -> ChannelPeer {
         ChannelPeer::create_now(
             None,
-            Channels::channel(route),
+            scope(route),
             Box::new(key.clone()),
             &VaultKey::new([9; 32]),
         )
@@ -634,11 +797,15 @@ mod tests {
     }
 
     /// Hand the page what `committer` queued, as the host would, with the
-    /// workspace's governance admitting `vouch`.
-    fn deliver(channels: &mut Channels, committer: &mut ChannelPeer, vouch: &Vouch<'_>) -> Changes {
+    /// workspace's governance admitting `policy`.
+    fn deliver(
+        channels: &mut Channels,
+        committer: &mut ChannelPeer,
+        policy: &Policy<'_>,
+    ) -> Changes {
         let mut changes = Changes::default();
         for frame in committer.outbox().to_vec() {
-            changes.extend(channels.receive_frame(WORKSPACE, frame, vouch, 0));
+            changes.extend(channels.receive_frame(WORKSPACE, frame, policy, 0));
         }
         committer.published(&VaultKey::new([9; 32])).unwrap();
         changes
@@ -652,9 +819,9 @@ mod tests {
         let browser = SigningKey::from_bytes(&[3; 32]);
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-before-admission");
-        let vouch = admitting(&[&laptop_key, &browser]);
+        let policy = admitting(&[&laptop_key, &browser]);
         let mut channels = Channels::new(device(&browser), [4; 32]);
-        let asked = requests(&channels.open(&note, &vouch, 0));
+        let asked = requests(&channels.open(&note, &policy, 0));
         assert_eq!(asked.len(), 1, "opening asks");
         assert!(
             requests(&channels.tick(1)).is_empty(),
@@ -672,17 +839,61 @@ mod tests {
         );
     }
 
+    /// A route of the workspace's key scope asks for the scope's group
+    /// without naming a record: every participant reads it. A record a Read
+    /// Deny narrows asks for its own group and names the record, so its
+    /// participants decide Read on it.
+    #[test]
+    fn the_scope_decides_whether_a_request_names_the_record() {
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let shared = route("note-shared");
+        let narrowed = route("note-narrowed");
+        let policy = {
+            let laptop = public(&laptop_key);
+            let browser = public(&browser);
+            move |route: &DocumentRoute| {
+                let unit = Channels::channel(route);
+                let scope = if route.record == "note-narrowed" {
+                    unit
+                } else {
+                    collab_types::workspace_scope(&route.cluster_id)
+                };
+                Some(RecordPolicy {
+                    unit,
+                    scope,
+                    allowed: BTreeSet::from([laptop, browser]),
+                })
+            }
+        };
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let shared_changes = channels.open(&shared, &policy, 0);
+        let narrowed_changes = channels.open(&narrowed, &policy, 0);
+        let [Outgoing::Request { route, .. }] = shared_changes.outgoing.as_slice() else {
+            panic!("an access request");
+        };
+        assert!(route.is_none(), "the workspace's scope names no record");
+        let [Outgoing::Request { route, .. }] = narrowed_changes.outgoing.as_slice() else {
+            panic!("an access request");
+        };
+        assert_eq!(
+            route.as_ref().map(|route| route.record.as_str()),
+            Some("note-narrowed"),
+            "a narrowed record's request names it"
+        );
+    }
+
     #[test]
     fn membership_survives_a_reload_without_asking_again() {
         let browser = SigningKey::from_bytes(&[3; 32]);
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-1");
         let mut laptop = laptop(&laptop_key, &note);
-        let vouch = admitting(&[&laptop_key, &browser]);
+        let policy = admitting(&[&laptop_key, &browser]);
         let mut channels = Channels::new(device(&browser), [4; 32]);
-        let changes = channels.open(&note, &vouch, 0);
+        let changes = channels.open(&note, &policy, 0);
         let request = requests(&changes).pop().expect("an access request");
-        deliver(&mut channels, &mut laptop, &vouch);
+        deliver(&mut channels, &mut laptop, &policy);
         laptop
             .learn_request(signed(&browser, request), &VaultKey::new([9; 32]))
             .unwrap();
@@ -690,11 +901,16 @@ mod tests {
         laptop
             .reconcile_now(&allowed, &VaultKey::new([9; 32]))
             .unwrap();
-        let (_, keys) = deliver(&mut channels, &mut laptop, &vouch)
+        let (_, keys) = deliver(&mut channels, &mut laptop, &policy)
             .keys
             .into_iter()
             .next()
             .expect("admitted");
+        assert_eq!(
+            keys.channel_id(),
+            Channels::channel(&note),
+            "the keys are named for the unit, not the group"
+        );
         let saved = channels.export_if_changed().expect("state to save");
         assert!(
             channels.export_if_changed().is_none(),
@@ -703,7 +919,7 @@ mod tests {
 
         let mut reloaded = Channels::new(device(&browser), [4; 32]);
         reloaded.restore(saved.clone());
-        let changes = reloaded.open(&note, &vouch, 0);
+        let changes = reloaded.open(&note, &policy, 0);
         assert!(requests(&changes).is_empty(), "a reload does not ask again");
         let (_, restored) = changes.keys.into_iter().next().expect("keys are back");
         assert_eq!(restored.epoch(), keys.epoch());
@@ -712,7 +928,7 @@ mod tests {
         // asks again.
         let mut elsewhere = Channels::new(device(&browser), [5; 32]);
         elsewhere.restore(saved);
-        let changes = elsewhere.open(&note, &vouch, 0);
+        let changes = elsewhere.open(&note, &policy, 0);
         assert!(changes.keys.is_empty());
         assert_eq!(requests(&changes).len(), 1);
     }
@@ -726,17 +942,17 @@ mod tests {
         let laptop_key = SigningKey::from_bytes(&[4; 32]);
         let note = route("note-pending-reload");
         let mut laptop = laptop(&laptop_key, &note);
-        let vouch = admitting(&[&laptop_key, &browser]);
+        let policy = admitting(&[&laptop_key, &browser]);
         let mut first = Channels::new(device(&browser), [4; 32]);
-        let first_changes = first.open(&note, &vouch, 0);
+        let first_changes = first.open(&note, &policy, 0);
         let saved = first.export_if_changed().expect("waiting state is stored");
         let pending = first.pending_requests();
         let mut reload = Channels::new(device(&browser), [4; 32]);
         reload.restore(saved);
         reload.restore_requests(pending);
-        let reload_changes = reload.open(&note, &vouch, 1);
+        let reload_changes = reload.open(&note, &policy, 1);
         let allowed = BTreeSet::from([public(&laptop_key), public(&browser)]);
-        deliver(&mut reload, &mut laptop, &vouch);
+        deliver(&mut reload, &mut laptop, &policy);
         for changes in [first_changes, reload_changes] {
             for request in requests(&changes) {
                 laptop
@@ -745,12 +961,11 @@ mod tests {
                 laptop
                     .reconcile_now(&allowed, &VaultKey::new([9; 32]))
                     .unwrap();
-                deliver(&mut reload, &mut laptop, &vouch);
+                deliver(&mut reload, &mut laptop, &policy);
             }
         }
-        let keys = reload.routes[&Channels::channel(&note)]
-            .peer
-            .content_keys()
+        let keys = reload
+            .content_keys(Channels::channel(&note))
             .expect("the reload keeps its admitted channel keys");
         let artifact =
             collab_types::document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
@@ -765,6 +980,7 @@ mod tests {
             laptop
                 .content_keys()
                 .unwrap()
+                .for_unit(Channels::channel(&note))
                 .open_content(artifact, &metadata, &sealed)
                 .unwrap()
                 .to_vec(),
@@ -793,28 +1009,95 @@ mod tests {
         let everyone = BTreeSet::from([public(&laptop_key), public(&browser), public(&phone_key)]);
         laptop.reconcile_now(&everyone, &vault).unwrap();
         deliver(&mut channels, &mut laptop, &before);
-        let joined = channels.routes[&Channels::channel(&note)].peer.access();
+        let joined = channels.groups[&scope(&note)].peer.access();
         assert_eq!(joined, Access::Ready { epoch: 1 });
 
         // The laptop admits the phone, which the workspace's governance does not
         // admit as the page holds it: the commit waits, and applies once it
         // does.
-        let mut phone = ChannelPeer::waiting(
-            None,
-            Channels::channel(&note),
-            Box::new(phone_key.clone()),
-            &vault,
-        )
-        .unwrap();
+        let mut phone =
+            ChannelPeer::waiting(None, scope(&note), Box::new(phone_key.clone()), &vault).unwrap();
         let ask = phone.access_request_now(1, false, &vault).unwrap().unwrap();
         laptop.learn_request(ask, &vault).unwrap();
         laptop.reconcile_now(&everyone, &vault).unwrap();
         deliver(&mut channels, &mut laptop, &before);
-        let state = |channels: &Channels| channels.routes[&Channels::channel(&note)].peer.access();
+        let state = |channels: &Channels| channels.groups[&scope(&note)].peer.access();
         assert_eq!(state(&channels), Access::Ready { epoch: 1 });
         let after = admitting(&[&laptop_key, &browser, &phone_key]);
-        let changes = channels.retry_early(&after, 0);
+        let changes = channels.retry(&after, 0);
         assert_eq!(state(&channels), Access::Ready { epoch: 2 });
         assert_eq!(changes.keys.len(), 1);
+    }
+
+    /// A page unsuspecting of the workspace's governance asks for nothing: it
+    /// would not know which group to ask, and a guessed one could ask for a
+    /// group no participant seals under. The route waits, and opens once the
+    /// governance names it.
+    #[test]
+    fn a_route_waits_for_the_governance_that_names_its_group() {
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-before-governance");
+        let unknown = |_: &DocumentRoute| None;
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let changes = channels.open(&note, &unknown, 0);
+        assert!(changes.is_empty(), "nothing is asked without governance");
+        let known = admitting(&[&laptop_key, &browser]);
+        let asked = requests(&channels.retry(&known, 1));
+        assert_eq!(asked.len(), 1, "the governance names the group, so it asks");
+        assert_eq!(asked[0].channel, scope(&note));
+    }
+
+    /// The bug this page had: a page and a desk each made a group for the
+    /// same channel. The unit's keys come from the group its scope names, so
+    /// a page and a desk in the same scope seal and open the same content —
+    /// media keys included, which hash the unit's channel.
+    #[test]
+    fn a_unit_seals_under_its_scope_and_names_itself() {
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-one-scope");
+        let mut laptop = laptop(&laptop_key, &note);
+        let policy = admitting(&[&laptop_key, &browser]);
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let request = requests(&channels.open(&note, &policy, 0)).pop().unwrap();
+        deliver(&mut channels, &mut laptop, &policy);
+        laptop
+            .learn_request(signed(&browser, request), &VaultKey::new([9; 32]))
+            .unwrap();
+        let allowed = BTreeSet::from([public(&laptop_key), public(&browser)]);
+        laptop
+            .reconcile_now(&allowed, &VaultKey::new([9; 32]))
+            .unwrap();
+        deliver(&mut channels, &mut laptop, &policy);
+        let unit = Channels::channel(&note);
+        let page = channels
+            .content_keys(unit)
+            .expect("the page holds the unit's keys");
+        let desk = laptop.content_keys().unwrap().for_unit(unit);
+        assert_eq!(page.channel_id(), unit);
+        assert_eq!(page.epoch(), desk.epoch());
+        let stream = [7; channel_crypto::MEDIA_STREAM_TAG_LEN];
+        assert_eq!(
+            page.media_key(page.epoch(), device(&laptop_key), stream)
+                .unwrap(),
+            desk.media_key(desk.epoch(), device(&laptop_key), stream)
+                .unwrap(),
+            "the page and the desk derive one media key for the unit"
+        );
+        // The unit's cleartext base, written before the scope sealed, is read
+        // from the host's replay; a live cleartext write is refused.
+        assert_eq!(
+            channels
+                .admission(&note, (true, true), true, None)
+                .admits_cleartext(),
+            Some(true)
+        );
+        assert_eq!(
+            channels
+                .admission(&note, (true, true), false, None)
+                .admits_cleartext(),
+            Some(false)
+        );
     }
 }

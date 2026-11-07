@@ -603,12 +603,18 @@ impl AgentWork {
         self.stream
             .as_ref()
             .is_some_and(|stream| stream.finish.is_some())
-            || matches!(
-                self.state,
-                AgentWorkState::Done { .. }
-                    | AgentWorkState::Refused
-                    | AgentWorkState::ProviderFinished { .. }
-            )
+            || self.state.finished()
+    }
+}
+
+impl AgentWorkState {
+    /// Whether this state ends the work: the agent is done, refused, or its
+    /// provider finished.
+    pub fn finished(&self) -> bool {
+        matches!(
+            self,
+            Self::Done { .. } | Self::Refused | Self::ProviderFinished { .. }
+        )
     }
 }
 

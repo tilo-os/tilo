@@ -337,7 +337,8 @@ fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     assert_eq!(reader.join(&host, 0x02), workspace);
 
     // The broker the writer's session serves its apps from.
-    let publisher = crate::plane::owner_publisher(Some(std::sync::Arc::clone(&writer.engine)));
+    let publisher =
+        crate::plane::owner_publisher(Some(std::sync::Arc::clone(&writer.engine)), None);
     assert!(
         publisher.records_effects_for(&workspace.to_string()),
         "the workspace's effect receipts are the owner's to commit"
@@ -375,7 +376,8 @@ fn write(
     workspace_id: WorkspaceId,
     invocation: uuid::Uuid,
 ) {
-    let publisher = crate::plane::owner_publisher(Some(std::sync::Arc::clone(&device.engine)));
+    let publisher =
+        crate::plane::owner_publisher(Some(std::sync::Arc::clone(&device.engine)), None);
     assert!(
         publisher.records_effects_for(&workspace_id.to_string()),
         "the workspace's effect receipts are the owner's to commit"

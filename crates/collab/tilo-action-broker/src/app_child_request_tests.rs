@@ -190,7 +190,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
             let rig = Rig::new(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.admit_agent("scribe", KindSet::READ);
+                workspace.allow_agent("scribe", KindSet::READ);
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
             }
@@ -278,7 +278,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
             let rig = Rig::new(&env).await;
             {
                 let workspace = &mut env.membership.write().workspaces[0];
-                workspace.admit_agent("scribe", KindSet::READ);
+                workspace.allow_agent("scribe", KindSet::READ);
                 workspace.allow_app(Subject::agent("scribe"), &env.route.app_id, KindSet::ALL);
                 workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
             }

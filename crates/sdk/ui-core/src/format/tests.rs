@@ -5,10 +5,16 @@ use crate::widget::Tone;
 use chrono::NaiveDate;
 
 /// Speak `locale` on this thread, the toolkit's catalogue loaded.
+/// The window speaks `locale`: its own catalogue is in it and the person
+/// selected it. Formats follow the window's language, so a process whose own
+/// copy is English keeps English dates whatever the device's locale says.
 fn speak(locale: &str) {
-    I18nManager::init("en-US");
+    let mut catalogues = vec![("en-US", "")];
+    if locale != "en-US" {
+        catalogues.push((locale, ""));
+    }
+    I18nManager::install("en-US", locale, &catalogues).expect("the window's catalogues install");
     I18nManager::register_widget_messages();
-    I18nManager::set_locale(locale);
 }
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {

@@ -18,6 +18,7 @@ impl ListRowFace<'_> {
         secondary
             + u8::from(self.note.is_some())
             + u8::from(self.subtitle.is_some())
+            + u8::from(self.change.is_some_and(|change| !change.said.is_empty()))
             + (self.title_lines - 1)
     }
 
@@ -84,7 +85,12 @@ impl ListRowFace<'_> {
         } else {
             0.0
         };
-        title + subtitle + secondary + note
+        let said = if self.change.is_some_and(|change| !change.said.is_empty()) {
+            RowMetrics::line(text, &m.secondary)
+        } else {
+            0.0
+        };
+        title + subtitle + secondary + note + said
     }
 
     pub(super) fn leading_extent(

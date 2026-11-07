@@ -1106,6 +1106,24 @@ impl Runtime {
         true
     }
 
+    /// `person` marked everything they had not seen of `resources` seen, in one move (*Mark
+    /// all seen*): each is seen up to its newest version, what it holds read to as well, and
+    /// the host is handed it to keep ([`Self::take_seen`]). How many marks it moved; the move
+    /// can be taken back with [`Self::undo_seen`].
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of one of them.
+    pub fn mark_all_seen(&self, person: &str, resources: &[String]) -> Result<usize, StoreError> {
+        self.core.mark_all_seen(person, resources)
+    }
+
+    /// Give back what the last catch-up in this runtime took away: every mark it moved, as it
+    /// was, and the host is handed it to keep. Whether there was one to take back.
+    pub fn undo_seen(&self, person: &str) -> bool {
+        self.core.undo_seen(person)
+    }
+
     /// The seen marks set here since last asked, for the host to keep in the person's own
     /// record.
     pub fn take_seen(&self) -> Vec<crate::seen::SeenWrite> {

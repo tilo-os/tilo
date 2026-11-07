@@ -198,6 +198,32 @@ impl PresenceCtx {
             .collect()
     }
 
+    /// Say that this frame paints `invocation`'s exact place: the characters
+    /// a write landed in, or the row it names. The activity rail then leaves
+    /// the invocation out, so one action is not named twice on one frame.
+    pub fn note_shown(&self, invocation: InvocationId) {
+        if self.interactions.contains_key(&invocation) {
+            self.shown.borrow_mut().insert(invocation);
+        }
+    }
+
+    /// What widgets reported shown since the last frame; taken by the pass
+    /// that would otherwise put them in the rail.
+    pub(crate) fn take_shown(&self) -> Vec<InvocationId> {
+        self.shown.borrow_mut().drain().collect()
+    }
+
+    /// How strongly an interaction still shows, from when its current phase
+    /// arrived: what the text it wrote fades by. `None` when it is no longer
+    /// shown, or its mark has faded out.
+    pub fn interaction_fade(&self, invocation: InvocationId, now: Instant) -> Option<f32> {
+        let entry = self.interactions.get(&invocation)?;
+        if !entry.visible_at(now) {
+            return None;
+        }
+        crate::motion::Trace::alpha(now.saturating_duration_since(entry.received_at))
+    }
+
     /// All currently visible interactions in deterministic display order.
     /// The host uses this read-only view to resolve generic semantic-control
     /// anchors against the current accessibility tree before falling back to
@@ -304,6 +330,7 @@ impl PresenceCtx {
         paint: &mut PaintCtx<'_>,
         interaction: &SemanticInteraction,
         locus: Rect,
+        control: Rect,
         viewport: Rect,
         surface: &str,
         now: Instant,
@@ -330,13 +357,14 @@ impl PresenceCtx {
         let first_received_at = entry.first_received_at;
         let received_at = entry.received_at;
         let user = UserId(interaction.actor.id.clone());
-        // Avoid parking over the control's central label. The tip still
-        // belongs to this exact bound control, not an inferred nearby point.
-        let inset = f64::from(paint.theme.tokens.spacing.s2);
-        let target = Point::new(
-            visible_locus.x1 - inset.min(visible_locus.width() / 4.0),
-            visible_locus.y1 - inset.min(visible_locus.height() / 4.0),
-        );
+        // The tip rests on the control the invocation is bound to: what the
+        // agent would press, fully inside the frame.
+        let control = control.intersect(viewport);
+        let target = if valid_marker_rect(control) {
+            control.center()
+        } else {
+            visible_locus.center()
+        };
         let previous = self.interaction_markers.get(&user);
         let cached_origin = previous.and_then(|previous| {
             if previous.surface != surface
@@ -451,14 +479,26 @@ impl PresenceCtx {
                 },
                 str::to_owned,
             );
-        crate::i18n::widget_format(
-            "interaction-action-status",
-            &[
-                ("name", actor.into()),
-                ("action", interaction.action.label.clone().into()),
-                ("phase", phase_label(&interaction.phase).into()),
-            ],
-        )
+        // The phase shows through the mark's fade; only a phase that needs a
+        // person — waiting, failed, cancelled — says so in words, because a
+        // failure must not read as an ordinary mark.
+        let doing = doing_phrase(&interaction.action.label);
+        match &interaction.phase {
+            InteractionPhase::Waiting { .. }
+            | InteractionPhase::Failed { .. }
+            | InteractionPhase::Cancelled { .. } => crate::i18n::widget_format(
+                "interaction-action-status",
+                &[
+                    ("name", actor.into()),
+                    ("doing", doing.into()),
+                    ("phase", phase_label(&interaction.phase).into()),
+                ],
+            ),
+            _ => crate::i18n::widget_format(
+                "interaction-action-doing",
+                &[("name", actor.into()), ("doing", doing.into())],
+            ),
+        }
     }
 
     /// Lay out the generic app-level fallback without overlap. At most three
@@ -691,10 +731,10 @@ impl PresenceCtx {
             &style.clone().with_weight(TextWeight::Medium),
         );
 
+        // What it is doing and where; the phase is the mark's fade, not words.
         let mut detail = format!(
-            "{} · {} · {}",
-            phase_label(&interaction.phase),
-            interaction.action.label,
+            "{} · {}",
+            doing_phrase(&interaction.action.label),
             interaction.resource.label
         );
         if placement.additional > 0 {
@@ -908,6 +948,49 @@ const fn phase_priority(phase: &InteractionPhase) -> u8 {
     }
 }
 
+/// What an actor is doing, in the app's own words: its action's label as a
+/// present-tense verb — "checking off", "writing" — because a mark reads as
+/// something happening now, not as a state printed beside a name.
+fn doing_phrase(label: &str) -> String {
+    let mut words = label.split_whitespace();
+    let Some(first) = words.next() else {
+        return crate::i18n::widget_format("interaction-working", &[]);
+    };
+    words.fold(participle(first), |mut phrase, word| {
+        phrase.push(' ');
+        phrase.push_str(word);
+        phrase
+    })
+}
+
+/// The -ing form of a verb as an app words it. Verbs that double their last
+/// consonant are listed: no rule derives "setting" from "set" without also
+/// turning "visit" into "visitting".
+fn participle(verb: &str) -> String {
+    const DOUBLING: &[&str] = &[
+        "begin", "commit", "cut", "drop", "embed", "fit", "forget", "get", "hit", "log", "map",
+        "permit", "pin", "plan", "prefer", "put", "quit", "refer", "run", "scan", "set", "ship",
+        "shop", "sit", "skip", "stop", "submit", "tag", "trim", "wrap",
+    ];
+    let verb = verb.trim_end_matches(['.', ',', ':', ';', '!', '?']);
+    let lower = verb.to_lowercase();
+    if let Some(stem) = lower.strip_suffix("ie") {
+        return format!("{stem}ying");
+    }
+    if let Some(stem) = lower.strip_suffix('e')
+        && !stem.is_empty()
+        && !stem.ends_with(['e', 'y', 'o'])
+    {
+        return format!("{stem}ing");
+    }
+    if let Some(last) = lower.chars().last()
+        && DOUBLING.contains(&lower.as_str())
+    {
+        return format!("{lower}{last}ing");
+    }
+    format!("{lower}ing")
+}
+
 fn phase_label(phase: &InteractionPhase) -> String {
     match phase {
         InteractionPhase::Locating => crate::i18n::widget_format("interaction-inspecting", &[]),
@@ -1072,6 +1155,7 @@ mod tests {
         presence.draw_agent_action_marker(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme),
             interaction,
+            locus,
             locus,
             viewport,
             surface,
@@ -1253,8 +1337,8 @@ mod tests {
             &theme,
         )
         .unwrap();
-        assert_eq!(first.tip, Point::new(viewport.x1, 312.0));
-        assert_eq!(first.target, Point::new(632.0, 312.0));
+        assert_eq!(first.tip, Point::new(viewport.x1, 300.0));
+        assert_eq!(first.target, Point::new(600.0, 300.0));
         assert!(locus.contains(first.target));
         assert_eq!(first.approach, 0.0);
         assert!(first.pulse > 0.99);
@@ -1296,7 +1380,7 @@ mod tests {
             &theme,
         )
         .unwrap();
-        assert_eq!(settled.tip, Point::new(632.0, 312.0));
+        assert_eq!(settled.tip, Point::new(600.0, 300.0));
         assert_eq!(settled.approach, 1.0);
         assert_eq!(settled.pulse, 0.0);
         assert!(!presence.interaction_animation_demand(settled_at, &theme));
@@ -1374,7 +1458,7 @@ mod tests {
             &reduced,
         )
         .unwrap();
-        assert_eq!(reduced_frame.tip, Point::new(492.0, 352.0));
+        assert_eq!(reduced_frame.tip, Point::new(450.0, 330.0));
         assert_eq!(reduced_frame.pulse, 0.0);
         assert!(!presence.interaction_animation_demand(second_at, &reduced));
     }
@@ -1513,6 +1597,51 @@ mod tests {
     }
 
     #[test]
+    fn an_action_reads_as_what_its_actor_is_doing() {
+        for (label, doing) in [
+            ("Edit", "editing"),
+            ("Insert", "inserting"),
+            ("Write", "writing"),
+            ("Check off", "checking off"),
+            ("Open", "opening"),
+            ("Set status", "setting status"),
+            ("Stop", "stopping"),
+            ("Apply", "applying"),
+            ("Tag", "tagging"),
+            ("Rename the note", "renaming the note"),
+        ] {
+            assert_eq!(doing_phrase(label), doing, "{label}");
+        }
+        assert_eq!(doing_phrase("  "), "working");
+    }
+
+    #[test]
+    fn a_place_a_widget_painted_leaves_the_rail() {
+        let at = crate::time::now();
+        let mut presence = PresenceCtx::empty();
+        let event = interaction(70, 1, InteractionPhase::Applying);
+        presence.apply_interaction_at(event.clone(), at).unwrap();
+        assert_eq!(
+            presence.visible_entries_excluding(at, &[]).len(),
+            1,
+            "an unwritten place is named by the rail"
+        );
+        presence.note_shown(event.invocation);
+        let shown = presence.take_shown();
+        assert_eq!(shown, vec![event.invocation]);
+        assert!(
+            presence.visible_entries_excluding(at, &shown).is_empty(),
+            "the characters are the mark; the rail leaves them out"
+        );
+        assert!(presence.take_shown().is_empty(), "shown is one frame's");
+        presence.note_shown(InvocationId(Uuid::from_u128(999)));
+        assert!(
+            presence.take_shown().is_empty(),
+            "an invocation this surface never saw cannot silence a rail entry"
+        );
+    }
+
+    #[test]
     fn interactions_are_labelled_and_narrated_as_actions() {
         // The exact-control badge names the action and lifecycle first, so
         // elision does not leave only an actor with an ambiguous "Applying".
@@ -1523,12 +1652,12 @@ mod tests {
                 .insert(UserId("quill".into()), "Release Notes Agent".into());
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Rename (Applying) - Release Notes Agent"
+                "Release Notes Agent · renaming"
             );
             presence.names.clear();
             assert_eq!(
                 presence.interaction_status_label(&interaction(11, 1, InteractionPhase::Applying)),
-                "Rename (Applying) - Agent"
+                "Agent · renaming"
             );
         }
         // phase: agent_identity_is_textual_and_does_not_fall_back_to_a_raw_id
@@ -1553,7 +1682,7 @@ mod tests {
             keyed.actor = InteractionActor::new(key, ActorKind::Person);
             assert_eq!(
                 presence.interaction_status_label(&keyed),
-                "Rename (Committed) - Collaborator"
+                "Collaborator · renaming"
             );
             let agent = UserId("quill".into());
             presence.set_display_name(agent.clone(), "Claude");

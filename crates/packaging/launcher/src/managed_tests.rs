@@ -521,7 +521,6 @@ fn managed_agent_argv_uses_its_actual_package_not_the_document_default() {
     assert_eq!(
         managed_service_argv(&binding),
         [
-            "--task-runs",
             "--workspace",
             &binding.workspace,
             "--app",

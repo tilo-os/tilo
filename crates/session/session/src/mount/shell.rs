@@ -88,6 +88,9 @@ fields = [
   { name = "enabled", type = "bool" },
   { name = "reason", type = { option = "text" } },
   { name = "shortcut", type = { option = "text" } },
+  { name = "icon", type = { option = "text" } },
+  { name = "children", type = { list = { named = "Row" } } },
+  { name = "separator", type = "bool" },
 ]
 
 [[resources.verbs]]
@@ -253,18 +256,16 @@ struct Row {
     /// now: what a person sees at the row's end.
     #[serde(skip_serializing_if = "Option::is_none")]
     shortcut: Option<String>,
-}
-
-impl From<WindowMenuRow> for Row {
-    fn from(row: WindowMenuRow) -> Self {
-        Self {
-            id: row.id,
-            label: row.label,
-            enabled: row.enabled,
-            reason: row.reason,
-            shortcut: None,
-        }
-    }
+    /// The picture of the command the row runs, by its Lucide name, as the
+    /// window's own controls draw it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    icon: Option<String>,
+    /// The rows a row that opens a submenu offers.
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    children: Vec<Row>,
+    /// A rule between two groups of rows, which chooses nothing.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    separator: bool,
 }
 
 /// The surface stack as it reads: what stands over the windows, topmost
@@ -625,16 +626,54 @@ impl Shell {
     }
 
     /// The rows the window showing `tab` offers, each carrying the chord that
-    /// does the same thing.
+    /// does the same thing and the picture of the command behind it, its
+    /// submenu's rows with them.
     fn rows(&self, tab: TabId) -> Vec<Row> {
-        self.handle
+        let mut rows: Vec<Row> = self
+            .handle
             .window_menu(tab)
             .into_iter()
-            .map(|row| Row {
-                shortcut: self.row_shortcut(&row.id),
-                ..Row::from(row)
-            })
-            .collect()
+            .map(|row| self.reading_row(row))
+            .collect();
+        // A window of one tab is its tab: the chord that closes the tab closes
+        // it, so its Close row says that chord. A window of several offers the
+        // tab's close beside the window's, and the chord does only the tab's.
+        if !rows.iter().any(|row| row.id == window_menu::CLOSE) {
+            let close = fixed_chord("fixed-close-tab");
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.id == window_menu::CLOSE_WINDOW)
+            {
+                row.shortcut.clone_from(&close);
+            }
+        }
+        rows
+    }
+
+    /// One row of the window menu as the reading spells it.
+    fn reading_row(&self, row: WindowMenuRow) -> Row {
+        let WindowMenuRow {
+            id,
+            label,
+            enabled,
+            reason,
+            icon,
+            children,
+            separator,
+        } = row;
+        Row {
+            shortcut: self.row_shortcut(&id),
+            icon: icon.map(|icon| icon.name().to_owned()),
+            children: children
+                .into_iter()
+                .map(|child| self.reading_row(child))
+                .collect(),
+            id,
+            label,
+            enabled,
+            reason,
+            separator,
+        }
     }
 
     /// The chord a press doing what row `id` does would be, as the desktop's
@@ -643,14 +682,7 @@ impl Shell {
     /// else.
     fn row_shortcut(&self, id: &str) -> Option<String> {
         if let Some(fixed) = fixed_row_shortcut(id) {
-            return ui::shortcut_table::fixed_shortcut(fixed).map(|fixed| {
-                fixed
-                    .chords()
-                    .iter()
-                    .map(KeyChord::display)
-                    .collect::<Vec<_>>()
-                    .join("  /  ")
-            });
+            return fixed_chord(fixed);
         }
         let action = match id {
             window_menu::FULLSCREEN | window_menu::EXIT_FULLSCREEN => {
@@ -669,6 +701,23 @@ impl Shell {
             .get(&action)
             .map(KeyChord::display)
     }
+}
+
+/// The chord the catalogue fixes for `id`, in the system's own spelling: its
+/// Super form where the catalogue binds one, so a row reads the key the desk
+/// advertises rather than every alternative at once.
+fn fixed_chord(id: &str) -> Option<String> {
+    let chords = ui::shortcut_table::fixed_shortcut(id)?.chords();
+    let chord = chords
+        .iter()
+        .find(|chord| {
+            chord
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.eq_ignore_ascii_case("super"))
+        })
+        .or_else(|| chords.first())?;
+    Some(chord.display())
 }
 
 /// The fixed shortcut whose chord does what row `id` does, for the rows a

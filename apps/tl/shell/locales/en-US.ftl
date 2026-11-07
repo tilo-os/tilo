@@ -65,8 +65,6 @@ d-xpcwi5mg = Strip
 
 d-vbyis266 = Workspaces
 
-d-mewztugi = Tasks
-
 d-xu2jijql = People
 
 d-g4t5njqq = Bar reached
@@ -91,82 +89,6 @@ d-5kokd6gv = Windows
 
 d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
-
-d-pcq2hsmd = Runs
-    .doc = The runs of what the person asked the session's agents, oldest first; each is a conversation (`conversation.tl`).
-
-d-kyflwqbc = Run entries
-
-d-l3sgzgcx = Entry refs
-
-d-ihivrfzx = Run
-    .doc = A run of what the person asked one of the session's agents: the conversation they have in it.
-    .noun = { $count ->
-        [one] run
-       *[other] runs
-    }
-
-d-76zxb2mg = Key
-
-d-gi3gmep2 = Title
-
-d-7w52457h = Agent
-
-d-rgfup3n2 = Phase
-
-d-mlpdykxt = Active
-
-d-svcsmns6 = Live
-    .doc = What the agent says now, as the model streams it; empty between turns.
-
-d-y2ocksvq = Run entry
-    .doc = One entry of a run's conversation: what the person or the agent said, or a program either of them ran.
-    .noun = { $count ->
-        [one] run entry
-       *[other] run entries
-    }
-
-d-pt4ssx46 = Key
-
-d-kzqpygsb = Run
-
-d-dfzwdenr = Seq
-
-d-pwj3dxxn = Author
-
-d-lpv4nya5 = By agent
-
-d-gln4bzfr = Step
-
-d-b52hiazz = Text
-    .doc = The words, or the program as it ran.
-
-d-tsjqixo4 = Outcome
-
-d-euv7qons = Answer
-
-d-oqhj7aau = Entry ref
-    .doc = A resource a program in a conversation printed (a reference) or changed (a row to undo).
-    .noun = { $count ->
-        [one] entry ref
-       *[other] entry refs
-    }
-
-d-twcxt5ku = Key
-
-d-fqi7b3k2 = Entry
-
-d-sjbkqhyd = Changed
-
-d-kuignxum = Resource
-
-d-32yhhdkm = App id
-
-d-6kelnhk7 = Type kind
-
-d-sobb47hr = Label
-
-d-z66pleua = Change
 
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
@@ -193,19 +115,6 @@ d-o3wuotce = Key
 d-e5qbz5cz = Title
 
 d-lsd5bmss = Menu
-
-d-eeoetc53 = Task
-    .doc = A task running for the person: an agent's or a script's.
-    .noun = { $count ->
-        [one] task
-       *[other] tasks
-    }
-
-d-qvmai6xx = Key
-
-d-h3h2rsdg = Title
-
-d-b3ijx2a6 = State
 
 d-bqittbss = Person
     .doc = Someone else here in the workspace in front.
@@ -733,6 +642,9 @@ d-zoqbhs7o = Seed
 d-vglzmkiy = Drop the power part
     .doc = A shell that kept the retired `power` part beside the status loses it.
 
+d-g7yuomid = Drop the tasks part
+    .doc = A shell that kept the retired `tasks` part loses it: what an agent does is the turn of a conversation, which Chat shows, so the bar has no running-tasks cluster.
+
 d-eanbdi6l = Use this layout
     .doc = Uses the preset `to`: every setting it names at once.
 
@@ -806,9 +718,6 @@ d-5yz5iwzs = Remove from the dock
 d-aitkuflo = Open item
     .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
 
-d-3edhzcjk = Seed run
-    .doc = The run a conversation starts from: what Ada asked, the agent's words between its steps, a program it ran that printed two notes, one that changed a note, one of Ada's own that did not compile, and the agent's answer.
-
 d-j4ax4otm = Seed notices
     .doc = The desk's notices a scenario starts from: what apps and an agent said today.
 
@@ -870,8 +779,8 @@ d-t3cux3yd = Framed place
 
 d-s6b5stgz = Space content
 
-d-w6ftt2gh = Canvas entry
-    .w-find-something-or-ask = Find something, or ask
+d-ymcmc5yv = Canvas entry
+    .w-find-something = Find something
 
 d-ewgdlyyr = Show app menus~present
 
@@ -882,49 +791,6 @@ d-vedyud4d = Move part~present
 d-gkca5uj2 = Move item~present
 
 d-i4odzov3 = Pin~present
-
-d-bzxwxsra = Composer
-    .w-ask-about = Ask about { $subject }
-    .w-ask-an-agent = Ask an agent
-    .w-what-should-it-do = What should it do?
-    .w-no-task-is-running = No task is running
-    .w-what-you-ask-becomes-one-and = What you ask becomes one, and its log stays here
-    .w-running = Running
-    .w-agents-here = Agents here
-    .w-send = Send
-    .w-what-i-am-on = What I am on
-    .w-enter = Enter
-
-d-6hsxbazg = Task line
-
-d-dz2lhlbc = Conversation
-
-d-cp25pggy = Conversation entry
-    .w-type-a-program-or-say-what = Type a program, or say what to do
-
-d-edxsethn = Said
-    .w-you = You
-
-d-zhqh5ven = Said now
-
-d-ojxyofwa = Program step
-    .w-you = You
-
-d-ghaelk2z = Reference
-
-d-dterbuii = Phase badge
-    .w-starting = Starting
-    .w-working = Working
-    .w-waiting-for-you = Waiting for you
-    .w-done = Done
-    .w-could-not-finish = Could not finish
-    .w-stopped = Stopped
-
-d-2u2ny6gr = Outcome badge
-    .w-did-not-compile = Did not compile
-    .w-waiting-to-confirm = Waiting to confirm
-    .w-waiting-for-an-answer = Waiting for an answer
-    .w-stopped = Stopped
 
 d-gctjtdv7 = Desk
 
@@ -950,6 +816,8 @@ d-ojscef66 = Dock
 
 d-lwre5gd7 = Dock run
 
+d-fr6w4hgp = Dock running tiles
+
 d-lwt7iwsj = Dock tile
 
 d-dpqvjh2f = Launcher
@@ -971,8 +839,6 @@ d-hlv2uw7o = Desk doors
     .w-who-is-in-each-and-what = Who is in each, and what it holds
     .w-notifications = Notifications
     .w-what-apps-and-agents-told-you = What apps and agents told you
-    .w-ask-an-agent = Ask an agent
-    .w-run-a-task-over-what-you = Run a task over what you point at
 
 d-outvdzmi = Layouts
     .w-layout = Layout

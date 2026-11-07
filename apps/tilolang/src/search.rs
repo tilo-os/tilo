@@ -73,6 +73,7 @@ pub fn refresh(catalog: &SearchCatalog, host: &Host) -> Vec<IndexEntry> {
                 .collect(),
             secret: false,
             references: hit.references.clone(),
+            ..IndexEntry::default()
         });
         records.push(
             SearchRecord::new(&hit.resource, result)

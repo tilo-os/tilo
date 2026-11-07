@@ -591,7 +591,11 @@ participant-numbered = { $name } ({ $number })
 participant-acting-for = { $name }, für { $person }
 interaction-agent = Agent
 interaction-collaborator = Mitwirkende Person
-interaction-action-status = { $action } ({ $phase }) - { $name }
+# Was jemand gerade tut: der Name, dann die Handlung im Präsens.
+interaction-working = arbeitet
+interaction-action-doing = { $name } · { $doing }
+# Dasselbe mit der Phase, wo sie nur ein Mensch klären kann.
+interaction-action-status = { $name } · { $doing }, { $phase }
 interaction-inspecting = Prüft
 interaction-applying = Wendet an
 interaction-waiting = Wartet
@@ -940,6 +944,26 @@ change-mark-in-run = { $what } in „{ $run }“
 change-window = { $count ->
     [one] Eine Änderung von { $who }
    *[other] { $count } Änderungen von { $who }
+}
+change-window-changed = { $who } hat { $count ->
+    [one] eine { $noun } geändert
+   *[other] { $count } { $noun } geändert
+}
+change-mark-names-two = { $first } und { $second }
+change-mark-names-three = { $first }, { $second } und { $third }
+change-mark-names-more = { $first }, { $second } und { $count } weitere
+change-mark-said = { $who } { $said }
+change-mark-said-more = { $said } und { $count ->
+    [one] eine weitere
+   *[other] { $count } weitere
+}
+change-window-more = { $who } hat mindestens { $count ->
+    [one] eine Änderung geändert
+   *[other] { $count } Änderungen geändert
+}
+change-window-changed-more = { $who } hat mindestens { $count ->
+    [one] eine { $noun } geändert
+   *[other] { $count } { $noun } geändert
 }
 
 # One step of an agent's task: the program it ran, what it answered, what it

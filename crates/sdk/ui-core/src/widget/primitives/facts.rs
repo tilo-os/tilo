@@ -229,6 +229,8 @@ impl Facts {
 }
 
 impl Widget for Facts {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

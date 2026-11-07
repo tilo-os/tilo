@@ -30,6 +30,13 @@ impl Session {
             .as_ref()
             .and_then(|controllers| controllers.next_deadline(now))
             .map(|due| due.saturating_duration_since(now));
+        // A package's trigger at the instant it names: the pass that runs it is due then,
+        // whether or not a window of its app is open.
+        let service = self.shared.services.borrow().wakes_in();
+        let controller = match (controller, service) {
+            (Some(controller), Some(service)) => Some(controller.min(service)),
+            (controller, service) => controller.or(service),
+        };
         let timeout = match (timeout, controller) {
             (Some(timeout), Some(due)) => Some(timeout.min(due)),
             (timeout, due) => timeout.or(due),
@@ -43,24 +50,13 @@ impl Session {
         }
     }
 
-    /// What this pass's runs and services did: an agent's run fed, the door
-    /// that reads its conversation lent, and the services polled, so the
-    /// surfaces below show what they published.
-    pub(super) fn serve_runs_and_services(&self) {
+    /// What this pass's services did: an agent's turns fed, the services
+    /// polled, so the surfaces below show what they published.
+    pub(super) fn serve_agent_runs_and_services(&self) {
         // What the session's own resources read, before the services poll
         // the readings this pass hands them.
         self.read_controls();
-        self.shared.feed_agent_runs();
-        // The door that decides what a person's line in a run's conversation
-        // reads and changes, once this pass's runs know where they are
-        // (shell.md §8.1).
-        let front = self.shared.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| held.id().to_string())
-                .unwrap_or_default()
-        });
-        self.shared
-            .lend_conversations(self.action_plane.as_ref(), &front);
+        self.shared.feed_agents();
         let mut services = self.shared.services.borrow_mut();
         // What the packages the session runs itself (the shell) wrote into the records their
         // parts share, published with every app's before the door answers this pass.
@@ -140,7 +136,7 @@ impl Session {
         self.follow_fullscreen();
         self.follow_overlays();
         self.follow_setup();
-        self.serve_runs_and_services();
+        self.serve_agent_runs_and_services();
         // The staged system update, finished on its own clock: the desktop
         // restarts onto it once the person is away, which ends this process
         // and comes back on the new interface.

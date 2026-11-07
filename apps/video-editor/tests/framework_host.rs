@@ -290,12 +290,9 @@ fn an_agent_is_asked_first_before_a_file_is_read_or_written() {
     const AGENT: &str = "renderer";
 
     let mut app = with_sample();
-    // An agent admitted as an Operator, with no answer of the person's yet.
-    let grants = policy::roles::AgentPreset::Operator.grants(
-        LOCAL_WORKSPACE,
-        AGENT,
-        &policy::Subject::person(LOCAL_USER),
-    );
+    // An agent with no answer of the person's yet, inside a turn of the
+    // person's that bound how far it reaches.
+    let grants = policy::roles::agent_turn(LOCAL_WORKSPACE, AGENT, LOCAL_USER, &[]).grants;
     app.set_permissions(
         PermissionContext::member(LOCAL_USER, Role::Owner)
             .acting_as(policy::Subject::agent(AGENT), grants),

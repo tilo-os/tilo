@@ -55,6 +55,11 @@ window shows a resource. The host draws marks from `unseen(r)` at those points:
 Apps write nothing for this. A view may place the mark itself (`ui.ChangeMark(r)`) when the
 default spot is wrong; the host then skips its own.
 
+A mark reads the index's newest version of what it marks, never the resource's log, so a row or
+a field of any workspace costs the same to mark. A window's count reads one page of its
+document's resources: when the document holds more than the page, the mark says *at least* how
+many changes it counted.
+
 Every mark activates to the step that made it: the run's log opens at that step, with Undo for
 the step and for the run.
 

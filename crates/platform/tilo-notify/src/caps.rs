@@ -17,6 +17,9 @@ pub enum Feature {
     /// Handing a clicked notification's activation URI to the app:
     /// [`set_activation_handler`](crate::set_activation_handler).
     Activate,
+    /// Saying why a notification the app showed went away:
+    /// [`set_close_handler`](crate::set_close_handler).
+    Close,
     /// Naming who may break through Do Not Disturb:
     /// [`publish_priority_contacts`](crate::publish_priority_contacts).
     PriorityContacts,
@@ -25,6 +28,9 @@ pub enum Feature {
 pub(crate) const WEB_SCHEDULE: &str = "A closed web page cannot show notifications.";
 pub(crate) const MAC_PRIORITY: &str = "macOS decides who breaks through Focus.";
 pub(crate) const WEB_PRIORITY: &str = "Browsers decide who breaks through Do Not Disturb.";
+pub(crate) const MAC_CLOSE: &str =
+    "This macOS backend subscribes to no dismiss action of the notification center.";
+pub(crate) const WEB_CLOSE: &str = "Browsers report a notification closing, never why.";
 
 impl tilo_platform_caps::Feature for Feature {
     /// The feature's availability on Linux, macOS and the web, in that
@@ -34,6 +40,7 @@ impl tilo_platform_caps::Feature for Feature {
         use Availability::{Available, Prompt, Unsupported};
         match self {
             Self::Show | Self::Activate => [Available, Prompt, Prompt],
+            Self::Close => [Available, Unsupported(MAC_CLOSE), Unsupported(WEB_CLOSE)],
             Self::Schedule => [Available, Prompt, Unsupported(WEB_SCHEDULE)],
             Self::PriorityContacts => [
                 Available,

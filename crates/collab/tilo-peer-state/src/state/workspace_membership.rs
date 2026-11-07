@@ -2,7 +2,7 @@ use super::facades::{PeerWorkspace, PeerWorkspaceMut};
 use super::{StatePeer, SystemTime};
 use crate::workspace_membership::WorkspaceMembershipCommand;
 use ed25519_dalek::SigningKey;
-use tilo_action_policy::{Change, GrantId, Subject, TreePath, roles};
+use tilo_action_policy::{Change, Subject, TreePath, roles};
 use tilo_user_identity::DeviceCert;
 
 impl StatePeer {
@@ -342,7 +342,7 @@ impl PeerWorkspaceMut<'_> {
 
 impl StatePeer {
     /// Apply a command only the workspace's administrators may give: letting a
-    /// person author apps, or adding or removing an agent.
+    /// person author apps.
     fn apply_administered_command(
         &mut self,
         caller: &DeviceCert,
@@ -373,58 +373,6 @@ impl StatePeer {
                 now,
             );
         }
-        let subject = Subject::agent(command.agent().ok_or("missing agent membership target")?);
-        let workspace = member.policy.node();
-        let removals = member
-            .policy
-            .grants
-            .iter()
-            .filter(|grant| {
-                grant.subject == subject
-                    && (matches!(command, WorkspaceMembershipCommand::RemoveAgent { .. })
-                        || grant.node.is_within(&workspace))
-            })
-            .map(|grant| grant.id.clone())
-            .collect::<Vec<GrantId>>();
-        // Work on a clone: an invalid later addition must not leave a removal
-        // applied to the caller's candidate.
-        let mut candidate = self.clone();
-        let removed = candidate
-            .governance_mut()
-            .remove_governed_grants(&removals, key, now)?;
-        let added = match command {
-            WorkspaceMembershipCommand::AddAgent { agent, preset } => {
-                let grants =
-                    preset.grants(&self.core.workspace, agent, &Subject::Person(member.person));
-                candidate
-                    .governance_mut()
-                    .put_governed_grants(&grants, key, now)?
-            }
-            WorkspaceMembershipCommand::RemoveAgent { .. } => false,
-            WorkspaceMembershipCommand::GrantAppAuthorship { .. }
-            | WorkspaceMembershipCommand::RetiredGrantForTask { .. }
-            | WorkspaceMembershipCommand::RetiredRevokeForTask { .. }
-            | WorkspaceMembershipCommand::Grant { .. }
-            | WorkspaceMembershipCommand::Revoke { .. }
-            | WorkspaceMembershipCommand::InstallBot(_)
-            | WorkspaceMembershipCommand::RenewBot(_)
-            | WorkspaceMembershipCommand::UninstallBot { .. }
-            | WorkspaceMembershipCommand::PauseBot { .. }
-            | WorkspaceMembershipCommand::ResumeBot { .. }
-            | WorkspaceMembershipCommand::SetBotAppearance { .. }
-            | WorkspaceMembershipCommand::AdoptBot(_)
-            | WorkspaceMembershipCommand::RequestBot(_)
-            | WorkspaceMembershipCommand::WithdrawBotRequest { .. }
-            | WorkspaceMembershipCommand::InstallApp(_)
-            | WorkspaceMembershipCommand::UninstallApp { .. }
-            | WorkspaceMembershipCommand::Member { .. }
-            | WorkspaceMembershipCommand::Settings(_)
-            | WorkspaceMembershipCommand::Share { .. }
-            | WorkspaceMembershipCommand::Unshare { .. } => {
-                return Err("a command entered the agent membership branch".into());
-            }
-        };
-        *self = candidate;
-        Ok(removed || added)
+        Ok(false)
     }
 }

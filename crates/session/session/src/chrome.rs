@@ -398,6 +398,8 @@ pub(crate) struct ChromeWiring {
     /// chrome matches a press against and what it shows beside its rows.
     pub(crate) shortcuts: crate::mount::panels::Shortcuts,
     pub(crate) feeds: BarFeeds,
+    /// This device's workspaces, as their records hold them.
+    pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, who
@@ -725,6 +727,9 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
 pub(crate) struct SessionRules {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
+    /// This device's workspaces, as their records hold them: what says
+    /// whether a workspace may be deleted.
+    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// Who made each strip and opened each window.
     pub(crate) authors: RefCell<Authors>,
 }
@@ -762,6 +767,31 @@ impl DesktopRules for SessionRules {
 
     fn may_create_workspace(&self) -> Result<(), String> {
         may_create_workspace(&self.standing()).map_err(|refusal| refusal.to_string())
+    }
+
+    fn may_delete_workspace(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceSlot,
+    ) -> Result<(), String> {
+        let Some(engine) = &self.engine else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "desktop-cannot-delete-workspace",
+            ));
+        };
+        let id = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.slot == workspace)
+                    .map(tilo_desktop_model::Workspace::id)
+            })
+            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+        if engine.may_delete(id) {
+            Ok(())
+        } else {
+            Err(tilo_desktop_surface::i18n::t("desktop-workspace-stays"))
+        }
     }
 
     fn made_strip(&self, strip: tilo_desktop_model::StripId) {
@@ -825,11 +855,13 @@ pub(crate) fn host(
         asks,
         shortcuts,
         feeds,
+        engine,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
+        engine,
         authors: RefCell::new(std::collections::BTreeMap::new()),
     });
     let tree = handle.read(Clone::clone);

@@ -832,6 +832,8 @@ impl NumberInput {
 }
 
 impl Widget for NumberInput {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_interaction_environment(

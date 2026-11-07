@@ -11,7 +11,7 @@ use ui::search::FieldWeight;
 use ui::search::system::{ResourceKind, rank_fields};
 
 use crate::i18n::{t, t_args};
-use crate::model::{Hit, Source, Target};
+use crate::model::{Hit, LaunchPlace, Source, Target};
 
 /// Separates the parts of a row id.
 const ID_SEPARATOR: char = '\u{1f}';
@@ -151,6 +151,7 @@ impl Source for Jobs {
                 // The app doing it comes forward.
                 target: Target::Launch {
                     app: job.app.clone(),
+                    place: LaunchPlace::Focus,
                 },
             });
             if job.cancellable && running(&job.update) {

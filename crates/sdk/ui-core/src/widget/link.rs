@@ -241,6 +241,8 @@ impl crate::widget::controls::ActionControls for Link {
 }
 
 impl Widget for Link {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(

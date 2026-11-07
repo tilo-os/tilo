@@ -356,6 +356,8 @@ mod query;
 mod reactions;
 mod reactive;
 mod record;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod record_index;
 pub mod reference;
 mod root;
 mod rows;

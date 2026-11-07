@@ -152,7 +152,10 @@ impl Widget for ActionPalette {
         );
     }
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
-        if self.hosts_rows() && self.is_open() && self.row_at(point).is_some() {
+        if self.hosts_rows()
+            && self.is_open()
+            && (self.row_at(point).is_some() || self.facet_chip_at(point).is_some())
+        {
             return Some(winit::window::CursorIcon::Pointer);
         }
         None

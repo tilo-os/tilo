@@ -164,6 +164,8 @@ impl SignalMeter {
 }
 
 impl Widget for SignalMeter {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

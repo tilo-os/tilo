@@ -176,11 +176,6 @@ pub struct Options {
     /// owns the machine, and `headless-owner-control.sock` for a headless
     /// one. `None`: there is none.
     pub admin_control: Option<std::path::PathBuf>,
-    /// The runs of what people ask this session's agents to do. Without one
-    /// the session keeps its own, which its broker delivers to the agents
-    /// admitted here; one given is a run channel a test plays the agent's
-    /// side of.
-    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
 }
 
 /// Which machine a session draws on.
@@ -393,7 +388,6 @@ impl Default for Options {
             admit_repl: Vec::new(),
             test_control: None,
             admin_control: None,
-            agent_runs: None,
             launches: std::sync::Arc::default(),
             drives: None,
         }

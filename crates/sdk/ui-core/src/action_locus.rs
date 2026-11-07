@@ -25,7 +25,9 @@ pub(crate) fn draw_action_presence(
     now: crate::time::Instant,
 ) -> Vec<PaintedActionMarker> {
     let mut painted = Vec::new();
-    let mut resolved = Vec::new();
+    // Widgets that drew the exact place themselves — the characters a write
+    // landed in — are marks already: the rail would name them twice.
+    let mut resolved = presence.take_shown();
     for interaction in presence.visible_interactions(now) {
         let Some(bounds) = interaction_bounds(tree, bindings, &interaction) else {
             continue;
@@ -36,6 +38,7 @@ pub(crate) fn draw_action_presence(
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
         let label = presence.interaction_status_label(&interaction);
+        let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
         presence.draw_action_outline_labeled_within(
             paint,
             &user,
@@ -44,9 +47,15 @@ pub(crate) fn draw_action_presence(
             f64::from(paint.theme.tokens.radii.detail),
             viewport,
         );
-        if let Some(marker) =
-            presence.draw_agent_action_marker(paint, &interaction, bounds, viewport, surface, now)
-            && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
+        if let Some(marker) = presence.draw_agent_action_marker(
+            paint,
+            &interaction,
+            bounds,
+            control,
+            viewport,
+            surface,
+            now,
+        ) && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
         {
             painted.push(PaintedActionMarker {
                 interaction: interaction.clone(),
@@ -187,6 +196,11 @@ pub(crate) fn interaction_bounds(
     bindings: &[crate::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<vello::kurbo::Rect> {
+    // An item an invocation names is found by the identity its row shows, not
+    // by which control the action is bound to.
+    if let tilo_actions::InteractionAnchor::ListItems { ids } = &interaction.anchor {
+        return item_bounds(tree, ids);
+    }
     let address = tilo_actions::ActionAddress::new(
         interaction.resource.id.clone(),
         interaction.action.id.clone(),
@@ -230,6 +244,95 @@ pub(crate) fn interaction_bounds(
         });
     let only = candidates.next()?;
     candidates.next().is_none().then_some(only)
+}
+
+/// The control an invocation on `locus` is acted through: the one its address
+/// is bound to, or else the toggle the item holds. `None` when the frame
+/// names none, so the marker rests on the locus itself.
+fn control_bounds(
+    tree: &crate::a11y_tree::SemanticTree,
+    bindings: &[crate::widget::ControlBindingMetadata],
+    interaction: &tilo_actions::SemanticInteraction,
+    locus: vello::kurbo::Rect,
+) -> Option<vello::kurbo::Rect> {
+    let address = tilo_actions::ActionAddress::new(
+        interaction.resource.id.clone(),
+        interaction.action.id.clone(),
+    );
+    let mut inside = action_ui_routes(tree, bindings, &address)
+        .into_iter()
+        .filter_map(|route| route.bounds)
+        .filter(|bounds| centred_in(*bounds, locus));
+    let only = inside.next();
+    if only.is_some() && inside.next().is_none() {
+        return only;
+    }
+    locus_toggle(tree, locus)
+}
+
+/// The control a row's item is acted through even when the action is not
+/// bound to it: a leading check box toggles through its row, so the pointer
+/// rests on the box a person would press rather than on the row's middle.
+fn locus_toggle(
+    tree: &crate::a11y_tree::SemanticTree,
+    locus: vello::kurbo::Rect,
+) -> Option<vello::kurbo::Rect> {
+    let toggles = tree
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.role,
+                crate::a11y::Role::Checkbox
+                    | crate::a11y::Role::Switch
+                    | crate::a11y::Role::RadioButton
+            )
+        })
+        .filter_map(|node| node.bounds)
+        .filter(|bounds| centred_in(*bounds, locus));
+    toggles.reduce(|smallest, bounds| {
+        if bounds.area() < smallest.area() {
+            bounds
+        } else {
+            smallest
+        }
+    })
+}
+
+/// Whether `inner` belongs to `outer`: a control's centre sits on the row it
+/// acts on, even where its pressable area reaches past the row's own bounds.
+fn centred_in(inner: vello::kurbo::Rect, outer: vello::kurbo::Rect) -> bool {
+    outer.contains(inner.center())
+}
+
+/// The bounds of the one node that shows the item `ids` name, when exactly
+/// one does: an invocation naming a row lands on that row, whether or not the
+/// row's own controls are the ones the action is bound to.
+fn item_bounds(
+    tree: &crate::a11y_tree::SemanticTree,
+    ids: &[String],
+) -> Option<vello::kurbo::Rect> {
+    let [item] = ids else {
+        return None;
+    };
+    if item.is_empty() {
+        return None;
+    }
+    let mut only = None;
+    for node in tree.nodes_showing_item(item) {
+        let bounds = node.bounds?;
+        if only.is_some_and(|seen| seen != bounds) {
+            // Two nodes claim the same item: the view cannot say which.
+            return None;
+        }
+        only = Some(bounds);
+    }
+    let only = only?;
+    ([only.x0, only.y0, only.x1, only.y1]
+        .into_iter()
+        .all(f64::is_finite)
+        && only.width() > 0.0
+        && only.height() > 0.0)
+        .then_some(only)
 }
 
 /// Exact resource geometry after the host has translated a checked publication.

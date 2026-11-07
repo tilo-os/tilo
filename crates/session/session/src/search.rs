@@ -43,7 +43,9 @@ use tilo_desktop_search::providers::places::{Continue, Place, RecentPlaces};
 use tilo_desktop_search::providers::records as record_rows;
 use tilo_desktop_search::providers::settings::Settings;
 use tilo_desktop_search::providers::waiting::Waiting;
-use tilo_desktop_search::{DESKTOP_APP, InvokeTarget, SearchPreferences, Source, Target, Usage};
+use tilo_desktop_search::{
+    DESKTOP_APP, InvokeTarget, LaunchPlace, SearchPreferences, Source, Target, Usage,
+};
 use tilo_desktop_surface::{SearchHost, SearchHostFeed};
 use ui::record::{RecordCheckout, RecordId, RecordKind};
 use ui::search::Scope;
@@ -85,6 +87,25 @@ pub trait AppActions {
     /// # Errors
     /// It did not start.
     fn start_host_app(&self, desktop_id: &str) -> Result<(), DoorError>;
+    /// Open the application `app` in `workspace`, where the person asked it:
+    /// a window of its own beside theirs when `place` says so, else the
+    /// window the app has there. A host that starts no windows arranges
+    /// nothing, and opens the app where it already opens.
+    ///
+    /// # Errors
+    /// The host's refusal.
+    fn open_application(
+        &self,
+        workspace: &str,
+        app: &str,
+        place: LaunchPlace,
+    ) -> Result<(), DoorError> {
+        let _ = place;
+        self.invoke(
+            application_open_target(workspace, app),
+            serde_json::Map::new(),
+        )
+    }
 }
 
 /// What the session's search reaches beyond the desktop.
@@ -190,6 +211,7 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 impl SessionSearch {
     pub(crate) fn new(
         options: SearchOptions,
+        person: String,
         apps: Option<Rc<dyn AppActions>>,
         wake: Option<tilo_service::Wake>,
     ) -> Self {
@@ -205,7 +227,7 @@ impl SessionSearch {
         let kept = Kept {
             host_apps: Arc::new(HostApps::new(read.host_apps.clone(), &preferences)),
             lists: read,
-            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name))),
+            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name, person))),
             files: files.map(|(home, names, content)| Arc::new(Files::new(home, names, content))),
             workspace: None,
         };
@@ -257,6 +279,18 @@ impl SessionSearch {
                 && address.action == "search";
             !searching && !opening
         });
+        // The desk's own resources are named after the person and the
+        // desktop, not after the thing an action acts on: matched as a
+        // word, that name would list every one of the desk's actions for a
+        // query that names the person.
+        for action in &mut published {
+            if matches!(
+                action.address.resource.as_str(),
+                tilo_surface_host::shell_part::DESK_RESOURCE | tilo_desktop_search::CHROME_RESOURCE
+            ) {
+                action.resource_label.clear();
+            }
+        }
         *self.own.borrow_mut() = published;
         *self.own_types.borrow_mut() = tilo_desktop_search::providers::types_of(own);
         *self.open_tabs.borrow_mut() = open_tabs;
@@ -532,13 +566,13 @@ impl SessionSearch {
                     invoke.arguments,
                 )
             }),
-            Target::Launch { app } => self.with_apps(|apps| match host_apps::launched(&app) {
-                Some(desktop_id) => apps.start_host_app(desktop_id),
-                None => apps.invoke(
-                    application_open_target(workspace, &app),
-                    serde_json::Map::new(),
-                ),
-            }),
+            Target::Launch { app, place } => {
+                self.with_apps(|apps| match host_apps::launched(&app) {
+                    // The machine's own app places its window itself.
+                    Some(desktop_id) => apps.start_host_app(desktop_id),
+                    None => apps.open_application(workspace, &app, place),
+                })
+            }
             Target::Prefer { source, enabled } => {
                 self.prefer(&source, enabled);
                 Ok(())
@@ -1038,6 +1072,7 @@ mod tests {
                 lists,
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1095,6 +1130,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1147,6 +1183,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            String::new(),
             Some(Rc::new(Opening(Rc::clone(&opened)))),
             None,
         );
@@ -1236,6 +1273,7 @@ mod tests {
                 places: recent,
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1273,7 +1311,7 @@ mod tests {
 
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
-        let search = SessionSearch::new(SearchOptions::default(), None, None);
+        let search = SessionSearch::new(SearchOptions::default(), String::new(), None, None);
         let before = Arc::clone(&search.kept.borrow().host_apps);
         let _ = search.feed("workspace", &Scope::Workspace);
         assert!(Arc::ptr_eq(&before, &search.kept.borrow().host_apps));

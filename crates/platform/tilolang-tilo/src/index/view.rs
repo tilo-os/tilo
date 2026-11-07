@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tilolang_runtime::store::{
-    FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError,
+    FieldKey, FieldRead, FieldValue, Listing, Lit, Pred, Splice, StoreError, Version,
 };
 
 use super::derive::{column_field, in_of, item_path, member_list};
@@ -64,6 +64,82 @@ impl View<'_> {
             return Ok(written);
         }
         self.snapshot.field(resource, field)
+    }
+
+    /// The items that left the collection `field` of `holder`, in the order they left, each
+    /// with the version that removed it ([`super::REMOVED`]): what a list shows of them struck
+    /// until the person has seen them go.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn removed(&self, holder: &str, field: &str) -> Result<Vec<(String, Version)>, IndexError> {
+        let Some(json) = self.text(holder, &super::removed_field(field))? else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<super::derive::LeftRow> =
+            serde_json::from_str(&json).map_err(|_| IndexError::Corrupt)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| (row.path, row.version))
+            .collect())
+    }
+
+    /// The newest version of `resource` (the store's open writes included), else `None`: what a
+    /// mark of it says, read without the resource's log.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn newest(&self, resource: &str) -> Result<Option<Version>, IndexError> {
+        if let Some(written) = self.overlay.newest(resource) {
+            return Ok(written.map(|stamp| stamp.version.clone()));
+        }
+        if self.overlay.removed(resource) {
+            return Ok(None);
+        }
+        self.snapshot.newest(resource)
+    }
+
+    /// The newest version of each resource of the document `path` (it and its items, and the
+    /// items a collection of one of them had removed), at most `page` of them, most recent
+    /// first, and whether the document holds more, the store's open writes included: what a
+    /// window's mark counts the unseen changes of, and the order a catch-up lists them in.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn newest_page(
+        &self,
+        path: &str,
+        page: usize,
+    ) -> Result<(Vec<(String, Version)>, bool), IndexError> {
+        let (mut out, mut more) = self.snapshot.newest_page(path, page)?;
+        for (resource, stamp) in self.overlay.newest_within(path) {
+            match out.iter_mut().find(|(held, _)| held == resource) {
+                Some(at) => at.1 = stamp.clone(),
+                None => {
+                    if out.len() == page {
+                        more = true;
+                    } else {
+                        out.push((resource.to_owned(), stamp.clone()));
+                    }
+                }
+            }
+        }
+        out.retain(|(resource, _)| !self.overlay.removed(resource));
+        // Most recent first: two versions recorded in the same second are ordered by the
+        // change's place in the log, which the stamp keeps.
+        out.sort_by(|a, b| b.1.order().cmp(&a.1.order()));
+        Ok((
+            out.into_iter()
+                .map(|(resource, stamp)| {
+                    let version = Version {
+                        resource: resource.clone(),
+                        ..stamp.version
+                    };
+                    (resource, version)
+                })
+                .collect(),
+            more,
+        ))
     }
 
     /// The type (`$type`) or order key (`$key`) of `resource`.

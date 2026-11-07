@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = true
 license.workspace = true
-description = "Hold an iroh endpoint's relays back until something needs the device dialable."
+description = "Hold an iroh endpoint's relays back until something needs the device dialable, and find the person's devices on the local network."
 repository.workspace = true
 homepage.workspace = true
 
@@ -19,6 +19,7 @@ test-support = ["dep:iroh-relay"]
 [dependencies]
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 iroh.workspace = true
+iroh-mdns-address-lookup.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"], optional = true }
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 # iroh's address-lookup trait hands a lookup's results back as this stream.

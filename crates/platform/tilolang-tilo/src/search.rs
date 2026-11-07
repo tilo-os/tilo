@@ -277,6 +277,7 @@ fn entry(
         fields,
         secret: false,
         references: references.to_vec(),
+        ..IndexEntry::default()
     };
     entry.bounded()
 }

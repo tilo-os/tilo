@@ -38,6 +38,8 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
+    /// What `now` reads: the system time, or what a test fixes.
+    clock: Box<dyn Fn() -> String>,
     /// The resources whose readings moved since [`Service::moved`] was last asked, by their
     /// published ids, and whether something moved that names no one resource (the record was
     /// taken in anew, a document changed as a whole).
@@ -57,12 +59,18 @@ pub struct RecordService {
     origins: crate::origin::Origins,
     /// What wakes the session's loop when an origin has an answer and work waits.
     origin_waker: Option<crate::background::Waker>,
+    /// The notices this device shows its person, and what it told already
+    /// ([`crate::notices::Notices`]).
+    notices: crate::notices::Notices,
+    /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
+    tell: Option<Box<dyn crate::notices::Tell>>,
 }
 
 impl RecordService {
     /// The records `host` runs over `record`, its packages loaded, published for `person`.
     #[must_use]
     pub fn new(record: tilo_resource::Doc, host: Host, person: impl Into<String>) -> Self {
+        let person: String = person.into();
         host.sync_from(&record);
         let planner: Arc<dyn Planner> = Arc::new(host.handle());
         let mut publications = Publications::new(&host);
@@ -75,7 +83,10 @@ impl RecordService {
             planner,
             publications,
             watch,
-            person: person.into(),
+            notices: crate::notices::Notices::new(person.clone()),
+            tell: None,
+            person,
+            clock: Box::new(crate::host::system_time),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
             shared: std::collections::BTreeMap::new(),
@@ -217,6 +228,8 @@ impl RecordService {
             .merge_incoming(other)
             .map_err(|error| error.to_string())?;
         self.host.sync_from(&self.record);
+        // What reached it of the person's notices, told as it arrives.
+        self.told();
         Ok(())
     }
 
@@ -506,6 +519,7 @@ impl RecordService {
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
+        self.told();
         let made = self
             .host
             .take_returned(&planned.action_id)
@@ -543,6 +557,125 @@ fn published_refs(json: &mut Json) {
         }
         Json::Array(items) => items.iter_mut().for_each(published_refs),
         _ => {}
+    }
+}
+
+impl RecordService {
+    /// Run what the packages have due at this device's clock: a trigger runs here whether a
+    /// window of its app is open or not, as it does on the device that governs the workspace,
+    /// once per instant across the workspace's devices (the change records what the trigger last
+    /// did for the record). Whether anything ran.
+    fn trigger(&mut self) -> bool {
+        let Some(now) = self.now() else {
+            return false;
+        };
+        if self.host.run_triggers(now) == 0 {
+            return false;
+        }
+        // What a trigger did is the app's own change, committed as its invocation says: the same
+        // commit as an action from the workspace, as the run's principal.
+        self.flush();
+        self.moved_unsaid = true;
+        true
+    }
+
+    /// Commit what the packages committed on their own — a trigger's change, a notice marked
+    /// seen — each as the step its authorship names.
+    fn flush(&mut self) {
+        for committed in self.host.take_committed() {
+            let actor = if committed.action.authorship.invoker.is_empty() {
+                crate::authority::trigger_principal(&committed.action.app).0
+            } else {
+                committed.action.authorship.invoker.clone()
+            };
+            let invoker = tilo_actions::ActionInvoker::actor(actor);
+            if let Err(error) = self.commit(&committed.action, &invoker) {
+                tracing::warn!(%error, "a change made on its own did not reach the workspace");
+            }
+        }
+    }
+
+    /// How long until what the packages have due next: the service's next poll runs it then, so
+    /// nothing polls for it.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let now = self.now()?;
+        let at = self.host.next_trigger(now)?;
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
+    /// Where the notices the workspace holds for this device's person are shown: the session's
+    /// notifications, the ones every app's notification goes through.
+    pub fn set_tell(&mut self, tell: impl crate::notices::Tell + 'static) {
+        self.tell = Some(Box::new(tell));
+    }
+
+    /// What this device's person has told, to keep across restarts: the notices it shows no
+    /// more ([`crate::notices::Notices::kept`]).
+    #[must_use]
+    pub fn told_kept(&self) -> Vec<String> {
+        self.notices.kept()
+    }
+
+    /// Take up what this device told before it restarted: none of those notices is told again.
+    pub fn take_up_told(&mut self, kept: impl IntoIterator<Item = String>) {
+        self.notices.remember(kept);
+    }
+
+    /// The person at this device saw the notice `id` — they opened or dismissed what it showed —
+    /// so it is marked seen for every device of theirs, and its notification here is taken back.
+    pub fn notice_seen(&mut self, id: &str) {
+        if let Err(error) = self.notices.seen(&self.host, id) {
+            tracing::warn!(%error, notice = id, "a notice was not marked seen");
+            return;
+        }
+        self.flush();
+        self.told();
+    }
+
+    /// Mark seen the notices the person dismissed on this device since the last look: their
+    /// notification closed because they dismissed it ([`crate::notices::Closed::Dismissed`]),
+    /// not because it ran out or because another device of theirs saw it.
+    fn dismissed(&mut self) {
+        let Some(tell) = &self.tell else {
+            return;
+        };
+        let ids: Vec<String> = tell
+            .closed()
+            .into_iter()
+            .filter(|(_, reason)| *reason == crate::notices::Closed::Dismissed)
+            .filter_map(|(tag, _)| self.notices.shown_as(&tag).map(str::to_owned))
+            .collect();
+        for id in ids {
+            self.notice_seen(&id);
+        }
+    }
+
+    /// Show the notices this device's person has not seen, and take back the ones they have
+    /// seen since the last look, here or on another device of theirs.
+    fn told(&mut self) {
+        let Some(tell) = &self.tell else {
+            return;
+        };
+        let told = self.notices.step(&self.host);
+        for notice in &told.show {
+            tell.show(notice);
+        }
+        for tag in &told.withdraw {
+            tell.withdraw(tag);
+        }
+    }
+
+    /// What `now` reads: this device's clock, or what a test fixes.
+    pub fn set_clock(&mut self, clock: impl Fn() -> String + 'static) {
+        self.clock = Box::new(clock);
+    }
+
+    /// This device's clock now, in seconds since the epoch.
+    fn now(&self) -> Option<i64> {
+        tilolang::calendar::instant(&(self.clock)())
     }
 }
 
@@ -605,10 +738,20 @@ impl Service for RecordService {
 
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
+        let ran = self.trigger();
+        // What the person dismissed here is their answer to a notice, as their change.
+        self.dismissed();
+        // What the workspace holds for this device's person, as the record reached it since the
+        // last look.
+        self.told();
         // The origins keep their records in step with their services, and hand the outside
         // effects the record queued to them: what they wrote is committed and published.
         let wrote = self.poll_origins();
-        self.watched() || !touched.is_empty() || wrote
+        self.watched() || !touched.is_empty() || ran || wrote
+    }
+
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        RecordService::wakes_in(self)
     }
 
     fn moved(&mut self) -> Option<Vec<String>> {

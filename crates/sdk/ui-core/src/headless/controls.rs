@@ -600,7 +600,7 @@ pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
 mod locus_tests {
     use super::*;
     use crate::state::State;
-    use crate::widget::{Button, Column, Container, resource_actions};
+    use crate::widget::{Button, Column, Container, ListRow, resource_actions};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -746,12 +746,7 @@ mod locus_tests {
 
     #[test]
     fn agent_marker_full_size_render_evidence() {
-        let out = crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../target/agent-marker")
-            });
+        let out = crate::headless::agent_marker_shots();
         for (name, theme) in [
             ("dark", crate::theme::Theme::dark()),
             ("light", crate::theme::Theme::light()),
@@ -818,8 +813,14 @@ mod locus_tests {
             None,
             "another resource's node is not this target"
         );
-        event.anchor = tilo_actions::InteractionAnchor::ListItems {
-            ids: vec!["first".into()],
+        event.anchor = tilo_actions::InteractionAnchor::Grid {
+            sheet: "sheet".into(),
+            ranges: vec![tilo_actions::InteractionGridRange {
+                start_col: 1,
+                start_row: 1,
+                end_col: 1,
+                end_row: 1,
+            }],
         };
         assert_eq!(
             frame.semantic_locus(&event),
@@ -827,6 +828,181 @@ mod locus_tests {
             "unsupported domain geometry remains missing"
         );
         assert_eq!(calls.get(), 0);
+    }
+
+    /// The capture a reviewer reads: an agent's item action marked on the row
+    /// that shows the item, beside the row it did not act on.
+    #[test]
+    fn agent_item_marker_render_evidence() {
+        let root = Column::new()
+            .push(Box::new(
+                ListRow::new("a", "First task")
+                    .item("issue-a")
+                    .checkbox(false, |_| {}),
+            ))
+            .push(Box::new(
+                ListRow::new("b", "Second task")
+                    .item("issue-b")
+                    .checkbox(false, |_| {}),
+            ));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
+        frame.relayout();
+        let out = crate::headless::agent_marker_shots();
+        std::fs::create_dir_all(&out).unwrap();
+        frame.render_png(&out.join("tasks-before.png"));
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.actor.id = "scribe".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.action.id = "check-off".into();
+        event.action.label = "Check off".into();
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        // A second in: the pointer has travelled to the check box, as the
+        // capture shows it at rest on the control rather than mid-glide.
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_secs(1))
+            .expect("the clock is later than a second ago");
+        let mut label = String::new();
+        frame.update_presence(|presence| {
+            presence
+                .names
+                .insert(crate::permissions::UserId("scribe".into()), "Ada".into());
+            let applied = presence
+                .apply_interaction_at(event.clone(), at)
+                .expect("a well-formed interaction applies");
+            label = presence.interaction_status_label(&event);
+            applied
+        });
+        assert_eq!(label, "Ada · checking off");
+        assert!(frame.poll_frame().unwrap());
+        frame.render_png(&out.join("tasks-agent-checks-second.png"));
+        assert!(
+            std::fs::metadata(out.join("tasks-agent-checks-second.png"))
+                .unwrap()
+                .len()
+                > 0
+        );
+        frame.set_theme(crate::theme::Theme::light());
+        frame.render_png(&out.join("tasks-agent-checks-second-light.png"));
+    }
+
+    /// An agent acting on a task rests its pointer on the row's check box —
+    /// the control a person presses — and its whole mark stays inside the row.
+    #[test]
+    fn an_agents_marker_rests_on_the_control_the_row_offers() {
+        let root = Column::new()
+            .push(Box::new(
+                ListRow::new("a", "First task")
+                    .item("issue-a")
+                    .checkbox(false, |_| {}),
+            ))
+            .push(Box::new(
+                ListRow::new("b", "Second task")
+                    .item("issue-b")
+                    .checkbox(false, |_| {}),
+            ));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
+        frame.relayout();
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.actor.id = "scribe".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.action.id = "check-off".into();
+        event.action.label = "Check off".into();
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        let locus = frame.semantic_locus(&event).expect("the item's row");
+        let (tree, bindings) = frame.retained_action_geometry().expect("a laid out frame");
+        let check = tree
+            .iter()
+            .filter(|node| node.role == crate::a11y::Role::Checkbox)
+            .filter_map(|node| node.bounds)
+            .find(|bounds| bounds.y0 >= locus.y0 && bounds.y1 <= locus.y1)
+            .expect("the row offers a check box");
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_secs(1))
+            .expect("the clock is later than a second ago");
+        let mut presence = crate::presence::PresenceCtx::empty();
+        presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies");
+        let theme = crate::theme::Theme::dark();
+        let viewport = vello::kurbo::Rect::new(0.0, 0.0, 480.0, 240.0);
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let markers = crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            &mut presence,
+            &tree,
+            &bindings,
+            viewport,
+            "native-primary",
+            crate::time::now(),
+        );
+        let marker = markers.first().expect("the agent's mark is painted");
+        let [x0, y0, x1, y1] = marker.marker;
+        assert!(
+            check.x0 <= x0 && x0 <= check.x1 && check.y0 <= y0 && y0 <= check.y1,
+            "the pointer tip rests on the check box: {x0},{y0} vs {check:?}"
+        );
+        assert!(
+            viewport.x0 <= x0 && x1 <= viewport.x1 && viewport.y0 <= y0 && y1 <= viewport.y1,
+            "the whole mark stays inside the window: {marker:?} vs {viewport:?}"
+        );
+        assert!(
+            locus.x0 <= x0 && x0 <= locus.x1 && locus.y0 <= y0 && y0 <= locus.y1,
+            "the tip is on the row it acts on: {x0},{y0} vs {locus:?}"
+        );
+    }
+
+    /// What an agent acts on is the item it names: the marker lands on the
+    /// row showing that item, whichever row the action happens to be bound
+    /// to, and an item no row shows has no place on screen.
+    #[test]
+    fn an_item_anchor_lands_on_the_row_showing_that_item() {
+        let root = Column::new()
+            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
+            .push(Box::new(ListRow::new("b", "Second task").item("issue-b")));
+        let frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+        let row = |name: &str| {
+            frame
+                .semantic_tree()
+                .find_by_name(name)
+                .and_then(|node| node.bounds)
+                .expect("a laid out row has bounds")
+        };
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        assert_eq!(frame.semantic_locus(&event), Some(row("Second task")));
+        assert_ne!(
+            frame.semantic_locus(&event),
+            Some(row("First task")),
+            "the marker never lands on a neighbouring row"
+        );
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-missing".into()],
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "an item no row shows is not guessed onto a row"
+        );
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-a".into(), "issue-b".into()],
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "two items have no single place"
+        );
     }
 
     #[test]

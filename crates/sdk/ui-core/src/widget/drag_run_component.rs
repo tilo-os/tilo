@@ -6,7 +6,9 @@
 //! reorder is attributed, permitted and undone like every other change. An item pressed and
 //! let go without moving reports `activate`.
 
-use crate::component::{Accepts, Component, Described, Event, ResourceId, SlotType, Source};
+use crate::component::{
+    Accepts, Component, Described, Event, ResourceId, SlotType, SlotViews, Source,
+};
 
 use super::drag_run::{DragDrop, DragRun, RunAxis, RunItem};
 
@@ -164,5 +166,95 @@ impl Described for DragRun {
             ])));
         });
         run
+    }
+
+    /// Take changed props in place: the items keep their keys and their order, so each item
+    /// changes what it says and what it shows where it stands, and the run keeps what those
+    /// views hold — a menu a person opened under a part of the bar stays open while the clock
+    /// ticks or the desk switches the workspace the bar names. The run is built again when it
+    /// is another run, when an item came, went or moved, and when it carries its own trailing
+    /// views, which stand beside the items and are not an item's to change.
+    fn set_props(&mut self, props: DragRunProps) -> bool {
+        let DragRunProps {
+            name,
+            axis,
+            distribute,
+            align,
+            items,
+            trailing,
+            drop,
+        } = props;
+        if !trailing.is_empty()
+            || name.as_deref() != self.name_of()
+            || axis.is_some_and(|axis| axis != self.axis_of())
+            || distribute.is_some_and(|distribute| distribute != self.distribute_of())
+            || align.is_some_and(|align| align != self.align_of())
+        {
+            return false;
+        }
+        let mut activates = Vec::with_capacity(items.0.len());
+        let mut taken = Vec::with_capacity(items.0.len());
+        for DragItemProps {
+            key,
+            title,
+            item,
+            group,
+            body,
+            activate,
+        } in items.0
+        {
+            let view = body
+                .into_iter()
+                .next()
+                // An item with no view of its own takes no room.
+                .unwrap_or_else(|| {
+                    Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+                });
+            activates.push((key.clone(), activate));
+            taken.push(RunItem {
+                key,
+                item,
+                label: title,
+                group: group.unwrap_or_default(),
+                view,
+            });
+        }
+        if !self.take_items(taken) {
+            return false;
+        }
+        self.replace_activate(Some(Box::new(move |key| {
+            if let Some((_, event)) = activates.iter().find(|(own, _)| own == key) {
+                event
+                    .clone()
+                    .fire(Some(crate::component::Value::Text(key.to_owned())));
+            }
+        })));
+        // A drop reports the item moved and its place, as a board's lane reports
+        // a card and its place: the event carries `[value, at]`.
+        let items = std::rc::Rc::new(self.item_ids().into_iter().collect::<Vec<_>>());
+        self.replace_reporter(Some(Box::new(move |dropped: &DragDrop| {
+            let value = items
+                .iter()
+                .find(|(key, _)| key == &dropped.moved)
+                .and_then(|(_, id)| id.clone())
+                .map_or(crate::component::Value::None, |id| {
+                    crate::component::Value::Resource(id.0)
+                });
+            drop.fire(Some(crate::component::Value::List(vec![
+                value,
+                crate::component::Value::Int(dropped.at),
+            ])));
+        })));
+        true
+    }
+
+    /// The view of the item `key` shows, to change where the item stands.
+    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
+        if slot != "items" || of != "body" {
+            return None;
+        }
+        let at = self.index_of(key)?;
+        self.edit_item(Some(at));
+        Some(self as &mut dyn SlotViews)
     }
 }

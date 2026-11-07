@@ -1232,6 +1232,29 @@ impl ContextMenu {
         self.submenu_selection.take()
     }
 
+    /// Choose row `nested` of the submenu row `row` opens, as a click on it
+    /// does, without the pointer the open submenu would need: what a test,
+    /// a script or a host that lists the rows itself chooses by.
+    ///
+    /// Returns whether `row` opens such a submenu and `nested` is a row of
+    /// it that can be chosen.
+    pub fn choose_submenu_item(&mut self, row: usize, nested: usize) -> bool {
+        let Some(item) = self
+            .items
+            .get(row)
+            .and_then(MenuItem::submenu_items)
+            .and_then(|items| items.get(nested))
+        else {
+            return false;
+        };
+        if !item.is_enabled() {
+            return false;
+        }
+        self.submenu_selection = Some((row, nested));
+        self.close();
+        true
+    }
+
     /// Give `event` to the open nested menu when it is the pointer's or the
     /// keyboard's: the pointer while over it, keys while it has focus.
     /// Returns whether it took the event.

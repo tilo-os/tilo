@@ -207,3 +207,41 @@ impl AppBrokerState {
         task_still_goes(&runs, task)
     }
 }
+
+/// Admit agent `agent_id`, kept in `workspace`, to join on the session of the
+/// person who keeps it. The workspace's record of its agents is the whole
+/// admission: no membership row and no grant is asked for, and the agent acts
+/// for its keeper, capped ([`roles::agent_policy::ROLE_CAP`]), inside the
+/// turns its conversations start. A record that no longer names it, or names
+/// another keeper, refuses the join and every later revalidation of it.
+pub(super) fn admit_kept_agent(
+    roster: &dyn crate::services::AgentRoster,
+    workspace: &str,
+    admitted: &mut AdmittedJoinIdentity,
+    agent_id: &str,
+) -> Result<(), String> {
+    tilo_peer_state::workspace_membership::valid_agent_id(agent_id)?;
+    if admitted.verified.capped {
+        return Err(format!(
+            "the agent {agent_id} runs only on a device of the session that keeps it"
+        ));
+    }
+    let keeper = roster
+        .keeper(workspace, agent_id)
+        .ok_or_else(|| format!("the workspace keeps no active agent {agent_id}"))?;
+    if !same_person(&keeper, &admitted.principal_id) {
+        return Err(format!(
+            "the agent {agent_id} is {keeper}'s to launch, not this session's"
+        ));
+    }
+    admitted.role = roles::agent_policy::role(admitted.role, roles::agent_policy::ROLE_CAP);
+    admitted.agent_id = Some(agent_id.to_string());
+    admitted.display_handle = Some(agent_id.to_string());
+    admitted.session_delegated = true;
+    Ok(())
+}
+
+/// Whether `a` and `b` name the same person, either spelling of their id.
+fn same_person(a: &str, b: &str) -> bool {
+    a.strip_prefix("person:").unwrap_or(a) == b.strip_prefix("person:").unwrap_or(b)
+}

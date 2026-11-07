@@ -190,7 +190,12 @@ impl Described for Button {
             props.label == self.label && heard == self.accessible_name.as_deref()
         };
         let same_face = named
-            && props.faces == self.faces
+            && props.faces.len() == self.faces.len()
+            && props
+                .faces
+                .iter()
+                .zip(&self.faces)
+                .all(|(name, (shown, _))| name == shown)
             && props.icon == self.icon
             && role == self.role
             && size == self.control_size

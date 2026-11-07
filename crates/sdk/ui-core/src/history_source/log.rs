@@ -157,7 +157,7 @@ impl HistoryLog {
             // the whole document.
             structural: tilo_doc::model::open(doc, &automerge::ROOT).is_ok(),
             passes_over: source.pass_over.is_some(),
-            locale: crate::i18n::I18nManager::current_locale(),
+            locale: crate::i18n::I18nManager::window_locale(),
             catalogue: crate::i18n::I18nManager::revision(),
         };
         let appended = {

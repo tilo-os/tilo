@@ -93,7 +93,8 @@ pub use approval::{
 pub use canonical::CanonicalError;
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
-    device_cert_signing_digest, sign_device_cert, verify_device_cert, verify_device_cert_at,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name,
+    sign_device_cert, verify_device_cert, verify_device_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,

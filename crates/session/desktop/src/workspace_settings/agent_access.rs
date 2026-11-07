@@ -83,15 +83,22 @@ pub struct AgentException {
     pub label: String,
 }
 
-/// The answer `agent` holds for `kind` at `scope`, decided over the workspace's
-/// grants naming it alone: what the person tells this agent, before their
-/// own role bounds it.
+/// The answer `agent` holds for `kind` at `scope`: the turn's own grants
+/// (`admission`, [`tilo_action_policy::roles::agent_turn`]) and the workspace's
+/// grants naming it alone, so a narrower answer the person set here wins over
+/// what the admission says.
 #[must_use]
-pub fn answer_at(ws: &Workspace, agent: &str, scope: &AnswerScope, kind: ActionKind) -> AnswerCell {
+pub fn answer_at(
+    ws: &Workspace,
+    agent: &str,
+    admission: &[tilo_action_policy::Grant],
+    scope: &AnswerScope,
+    kind: ActionKind,
+) -> AnswerCell {
     let subject = [Subject::agent(agent)];
     let cx = tilo_desktop_model::context_at(tilo_clock::unix_now());
     let decision = decide(
-        ws.policy.grants.iter(),
+        admission.iter().chain(ws.policy.grants.iter()),
         &subject,
         &scope.node(&ws.policy.workspace),
         kind,
@@ -112,6 +119,7 @@ pub fn answer_at(ws: &Workspace, agent: &str, scope: &AnswerScope, kind: ActionK
 pub fn agent_access_rows(
     ws: &Workspace,
     agent: &str,
+    admission: &[tilo_action_policy::Grant],
     apps: &dyn AppDirectory,
 ) -> Vec<AgentAccessRow> {
     let subject = Subject::agent(agent);
@@ -138,7 +146,7 @@ pub fn agent_access_rows(
         .map(|app| {
             let scope = AnswerScope::app(&app);
             AgentAccessRow {
-                cells: KINDS.map(|kind| answer_at(ws, agent, &scope, kind)),
+                cells: KINDS.map(|kind| answer_at(ws, agent, admission, &scope, kind)),
                 label: app_display_name(apps, &app),
                 scope,
                 app,
@@ -346,25 +354,26 @@ mod tests {
     const AGENT: &str = "scribe";
     const MAIL: &str = "so.tilo.mail";
 
+    /// A workspace where the agent may change it all and asks before
+    /// reaching outside.
     fn ws() -> Workspace {
         let mut ws = Workspace::new(WorkspaceSlot::from(31), "access");
         ws.set_owner(OWNER);
-        let edit = super::super::admit_agent(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            super::super::AgentPreset::Operator,
-        );
-        assert!(!edit.is_empty());
         ws
+    }
+
+    /// The grants the agent's admission gives it: the editor cap, unbounded
+    /// by its record.
+    fn admission(ws: &Workspace) -> Vec<tilo_action_policy::Grant> {
+        tilo_action_policy::roles::agent_turn(&ws.policy.workspace, AGENT, OWNER, &[]).grants
     }
 
     #[test]
     fn answers_follow_the_admission_until_set_here() {
         let mut ws = ws();
         let mail = AnswerScope::app(MAIL);
-        let read = answer_at(&ws, AGENT, &mail, ActionKind::Read);
-        let outside = answer_at(&ws, AGENT, &mail, ActionKind::Outside);
+        let read = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Read);
+        let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
         assert_eq!((read.answer, read.explicit), (Answer::Allow, false));
         assert_eq!((outside.answer, outside.explicit), (Answer::Ask, false));
 
@@ -375,11 +384,12 @@ mod tests {
             &[(mail.clone(), ActionKind::Outside, Some(Answer::Deny))],
         );
         assert_eq!(edit.granted.len(), 1);
-        let outside = answer_at(&ws, AGENT, &mail, ActionKind::Outside);
+        let outside = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Outside);
         assert_eq!((outside.answer, outside.explicit), (Answer::Deny, true));
         let notes = answer_at(
             &ws,
             AGENT,
+            &admission(&ws),
             &AnswerScope::app("so.tilo.notes"),
             ActionKind::Outside,
         );
@@ -411,7 +421,7 @@ mod tests {
         assert_eq!(held[0].answer, Answer::Deny);
         let cleared = set(&mut ws, None);
         assert_eq!((cleared.revoked.len(), cleared.granted.len()), (1, 0));
-        let cell = answer_at(&ws, AGENT, &mail, ActionKind::Undoable);
+        let cell = answer_at(&ws, AGENT, &admission(&ws), &mail, ActionKind::Undoable);
         assert_eq!((cell.answer, cell.explicit), (Answer::Allow, false));
         // Nothing to clear: no edit.
         assert!(set(&mut ws, None).is_empty());
@@ -431,7 +441,7 @@ mod tests {
                 (purge, ActionKind::Undoable, Some(Answer::Deny)),
             ],
         );
-        let rows = agent_access_rows(&ws, AGENT, &super::super::NoAppDirectory);
+        let rows = agent_access_rows(&ws, AGENT, &admission(&ws), &super::super::NoAppDirectory);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].scope, AnswerScope::app(MAIL));
         assert_eq!(rows[0].app, MAIL);
@@ -450,44 +460,6 @@ mod tests {
         );
         assert_eq!(edit.revoked.len(), 1);
         assert!(agent_exceptions(&ws, AGENT, &super::super::NoAppDirectory).is_empty());
-    }
-
-    #[test]
-    fn answers_keep_the_agents_preset_and_stay_out_of_custom() {
-        let mut ws = ws();
-        set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[
-                (AnswerScope::app(MAIL), ActionKind::Read, Some(Answer::Deny)),
-                (
-                    AnswerScope::app(MAIL),
-                    ActionKind::Outside,
-                    Some(Answer::Ask),
-                ),
-            ],
-        );
-        assert_eq!(
-            super::super::agent_authority_preset(&ws, AGENT),
-            super::super::AgentPreset::Operator,
-            "a narrowing answer is no broad grant"
-        );
-        set_agent_answers(
-            &mut ws,
-            &OWNER.to_string(),
-            AGENT,
-            &[(
-                AnswerScope::app(MAIL),
-                ActionKind::Outside,
-                Some(Answer::Allow),
-            )],
-        );
-        assert_eq!(
-            super::super::agent_authority_preset(&ws, AGENT),
-            super::super::AgentPreset::Custom,
-            "letting it reach outside unasked needs a conscious review"
-        );
     }
 
     #[test]

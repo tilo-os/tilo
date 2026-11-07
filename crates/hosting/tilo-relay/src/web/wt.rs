@@ -400,8 +400,9 @@ impl Live {
     /// # Errors
     ///
     /// Returns a message when the certificate is unusable, the announced
-    /// origin is not an `https://host[:port]` origin, or no socket can be
-    /// bound: a relay serves no live plane it cannot reach.
+    /// origin is not an `https://host[:port]` origin or is a host the
+    /// certificate does not name, or no socket can be bound: a relay serves no
+    /// live plane it cannot reach.
     pub(crate) fn start(
         plane: &Plane,
         identity: &tls::Identity,
@@ -415,6 +416,7 @@ impl Live {
             Some(configured) => live_origin(configured)?,
             None => (webtransport_origin(origin, bound.port()), bound.port()),
         };
+        unnamed_origin(identity, &webtransport_origin)?;
         let serve = plane.relay.clone();
         let listener = tokio::spawn(async move { serve.serve(endpoint).await });
         Ok(Self {
@@ -477,6 +479,29 @@ fn live_origin(text: &str) -> Result<(String, u16), String> {
     }
     let origin = format!("https://{}", authority.as_str());
     Ok((origin, uri.port_u16().unwrap_or(443)))
+}
+
+/// Refuses an origin the certificate does not name: a page pins the
+/// certificate for the origin it is told, and a client that reads the names as
+/// well finds none. A certificate from files carries names this host does not
+/// read, so it is not judged here.
+fn unnamed_origin(identity: &tls::Identity, origin: &str) -> Result<(), String> {
+    let Some(named) = identity.hosts.as_deref() else {
+        return Ok(());
+    };
+    let host = origin
+        .strip_prefix("https://")
+        .unwrap_or(origin)
+        .split([':', '/'])
+        .next()
+        .unwrap_or_default();
+    if named.iter().any(|name| name.eq_ignore_ascii_case(host)) {
+        return Ok(());
+    }
+    Err(format!(
+        "live origin {origin}: the certificate names {named:?}, not {host}: publish that host \
+         with --public-host, or announce an origin this certificate names"
+    ))
 }
 
 /// The origin a page dials the live listener at: the relay's own origin's

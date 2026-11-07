@@ -945,6 +945,81 @@ impl View<'_> {
         }
     }
 
+    /// The resource of the type `schema` anywhere in the index that `pred` holds of and comes
+    /// first in `order`, or `None` when `pred` holds of none: [`Self::select`]'s query asked for
+    /// one answer. When one exact run of a column answers the predicate and that column is what
+    /// `order` (or no order) keeps the resources by, the first entry of the run is read, and the
+    /// rest of the run is not: a query that ends at its first answer costs the pages up to it.
+    ///
+    /// # Errors
+    /// The index cannot be read, or `pred` cannot compare what a field holds.
+    pub fn first(
+        &self,
+        schema: &TypeSchema,
+        pred: &Pred,
+        order: Option<&Order>,
+        evaluated: &Cell<u64>,
+    ) -> Result<Option<String>, StoreError> {
+        let Some(conj) = conjuncts(Some(pred))? else {
+            return Ok(None);
+        };
+        let Some((at, access)) = choose(schema, &conj, true) else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let [run] = access.as_slice() else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let [one] = run.runs.as_slice() else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let ascending = order.is_none_or(|o| {
+            !o.descending
+                && !o.absent_last
+                && o.then.is_none()
+                && schema
+                    .column(&o.field)
+                    .is_some_and(|column| column.name == run.column)
+        });
+        if !run.exact
+            || !ascending
+            || (run.repeats && !membership(conj.get(at).copied().unwrap_or(&Pred::Const(false))))
+        {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        }
+        let list = type_list(&schema.id, &run.column);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let (start, end) = bounds(&pages, one);
+        let residual = rest(&conj, Some(at));
+        for index in start..end {
+            let Some((_, path)) = pages.entry(index) else {
+                break;
+            };
+            if self.text(&path, TYPE).map_err(index_error)?.is_none() {
+                continue;
+            }
+            if let Some(p) = &residual {
+                evaluated.set(evaluated.get().saturating_add(1));
+                if !self.holds(&path, schema, p)? {
+                    continue;
+                }
+            }
+            return Ok(Some(path.to_string()));
+        }
+        Ok(None)
+    }
+
     /// How many items of the collection `field` of `resource` hold each value of the column
     /// `column` whose values are known (a toggle's, an enum's cases), as the index holds them:
     /// the difference of two positions in the column's list.

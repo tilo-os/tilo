@@ -408,12 +408,38 @@ impl ListRowFace<'_> {
                 );
             }
         }
+        if let Some(change) = self.change.filter(|change| !change.said.is_empty()) {
+            // What someone else did to it stands under its title, in the quietest ink: the row
+            // still reads as its own item, with the change noted under it.
+            let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
+            let y = if self.secondary.is_some() {
+                y + f64::from(self.secondary_lines) * secondary_line
+            } else {
+                y
+            };
+            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
+            let line = ctx
+                .text
+                .elide_to_width_style(change.said, width, &m.secondary);
+            ctx.text(
+                &line,
+                &m.secondary,
+                theme.text_tertiary,
+                Point::new(text_x, y),
+                None,
+            );
+        }
         if let Some(note) = self.note {
             // What waits on the item stands under its text, in the quieter ink: a proposal is
             // not the item's own content.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let y = if self.secondary.is_some() {
                 y + f64::from(self.secondary_lines) * secondary_line
+            } else {
+                y
+            };
+            let y = if self.change.is_some_and(|change| !change.said.is_empty()) {
+                y + secondary_line
             } else {
                 y
             };

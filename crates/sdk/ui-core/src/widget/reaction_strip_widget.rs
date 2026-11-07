@@ -244,6 +244,8 @@ impl ReactionStripWidget {
 }
 
 impl Widget for ReactionStripWidget {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(

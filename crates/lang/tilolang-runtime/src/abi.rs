@@ -176,6 +176,7 @@ imports! {
     (OutsideAt, "outside_at", "iii", "i"),
     (Withdraw, "withdraw", "ii", "i"),
     (ModelCall, "model_call", "ii", "i"),
+    (Notify, "notify", "iiii", ""),
     (QueueBlock, "queue_block", "iii", ""),
     (Print, "print", "ii", ""),
     (Find, "find", "ii", "i"),

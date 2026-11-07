@@ -184,7 +184,7 @@ impl Surface {
         Self {
             app_id: format!("{}.{name}", tilo_desktop_model::APP_ID_PREFIX),
             program: program.into(),
-            namespace: format!("tilo-{name}"),
+            namespace: namespace(&name),
             name,
             layer: Layer::Top,
             anchor: Anchor::default(),
@@ -415,6 +415,13 @@ impl std::fmt::Display for StartError {
 }
 
 impl std::error::Error for StartError {}
+
+/// The name a surface app of `name` asks the compositor for, which is what
+/// the session shows and hides it by.
+#[must_use]
+pub fn namespace(name: &str) -> String {
+    format!("tilo-{name}")
+}
 
 /// The program a surface app of `name` runs: the one
 /// `TILO_SURFACE_<NAME>` names, else the one in `TILO_SURFACE_PROGRAMS`,

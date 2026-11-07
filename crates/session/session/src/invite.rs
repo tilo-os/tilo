@@ -273,10 +273,21 @@ impl Shared {
                 &[("name", name.into()), ("role", role.as_str().into())],
             )
         };
+        // The code the sheet draws is the invitation itself: its text spells
+        // those bytes out in base64, which is longer than a code fits.
+        let code = match tilo_workspace_join::invitation_bytes(link) {
+            Ok(code) => code,
+            Err(reason) => {
+                tracing::warn!(%reason, "the invitation's text is not the invitation's bytes");
+                self.refused("invite-failed", &reason);
+                return;
+            }
+        };
         let mut made = self.invite_made.borrow_mut();
         made.created = Some(sheet::Created {
             invite,
             link: link.to_owned(),
+            code,
             link_label: t("invite-link-label"),
             brings,
             lasts: t_args(

@@ -108,11 +108,17 @@ pub(crate) enum Failed {
     Unavailable,
 }
 
+/// How many asks in a row for a workspace's plane may fail to reach one
+/// before the page says so in its members' place.
+pub(crate) const MISSES_BEFORE_NOTE: u8 = 2;
+
 /// The page's planes, one per joined workspace.
 #[derive(Default)]
 pub(crate) struct Planes {
     joined: BTreeMap<u64, Joined>,
     asking: BTreeMap<u64, Waiting>,
+    /// Per workspace, how many asks in a row did not reach a plane.
+    misses: BTreeMap<u64, u8>,
     /// This browser has no WebTransport: no plane is asked for again.
     unsupported: bool,
 }
@@ -129,29 +135,48 @@ impl Planes {
     /// The plane of `workspace_id`, dropped (which ends its session).
     pub(crate) fn leave(&mut self, workspace_id: u64) -> Option<Joined> {
         self.asking.remove(&workspace_id);
+        self.misses.remove(&workspace_id);
         self.joined.remove(&workspace_id)
     }
 
-    /// One line per joined plane for diagnostics: whose objects it reads, and
-    /// what it heard and could not open.
+    /// One line per plane for diagnostics: whose objects each joined plane
+    /// reads and what it heard and could not open, and for every workspace
+    /// whose plane is not joined, what it waits for — so a page that lists
+    /// nobody says why.
     pub(crate) fn describe(&self) -> String {
         use std::fmt::Write as _;
-        self.joined
-            .iter()
-            .map(|(workspace_id, joined)| {
-                let mut line = format!(
-                    "plane {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
-                    joined.epoch,
-                    joined.members.len(),
-                    joined.plane.heard_total()
-                );
-                for (reason, count) in joined.plane.refusals() {
-                    let _ = write!(line, "\n  refused {count}: {reason}");
+        let mut lines: Vec<String> = Vec::new();
+        if self.unsupported {
+            lines.push(format!("plane: none — {}", crate::live::UNSUPPORTED));
+        }
+        for (workspace_id, joined) in &self.joined {
+            let mut line = format!(
+                "plane {workspace_id}: epoch {}, reads {} device(s), heard {} object(s)",
+                joined.epoch,
+                joined.members.len(),
+                joined.plane.heard_total()
+            );
+            for (reason, count) in joined.plane.refusals() {
+                let _ = write!(line, "\n  refused {count}: {reason}");
+            }
+            lines.push(line);
+        }
+        for (workspace_id, waiting) in &self.asking {
+            lines.push(match waiting {
+                Waiting::Joining { since_ms, .. } => {
+                    format!("plane {workspace_id}: asking the host for its live session since {since_ms}")
                 }
-                line
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
+                Waiting::Later { at_ms } => format!(
+                    "plane {workspace_id}: not joined — no live plane was reached; asking \
+                     again at {at_ms}"
+                ),
+                Waiting::Refused { at_ms } => format!(
+                    "plane {workspace_id}: not joined — the workspace does not admit this \
+                     page's plane; asking again at {at_ms}"
+                ),
+            });
+        }
+        lines.join("\n")
     }
 
     /// Drop the planes of workspaces this page is no longer in, and the asks
@@ -161,6 +186,8 @@ impl Planes {
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
         self.asking
             .retain(|workspace_id, _| workspaces.contains(workspace_id));
+        self.misses
+            .retain(|workspace_id, _| workspaces.contains(workspace_id));
     }
 
     /// A new session: every plane of the last one ended with its grant, and
@@ -168,6 +195,7 @@ impl Planes {
     pub(crate) fn end_session(&mut self) {
         self.joined.clear();
         self.asking.clear();
+        self.misses.clear();
     }
 
     /// Whether `workspace_id`'s plane is to be asked for at `now_ms`: it is
@@ -211,6 +239,7 @@ impl Planes {
 
     /// The plane of `workspace_id` opened.
     pub(crate) fn insert(&mut self, workspace_id: u64, joined: Joined) {
+        self.misses.remove(&workspace_id);
         self.joined.insert(workspace_id, joined);
     }
 
@@ -221,7 +250,18 @@ impl Planes {
 
     /// The workspace refused this page's plane: ask again at `at_ms`.
     pub(crate) fn refused(&mut self, workspace_id: u64, at_ms: u64) {
+        // The host answered, so the plane was reached: only asks that reached
+        // nothing count towards the note in the members' place.
+        self.misses.remove(&workspace_id);
         self.asking.insert(workspace_id, Waiting::Refused { at_ms });
+    }
+
+    /// An ask for `workspace_id`'s plane reached no plane: how many asks in a
+    /// row that is now.
+    pub(crate) fn missed(&mut self, workspace_id: u64) -> u8 {
+        let misses = self.misses.entry(workspace_id).or_default();
+        *misses = misses.saturating_add(1);
+        *misses
     }
 
     /// This browser has no WebTransport.
@@ -582,6 +622,8 @@ impl Task {
                         demand_at: u64::MAX,
                     },
                 );
+                // The members' place goes back to listing who is on the plane.
+                self.set_live_note(None);
             }
             Err(Failed::Unsupported) => {
                 // There is no fallback: no workspace's plane can be joined,
@@ -600,6 +642,12 @@ impl Task {
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));
             }
             Err(Failed::Unavailable) => {
+                // Asking again is quiet, so the page says in its members'
+                // place that it lists nobody from the plane; the reason is in
+                // the channel diagnostics either way.
+                if self.planes.missed(workspace_id) >= MISSES_BEFORE_NOTE {
+                    self.set_live_note(Some(crate::live::UNREACHABLE));
+                }
                 self.planes.later(
                     workspace_id,
                     tilo_clock::unix_now_ms().saturating_add(RETRY_MS),

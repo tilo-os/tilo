@@ -9,6 +9,8 @@ use tilolang_runtime::seen::{SeenMark, SeenWrite};
 use tilolang_runtime::store::{Version, VersionKind};
 use tilolang_runtime::{InvokeOutcome, Principal, ResourceRef, Store as _, Value};
 
+use tilolang_tilo::host::{Host, Opening};
+
 use crate::fixtures::Replica;
 
 const DISCUSSION: &str = include_str!("../../../../apps/tl/discussion/app.tl");
@@ -90,6 +92,33 @@ impl Tidied {
             &self.stale,
         ]
     }
+}
+
+/// Ada's workspace as another of her devices opens it over an index it builds whole from the
+/// record: the same lists, and what a list shows of what left it, without catching up.
+pub(crate) fn built_over(ada: &Replica) -> Host {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("built-over-the-record");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("the index dir is made");
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            index_dir: Some(dir),
+            device: None,
+        },
+        Principal::new("phone"),
+        || None,
+    )
+    .expect("the workspace opens");
+    for (source, ids) in [
+        (DISCUSSION, DISCUSSION_IDS),
+        (NOTES, NOTES_IDS),
+        (TASKS, TASKS_IDS),
+    ] {
+        host.load_builtin(source, ids).expect("the package loads");
+    }
+    host.wait_index();
+    host
 }
 
 pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
@@ -303,7 +332,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         [SeenWrite::Resource {
             person: "ada".to_owned(),
             resource: landlord.id_string(),
-            mark: SeenMark::of(newest.last().unwrap()),
+            mark: Some(SeenMark::of(newest.last().unwrap())),
         }]
     );
     // Mark all seen on the run: every version it made, in both apps, in one step; kept for

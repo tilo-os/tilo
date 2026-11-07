@@ -37,7 +37,7 @@ use tilolang_tilo::runtime::Principal;
 /// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
 /// the name the view gives it for a person to read, its own words, rather than the state's name
 /// in the code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something, or ask";
+pub const CANVAS_ENTRY: &str = "Find something";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
@@ -454,16 +454,6 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
 /// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
 /// test's program to act as the person, and the framed canvas in front.
 pub fn seeded_session(root: &Path) -> Session {
-    seeded_session_with(root, None)
-}
-
-/// [`seeded_session`], with the runs of what the person asks the session's agents played by
-/// `runs` when a test brings them (the agent's side of the run channel); the session keeps its
-/// own otherwise.
-pub fn seeded_session_with(
-    root: &Path,
-    runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
-) -> Session {
     let program = std::env::current_exe().expect("this test's program");
     let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
     let mut session = Session::headless(
@@ -478,7 +468,6 @@ pub fn seeded_session_with(
             agent_door: Some(root.join("agent.sock")),
             admit_repl: vec![program],
             test_control: Some(root.join("test-control.sock")),
-            agent_runs: runs,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],

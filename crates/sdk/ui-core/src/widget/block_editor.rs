@@ -11108,9 +11108,6 @@ impl BlockEditor {
         }
     }
 
-    /// Peer authorship marker, live-typing glow, carets and selection
-    /// bands for one block — collaboration overlays drawn after every
-    /// block's own content so they land on top.
     /// `(start index, end index, user, byte range)` of every remote document
     /// selection whose start block exists here; the span is clamped to the
     /// last block.
@@ -11139,117 +11136,6 @@ impl BlockEditor {
             }
         }
         out
-    }
-
-    fn draw_block_presence(
-        &self,
-        i: usize,
-        b: &Block,
-        document_selections: &[(
-            usize,
-            usize,
-            &crate::permissions::UserId,
-            crate::presence::SelectionRange,
-        )],
-        ctx: &mut BlockDrawCtx<'_>,
-    ) {
-        let key = self.presence_key_for(&b.id);
-        let line = &b.line;
-        let brect = line.get_rect();
-        let _tr_rect = {
-            let p0 = transformed(ctx.transform, Point::new(brect.x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(brect.x1, brect.y1));
-            Rect::new(p0.x, p0.y, p1.x, p1.y)
-        };
-        // Drawn first, under caret/selection: the runs each foreign
-        // author wrote, marker-style in their color.
-        for (bs, be, author) in line.author_runs() {
-            if self.local_author.as_deref() == Some(author.as_str()) {
-                continue;
-            }
-            let x0 = line.pixel_x_for_byte(ctx.theme, *bs);
-            let x1 = line.pixel_x_for_byte(ctx.theme, *be);
-            let p0 = transformed(ctx.transform, Point::new(x0, brect.y0));
-            let p1 = transformed(ctx.transform, Point::new(x1, brect.y1));
-            let user = crate::permissions::UserId(author.clone());
-            ctx.presence.draw_peer_authorship(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[Rect::new(p0.x, p0.y, p1.x, p1.y)],
-            );
-        }
-        // A peer's recently-inserted run glows and decays over
-        // TYPING_FADE. Drawn over authorship, under caret/selection.
-        let now = crate::time::now();
-        for (user, range, alpha) in ctx.presence.typing_marks_for_key(&key, now) {
-            if self.local_author.as_deref() == Some(user.0.as_str()) {
-                continue;
-            }
-            let rect = line.selection_rect(ctx.theme, range.start, range.end);
-            let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
-            let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
-            ctx.presence.draw_peer_typing(
-                ctx.scene,
-                ctx.theme,
-                &user,
-                &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
-            );
-        }
-        if let Some(list) = ctx.presence.carets.get(&key) {
-            // What sits above the editor (a note's title and dates) is not
-            // the editor's to cover: a chip on the first line hangs below.
-            let top = self
-                .blocks
-                .first()
-                .map_or(brect.y0, |first| first.line.get_rect().y0);
-            for (user, byte_pos) in list {
-                let name = ctx.presence.display_name(user);
-                ctx.presence.draw_peer_caret_labeled_in(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.text_renderer,
-                    ctx.transform,
-                    user,
-                    &name,
-                    crate::presence::LabeledCaret::within(
-                        line.caret_rect(ctx.theme, *byte_pos),
-                        top,
-                    ),
-                );
-            }
-        }
-        if let Some(list) = ctx.presence.selections.get(&key) {
-            for (user, range) in list {
-                ctx.presence.draw_peer_selection(
-                    ctx.scene,
-                    ctx.theme,
-                    ctx.transform,
-                    user,
-                    line.selection_rect(ctx.theme, range.start, range.end),
-                );
-            }
-        }
-        // Cross-block selection presence is sent once under a document
-        // key, then expanded into the same per-line geometry locally.
-        for &(start_block, end_block, user, range) in document_selections {
-            if i < start_block || i > end_block {
-                continue;
-            }
-            let start = if i == start_block { range.start } else { 0 };
-            let end = if i == end_block {
-                range.end
-            } else {
-                line.value().len()
-            };
-            ctx.presence.draw_peer_selection(
-                ctx.scene,
-                ctx.theme,
-                ctx.transform,
-                user,
-                line.selection_rect(ctx.theme, start, end),
-            );
-        }
     }
 }
 
@@ -12023,6 +11909,8 @@ mod inline_markdown;
 #[cfg(test)]
 #[path = "block_editor_markdown_shortcut_tests.rs"]
 mod markdown_shortcut_tests;
+#[path = "block_editor_presence.rs"]
+mod presence;
 #[path = "block_editor_present.rs"]
 mod present;
 #[path = "block_editor_references.rs"]

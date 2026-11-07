@@ -53,6 +53,13 @@ pub trait FabricLink {
     fn online_device_ids(&self) -> BTreeSet<DeviceId>;
     /// This device's fabric id and label, once it has a certified identity.
     fn local_device_fabric_identity(&self) -> Option<(DeviceId, String)>;
+    /// The device this session's fabric knows to speak from `endpoint`, when
+    /// it proved itself there: what something heard at a bare endpoint is
+    /// named by.
+    fn device_behind(&self, endpoint: iroh::EndpointId) -> Option<DeviceId> {
+        let _ = endpoint;
+        None
+    }
     /// Send `action` to `target`, returning its request id.
     ///
     /// # Errors
@@ -87,6 +94,10 @@ pub trait FabricLink {
     /// Returns why Wi-Fi continuity is off.
     fn require_wifi_settings(&self) -> Result<(), String> {
         Ok(())
+    }
+    /// Whether the person lets notifications continue between their devices.
+    fn notifications_permitted(&self) -> bool {
+        false
     }
     /// The passphrase this device holds for `ssid` with `security`, opened for
     /// this device's key: what one of the person's devices shared here.
@@ -222,6 +233,10 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
         (**self).local_device_fabric_identity()
     }
 
+    fn device_behind(&self, endpoint: iroh::EndpointId) -> Option<DeviceId> {
+        (**self).device_behind(endpoint)
+    }
+
     fn send_personal_fabric_action(
         &self,
         target: &DeviceId,
@@ -244,6 +259,10 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn require_wifi_settings(&self) -> Result<(), String> {
         (**self).require_wifi_settings()
+    }
+
+    fn notifications_permitted(&self) -> bool {
+        (**self).notifications_permitted()
     }
 
     fn wifi_password(&self, ssid: &str, security: os_actions::WifiSecurity) -> Option<String> {

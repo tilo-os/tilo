@@ -636,22 +636,6 @@ impl Workspace {
             .apply(actor, &authority, change, &context_at(now), false)
     }
 
-    /// Admit `agent` to the workspace with `preset`'s grants, given by
-    /// `granted_by`, without a governance check, for a host installing the
-    /// workspace's own state. The ids recorded.
-    pub fn admit_agent_preset(
-        &mut self,
-        agent: &str,
-        preset: roles::AgentPreset,
-        granted_by: &Subject,
-    ) -> Vec<GrantId> {
-        preset
-            .grants(&self.policy.workspace, agent, granted_by)
-            .into_iter()
-            .map(|grant| self.grant(grant))
-            .collect()
-    }
-
     /// The first instant after `now` (Unix seconds) at which one of this
     /// workspace's grants or sandbox capabilities stops being live: until then
     /// every decision answers the same as at `now` unless the workspace is
@@ -897,35 +881,6 @@ impl Workspace {
         Some(changes && self.app_is_author_at(app, now))
     }
 
-    /// The role a person with `agent`'s reach in the workspace would hold: what
-    /// its grants let it change — the workspace, only its comments, or nothing.
-    /// `None` when no live grant admits it.
-    #[must_use]
-    pub fn agent_role_at(&self, agent: &str, now: u64) -> Option<Role> {
-        let cx = context_at(now);
-        let workspace_node = self.node();
-        let admitted = self.policy.grants.iter().any(|grant| {
-            matches!(&grant.subject, Subject::Agent(held) if held == agent)
-                && grant.node == workspace_node
-                && grant.answer != Answer::Deny
-                && grant.is_live(&cx)
-        });
-        if !admitted {
-            return None;
-        }
-        let authority = self.subject_authority(Subject::agent(agent));
-        let changes = |node: &TreePath| {
-            authority.decide(node, ActionKind::Undoable, &cx).answer == Answer::Allow
-        };
-        Some(if changes(&workspace_node) {
-            Role::Editor
-        } else if changes(&roles::comments(&self.policy.workspace)) {
-            Role::Commenter
-        } else {
-            Role::Viewer
-        })
-    }
-
     /// The grants naming a person on one node below the workspace — the share list
     /// of a resource, apart from the workspace's roster.
     #[must_use]
@@ -1042,23 +997,17 @@ impl Workspace {
             .find(|preset| preset.name.eq_ignore_ascii_case(name.trim()))
             .cloned();
         let workspace = self.policy.workspace.clone();
-        let may = |node: &TreePath| {
-            authority.decide(node, roles::GOVERNANCE_KIND, &cx).answer == Answer::Allow
-        };
-        let on_set = preset
-            .as_ref()
-            .is_some_and(|preset| may(&preset_assign_node(&workspace, &preset.name)));
-        if !on_set
-            && !may(&roles::governance_action(
-                &workspace,
-                roles::governance::GRANT,
-            ))
-        {
-            let verdict = authority.decide(
-                &roles::governance_action(&workspace, roles::governance::GRANT),
-                roles::GOVERNANCE_KIND,
-                &cx,
-            );
+        let verdict = preset.as_ref().map_or_else(
+            || {
+                authority.decide(
+                    &roles::governance_action(&workspace, roles::governance::GRANT),
+                    roles::GOVERNANCE_KIND,
+                    &cx,
+                )
+            },
+            |preset| roles::assign_preset_verdict(authority, &workspace, &preset.name, &cx),
+        );
+        if verdict.answer != Answer::Allow {
             return Err(Refusal::NotPermitted(verdict.explain()).into());
         }
         let preset = preset.ok_or(PresetMutationError::NotFound)?;

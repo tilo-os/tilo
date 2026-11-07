@@ -673,6 +673,8 @@ fn unchecked_edge(theme: &Theme, face: vello::peniko::Color) -> vello::peniko::C
 }
 
 impl Widget for Checkbox {
+    crate::described!();
+
     bool_control_widget_methods!("checkbox");
 
     fn build_layout(

@@ -177,7 +177,7 @@ impl Session {
             },
         };
         let step = programs::door_step(&program.source, &answered, &state.programs.mounted);
-        self.record_step(run, &step)?;
+        self.record_program(run, &step)?;
         Ok(Handled::Result(answered.text))
     }
 
@@ -282,12 +282,11 @@ impl Session {
             mounted: &mounted,
             types: &types,
         };
-        let Some(resource) = kept_resource(&kept, &naming, &view.title) else {
+        if kept_resource(&kept, &naming, &view.title).is_none() {
             return Ok(Err(
                 "Not finished: Views kept the view but did not say where; finish again.".into(),
             ));
-        };
-        self.record_answer(run, &resource)?;
+        }
         Ok(Ok(()))
     }
 }

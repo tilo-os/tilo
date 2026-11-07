@@ -1764,6 +1764,23 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         "PopoverButton"
     }
 
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        key_path: &[u64],
+        state: &mut crate::widget::Edits<'_>,
+        path: &ModelPath,
+    ) -> bool {
+        if !self.button.perform_action(action, key_path, state, path) {
+            return false;
+        }
+        // An activation that reaches the button directly, as a press does, opens (or
+        // closes) the panel it stands for.
+        self.request.set(true);
+        self.take_request();
+        true
+    }
+
     fn get_rect(&self) -> Rect {
         self.button.get_rect()
     }

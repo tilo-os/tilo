@@ -394,7 +394,7 @@ impl Window {
                 } if person.eq_ignore_ascii_case(&self.me) => Keep::Seen {
                     person: self.me.clone(),
                     resource,
-                    mark: Some(mark),
+                    mark,
                 },
                 tilolang_tilo::runtime::seen::SeenWrite::Run { person, run }
                     if person.eq_ignore_ascii_case(&self.me) =>

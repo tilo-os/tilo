@@ -93,16 +93,26 @@ fn group_at(tree: &DesktopTree, route: RouteIds) -> tilo_desktop_model::WindowGr
         .expect("the window is in the tree")
 }
 
+/// The row `id`, in the menu or in one of its submenus.
 fn row<'a>(rows: &'a [Row], id: &str) -> Option<&'a Row> {
-    rows.iter().find(|row| row.id == id)
+    rows.iter().find_map(|row| row.find(id))
 }
 
+/// The ids of the rows the menu lists, its rules and the rows of its
+/// submenus included, in the order a person reads them.
 fn ids(rows: &[Row]) -> Vec<&str> {
-    rows.iter().map(|row| row.id.as_str()).collect()
+    let mut found = Vec::new();
+    for row in rows {
+        if !row.separator {
+            found.push(row.id.as_str());
+        }
+        found.extend(ids(&row.children));
+    }
+    found
 }
 
-/// A window offers every row the desktop has for it, in the order the
-/// desktop shows them, and each means the command it names.
+/// A window offers every row the desktop has for it, in the groups the
+/// desktop shows them in, and each means the command it names.
 #[test]
 fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
     let (_surface, handle) = apps_desk(1);
@@ -113,9 +123,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
         vec![
             FULLSCREEN,
             MAXIMIZE,
-            MOVE_TO_STRIP,
-            MOVE_TO_WORKSPACE,
-            MOVE_TO_DISPLAY,
+            WIDTH,
             HALF,
             WIDTH_NARROW,
             WIDTH_NORMAL,
@@ -127,20 +135,46 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
             CLOSE_WINDOW,
         ]
     );
-    // Nowhere to move it to: the rows stay, disabled, saying why.
-    let strip = row(&rows, MOVE_TO_STRIP).unwrap();
-    assert!(!strip.enabled);
-    assert_eq!(strip.reason.as_deref(), Some("No other strip"));
-    let workspace = row(&rows, MOVE_TO_WORKSPACE).unwrap();
-    assert!(!workspace.enabled);
-    assert_eq!(workspace.reason.as_deref(), Some("No other workspace"));
-    let display = row(&rows, MOVE_TO_DISPLAY).unwrap();
-    assert!(!display.enabled);
-    assert_eq!(display.reason.as_deref(), Some("Only display"));
-    for offered in rows.iter().filter(|row| row.enabled) {
+    let groups: Vec<Vec<&str>> = rows
+        .split(|row| row.separator)
+        .map(|group| group.iter().map(|row| row.id.as_str()).collect())
+        .collect();
+    assert_eq!(
+        groups,
+        vec![
+            vec![FULLSCREEN, MAXIMIZE],
+            vec![WIDTH],
+            vec![NEW_TAB],
+            vec![CLOSE_WINDOW],
+        ],
+        "covering and filling the window, its share of the strip, what it shows, and closing it"
+    );
+    // Nowhere to move it to: the place offers no row at all, rather than one
+    // that cannot be chosen.
+    for place in [MOVE_TO_STRIP, MOVE_TO_WORKSPACE, MOVE_TO_DISPLAY] {
+        assert!(row(&rows, place).is_none(), "{place}");
+    }
+    assert_eq!(
+        row(&rows, WIDTH).map(|row| row.label.as_str()),
+        Some("Width"),
+        "the shares are nested under one row"
+    );
+    for listed in rows.iter().filter(|row| !row.separator) {
+        assert!(listed.icon.is_some(), "every row carries its picture");
+        if !listed.children.is_empty() {
+            assert!(
+                command(&tree, &route, &listed.id, Some("A name")).is_none(),
+                "a row that opens a submenu is not itself a command"
+            );
+            continue;
+        }
         assert!(
-            command(&tree, &route, &offered.id, Some("A name")).is_some(),
-            "{offered:?} means a command"
+            command(&tree, &route, &listed.id, Some("A name")).is_some(),
+            "{listed:?} means a command"
+        );
+        assert!(
+            listed.children.is_empty(),
+            "{listed:?} is a command, not a submenu"
         );
     }
     // A window of one tab is its own tab: it offers no split and no close of
@@ -372,7 +406,10 @@ fn a_window_moves_to_another_strip_by_its_name() {
     let rows = handle.window_menu(route.tab);
     let across = row(&rows, &format!("{MOVE_TO_STRIP}:90")).expect("the strip is offered");
     assert!(across.enabled, "{across:?}");
-    assert_eq!(across.label, "Move to strip Research");
+    assert_eq!(
+        across.label, "Research",
+        "the submenu names the places it goes to"
+    );
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, &across.id, None),
@@ -413,7 +450,10 @@ fn a_window_moves_to_another_workspace_by_its_name() {
     let rows = handle.window_menu(route.tab);
     let across = row(&rows, &format!("{MOVE_TO_WORKSPACE}:91")).expect("the workspace is offered");
     assert!(across.enabled, "{across:?}");
-    assert_eq!(across.label, "Move to workspace Studio");
+    assert_eq!(
+        across.label, "Studio",
+        "the submenu names the workspaces it goes to"
+    );
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, &across.id, None),
@@ -596,7 +636,10 @@ fn a_window_moves_to_another_display_by_its_name() {
     let rows = handle.window_menu(route.tab);
     let across = row(&rows, &format!("{MOVE_TO_DISPLAY}:2")).expect("the display is offered");
     assert!(across.enabled, "{across:?}");
-    assert_eq!(across.label, "Move to display Display 2");
+    assert_eq!(
+        across.label, "Display 2",
+        "the submenu names the displays it goes to"
+    );
     let tree = handle.read(Clone::clone);
     assert!(matches!(
         command(&tree, &route, &across.id, None),

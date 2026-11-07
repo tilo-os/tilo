@@ -1,12 +1,11 @@
-//! One agent session: join the workspace and carry out the runs of its issues.
+//! One agent session: join the workspace and answer the conversations it is
+//! asked in.
 
 use std::path::PathBuf;
 use ui::time::{Duration, Instant};
 
 use anyhow::Result;
-use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, PresencePayload, RouteSpec,
-};
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceKey;
 use uuid::Uuid;
@@ -18,11 +17,11 @@ use crate::wire::Link;
 
 mod agent_loop;
 mod confirmation;
+mod conversation;
 mod native_task;
 mod outstanding;
 mod planning;
 mod selection_prompt;
-mod tracker;
 
 /// How long a task waits for the broker's pushed action catalogue.
 const TASK_CATALOGUE_WAIT: Duration = Duration::from_secs(2);
@@ -117,36 +116,6 @@ impl Following {
     }
 }
 
-fn validate_task_run(run: &runtime_collab::TaskRunEnvelope) -> Result<(), String> {
-    if run.version != 1 || run.run_id == 0 {
-        return Err("The task envelope has an unsupported version or empty run id".into());
-    }
-    if run.task_id.trim().is_empty()
-        || run.task_id.len() > 256
-        || run.title.trim().is_empty()
-        || run.title.len() > 4 * 1024
-        || run.instruction().trim().is_empty()
-        || run.instruction().len() > 32 * 1024
-        || run.lease.len() > 128
-        || runtime_collab::native_task_revision(&run.lease).is_none()
-        || tracker::issue_of(run).is_none()
-    {
-        return Err("The task envelope has an invalid issue, title, or lease".into());
-    }
-    if let Some(budget) = run.execution_budget {
-        budget.validate().map_err(str::to_owned)?;
-    }
-    let context = serde_json::from_value::<tilo_actions::ActionContext>(run.action_context.clone())
-        .map_err(|_| "The task has an invalid action context".to_string())?;
-    let valid_group = context.group.as_ref().is_some_and(|group| {
-        group.id == run.group() && group.label == run.title && group.kind == "task"
-    });
-    if context.purpose.as_deref() != Some(run.title.as_str()) || !valid_group {
-        return Err("The task action context does not bind this task title and id".into());
-    }
-    Ok(())
-}
-
 fn task_action_from_offer(
     offer: &surface::Offer,
     arguments: serde_json::Map<String, serde_json::Value>,
@@ -181,13 +150,6 @@ pub struct Config {
     /// Explicit typed collaboration endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
-    /// Certified credentials to join with: a diagnostic endpoint's device,
-    /// or a task agent's task delegation and key over the inherited service.
-    /// Other launcher-bound sessions leave this `None` and use the inherited
-    /// identity service.
-    pub endpoint_identity: Option<CertifiedEndpointIdentity>,
-    /// A task agent, made for one task: it ends once its first run does.
-    pub task_agent: bool,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
@@ -238,10 +200,6 @@ pub struct Session {
     /// The companions not yet seen in the catalogue, until the first run
     /// waited for them; empty afterwards.
     awaiting_companions: Vec<String>,
-    /// The model turn whose spend is held on the run's issue and not yet
-    /// settled: settled with the receipt when it answers, and at nothing
-    /// when its provider fails, so a failed call never spends the budget.
-    held_turn: Option<u64>,
     /// Bumped whenever the broker republishes its catalogue.
     broker_revision: u64,
     /// The task catalogue survey for [`Self::broker_revision`], shared by
@@ -249,12 +207,10 @@ pub struct Session {
     catalogue_cache: Option<(u64, std::sync::Arc<surface::Catalogue>)>,
     /// The model turn in flight while a task loop runs.
     turn: Option<agent_loop::ActiveTurn>,
-    /// What this agent was asked, did and said in earlier tasks.
-    /// What the task in progress asked its host without waiting in line.
+    /// What the run in progress asked its host without waiting in line.
     outstanding: outstanding::Outstanding,
-    /// What the model spent on the run in progress, as its provider counted
-    /// it: reported on the run's thread when the run ends.
-    spend: planning::Spend,
+    /// The turn the run in progress answers, as its reply is being told.
+    record: Option<conversation::Record>,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -281,14 +237,14 @@ impl Session {
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
-                cfg.endpoint_identity.clone(),
+                None,
             )?,
             None => Link::connect(
                 &cfg.app_id,
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
-                cfg.endpoint_identity.clone(),
+                None,
             )?,
         };
         // Discovery is workspace-wide, but writes never are. This subscription
@@ -344,19 +300,18 @@ impl Session {
             broker_surfaces: Vec::new(),
             next_broker_request: 1,
             awaiting_companions: cfg_companions,
-            held_turn: None,
             broker_revision: 0,
             catalogue_cache: None,
             turn: None,
             outstanding: outstanding::Outstanding::default(),
-            spend: planning::Spend::default(),
+            record: None,
         })
     }
 
-    /// Run the issues the broker delivers: an unattended run may invoke
+    /// Answer the turns the broker delivers: an unattended run may invoke
     /// only actions that the authenticated broker currently publishes to this
     /// agent.
-    pub fn run_task_runs(&mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
             std::sync::Arc::new(crate::transform::GatewayModel {
                 launched: self.chooser.selection().cloned(),
@@ -372,7 +327,7 @@ impl Session {
                 "published the AI transforms"
             );
         }
-        tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
+        tracing::info!(agent = %self.cfg.name, "waiting for the conversations' turns");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
@@ -384,12 +339,6 @@ impl Session {
                         if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
                             tracing::warn!(%report_error, "native task review report was refused");
                         }
-                    }
-                    // A task agent was made for this one task: its life ends
-                    // with the task's run, as its delegation does.
-                    if self.cfg.task_agent {
-                        tracing::info!(run_id = run.run_id, task = %run.task_id, "the task agent's task ended; exiting");
-                        return Ok(());
                     }
                 }
                 Some(CollabEvent::Invocation {
@@ -504,13 +453,24 @@ impl Session {
                     ..Default::default()
                 }
             });
-        if let Err(message) = validate_task_run(run) {
-            tracing::warn!(run_id = run.run_id, %message, "refused malformed task run");
-            self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
-            return Ok(());
-        }
+        let cause = match conversation::validate(run) {
+            Ok(cause) => cause,
+            Err(message) => {
+                tracing::warn!(run_id = run.run_id, %message, "refused a run that answers no turn");
+                self.report_task(run, runtime_collab::TaskRunUpdate::Failed { message })?;
+                return Ok(());
+            }
+        };
         self.begin_task_watch();
-        self.spend = planning::Spend::default();
+        self.record = None;
+        let plan = self.planner(run);
+        let route = if plan.is_model() { "model" } else { "floor" };
+        self.start_turn(cause, (route, plan.announcing()));
+        // The reply that answers the turn is recorded through the
+        // conversation's own action, so the actions this workspace publishes
+        // are read before the first record: the person sees the reply the
+        // moment the run is taken.
+        self.wait_for_task_catalogue()?;
         self.report_task(run, runtime_collab::TaskRunUpdate::Accepted)?;
         // The cancellation poll is not waited for here: its answer, with the
         // run's messages, is read before the first turn (or the first
@@ -523,11 +483,9 @@ impl Session {
             },
         )?;
         self.poll_cancellation(run)?;
-        self.wait_for_task_catalogue()?;
         // Which planner decides this run's steps, said before it decides:
         // the model that plans it, or that its steps are matched to the
         // published actions and why no model plans instead.
-        let plan = self.planner(run);
         self.report_task(
             run,
             runtime_collab::TaskRunUpdate::Progress {
@@ -540,7 +498,6 @@ impl Session {
         // model (`--no-model`) falls back to the rules-only survey below.
         if plan.is_model() {
             let end = self.run_task_loop(run)?;
-            self.report_spend(run, &plan)?;
             return match end {
                 agent_loop::LoopEnd::Finished(finish, completed) => {
                     if !finish.done {
@@ -617,7 +574,9 @@ impl Session {
                     presentation: None,
                 },
             )?;
-            match self.run_task_step(run, index, action, &arguments)? {
+            let settled = self.run_task_step(run, index, action, &arguments)?;
+            self.record_action(run, &action.resource_kind, &action.label, settled.as_ref())?;
+            match settled {
                 Ok(outcome) => {
                     self.chooser
                         .mark(tilo_model_client::TraceEvent::ActionSettled, index);
@@ -660,7 +619,7 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
         update: runtime_collab::TaskRunUpdate,
     ) -> Result<()> {
-        self.report_to_tracker(run, &update)?;
+        self.show_turn(run, &update)?;
         let request_id = self.next_request_id();
         self.link.send(&CollabRequest::ReportTaskRun {
             request_id: Some(request_id),
@@ -723,14 +682,6 @@ impl Session {
             .is_some_and(|deadline| ui::time::now() >= deadline)
     }
 
-    /// The model this agent plans with, as its provider names it; empty when
-    /// no model plans its runs and their steps are matched to words.
-    fn model_name(&self) -> String {
-        self.chooser
-            .planned_by()
-            .map_or_else(String::new, |(_, model)| model.to_owned())
-    }
-
     /// The rules-only planner: one surveyed action matched by the words of
     /// the title. Model tasks run [`Self::run_task_loop`] instead.
     fn plan_task(
@@ -763,26 +714,6 @@ impl Session {
                 reason: planning::Words::NoModel,
             },
         }
-    }
-
-    /// Record what the model spent on this run, on the run's own thread: the
-    /// model, its turns and its tokens, or that it counted none.
-    fn report_spend(
-        &mut self,
-        run: &runtime_collab::TaskRunEnvelope,
-        plan: &planning::Planner,
-    ) -> Result<()> {
-        let report = self.spend.report(plan);
-        if report.is_empty() {
-            return Ok(());
-        }
-        self.report_task(
-            run,
-            runtime_collab::TaskRunUpdate::Progress {
-                message: report,
-                presentation: None,
-            },
-        )
     }
 
     fn invoke_task_action(
@@ -834,10 +765,11 @@ impl Session {
         let update = match self.wait_for_task_action_result(request_id)? {
             Ok((_, update)) => update,
             Err(error) if confirmation::is_awaiting(&error) => {
-                match self.await_confirmation(run, (action, arguments), invocation)? {
-                    Ok(update) => update,
-                    Err(stop) => return Ok(Err(stop)),
-                }
+                // A step that asks first belongs to the record's app, which
+                // shows the question; a conversation has nowhere to show it,
+                // so the step fails with the reason and the model plans
+                // around it.
+                return Ok(Err(confirmation::cannot_ask(action)));
             }
             Err(error) => {
                 return Ok(Err(TaskActionStop::Failed(confirmation::step_failure(
@@ -975,62 +907,6 @@ fn managed_context(cfg: &Config) -> Result<Option<crate::providers::ProviderSele
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn task_run() -> runtime_collab::TaskRunEnvelope {
-        runtime_collab::TaskRunEnvelope {
-            paused: None,
-            model: None,
-            version: 1,
-            task_id: "tasks.tracker/issues/review".into(),
-            title: "Review draft".into(),
-            instruction: None,
-            subject: None,
-            run_id: 7,
-            lease: "native:00000000000000000000000000000000:0".into(),
-            planning: runtime_collab::TaskRunPlanning::RulesOnly,
-            presentation_version: None,
-            execution_budget: None,
-            action_context: serde_json::json!({
-                "purpose": "Review draft",
-                "group": {
-                    "id": runtime_collab::task_run_group("tasks.tracker/issues/review", 7),
-                    "label": "Review draft",
-                    "kind": "task"
-                }
-            }),
-        }
-    }
-
-    #[test]
-    fn a_task_run_needs_a_known_version_and_broker_bound_task_context() {
-        {
-            assert!(validate_task_run(&task_run()).is_ok());
-            let mut mismatched = task_run();
-            mismatched.action_context = serde_json::json!({
-                "purpose": "Review draft",
-                "group": {"id": "different", "label": "Review draft", "kind": "task"}
-            });
-            assert!(validate_task_run(&mismatched).is_err());
-        }
-
-        {
-            let mut invalid = task_run();
-            invalid.version = 2;
-            assert!(validate_task_run(&invalid).is_err());
-        }
-
-        {
-            let mut unleased = task_run();
-            unleased.lease = "broker-minted-lease".into();
-            assert!(validate_task_run(&unleased).is_err(), "only a native lease");
-            let mut no_issue = task_run();
-            no_issue.task_id = "task:review".into();
-            assert!(
-                validate_task_run(&no_issue).is_err(),
-                "every run is an issue's"
-            );
-        }
-    }
 
     #[test]
     fn a_steps_arguments_bind_exactly_one_preceding_content_result_and_key_its_dispatch() {

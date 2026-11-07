@@ -23,7 +23,7 @@ impl ParticipantJoinFixture {
         workspace.set_owner(principal.clone());
         let route = CrdtRoute::cluster(workspace.id().to_string());
         for agent in agents {
-            workspace.admit_agent(agent, crate::test_support::KindSet::READ);
+            workspace.allow_agent(agent, crate::test_support::KindSet::READ);
         }
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);

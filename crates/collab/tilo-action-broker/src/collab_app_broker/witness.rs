@@ -527,6 +527,7 @@ impl AppBrokerState {
                 None,
             )
         };
+        let argument = request.argument.to_slot();
         let shown = self
             .live_surfaces(RowScope::Provider(provider))
             .into_iter()
@@ -540,6 +541,7 @@ impl AppBrokerState {
                     request.context.as_ref(),
                     &surface,
                     action,
+                    argument.as_deref(),
                 )?;
                 Some((surface.route.clone(), shown))
             });

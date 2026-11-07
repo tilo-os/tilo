@@ -549,6 +549,10 @@ pub struct PresenceCtx {
     /// Last marker tip actually painted for each agent. This is local visual
     /// continuity only: it never enters pointer presence or action state.
     interaction_markers: HashMap<UserId, interaction::AgentMarkerContinuity>,
+    /// Invocations whose exact place a widget already painted this frame —
+    /// the characters a write landed in. The rail leaves them out instead of
+    /// naming the same activity a second time.
+    shown: std::cell::RefCell<std::collections::HashSet<tilo_actions::InvocationId>>,
     /// Per-user "just typed" highlight spans, keyed by presence scope and
     /// faded out by [`PresenceCtx::active_typing`] over [`TYPING_FADE`].
     /// Not serialised — purely a local render effect.

@@ -190,6 +190,7 @@ imports! {
     OutsideAt = "outside_at" ([H, H, H] -> [H]);
     Withdraw = "withdraw" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
+    Notify = "notify" ([H, H, H, H] -> []);
     QueueBlock = "queue_block" ([H, H, H] -> []);
     Print = "print" ([H, H] -> []);
     Find = "find" ([H, H] -> [H]);

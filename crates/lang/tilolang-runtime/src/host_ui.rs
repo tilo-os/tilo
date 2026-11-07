@@ -40,6 +40,11 @@ pub const REVIEW_ACTION: &str = "$review";
 /// change or the run, and the resource the version is of (`Unit` for a run).
 pub const UNDO_ACTION: &str = "$undo";
 
+/// The action of a catch-up's *Mark all seen*: every change the person has not seen of the
+/// resources it lists, in one move. Its only argument is the list of their ids; what it moved
+/// can be given back with [`crate::Runtime::undo_seen`].
+pub const MARK_SEEN_ACTION: &str = "$mark-seen";
+
 impl Core {
     pub(crate) fn with_view<R>(
         &self,

@@ -556,3 +556,11 @@ display-sheet-layouts = Displays
 display-confirm-question = Display change
 portal-sheet-question = System question
 workspace-settings-lens = Workspace settings
+
+# Deleting a workspace, asked wherever it was asked from: the confirm sheet
+# and the workspace settings' own question say the same words.
+workspace-delete-title = Delete { $name }?
+workspace-delete-body = Everything in this workspace goes with it: its windows, its groups, its history. It disappears from every device that has it.
+workspace-delete-confirm = Delete
+workspace-delete-keep = Keep
+workspace-delete-lens = Delete workspace

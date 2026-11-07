@@ -104,7 +104,10 @@ mod tests {
             facts: Vec::new(),
             score: 1,
             icon: None,
-            target: Target::Launch { app: id.into() },
+            target: Target::Launch {
+                app: id.into(),
+                place: crate::model::LaunchPlace::Focus,
+            },
         }
     }
 

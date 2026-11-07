@@ -9,6 +9,7 @@ use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::Principal;
+use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::host::{Host, Opening};
@@ -637,4 +638,38 @@ fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() 
     host.sync_from(&ada.doc);
     assert!(published(&host).contains(&"late arrival".to_owned()));
     assert_eq!(host.store().index_contents(APP).unwrap(), anew(&ada, &lock));
+}
+
+/// A window's mark counts a page of the resources of its document, and says when there are
+/// more: what a workspace of any size reads of them, never all of it, and of each resource
+/// only its newest version.
+#[test]
+fn a_documents_newest_versions_are_read_a_page_at_a_time() {
+    let (mut ada, root, _lock) = workspace();
+    for step in 0..5 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step}") }),
+            &root,
+        );
+        ada.apply(&action);
+    }
+    ada.commit();
+    let doc = ResourceRef::parse_id(&root, String::new()).unwrap().doc;
+    let store = ada.host.store();
+
+    let (page, more) = store.newest_page(&doc, 3).unwrap();
+    assert_eq!(page.len(), 3, "a page of them, not the document");
+    assert!(more, "the document holds more than the page");
+    let (all, more) = store.newest_page(&doc, 100).unwrap();
+    assert!(!more, "a page the document fits in holds it all");
+    assert!(all.len() > 3, "the document holds a list and its items");
+    for (resource, version) in &all {
+        assert_eq!(&version.resource, resource, "a version of what it names");
+        assert!(!version.change.is_empty(), "{resource} was changed");
+    }
+    // The newest version of an item is the one the page reads of it.
+    let item = ResourceRef::parse_id(&all[1].0, String::new()).unwrap();
+    assert_eq!(store.newest(&item).unwrap(), Some(all[1].1.clone()));
 }

@@ -360,6 +360,7 @@ fn index_mailbox(
         fields: Vec::new(),
         secret: false,
         references: Vec::new(),
+        ..tilo_resource::search_index::IndexEntry::default()
     };
     let mut publisher = tilo_resource::search_index::Publisher::default();
     for delta in publisher.publish(

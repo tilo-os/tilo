@@ -636,7 +636,7 @@ pub enum Unknown {
     /// The frames cannot be compared part by part.
     Unproven(crate::scene_parts::Unproven),
     /// The renderer dropped geometry from a frame drawn since the target
-    /// was last repainted whole ([`RetainedFrames::note_overflows`]).
+    /// was last repainted whole ([`RetainedFrames::note_scratch`]).
     LostGeometry,
 }
 
@@ -651,9 +651,9 @@ pub struct RetainedFrames {
     last: Option<(Scene, crate::scene_parts::SectionParts, TargetKey)>,
     /// The target holds the frame last presented, parts or not.
     shown: bool,
-    /// The renderer's overflows ([`crate::render_bump_recovery::Overflows`])
-    /// the target was last repainted whole for.
-    overflows: u64,
+    /// The renderer's scratch ([`crate::render_bump_recovery::Scratch`]) when
+    /// the target was last brought up to date.
+    scratch: Option<crate::render_bump_recovery::Scratch>,
     /// The target may show a frame with geometry missing.
     lost: bool,
 }
@@ -713,22 +713,29 @@ impl RetainedFrames {
         self.lost = false;
     }
 
-    /// Whether the renderer has collected an overflow, `collected` in all,
-    /// that the target was not yet repainted whole for: a frame it shows may
+    /// Whether the renderer's scratch is `scratch` without the target having
+    /// been brought up to date since it changed: a frame the target shows may
     /// have geometry missing.
+    ///
+    /// Either half of a scratch names the same renderer being short: a
+    /// reservation that grew because a frame did not fit, or an overflow
+    /// collected while the reservation was at its ceiling. The reservation
+    /// changes as soon as the counters are collected, before the frame that
+    /// dropped the geometry has been repainted whole for it, so a host that
+    /// compares it here repaints again even when nothing was collected since.
     #[must_use]
-    pub const fn shows_lost_geometry(&self, collected: u64) -> bool {
-        self.lost || self.overflows != collected
+    pub fn shows_lost_geometry(&self, scratch: crate::render_bump_recovery::Scratch) -> bool {
+        self.lost || self.scratch.is_some_and(|recorded| recorded != scratch)
     }
 
-    /// The renderer has collected `collected` overflows in all: after a new
-    /// one, the next frame repaints the whole target. Pixels drawn with
-    /// geometry missing stay on it otherwise, since later frames repaint
-    /// only what changes.
-    pub fn note_overflows(&mut self, collected: u64) {
-        if self.overflows != collected {
-            self.overflows = collected;
-            self.lost = true;
+    /// The renderer's scratch is `scratch` now: once it changed since the
+    /// target was brought up to date, the next frame repaints the whole
+    /// target. Pixels drawn with geometry missing stay on it otherwise, since
+    /// later frames repaint only what changes.
+    pub fn note_scratch(&mut self, scratch: crate::render_bump_recovery::Scratch) {
+        if self.scratch.is_none_or(|recorded| recorded != scratch) {
+            self.lost = self.scratch.is_some();
+            self.scratch = Some(scratch);
         }
     }
 
@@ -751,7 +758,7 @@ impl RetainedFrames {
 /// A check that a retained target shows what a full render of the same
 /// frame does: a frame repainted only where it changed must leave no stale
 /// pixel. Debug and test builds run it on the frames they repaint in part.
-/// The two images are read back asynchronously; [`Self::differing`] answers
+/// The two images are read back asynchronously; [`Self::differences`] answers
 /// once both are in.
 pub struct RasterCheck {
     retained: vello::wgpu::Buffer,
@@ -759,6 +766,15 @@ pub struct RasterCheck {
     width: u32,
     height: u32,
     row: u32,
+    /// The colour the target was cleared with: a pixel missing geometry
+    /// shows it, so a difference that has one side at it names the side that
+    /// dropped the geometry.
+    base: [u8; 4],
+    /// The renderer's scratch when the check started
+    /// ([`crate::render_bump_recovery::Scratch`]): one that changed before
+    /// the comparison means a render in it, or the frame it compares, may
+    /// have dropped geometry, and a difference then names neither.
+    scratch: crate::render_bump_recovery::Scratch,
     mapped: std::sync::Arc<std::sync::atomic::AtomicU32>,
     /// Why the readback failed, when it did: a check that could not read
     /// the frames back says so, rather than claiming they differ.
@@ -767,7 +783,8 @@ pub struct RasterCheck {
 
 impl RasterCheck {
     /// Render `scene` in full beside `target`, which must already show it,
-    /// and start reading both back.
+    /// and start reading both back. `scratch` is the renderer's
+    /// [`crate::render_bump_recovery::Overflows::scratch`] now.
     ///
     /// # Errors
     ///
@@ -779,6 +796,7 @@ impl RasterCheck {
         scene: &Scene,
         (width, height): (u32, u32),
         base_color: Color,
+        scratch: crate::render_bump_recovery::Scratch,
     ) -> Result<Self, String> {
         use vello::wgpu;
         let full = device.create_texture(&wgpu::TextureDescriptor {
@@ -822,10 +840,12 @@ impl RasterCheck {
             })
         };
         let (retained, full_pixels) = (buffer(), buffer());
+        let copied = [(target.texture, &retained), (&full, &full_pixels)];
+        let buffers = [&retained, &full_pixels];
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("ui-retained-check"),
         });
-        for (texture, buffer) in [(target.texture, &retained), (&full, &full_pixels)] {
+        for (texture, buffer) in copied {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture,
@@ -851,7 +871,7 @@ impl RasterCheck {
         queue.submit([encoder.finish()]);
         let mapped = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
         let unreadable = std::sync::Arc::new(std::sync::Mutex::new(None));
-        for buffer in [&retained, &full_pixels] {
+        for buffer in buffers {
             let mapped = mapped.clone();
             let unreadable = unreadable.clone();
             buffer
@@ -876,6 +896,8 @@ impl RasterCheck {
             width,
             height,
             row,
+            base: base_color.to_rgba8().to_u8_array(),
+            scratch,
             mapped,
             unreadable,
         })
@@ -885,7 +907,14 @@ impl RasterCheck {
     /// the frame, so a stale repaint is found on the screen rather than only
     /// counted, or why the frames could not be read. `None` while they are
     /// not read yet.
-    pub fn differences(&self) -> Option<Readback> {
+    ///
+    /// `scratch` is the renderer's
+    /// [`crate::render_bump_recovery::Overflows::scratch`] now: a renderer
+    /// whose reservation changed, or which collected an overflow, since the
+    /// check started may have dropped geometry from the frame it compares or
+    /// from the check's own render of it, so a difference then proves
+    /// nothing and says what it saw instead.
+    pub fn differences(&self, scratch: crate::render_bump_recovery::Scratch) -> Option<Readback> {
         let mapped = self.mapped.load(std::sync::atomic::Ordering::Acquire);
         if mapped < 2 {
             return None;
@@ -921,14 +950,80 @@ impl RasterCheck {
         // A full render that read back empty was not drawn: the check has
         // nothing to compare with and says so rather than blaming the frame.
         if blank.1 {
-            self.retained.unmap();
-            self.full.unmap();
+            self.unmap_all();
             return Some(Readback::Unreadable(
                 "the full render read back empty".to_owned(),
             ));
         }
         let (count, bounds) =
             crate::offscreen::OffscreenRenderer::differing_beyond_aa(&kept, &rendered, width);
+        let (inside, rows, kept_base, render_base) = if count == 0 {
+            (0, Vec::new(), 0, 0)
+        } else {
+            let positions = crate::offscreen::OffscreenRenderer::positions_differing_beyond_aa(
+                &kept, &rendered, width,
+            );
+            let inside = bounds.map_or(0, |(x0, y0, x1, y1)| {
+                let (left, top) = (x0.saturating_add(8), y0.saturating_add(8));
+                let (right, bottom) = (x1.saturating_sub(8), y1.saturating_sub(8));
+                positions
+                    .iter()
+                    .filter(|(x, y)| *x >= left && *x < right && *y >= top && *y < bottom)
+                    .count()
+            });
+            let mut rows: Vec<(u32, Vec<(u32, u32)>)> = Vec::new();
+            for (x, y) in &positions {
+                let (Ok(x), Ok(y)) = (u32::try_from(*x), u32::try_from(*y)) else {
+                    continue;
+                };
+                if rows.last().is_none_or(|(at, _)| *at != y) {
+                    if rows.len() == DIFF_ROWS {
+                        continue;
+                    }
+                    rows.push((y, Vec::new()));
+                }
+                let Some((_, runs)) = rows.last_mut() else {
+                    continue;
+                };
+                let extends = runs.last().is_some_and(|(_, end)| *end == x);
+                if extends {
+                    if let Some((_, end)) = runs.last_mut() {
+                        *end = x.saturating_add(1);
+                    }
+                } else if runs.len() < DIFF_RUNS {
+                    runs.push((x, x.saturating_add(1)));
+                }
+            }
+            // Which side is missing what: a pixel cleared to the base colour
+            // and drawn on nothing shows it, so a differing pixel that is the
+            // base colour on one side only names the side that dropped it.
+            let near = |colour: [u8; 4]| {
+                colour[..3]
+                    .iter()
+                    .zip(&self.base[..3])
+                    .all(|(c, base)| c.abs_diff(*base) <= 1)
+            };
+            let (mut kept_base, mut render_base) = (0, 0);
+            for (kept_at, rendered_at) in kept.chunks_exact(4).zip(rendered.chunks_exact(4)) {
+                if kept_at
+                    .iter()
+                    .zip(rendered_at)
+                    .all(|(a, b)| a.abs_diff(*b) <= 1)
+                {
+                    continue;
+                }
+                let kept_at = [kept_at[0], kept_at[1], kept_at[2], kept_at[3]];
+                let rendered_at = [
+                    rendered_at[0],
+                    rendered_at[1],
+                    rendered_at[2],
+                    rendered_at[3],
+                ];
+                kept_base += usize::from(near(kept_at));
+                render_base += usize::from(near(rendered_at));
+            }
+            (inside, rows, kept_base, render_base)
+        };
         let first = kept
             .chunks_exact(4)
             .zip(rendered.chunks_exact(4))
@@ -945,10 +1040,28 @@ impl RasterCheck {
                     [rendered[0], rendered[1], rendered[2], rendered[3]],
                 ))
             });
-        self.retained.unmap();
-        self.full.unmap();
+        self.unmap_all();
+        // A renderer that lost geometry may have lost it from the frame the
+        // target shows or from this check's render of it: the difference
+        // says which side is at the base colour, but not which one is right.
+        // Its reservation changing is that loss too, and it is known before
+        // an overflow readback is collected.
+        if count != 0 && scratch != self.scratch {
+            return Some(Readback::Unreadable(format!(
+                "the renderer's scratch changed while this frame was drawn: {} to {} bytes, {} \
+                 overflow(s) collected, and the {count} pixels that differ ({kept_base} at the \
+                 base colour in the target, {render_base} in the full render) name neither side",
+                self.scratch.bump_bytes,
+                scratch.bump_bytes,
+                scratch.collected.saturating_sub(self.scratch.collected),
+            )));
+        }
         Some(Readback::Differing(Differences {
             count,
+            inside,
+            rows,
+            kept_base,
+            render_base,
             first,
             bounds: bounds.map(|(x0, y0, x1, y1)| {
                 (
@@ -959,6 +1072,11 @@ impl RasterCheck {
                 )
             }),
         }))
+    }
+
+    fn unmap_all(&self) {
+        self.retained.unmap();
+        self.full.unmap();
     }
 }
 
@@ -973,10 +1091,22 @@ pub enum Readback {
 }
 
 /// How a frame repainted in part differed from a full render of it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Differences {
     /// How many pixels differ.
     pub count: usize,
+    /// How many of them lie more than eight pixels inside [`Self::bounds`]:
+    /// `0` says the difference is the outline of a rectangle, not its fill.
+    pub inside: usize,
+    /// For each row that differs, up to [`DIFF_ROWS`] of them, the runs of
+    /// columns that differ, up to [`DIFF_RUNS`] a row.
+    pub rows: Vec<(u32, Vec<(u32, u32)>)>,
+    /// How many of them are the colour the target was cleared with in the
+    /// frame repainted in part: geometry missing from what the target shows.
+    pub kept_base: usize,
+    /// How many of them are that colour in the full render: geometry the
+    /// check's own render dropped, which names no stale frame.
+    pub render_base: usize,
     /// The first pixel that differs beyond the ±1 two renders of one frame
     /// may differ by: where it is, then its colour in the frame repainted in
     /// part and in the full render.
@@ -985,6 +1115,10 @@ pub struct Differences {
     /// edges exclusive, or `None` where none do.
     pub bounds: Option<(u32, u32, u32, u32)>,
 }
+
+/// Rows of a difference [`Differences`] reports, and column runs a row.
+const DIFF_ROWS: usize = 16;
+const DIFF_RUNS: usize = 8;
 
 #[cfg(test)]
 #[path = "retained_raster_tests.rs"]

@@ -452,6 +452,8 @@ impl TextStack {
 }
 
 impl Widget for TextStack {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

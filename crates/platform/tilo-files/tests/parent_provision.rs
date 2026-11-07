@@ -92,20 +92,30 @@ use tilo_files::native::atomic::test_support::{
 fn physical(root: &Path) -> PathBuf {
     fs::canonicalize(root).unwrap()
 }
-fn chain(leaf: &Path) -> Vec<PathBuf> {
-    leaf.ancestors().map(Path::to_owned).collect()
+// Barriers run leaf first up to the deepest directory that exists when the
+// provisioning call starts: that is the store root, and nothing above it is
+// opened or synced.
+fn committed(leaf: &Path, prefix: &Path) -> Vec<PathBuf> {
+    let mut chain = Vec::new();
+    for path in leaf.ancestors() {
+        chain.push(path.to_owned());
+        if path == prefix {
+            break;
+        }
+    }
+    chain
 }
 
 #[test]
 fn wrappers_flush_entire_complete_tree_before_staging_on_every_call() {
-    let root = tempfile::tempdir().unwrap();
-    let leaf = physical(root.path()).join("profile/data");
     for explicit_mode in [None, Some(0o644)] {
+        let root = tempfile::tempdir().unwrap();
+        let leaf = physical(root.path()).join("profile/data");
         let visits = Rc::new(RefCell::new(Vec::new()));
         let observed = visits.clone();
         let complete = leaf.clone();
         let staged = visits.clone();
-        let expected = chain(&leaf);
+        let expected = committed(&leaf, &physical(root.path()));
         let expected_stage = expected.clone();
         with_provision_observer(
             move |event| {
@@ -192,7 +202,10 @@ fn early_ancestor_failure_prevents_staging_and_fresh_call_replays() {
         || tilo_files::native::atomic::write_creating_parent(&path, b"payload"),
     )
     .unwrap();
-    assert_eq!(*seen.borrow(), chain(path.parent().unwrap()));
+    assert_eq!(
+        *seen.borrow(),
+        committed(path.parent().unwrap(), path.parent().unwrap())
+    );
 }
 
 use std::{
@@ -233,16 +246,55 @@ fn complete_retry_replays_every_barrier_and_returns_requested_leaf() {
         || second.retry_commit(),
     )
     .unwrap();
-    assert_eq!(*visits.borrow(), chain(&leaf));
+    assert_eq!(*visits.borrow(), committed(&leaf, &physical(root.path())));
     assert_eq!(
         held.identity().unwrap(),
         StorageDirectory::open(&leaf).unwrap().identity().unwrap()
     );
-    let existing = error(with_provision_failure(P::BeforeSync, &profile, || {
+    let existing = error(with_provision_failure(P::BeforeSync, &leaf, || {
         provision_directory(&leaf, Privacy::Inherit)
     }));
     assert_eq!(existing.state(), D::Unchanged);
     assert!(existing.retry_commit().is_ok());
+}
+
+#[test]
+fn provisioning_is_bounded_by_a_root_whose_ancestors_are_unreadable() {
+    if rustix::process::getuid().as_raw() == 0 {
+        return;
+    }
+    let base = tempfile::tempdir().unwrap();
+    let store = fs::canonicalize(base.path()).unwrap().join("store");
+    fs::create_dir(&store).unwrap();
+    let leaf = store.join("leaf");
+    // Execute-only ancestors admit traversal but refuse to be opened, the way a
+    // sandbox grants the directories a launch uses and none above them.
+    fs::set_permissions(base.path(), fs::Permissions::from_mode(0o111)).unwrap();
+    let visits = Rc::new(RefCell::new(Vec::new()));
+    let observed = visits.clone();
+    let result = with_provision_observer(
+        move |e| {
+            if e.checkpoint == P::Synced {
+                observed.borrow_mut().push(e.path.clone());
+            }
+        },
+        || {
+            let unreadable = StorageDirectory::open(base.path())
+                .err()
+                .expect("ancestor must not open");
+            assert_eq!(unreadable.kind(), io::ErrorKind::PermissionDenied);
+            provision_directory(&leaf, Privacy::Inherit)
+        },
+    );
+    fs::set_permissions(base.path(), fs::Permissions::from_mode(0o755)).unwrap();
+    let held = result.unwrap();
+    assert_eq!(*visits.borrow(), vec![leaf.clone(), store]);
+    assert_eq!(
+        held.identity().unwrap(),
+        StorageDirectory::open(&leaf).unwrap().identity().unwrap()
+    );
+    tilo_files::native::atomic::write_creating_parent(&leaf.join("state"), b"payload").unwrap();
+    assert_eq!(fs::read(leaf.join("state")).unwrap(), b"payload");
 }
 
 #[test]
@@ -574,7 +626,8 @@ fn restart_child() {
     let Some(root) = std::env::var_os("ATOMIC_PROVISION_RESTART_FIXTURE") else {
         return;
     };
-    let profile = PathBuf::from(root).join("profile");
+    let root = PathBuf::from(root);
+    let profile = root.join("profile");
     let file = profile.join("data/state");
     if std::env::var_os("ATOMIC_PROVISION_RESTART_PHASE").unwrap() == "fail" {
         let failure = with_provision_failure(P::BeforeSync, &profile, || {
@@ -599,7 +652,7 @@ fn restart_child() {
         || tilo_files::native::atomic::write_creating_parent(&file, b"payload"),
     )
     .unwrap();
-    assert_eq!(*visits.borrow(), chain(file.parent().unwrap()));
+    assert_eq!(*visits.borrow(), vec![file.parent().unwrap().to_owned()]);
     assert_eq!(fs::read(file).unwrap(), b"payload");
 }
 

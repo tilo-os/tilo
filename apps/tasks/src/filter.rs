@@ -3,8 +3,8 @@
 //!
 //! A filter is view state, never stored: the sidebar offers the ones that
 //! read a tracker as a person works through it — everything, mine, the todo
-//! nobody has started, what nobody has taken, what an agent is working on,
-//! and one per label in use — and the list and the board both narrow to it.
+//! nobody has started, what nobody has taken, what an agent has, and one per
+//! label in use — and the list and the board both narrow to it.
 //! An issue shows when it matches, and so does an issue whose sub-issue
 //! matches, so the tree stays whole down to what was asked for.
 
@@ -26,24 +26,20 @@ pub(crate) enum Filter {
     Todo,
     /// The ones nobody has taken.
     Unassigned,
-    /// The ones an agent is working on.
+    /// The ones an agent has.
     Agent,
-    /// The ones a task is running on: every issue whose run has not ended,
-    /// whatever it is doing, and the tasks that ended and can be undone.
-    Running,
     /// The ones carrying this label.
     Label(String),
 }
 
 impl Filter {
     /// The filters the sidebar offers, before the labels in use.
-    pub(crate) const ALL: [Self; 6] = [
+    pub(crate) const ALL: [Self; 5] = [
         Self::All,
         Self::Mine,
         Self::Todo,
         Self::Unassigned,
         Self::Agent,
-        Self::Running,
     ];
 
     /// The sidebar row's name.
@@ -54,7 +50,6 @@ impl Filter {
             Self::Todo => crate::tr("tasks-filter-todo"),
             Self::Unassigned => crate::tr("tasks-filter-unassigned"),
             Self::Agent => crate::tr("tasks-filter-agent"),
-            Self::Running => crate::tr("tasks-filter-running"),
             Self::Label(label) => label.clone(),
         }
     }
@@ -67,7 +62,6 @@ impl Filter {
             Self::Todo => ui::icons::Icon::Circle,
             Self::Unassigned => ui::icons::Icon::CircleDashed,
             Self::Agent => ui::icons::Icon::Bot,
-            Self::Running => ui::icons::Icon::Hourglass,
             Self::Label(_) => ui::icons::Icon::Tag,
         }
     }
@@ -80,7 +74,6 @@ impl Filter {
             Self::Todo => "filter:todo".to_owned(),
             Self::Unassigned => "filter:unassigned".to_owned(),
             Self::Agent => "filter:agent".to_owned(),
-            Self::Running => "filter:running".to_owned(),
             Self::Label(label) => format!("filter:label:{label}"),
         }
     }
@@ -93,7 +86,6 @@ impl Filter {
             "filter:todo" => Self::Todo,
             "filter:unassigned" => Self::Unassigned,
             "filter:agent" => Self::Agent,
-            "filter:running" => Self::Running,
             other => Self::Label(other.strip_prefix("filter:label:")?.to_owned()),
         })
     }
@@ -103,16 +95,12 @@ impl Filter {
         match self {
             Self::All => true,
             Self::Mine => me.is_some_and(|me| issue.assigned_person() == Some(me)),
-            // A todo is a task nobody, human or AI, has started: no run has
-            // taken it up, and it has not been moved out of where it waits.
-            // "Started" is the work beginning, not the assignment.
-            Self::Todo => issue.run.is_none() && !issue.status.started(),
+            // A todo is a task nobody has started: it has not been moved out
+            // of where it waits. "Started" is the work beginning, not the
+            // assignment.
+            Self::Todo => !issue.status.started(),
             Self::Unassigned => issue.assignee.is_none(),
             Self::Agent => issue.assigned_agent().is_some(),
-            // A task list is what a person reads to follow the work going on
-            // and to take back what a run finished: a task a run has been
-            // let go on is on it, and so is one a person has held.
-            Self::Running => issue.run.is_some(),
             Self::Label(label) => issue.labels.iter().any(|carried| carried == label),
         }
     }

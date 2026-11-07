@@ -230,8 +230,7 @@ impl PeerGovernanceMut<'_> {
             return Err("the delegation is not an agent's".into());
         }
         self.peer.require_governance_writer(key, now)?;
-        if !agent_policy::OTHER_PEOPLES_AGENTS_JOIN && cert.user_public_key != self.peer.core.owner
-        {
+        if cert.user_public_key != self.peer.core.owner {
             return Err("only the workspace owner's agents are admitted".into());
         }
         if !holds_no_power(&cert) {

@@ -204,6 +204,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         if let Some(did) = &action.did {
             attribute(&mut out, "did", &pattern(did));
         }
+        // What it tells a person, as a notification shows it (`notify`'s title and body).
+        for word in meta.words.iter().filter(|word| word.view == action.id) {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
     }
     // A view's doc comment says how it draws, for its author; a person sees its label.
     // The words it shows as written are its attributes (i18n.md §2).
@@ -352,6 +356,32 @@ mod tests {
             assert!(reads_as_code(words).is_none(), "{words}");
             assert!(views_named_as_code(&alone(words)).is_empty(), "{words}");
         }
+    }
+
+    /// What an action tells a person is words a person reads: `notify`'s title and body are
+    /// messages of the action, so a catalogue translates them as it translates a view's.
+    #[test]
+    fn what_an_action_notifies_is_a_message_of_the_action() {
+        let mut meta = PackageMeta::default();
+        let action = serde_json::from_value(serde_json::json!({
+            "id": "7vjyuy7c",
+            "name": "remind",
+            "doc": "",
+            "params": [],
+            "class": "undoable",
+            "reaches": [],
+            "label": "Remind",
+        }))
+        .expect("an action");
+        meta.actions.push(action);
+        meta.words.push(crate::meta::WordMeta {
+            view: "7vjyuy7c".to_owned(),
+            key: "w-due".to_owned(),
+            text: "Due {d}".to_owned(),
+        });
+        let catalogue = source_catalogue(&meta);
+        assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
+        assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
     }
 
     /// A view the compiler makes of a loop body is a part of the view it stands in: it has no

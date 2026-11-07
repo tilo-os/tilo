@@ -11,9 +11,10 @@
 
 use serde_json::Value as Json;
 use tilolang::calendar::instant;
+use tilolang::pred::{CmpOp, Lit, Operand};
 use tilolang_runtime::InvokeOutcome;
 use tilolang_runtime::meta::{FieldKind, TriggerArgMeta, TriggerMeta, TriggerWhenMeta};
-use tilolang_runtime::store::{FieldSpec, FieldValue, Scalar, Store as _};
+use tilolang_runtime::store::{FieldRead, FieldSpec, FieldValue, Pred, Scalar, Store as _};
 use tilolang_runtime::value::{ResourceRef, Value};
 
 use crate::host::Host;
@@ -50,30 +51,68 @@ pub fn run(host: &Host, now: i64) -> usize {
 /// The next instant strictly after `now` at which a trigger of `host`'s packages has something
 /// to run: the start of the next period an `every` trigger covers, or the time a record's field
 /// names while that is still to come. `None` when no trigger will come due again.
+///
+/// The time a record's field names is the first of the type's when the index keeps its column,
+/// so a trigger over a large collection costs the pages up to its next instant, not the
+/// collection.
 #[must_use]
 pub fn next(host: &Host, now: i64) -> Option<i64> {
     let mut next: Option<i64> = None;
     for package in host.packages() {
         for trigger in &package.meta.triggers {
-            for doc in host.store().resources_of(&package.meta.app, &trigger.ty) {
-                let at = match &trigger.when {
-                    TriggerWhenMeta::Every(secs) if *secs > 0 => Some(
+            let at = match &trigger.when {
+                TriggerWhenMeta::Every(secs) if *secs > 0 => {
+                    let first = host
+                        .store()
+                        .resources_of(&package.meta.app, &trigger.ty)
+                        .into_iter()
+                        .next();
+                    first.map(|_| {
                         now.div_euclid(*secs)
                             .saturating_add(1)
-                            .saturating_mul(*secs),
-                    ),
-                    TriggerWhenMeta::Every(_) => None,
-                    TriggerWhenMeta::At(field) => {
-                        time_of(host, &doc, &trigger.ty, field).filter(|at| *at > now)
-                    }
-                };
-                if let Some(at) = at {
-                    next = Some(next.map_or(at, |held| held.min(at)));
+                            .saturating_mul(*secs)
+                    })
                 }
+                TriggerWhenMeta::Every(_) => None,
+                TriggerWhenMeta::At(field) => later(host, &trigger.ty, field, now)
+                    .and_then(|doc| time_of(host, &doc, field).filter(|at| *at > now)),
+            };
+            if let Some(at) = at {
+                next = Some(next.map_or(at, |held| held.min(at)));
             }
         }
     }
     next
+}
+
+/// The first record of the type `ty` whose time in `field` is after `now`, as the index keeps it.
+fn later(host: &Host, ty: &str, field: &str, now: i64) -> Option<ResourceRef> {
+    let pred = time_where(field, CmpOp::Gt, now);
+    let out = host.store().first(&ty.to_owned(), &pred, None);
+    out.ok().flatten()
+}
+
+/// Every record of the type `ty` whose time in `field` has come at `now`, as the index keeps it.
+fn come(host: &Host, ty: &str, field: &str, now: i64) -> Vec<ResourceRef> {
+    let pred = time_where(field, CmpOp::Le, now);
+    let out = host.store().select(&ty.to_owned(), &pred, None);
+    out.unwrap_or_default()
+}
+
+/// The records of the type `ty` whose time in `field` compares with the instant `now` by `op`:
+/// a range of the field's column, which the index answers without reading the records.
+fn time_where(field: &str, op: CmpOp, now: i64) -> Pred {
+    Pred::Cmp(
+        op,
+        Operand::Field(FieldRead {
+            spec: FieldSpec {
+                id: field.to_owned(),
+                kind: FieldKind::Register,
+            },
+            absent: Lit::Absent,
+        }),
+        Operand::Lit(Lit::Time(crate::host::iso_utc(now.cast_unsigned()))),
+    )
 }
 
 /// A trigger's run, as it is about to be made.
@@ -90,23 +129,34 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
     let mut out = Vec::new();
     for package in host.packages() {
         for trigger in &package.meta.triggers {
-            for doc in host.store().resources_of(&package.meta.app, &trigger.ty) {
+            let records: Vec<ResourceRef> = match &trigger.when {
+                TriggerWhenMeta::Every(secs) if *secs > 0 => host
+                    .store()
+                    .resources_of(&package.meta.app, &trigger.ty)
+                    .into_iter()
+                    .map(|doc| ResourceRef::root(doc, trigger.ty.clone()))
+                    .collect(),
+                TriggerWhenMeta::Every(_) => continue,
+                TriggerWhenMeta::At(field) => come(host, &trigger.ty, field, now),
+            };
+            for doc in &records {
                 let at = match &trigger.when {
                     TriggerWhenMeta::Every(secs) if *secs > 0 => {
                         now.div_euclid(*secs).saturating_mul(*secs)
                     }
                     TriggerWhenMeta::Every(_) => continue,
                     // A time still to come is left for the wake that reaches it.
-                    TriggerWhenMeta::At(field) => match time_of(host, &doc, &trigger.ty, field) {
+                    TriggerWhenMeta::At(field) => match time_of(host, doc, field) {
                         Some(at) if at <= now => at,
                         _ => continue,
                     },
                 };
                 let value = at.to_string();
-                if host.store().triggered(&doc, &trigger.id).as_deref() == Some(value.as_str()) {
+                let id = doc.id_string();
+                if host.store().triggered(&id, &trigger.id).as_deref() == Some(value.as_str()) {
                     continue;
                 }
-                let Some(args) = arguments(host, trigger, &package.meta.app, &doc) else {
+                let Some(args) = arguments(host, trigger, &package.meta.app, doc) else {
                     continue;
                 };
                 out.push(Due {
@@ -115,7 +165,7 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
                     action: trigger.action.clone(),
                     args,
                     triggering: Triggering {
-                        doc,
+                        doc: id,
                         key: trigger.id.clone(),
                         value,
                     },
@@ -126,15 +176,14 @@ fn due(host: &Host, now: i64) -> Vec<Due> {
     out
 }
 
-/// The instant the field `field` holds in the record `doc`: `Time`, or an `Option<Time>` with a
+/// The instant the field `field` holds in the record `at`: `Time`, or an `Option<Time>` with a
 /// time in it.
-fn time_of(host: &Host, doc: &str, ty: &str, field: &str) -> Option<i64> {
+fn time_of(host: &Host, at: &ResourceRef, field: &str) -> Option<i64> {
     let spec = FieldSpec {
         id: field.to_owned(),
         kind: FieldKind::Register,
     };
-    let at = ResourceRef::root(doc.to_owned(), ty.to_owned());
-    let text = match host.store().read(&at, &spec).ok()? {
+    let text = match host.store().read(at, &spec).ok()? {
         FieldValue::Scalar(Scalar::Text(text) | Scalar::Json(Json::String(text))) => text,
         FieldValue::Scalar(Scalar::Json(Json::Object(held))) => {
             held.get("some").and_then(Json::as_str)?.to_owned()
@@ -146,16 +195,16 @@ fn time_of(host: &Host, doc: &str, ty: &str, field: &str) -> Option<i64> {
 
 /// The arguments the trigger passes to its action: the record it runs for, and each root it
 /// names.
-fn arguments(host: &Host, trigger: &TriggerMeta, app: &str, doc: &str) -> Option<Vec<Value>> {
+fn arguments(
+    host: &Host,
+    trigger: &TriggerMeta,
+    app: &str,
+    subject: &ResourceRef,
+) -> Option<Vec<Value>> {
     let mut out = Vec::new();
     for arg in &trigger.args {
         match arg {
-            TriggerArgMeta::Subject => {
-                out.push(Value::resource(&ResourceRef::root(
-                    doc.to_owned(),
-                    trigger.ty.clone(),
-                )));
-            }
+            TriggerArgMeta::Subject => out.push(Value::resource(subject)),
             TriggerArgMeta::Root(ty) => {
                 let root = host.root_record(app, ty).ok()?;
                 out.push(Value::resource(&root));

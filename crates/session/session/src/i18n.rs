@@ -26,26 +26,38 @@ pub(crate) fn ensure() {
     tilo_desktop_search::i18n::ensure();
 }
 
-/// The words of a tilolang package the session runs, in the person's language: its catalogues
-/// join the session's, so a declaration's label, description and noun read through them
-/// (`docs/designs/app-language/i18n.md`).
-pub(crate) struct PackageWords;
+/// The words of the tilolang packages a development session seeds, in the person's language:
+/// their catalogues ride along with the session's — a declaration's label, description and noun
+/// read through them (`docs/designs/app-language/i18n.md`) — without saying which language the
+/// session itself draws in. A seeded package that ships German leaves the session's own words
+/// (the toolkit's, the desktop's) English on a German device; a session that has its own German
+/// reads them German still.
+pub(crate) struct SeededWords;
 
-impl tilolang_tilo::runtime::Words for PackageWords {
+impl tilolang_tilo::runtime::Words for SeededWords {
     fn add(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
+        ensure();
+        for (locale, text) in catalogues {
+            ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
+        }
     }
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
-        tilo_ui_host::i18n::word(key, args, source)
+        ensure();
+        let args: Vec<(&str, ui::i18n::ArgValue)> = args
+            .iter()
+            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
+            .collect();
+        let said = ui::i18n::I18nManager::format(key, &args);
+        if said == key { source.to_owned() } else { said }
     }
 
     fn revision(&self) -> u64 {
-        tilo_ui_host::i18n::revision()
+        ui::i18n::I18nManager::revision()
     }
 
     fn language(&self) -> String {
-        ui::i18n::I18nManager::current_locale()
+        ui::i18n::I18nManager::window_locale()
     }
 }
 

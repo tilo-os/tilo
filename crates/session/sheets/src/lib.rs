@@ -8,6 +8,7 @@
 //! in and requests out ([`ui::application::HostContext::lend`]).
 
 pub mod add_app;
+pub mod delete_workspace;
 pub mod dictation;
 pub mod directory;
 pub mod display_confirm;

@@ -548,6 +548,8 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
+    crate::described!();
+
     crate::provides!(
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::undo::UndoPoints

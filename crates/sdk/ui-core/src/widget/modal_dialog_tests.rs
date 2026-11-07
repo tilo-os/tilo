@@ -1150,6 +1150,91 @@ fn a_tall_body_scrolls_inside_a_sheet_that_takes_the_window() {
     assert!(d.scroll_offset().abs() < 1e-9);
 }
 
+/// A strip the caller passes as the sheet's header stays where it is while
+/// the body scrolls under it: the wheel moves what the body holds, never the
+/// tabs a person is switching between.
+#[test]
+fn a_header_stays_put_while_the_body_scrolls_under_it() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+
+    // Geometry: the strip takes its height out of the body and stands above
+    // it, with the gap the title keeps from the body.
+    let strip = 40.0;
+    let plain = lay(&ModalSpec::new("Tabs").body_height(600.0), &theme);
+    let headed = lay(
+        &ModalSpec::new("Tabs")
+            .body_height(600.0)
+            .header_height(strip),
+        &theme,
+    );
+    assert!(
+        plain.header.is_none(),
+        "a sheet that asked for none has none"
+    );
+    let header = headed.header.expect("the spec asked for a header");
+    assert!(
+        (header.height() - strip).abs() < 0.5,
+        "the header takes the height it asked for: {header:?}"
+    );
+    assert!(
+        (header.width() - headed.body.width()).abs() < 0.5,
+        "and the body's width"
+    );
+    assert!(
+        header.y0 >= headed.title.y1 - 0.5 && headed.body.y0 >= header.y1,
+        "the header stands below the title and the body below it: {:?} {:?}",
+        header,
+        headed.body
+    );
+    let gap = plain.body.y0 - plain.title.y1;
+    assert!(
+        (headed.card.height() - plain.card.height() - strip - gap).abs() < 0.5,
+        "the sheet grows by the header and its gap: {} vs {}",
+        plain.card.height(),
+        headed.card.height()
+    );
+    assert!(
+        (plain.body.height() - headed.body.height()).abs() < 0.5,
+        "and the body keeps the height it asked for"
+    );
+
+    // A real dialog: the strip is drawn where it was laid out, and the
+    // wheel over the body leaves it there.
+    let mut d = ModalDialog::new(
+        "Tabs",
+        CountingContent {
+            height: 2000.0,
+            ..CountingContent::default()
+        },
+    )
+    .with_header(CountingContent {
+        height: 40.0,
+        ..CountingContent::default()
+    })
+    .open(true);
+    lay_out(&mut d, WINDOW, &theme);
+    present(&mut d, WINDOW, &theme);
+    let header_before = d.header_rect().expect("the sheet shows its header");
+    let body = d.body_rect();
+    dispatch(&mut d, &cursor_at(body.center()));
+    dispatch(&mut d, &wheel(-3.0));
+    let scrolled = d.scroll_offset();
+    assert!(scrolled > 0.0, "the wheel scrolls the body");
+    lay_out(&mut d, WINDOW, &theme);
+    present(&mut d, WINDOW, &theme);
+    assert_eq!(
+        d.header_rect(),
+        Some(header_before),
+        "the header stays where it stands"
+    );
+    assert!(
+        (d.content().get_rect().y0 - (d.body_rect().y0 - scrolled)).abs() < 0.5,
+        "while the content under it moves up by the scroll"
+    );
+}
+
 /// A sheet whose body is too short for what it holds ends above the row
 /// the window's edge falls in, and the rows below are reached by scrolling:
 /// a person never sees half a row under the footer.

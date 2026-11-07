@@ -6,7 +6,7 @@ mod workspace_nodes;
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
 pub use published::{Caller, Granted, PublishedResources, Reading, ResourceWatch};
 pub use task_execution::{
-    NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
+    AgentRoster, NativeTaskActionRequirement, NativeTaskBinding, Preview, PreviewSide, TRACKER_APP,
     TRACKER_ISSUE_PREFIX, TRACKER_RECORD, TRACKER_RESOURCE, TrackerAnswer, TrackerDirection,
     TrackerQuestion, TrackerRun, TrackerRuns, confirmation_preview, is_tracker_issue,
     tracker_written,
@@ -1173,6 +1173,15 @@ pub trait SearchIndexServices: Send + Sync {
     ) -> Result<(), String>;
 }
 
+/// What the session hears of a workspace's record changing: an app of the
+/// workspace wrote it here, or a peer's change of it was taken in. The content
+/// the record holds may have moved, and the search index that reads it without
+/// the app's window is out of date.
+pub trait RecordIndexChanges: Send + Sync {
+    /// The record `record` of `app` in `workspace` changed.
+    fn changed(&self, workspace: &str, app: &str, record: &str);
+}
+
 /// The scope component content puts are kept under in a workspace's content
 /// store: neutral, no application's. The store reads by workspace, so every app
 /// of the workspace reads what was put there once an action hands it the
@@ -1875,6 +1884,9 @@ pub struct HostServices {
     /// The Tasks app's tracker, whose issues assigned to an agent are its
     /// runs. Without it agents run no tasks.
     pub tracker_runs: Option<Arc<dyn TrackerRuns>>,
+    /// The workspaces' agents, as their records name them: what the broker
+    /// admits an agent's session with. Without it no agent joins.
+    pub agents: Option<Arc<dyn AgentRoster>>,
     pub native_certificates: Option<Arc<dyn crate::certificate_authority::CertificateAuthority>>,
     pub local_person: Option<Arc<dyn LocalPersonServices>>,
     pub record_changes: Option<Arc<dyn RecordChangeServices>>,
@@ -1896,6 +1908,9 @@ pub struct HostServices {
     /// The session's persistent search index of applications' content.
     /// Without it apps' content is findable only while they run.
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
+    /// What the session hears of a record changing, so search reads it again
+    /// without the app's window.
+    pub record_index_changes: Option<Arc<dyn RecordIndexChanges>>,
     /// The device content store content puts go to. Without it the content
     /// put door is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,

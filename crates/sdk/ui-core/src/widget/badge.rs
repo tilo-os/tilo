@@ -614,6 +614,8 @@ pub(crate) fn shows(content: &BadgeContent) -> bool {
 }
 
 impl Widget for Badge {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

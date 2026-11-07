@@ -123,6 +123,18 @@ impl Replica {
         }
     }
 
+    /// Commit what the runtime committed on its own as `who`'s steps, as another person at their
+    /// window made them.
+    pub fn commit_as(&mut self, who: &str) {
+        for committed in self.host.take_committed() {
+            self.apply_as(
+                &committed.action,
+                ActionInvoker::actor(who.to_owned()),
+                None,
+            );
+        }
+    }
+
     fn apply_as(
         &mut self,
         action: &DynAction,

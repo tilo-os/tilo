@@ -2003,17 +2003,13 @@ fn rows_of(
 ) -> Vec<RosterRow> {
     let colors = roster_colors_with_local_user(roster, local_user);
     let now = tilo_clock::unix_now();
+    let agents = agent_members(workspace, now);
     let rows: Vec<RosterRow> = roster
         .iter()
         .map(|participant| {
-            let agent_role = workspace.and_then(|workspace| {
-                workspace
-                    .agent_role_at(&participant.id, now)
-                    .or_else(|| workspace.agent_role_at(&participant.name, now))
-            });
             let is_bot =
                 workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
-            let is_agent = is_bot || agent_role.is_some() || has_agent_marker(participant);
+            let is_agent = is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
             let (red, green, blue) = colors
                 .get(&participant.id)
                 .copied()
@@ -2026,15 +2022,11 @@ fn rows_of(
                 color: Color::from_rgb8(red, green, blue),
                 is_agent,
                 is_bot,
-                role: agent_role
-                    .map(crate::workspace_settings::role_label)
-                    .or_else(|| {
-                        participant
-                            .role_id
-                            .as_deref()
-                            .filter(|_| !has_agent_marker(participant))
-                            .map(display_role_id)
-                    }),
+                role: participant
+                    .role_id
+                    .as_deref()
+                    .filter(|_| !has_agent_marker(participant))
+                    .map(display_role_id),
                 invited: participant.invited,
                 own_device: participant.own_device,
                 activity: participant
@@ -2104,9 +2096,26 @@ pub fn collaborator_is_agent(
     has_agent_marker(participant)
         || workspace.is_some_and(|workspace| {
             is_workspace_bot(workspace, participant)
-                || workspace.agent_role_at(&participant.id, now).is_some()
-                || workspace.agent_role_at(&participant.name, now).is_some()
+                || names_agent(&agent_members(Some(workspace), now), participant)
         })
+}
+
+/// The ids of the agents the workspace's grants name, as agents.
+fn agent_members(workspace: Option<&tilo_desktop_model::Workspace>, now: u64) -> Vec<String> {
+    workspace.map_or_else(Vec::new, |workspace| {
+        workspace
+            .agent_members_at(now)
+            .into_iter()
+            .map(|(agent, _)| agent)
+            .collect()
+    })
+}
+
+/// Whether `participant` is one of `agents`, by id or by the name it shows.
+fn names_agent(agents: &[String], participant: &Collaborator) -> bool {
+    agents.iter().any(|agent| {
+        agent == &participant.id || agent == &participant.name
+    })
 }
 
 /// A recorded role id as people read it; an id this model does not define
@@ -2432,16 +2441,15 @@ mod tests {
 
         let mut workspace = Workspace::new(WorkspaceSlot(71), "Shared");
         workspace.set_owner("owner");
-        assert!(
-            !crate::workspace_settings::admit_agent(
-                &mut workspace,
-                &"owner".to_string(),
-                "scribe",
-                crate::workspace_settings::AgentPreset::Operator,
-            )
-            .is_empty(),
-            "owner admits agent"
-        );
+        let node = workspace.node();
+    workspace.grant(tilo_action_policy::Grant::new(
+        "agent-member:scribe",
+        tilo_action_policy::Subject::agent("scribe"),
+        node,
+        tilo_action_policy::KindSet::READ,
+        tilo_action_policy::Answer::Allow,
+        tilo_action_policy::Subject::person("owner"),
+    ));
         workspace
             .collaborators
             .push(Collaborator::new("scribe", "Release Notes Agent"));

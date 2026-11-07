@@ -170,6 +170,7 @@ impl Checker<'_> {
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
             "open" => return self.builtin_open(args, span),
+            "notify" => return self.builtin_notify(args, span),
             "resource" => return self.builtin_resource(args, span),
             "person" => return self.builtin_person(args, span),
             "agent" => return self.builtin_agent(args, span),
@@ -1206,6 +1207,100 @@ impl Checker<'_> {
         let fits = c.kind == CKind::View
             && matches!(c.params.as_slice(), [p] if p.ty == Ty::Record(key.clone()));
         fits.then(|| c.id.clone())
+    }
+
+    /// `notify(to: who, title: text, body: text, opens: r)`: tell the person `to` something on
+    /// their device, and open the resource `r` when they choose it. The invocation records it,
+    /// so a run replayed after waiting tells them no more than the first time.
+    fn builtin_notify(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        let mut to = None;
+        let mut title = None;
+        let mut body = None;
+        let mut opens = None;
+        for arg in args {
+            let Some(named) = &arg.name else {
+                self.err(
+                    "E022",
+                    arg.value.span,
+                    "`notify` takes what it says by name: `notify(to:, title:, body:, opens:)`",
+                );
+                let _ = self.expr(&arg.value, None);
+                continue;
+            };
+            match named.name.as_str() {
+                "to" => to = Some(self.expr_as(&arg.value, &Ty::Principal)),
+                "title" | "body" => {
+                    // What the notification shows is words a person reads: its literal is a
+                    // message of the action, as the text of a component is one of the view.
+                    self.mark_shown(&arg.value);
+                    let said = self.expr_as(&arg.value, &Ty::Text);
+                    if named.name == "title" {
+                        title = Some(said);
+                    } else {
+                        body = Some(said);
+                    }
+                }
+                "opens" => {
+                    let r = self.expr(&arg.value, None);
+                    match r.ty.clone() {
+                        Ty::Record(_) => opens = Some(r),
+                        ty if ty.is_error() => {}
+                        ty => {
+                            let t = self.show(&ty);
+                            self.err(
+                                "E022",
+                                arg.value.span,
+                                format!(
+                                    "`opens:` is the resource choosing the notification opens; this is {t}"
+                                ),
+                            );
+                        }
+                    }
+                }
+                other => {
+                    self.err(
+                        "E022",
+                        arg.value.span,
+                        format!(
+                            "`notify` says `to:`, `title:`, `body:` and `opens:`; not `{other}:`"
+                        ),
+                    );
+                    let _ = self.expr(&arg.value, None);
+                }
+            }
+        }
+        let mut missing = Vec::new();
+        for (given, what) in [
+            (to.is_some(), "to"),
+            (title.is_some(), "title"),
+            (body.is_some(), "body"),
+            (opens.is_some(), "opens"),
+        ] {
+            if !given {
+                missing.push(what);
+            }
+        }
+        if !missing.is_empty() {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`notify` also needs {}: `notify(to: who, title: ..., body: ..., opens: r)`",
+                    missing.join(", ")
+                ),
+            );
+        }
+        self.reads(crate::effects::Effect::Notify, span, "`notify`");
+        Ex::host(
+            Imp::Notify,
+            vec![
+                to.unwrap_or_else(Ex::error),
+                title.unwrap_or_else(Ex::error),
+                body.unwrap_or_else(Ex::error),
+                opens.unwrap_or_else(Ex::error),
+            ],
+            Ty::Unit,
+        )
     }
 
     fn builtin_model(&mut self, args: &[ast::Arg], span: Span) -> Ex {

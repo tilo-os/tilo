@@ -1825,6 +1825,8 @@ impl StatusLine {
 }
 
 impl Widget for StatusLine {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2048,6 +2050,8 @@ impl ObjectHeader {
 }
 
 impl Widget for ObjectHeader {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

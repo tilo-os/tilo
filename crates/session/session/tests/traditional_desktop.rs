@@ -305,8 +305,8 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     );
 }
 
-/// Two frames placed by the canvas's own typed line stand clear of each other: a new place takes
-/// the free space nearest its anchor and never covers what is already there (canvas.md §6).
+/// Two frames placed at points closer than a frame is wide stand clear of each other: a new place
+/// takes the free space nearest its anchor and never covers what is already there (canvas.md §6).
 #[test]
 fn two_frames_placed_at_one_point_do_not_overlap() {
     let _settled = ui::motion::testing::settled();
@@ -317,16 +317,10 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
     });
     show(&mut session, root.path(), "Frames");
 
-    // Two typed lines at two points, as the canvas's entry sends them, 600 apart: less than a
+    // Two places at two points, each the size a place takes by default, 600 apart: less than a
     // frame's 720 width, so the second would lie over the first.
     for (note, x) in [(&notes[0], 100), (&notes[1], 700)] {
-        session
-            .invoke(
-                "shell:arrangement",
-                "conversation",
-                json!({"line": note, "x": x, "y": 120}).as_object().unwrap(),
-            )
-            .unwrap_or_else(|error| panic!("conversation: {error:?}"));
+        place(&mut session, note, x, 120, 720, 520);
     }
     until(&mut session, "two frames", |session| {
         frames(session).len() == 2

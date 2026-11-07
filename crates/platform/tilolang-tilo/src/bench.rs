@@ -761,9 +761,9 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 }
 
 /// Create the root of `shape`, seeded with `n` items, in `doc`: the roots it links first.
-fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta) -> Result<(), String> {
+fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<(), String> {
     for (_, linked) in &shape.links {
-        seed(doc, linked, n, meta)?;
+        seed(doc, linked, n, meta, who)?;
     }
     let root = seeded_root(shape, n, meta)?;
     let action = DynAction {
@@ -777,13 +777,13 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta) -> Result<(), Strin
             record: tilo_resource::Model::to_json(&root),
         }],
     };
-    execute(doc, &action, "seed")
+    execute(doc, &action, who)
 }
 
-/// A workspace seeded with `n` items: the record, ready for a host.
-fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta) -> Result<Doc, String> {
+/// A workspace seeded with `n` items, all made by `who`: the record, ready for a host.
+fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<Doc, String> {
     let mut doc = Doc::new();
-    seed(&mut doc, shape, n, meta)?;
+    seed(&mut doc, shape, n, meta, who)?;
     // A window opens a workspace it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
@@ -797,6 +797,16 @@ fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta) -> Result<Doc, String>
 /// # Errors
 /// The package's root has nothing to seed, or seeding fails.
 pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
+    seeded_record_by(packages, n, "seed")
+}
+
+/// As [`seeded_record`], its items made by `who`: a workspace as the person `who` left it, so
+/// that what another person changed of it afterwards is what they have not seen.
+///
+/// # Errors
+///
+/// As [`seeded_record`].
+pub fn seeded_record_by(packages: &[Compiled], n: usize, who: &str) -> Result<Doc, String> {
     for compiled in packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
     }
@@ -809,7 +819,7 @@ pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
         .map(|p| &p.meta)
         .filter(|m| m.app != main.meta.app)
         .collect();
-    seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta)
+    seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta, who)
 }
 
 fn root_id(shape: &Shape) -> String {
@@ -929,6 +939,8 @@ struct Phases {
     open_load: Vec<f64>,
     open_view: Vec<f64>,
     open_rows: Vec<f64>,
+    /// Copying the indexes the samples open from, outside what opening them costs.
+    fixture: Vec<f64>,
 }
 
 impl Phases {
@@ -974,6 +986,7 @@ impl Phases {
             "open_load_p50_ms": p50(&mut self.open_load),
             "open_view_p50_ms": p50(&mut self.open_view),
             "open_rows_p50_ms": p50(&mut self.open_rows),
+            "fixture_p50_ms": p50(&mut self.fixture),
         })
     }
 }
@@ -1022,6 +1035,12 @@ impl Workspace {
         // As a launcher does: from the modules built with Tilo, compiling no source.
         for compiled in packages {
             host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
+        }
+        // The shell shows its loading state until the package's index is ready, and renders the
+        // window over it: the bench waits for it too, so what it opens is the index an earlier
+        // session kept, never the record's log for what an index answers.
+        if index.is_some() {
+            host.wait_index();
         }
         let loaded = Instant::now();
         let mut list = host.open_main(app).map_err(|e| e.to_string())?;
@@ -1532,12 +1551,24 @@ impl Sized<'_> {
     }
 
     fn open(&self) -> Result<Workspace, String> {
+        let index = self.fixture()?;
+        self.opened(index)
+    }
+
+    /// A copy of the indexes as an earlier session left them: what opening a workspace of its own
+    /// from them changes, never the copy the other samples open from.
+    fn fixture(&self) -> Result<IndexDir, String> {
+        self.index.copy()
+    }
+
+    /// [`Self::open`] from the index `index`, which is the sample's to change.
+    fn opened(&self, index: IndexDir) -> Result<Workspace, String> {
         Workspace::open(
             self.base.clone(),
             self.packages,
             &self.meta.app,
             self.config.profile,
-            Some(self.index.copy()?),
+            Some(index),
         )
     }
 
@@ -1622,7 +1653,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_workspace(&shape, n, &meta)?)?;
+        let sized = sized(n, seeded_workspace(&shape, n, &meta, "seed")?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }
@@ -1801,7 +1832,9 @@ fn measure_memory(workspace: &Path, package: &Path, index: Option<PathBuf>) -> R
 /// Opening the package's main view on a workspace of the size, through the first frame; and until
 /// search and publication, which read the workspace off the frame, have it all. Beside them, loading
 /// the workspace's record from its saved bytes, which opening a workspace from disk adds first: the one
-/// part of opening that reads the whole record, and grows with it.
+/// part of opening that reads the whole record, and grows with it. The indexes a sample opens from
+/// are copied first, outside the time it takes ([`Sized::fixture`]): a session opens the ones it
+/// keeps in place.
 fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
@@ -1810,10 +1843,16 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut live = tilolang_runtime::LiveStats::default();
     let mut work = None;
     for _ in 0..sized.config.open_samples() {
-        // Each sample opens a workspace of its own, from a store that read nothing yet.
+        // Each sample opens a workspace of its own, from a store that read nothing yet. The copy
+        // of the indexes that gives it is the fixture, made before the timer: a session opens
+        // the indexes it keeps in place, and copying them grows with the workspace, unlike
+        // opening it.
+        let copied = Instant::now();
+        let fixture = sized.fixture()?;
+        let copy = ms(copied.elapsed());
         let allocated = allocations();
         let start = Instant::now();
-        let mut workspace = sized.open()?;
+        let mut workspace = sized.opened(fixture)?;
         samples.push(ms(start.elapsed()));
         live = workspace.list.stats();
         let mut opened = Work::of(&workspace, &[]);
@@ -1830,6 +1869,7 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
         phases.open_load.append(&mut workspace.phases.open_load);
         phases.open_view.append(&mut workspace.phases.open_view);
         phases.open_rows.append(&mut workspace.phases.open_rows);
+        phases.fixture.push(copy);
     }
     let mut extra = with_work(phases.take(), work.unwrap_or_default());
     if let Json::Object(m) = &mut extra {
@@ -2710,5 +2750,38 @@ mod costs {
         tilolang_runtime::assert_costs("open", &costs, |c| {
             c.calls("Task.due_today requirement") <= shown
         });
+    }
+
+    /// The first render reads the same of the index at a hundred thousand tasks as at a
+    /// thousand: what a window shows is one page of them, and nothing it reads is worked out
+    /// per task in the workspace. Release only: a hundred thousand tasks are seeded and
+    /// indexed as the bench seeds them, which a debug build takes minutes to do.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_first_render_at_a_hundred_thousand_reads_the_index_as_at_a_thousand() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let packages = compile(&dir).expect("the tasks package compiles");
+        let app = packages.last().expect("a package").meta.app.clone();
+        let reads_at = |n: usize| {
+            let doc = seeded_record(&packages, n).expect("the workspace seeds");
+            // The index an earlier window kept, so the open reads it rather than building one.
+            let (index, _) = prepare_index(&doc, &packages).expect("the index builds");
+            let mut workspace =
+                Workspace::open_counting(doc, &packages, &app, false, Some(index), false)
+                    .expect("the workspace opens");
+            workspace.settle();
+            workspace.host.store().read_stats()
+        };
+        let small = reads_at(1_000);
+        let large = reads_at(100_000);
+        assert_eq!(
+            ((large.doc, large.index, large.evaluated), large.versions),
+            ((small.doc, small.index, small.evaluated), small.versions),
+            "the first render reads more at 100k than at 1k"
+        );
+        assert_eq!(
+            large.versions, 0,
+            "the first render derived the record's versions rather than reading the index"
+        );
     }
 }
