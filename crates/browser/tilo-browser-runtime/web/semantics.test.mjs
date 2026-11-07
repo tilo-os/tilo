@@ -426,6 +426,24 @@ test('duplicate tab test IDs route by current path while canonical group identit
 });
 
 
+test('a node a widget lends to two places is its own element in each',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
+  document.activeElement=document.body;
+  const lent=()=>({role:'Group',name:'Lent',children:[{role:'Button',name:'Act',action_target:'act'}]});
+  const view=()=>({root:{path:'desk',children:[
+    {path:'desk/left',semantics:{role:'Group',name:'Left'},children:[{path:'shared',semantics:lent()}]},
+    {path:'desk/right',semantics:{role:'Group',name:'Right'},children:[{path:'shared',semantics:lent()}]},
+  ]}});
+  bridge.update(view());
+  const lentIn=nodes=>nodes.filter(node=>node.getAttribute('aria-label')==='Lent');
+  const each=lentIn(root.children);
+  assert.equal(each.length,2,'each place mirrors the lent node in an element of its own');
+  for(const node of each)assert.equal(node.children[0]?.getAttribute('aria-label'),'Act');
+  bridge.update(view());
+  assert.deepEqual(lentIn(root.children),each,'each place keeps its element across updates');
+  bridge.close();
+});
+
 test('caller palette keeps test IDs for identity while actions route by canonical paths',()=>{
   const calls=[];const reports=[];const root=new Element('div');
   const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));

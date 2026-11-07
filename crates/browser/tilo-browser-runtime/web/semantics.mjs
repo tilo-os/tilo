@@ -334,11 +334,12 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
     const activeCandidates=[];
     // A test ID is a convenient alias only when it names one current widget.
     // Keep DOM identity separate from the route, which changes with layout paths.
-    const testIds=new Map(),semanticOwners=new Map();
+    const testIds=new Map(),semanticOwners=new Map(),pathOwners=new Map();
     function countOwners(node){
       if(node.test_id)testIds.set(node.test_id,(testIds.get(node.test_id)??0)+1);
       const key=node.semantics?.semantic_key;
       if(key)semanticOwners.set(key,(semanticOwners.get(key)??0)+1);
+      if(node.semantics)pathOwners.set(node.path,(pathOwners.get(node.path)??0)+1);
       for(const child of node.children??[])countOwners(child);
     }
     countOwners(snapshot.root);
@@ -422,16 +423,20 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope) {
       else if(changed&&!node.children?.length)element.textContent=value||node.name||'';
       (node.children??[]).forEach((child,i)=>semantic(child,owner,element,`${index}/${i}`,identity,[...ancestry,key],ownerPath,element.tiloRect));
     }
-    function walk(node,parent,ancestry=[]){
+    function walk(node,parent,ancestry=[],place=[]){
       if(node.semantics?.state?.hidden)return;
       if(node.semantics){
         const uniqueTestId=node.test_id&&testIds.get(node.test_id)===1;
         const semanticKey=node.semantics.semantic_key;
-        const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:['path',node.path];
+        // A path names one place when one node says it; a node a widget lends
+        // to two places (a shared node) says its path twice, and each place is
+        // its own element, under its own ancestors: the other copy's element
+        // standing above this one is no tree to append into.
+        const identity=semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]:uniqueTestId?['test',node.test_id]:pathOwners.get(node.path)===1?['path',node.path]:['place',[...place,node.path].join('/')];
         semantic(node.semantics,node.path,parent,node.path,identity,ancestry,node.path,node.rect);
         ancestry=[...ancestry,JSON.stringify([identity,node.semantics.semantic_key??node.semantics.action_target??node.path])];
       }
-      for(const child of node.children??[])walk(child,parent,ancestry);
+      for(const child of node.children??[])walk(child,parent,ancestry,[...place,node.path]);
     }
     walk(snapshot.root,root);
     for(const [key,element] of elements)if(!live.has(key)){shortcuts?.blur?.(element);element.tiloState.active=false;element.route=undefined;element.remove();elements.delete(key);}
