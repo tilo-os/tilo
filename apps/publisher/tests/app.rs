@@ -21,17 +21,19 @@ struct Machine {
 impl Machine {
     /// The publisher key in the machine's secret store, as `tilo-app` reads it.
     #[expect(clippy::expect_used, reason = "the in-memory store always answers")]
-    fn key(&self) -> Option<registry_client::key::SigningKey> {
-        registry_client::key::stored(&self.secrets).expect("the secret store answers")
+    fn key(&self) -> Option<app_registry::publisher::key::SigningKey> {
+        app_registry::publisher::key::stored(&self.secrets).expect("the secret store answers")
     }
 }
 
 #[expect(clippy::expect_used, reason = "a test without its home cannot run")]
 fn home() -> Machine {
     let mut home = tilo_test_env::TestHome::new().expect("test home");
-    home.env().remove(registry_client::key::KEY_ENV);
+    home.env().remove(app_registry::publisher::key::KEY_ENV);
     let services = ui::host::HostServices::null();
-    let secrets = services.secrets.store(registry_client::key::SECRETS_APP);
+    let secrets = services
+        .secrets
+        .store(app_registry::publisher::key::SECRETS_APP);
     Machine {
         _home: home,
         _host: ui::host::enter(&services),
@@ -49,7 +51,7 @@ fn the_registry_must_be_https_or_this_machine() {
         "http://localhost:8080",
         "http://[::1]:8080",
     ] {
-        assert!(registry_client::RegistryClient::validate_url(address).is_ok());
+        assert!(app_registry::publisher::RegistryClient::validate_url(address).is_ok());
         profile
             .apply(edit(&Publisher::paths().registry, address))
             .expect("HTTPS or an actual loopback host");
@@ -65,7 +67,7 @@ fn the_registry_must_be_https_or_this_machine() {
         "not a URL",
         "file:///tmp/registry",
     ] {
-        assert!(registry_client::RegistryClient::validate_url(address).is_err());
+        assert!(app_registry::publisher::RegistryClient::validate_url(address).is_err());
         assert!(
             profile
                 .apply(edit(&Publisher::paths().registry, address))
@@ -98,7 +100,7 @@ fn creating_a_key_needs_confirmation_and_keeps_it_out_of_the_resource() {
         .expect("the new key's public half is shown");
 
     let key = home.key().expect("the key tilo-app reads");
-    let public = registry_client::key::public_hex(&key);
+    let public = app_registry::publisher::key::public_hex(&key);
     app.harness()
         .expect(&SemanticExpectation::named("public-key").name_contains(&public))
         .expect("the public key is the stored key's");

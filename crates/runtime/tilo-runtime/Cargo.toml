@@ -66,6 +66,9 @@ iroh.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true
 package-store = { path = "../../packaging/package-store" }
+# The installed applications this runtime launches, read through their signed
+# manifests.
+app-catalogue = { path = "../../packaging/app-catalogue" }
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
 # Existing certified Join encoder; no new wire schema or credential.
@@ -91,7 +94,6 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 tilo-os-search = { path = "../os-search" }
 # The native request an app hands a host search result back with.
 tilo-host-search = { path = "../../platform/tilo-host-search" }
-tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # What a device says of itself when another device of its workspace offers it
 # work: whether it runs the app, and how it is powered.
 tilo-power-mgmt = { path = "../../system/power" }

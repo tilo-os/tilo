@@ -357,7 +357,7 @@ impl InstalledApps {
     /// The catalogue as this login holds it; an unreadable one leaves the
     /// apps with the ids they have now.
     fn read() -> Self {
-        let earlier = match tilo_installed_apps::earlier_ids_from_env() {
+        let earlier = match app_catalogue::apps::earlier_ids_from_env() {
             Ok(earlier) => earlier,
             Err(error) => {
                 tracing::warn!(%error, "the installed apps are not read: no earlier app ids");

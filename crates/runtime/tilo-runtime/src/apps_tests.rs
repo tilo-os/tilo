@@ -469,7 +469,7 @@ fn a_payload_that_does_not_verify_is_refused() {
         &[("probe", b"binary")],
     );
     let installed = || {
-        tilo_installed_apps::read(&store.catalog())
+        app_catalogue::apps::read(&store.catalog())
             .unwrap()
             .into_iter()
             .find(|app| app.package_id == VIEWER)

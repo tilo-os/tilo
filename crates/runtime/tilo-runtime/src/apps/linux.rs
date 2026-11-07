@@ -10,12 +10,12 @@
 
 use super::{Apps, Launch, Sockets};
 use crate::unix;
+use app_catalogue::apps::InstalledApp;
 use std::{
     io,
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
-use tilo_installed_apps::InstalledApp;
 
 /// The launcher's view of `XDG_RUNTIME_DIR`, inside the profile.
 const LAUNCH_RUNTIME_DIR: &str = "run";

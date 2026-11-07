@@ -71,7 +71,7 @@ pub trait PersonRecordKinds: Send + Sync + 'static {
     fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 
     /// The ids `app_id` had before, as the installed catalogue believes them (the same publisher
-    /// signed them, `tilo_installed_apps::earlier_ids`): the app keeps using the records of
+    /// signed them, `app_catalogue::apps::earlier_ids`): the app keeps using the records of
     /// those ids, so a route of one is its launch's own. None by default.
     fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
         Vec::new()

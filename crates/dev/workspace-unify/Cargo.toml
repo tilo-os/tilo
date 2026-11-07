@@ -869,7 +869,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -1207,7 +1206,7 @@ doc = false
 "tilo-host" = { path = "../../../crates/sdk/tilo-host", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony" }
+"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = [] }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-identity-host" = { path = "../../../crates/runtime/tilo-identity-host", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
@@ -1215,7 +1214,6 @@ doc = false
 "tilo-innertube" = { path = "../../../crates/platform/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
-"tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
 "tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "native", "plane", "relay", "tls"] }
@@ -1616,6 +1614,7 @@ doc = false
 "anstyle-parse-1_0_0" = { package = "anstyle-parse", version = "^1.0.0", default-features = false, features = ["default", "utf8"] }
 "anstyle-query-1_1_5" = { package = "anstyle-query", version = "^1.1.5", default-features = false, features = [] }
 "anyhow-1_0_103" = { package = "anyhow", version = "^1.0.103", default-features = false, features = ["default", "std"] }
+"app-registry" = { path = "../../../crates/packaging/app-registry", default-features = false, features = [] }
 "ar_archive_writer-0_5_3" = { package = "ar_archive_writer", version = "^0.5.3", default-features = false, features = [] }
 "arc-swap-1_9_2" = { package = "arc-swap", version = "^1.9.2", default-features = false, features = [] }
 "argon2-0_6_0" = { package = "argon2", version = "^0.6.0", default-features = false, features = ["alloc"] }
@@ -2199,7 +2198,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }
@@ -3461,7 +3459,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-server" = { path = "../../../crates/packaging/registry-server", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "reis-0_7_1" = { package = "reis", version = "^0.7.1", default-features = false, features = ["calloop"] }
@@ -3807,7 +3804,6 @@ doc = false
 "tilo-innertube" = { path = "../../../crates/platform/tilo-innertube", default-features = false, features = [] }
 "tilo-input-context" = { path = "../../../crates/platform/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../../crates/system/install-helpers", default-features = false, features = [] }
-"tilo-installed-apps" = { path = "../../../crates/packaging/installed-apps", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../../crates/platform/tilo-keyboard-map", default-features = false, features = [] }
 "tilo-libvirt-domain" = { path = "../../../crates/system/libvirt-domain", default-features = false, features = [] }
 "tilo-live" = { path = "../../../crates/collab/tilo-live", default-features = false, features = ["default", "native", "plane", "relay", "tls"] }
@@ -4790,7 +4786,6 @@ doc = false
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
 "regex-lite-0_1_9" = { package = "regex-lite", version = "^0.1.9", default-features = false, features = ["default", "std", "string"] }
 "regex-syntax-0_8_11" = { package = "regex-syntax", path = "../../../vendor/regex-syntax", default-features = false, features = ["default", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
-"registry-client" = { path = "../../../crates/packaging/registry-client", default-features = false, features = [] }
 "registry-types" = { path = "../../../crates/packaging/registry-types", default-features = false, features = [] }
 "renderdoc-sys-1_1_0" = { package = "renderdoc-sys", version = "^1.1.0", default-features = false, features = [] }
 "reqwest-0_13_4" = { package = "reqwest", version = "^0.13.4", default-features = false, features = ["__rustls", "__tls", "blocking", "brotli", "form", "gzip", "json", "rustls-no-provider", "stream"] }

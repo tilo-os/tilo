@@ -582,11 +582,15 @@ name = "app-catalogue"
 version = "0.1.0"
 dependencies = [
  "app-fleet",
+ "desktop-policy",
  "flate2",
+ "package-store",
  "quick-xml 0.41.0",
  "registry-types",
  "serde",
  "tempfile",
+ "tilo-action-policy",
+ "tilo-app-package",
  "tilo-paths",
  "workspace-hack",
 ]
@@ -678,11 +682,19 @@ dependencies = [
  "anyhow",
  "blake3",
  "bytes",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
  "hex",
+ "registry-types",
  "reqwest 0.13.4",
+ "serde",
+ "serde_json",
  "tempfile",
  "tilo-app-package",
+ "tilo-automation",
+ "tilo-clock",
  "tilo-net",
+ "tilo-secrets",
  "tilo-test-env",
  "tokio",
  "workspace-hack",
@@ -13036,8 +13048,8 @@ dependencies = [
 name = "publisher"
 version = "0.1.0"
 dependencies = [
+ "app-registry",
  "hex",
- "registry-client",
  "registry-types",
  "runtime-dylib",
  "tilo-app",
@@ -13561,28 +13573,6 @@ name = "regex-syntax"
 version = "0.8.11"
 
 [[package]]
-name = "registry-client"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "blake3",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "hex",
- "registry-types",
- "reqwest 0.13.4",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-app-package",
- "tilo-automation",
- "tilo-clock",
- "tilo-net",
- "tilo-secrets",
- "workspace-hack",
-]
-
-[[package]]
 name = "registry-server"
 version = "0.1.0"
 dependencies = [
@@ -13599,7 +13589,6 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "registry-client",
  "registry-types",
  "reqwest 0.13.4",
  "serde",
@@ -17321,6 +17310,7 @@ name = "tilo-app-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-registry",
  "blake3",
  "bounded-command",
  "clap",
@@ -17334,7 +17324,6 @@ dependencies = [
  "messages",
  "proc-macro2",
  "quote",
- "registry-client",
  "registry-server",
  "registry-types",
  "runtime-bundle",
@@ -17381,6 +17370,7 @@ dependencies = [
 name = "tilo-app-launch"
 version = "0.1.0"
 dependencies = [
+ "app-catalogue",
  "blake3",
  "collab-types",
  "collaboration",
@@ -17395,9 +17385,9 @@ dependencies = [
  "thiserror 2.0.21",
  "tilo-action-policy",
  "tilo-actions",
+ "tilo-app-package",
  "tilo-desktop-entry",
  "tilo-files",
- "tilo-installed-apps",
  "tilo-lock",
  "tilo-mime",
  "tilo-paths",
@@ -17451,10 +17441,10 @@ name = "tilo-app-package-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-registry",
  "clap",
  "ed25519-dalek 3.0.0",
  "hex",
- "registry-client",
  "registry-types",
  "serde_json",
  "tempfile",
@@ -19394,18 +19384,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-installed-apps"
-version = "0.1.0"
-dependencies = [
- "desktop-policy",
- "package-store",
- "tempfile",
- "tilo-action-policy",
- "tilo-app-package",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-keyboard-map"
 version = "0.1.0"
 dependencies = [
@@ -21021,6 +20999,7 @@ name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "app-catalogue",
  "base64 0.22.1",
  "blake3",
  "channel-crypto",
@@ -21069,7 +21048,6 @@ dependencies = [
  "tilo-fs",
  "tilo-host-search",
  "tilo-identity-host",
- "tilo-installed-apps",
  "tilo-lock",
  "tilo-os-search",
  "tilo-paths",
@@ -21381,7 +21359,6 @@ dependencies = [
  "tilo-fs-client",
  "tilo-identity-authority",
  "tilo-identity-host",
- "tilo-installed-apps",
  "tilo-live",
  "tilo-liveness",
  "tilo-lock",
@@ -27878,7 +27855,6 @@ dependencies = [
  "regex-automata",
  "regex-lite",
  "regex-syntax",
- "registry-client",
  "registry-server",
  "registry-types",
  "reis",
@@ -28243,7 +28219,6 @@ dependencies = [
  "tilo-innertube",
  "tilo-input-context",
  "tilo-install-helpers",
- "tilo-installed-apps",
  "tilo-keyboard-map",
  "tilo-libvirt-domain",
  "tilo-live",

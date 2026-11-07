@@ -100,7 +100,7 @@ impl RecordReader for AppReader {
             .launcher
             .as_deref()
             .ok_or("no tilo-launcher is installed, so no app's records are read")?;
-        let installed = tilo_installed_apps::read_one_from_env(app)
+        let installed = app_catalogue::apps::read_one_from_env(app)
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{app} is not installed here"))?;
         let mut child = Command::new(launcher)

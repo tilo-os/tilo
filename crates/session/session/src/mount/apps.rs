@@ -323,7 +323,7 @@ impl Apps {
         let Some(launcher) = state.launcher.clone() else {
             return Err("no tilo-launcher is installed, so no connector can start".to_owned());
         };
-        let installed = tilo_installed_apps::read_one_from_env(app)
+        let installed = app_catalogue::apps::read_one_from_env(app)
             .ok()
             .flatten()
             .ok_or_else(|| format!("{app} is not installed here"))?;
@@ -1277,7 +1277,7 @@ impl AppActions for Apps {
     /// Open `uri` in the app that takes it: a document's own app when it is
     /// a file on this machine, else the app that claims its scheme.
     fn open_uri(&self, workspace: &str, uri: &str) -> Result<(), DoorError> {
-        let installed = tilo_installed_apps::read_from_env().unwrap_or_default();
+        let installed = app_catalogue::apps::read_from_env().unwrap_or_default();
         let entries = desktop_entry::cache::cached_scan(&crate::app_names::entry_locales());
         let launch = match uri.strip_prefix("file://") {
             // A file URI is percent-encoded; the path it names is not.
@@ -1345,13 +1345,13 @@ pub(crate) fn launch_of(app: &str) -> Option<Launch> {
 /// The package id `app` is installed under: the id itself, or the package
 /// whose short name it is.
 fn installed_package(app: &str) -> Option<String> {
-    if let Ok(Some(installed)) = tilo_installed_apps::read_one_from_env(app) {
+    if let Ok(Some(installed)) = app_catalogue::apps::read_one_from_env(app) {
         return Some(installed.package_id);
     }
     if app.contains('.') {
         return None;
     }
-    let installed = tilo_installed_apps::read_from_env().ok()?;
+    let installed = app_catalogue::apps::read_from_env().ok()?;
     installed
         .into_iter()
         .find(|package| {
@@ -1368,7 +1368,7 @@ fn installed_package(app: &str) -> Option<String> {
 /// for an app this device has not installed.
 pub(crate) fn declared_resource_kinds(app: &str) -> Option<Vec<String>> {
     let package = installed_package(app)?;
-    let installed = tilo_installed_apps::read_one_from_env(&package)
+    let installed = app_catalogue::apps::read_one_from_env(&package)
         .ok()
         .flatten()?;
     Some(installed.declared_resource_kinds())

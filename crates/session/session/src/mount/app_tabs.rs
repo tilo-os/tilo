@@ -1216,7 +1216,7 @@ fn target_open(app: &str, target: &str) -> Option<Open> {
         return None;
     }
     let scheme = routing::scheme_of(target)?;
-    let installed = tilo_installed_apps::read_one_from_env(app).ok().flatten()?;
+    let installed = app_catalogue::apps::read_one_from_env(app).ok().flatten()?;
     installed
         .opens_uri_schemes
         .iter()

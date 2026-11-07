@@ -1,9 +1,10 @@
-//! The applications a session can launch.
+//! The installed half of the catalogue: the applications this device can
+//! launch, with the signed manifest each was admitted with.
 //!
 //! Every installed package ([`package_store::Catalog`]) read through the
 //! view of its manifest ([`tilo_app_package::view`]), and what each declared
-//! it may do on the action door under its own identity. The desktop session and the per-user
-//! runtime both launch from this one answer.
+//! it may do on the action door under its own identity. The desktop session,
+//! the per-user runtime and app-host launch from this one answer.
 
 use std::path::PathBuf;
 
@@ -50,26 +51,23 @@ pub struct InstalledApp {
     /// The signed manifest's `[[offers]]`: actions the app offers while it
     /// is not running, which the action catalogue lists for it.
     pub offers: Vec<tilo_app_package::manifest::OfferedAction>,
+    /// The signed manifest as it was decoded when the app was read: what a
+    /// host answers questions about the app from, without reading the file
+    /// again. The fields above are its normalized view.
+    pub manifest: tilo_app_package::manifest::Manifest,
 }
 
 impl InstalledApp {
     /// The capabilities its signed manifest declares (`[capabilities]`,
-    /// required and optional), read from the manifest on disk; none when
-    /// the manifest is gone or unreadable. Read when a host decides a grant
-    /// on one, not kept for every app.
+    /// required and optional).
     #[must_use]
     pub fn declared_capabilities(&self) -> Vec<String> {
-        let Ok(source) = std::fs::read_to_string(&self.manifest_path) else {
-            return Vec::new();
-        };
-        let Ok(manifest) = tilo_app_package::manifest::Manifest::from_toml_str(&source) else {
-            return Vec::new();
-        };
-        let capabilities = manifest.capabilities;
+        let capabilities = &self.manifest.capabilities;
         capabilities
             .required
-            .into_iter()
-            .chain(capabilities.optional)
+            .iter()
+            .chain(&capabilities.optional)
+            .cloned()
             .collect()
     }
 
@@ -83,7 +81,7 @@ impl InstalledApp {
         let signed = tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()?;
         let offers = signed.offers.clone();
         let opens_resource_kinds = signed.providers.resources.clone();
-        let manifest = tilo_app_package::view::ManifestView::try_from(signed).ok()?;
+        let manifest = tilo_app_package::view::ManifestView::try_from(signed.clone()).ok()?;
         let package_id = if manifest.package_id.is_empty() {
             entry.id.clone()
         } else {
@@ -113,6 +111,7 @@ impl InstalledApp {
             opens_secondary: manifest.opens_secondary,
             opens_resource_kinds,
             offers,
+            manifest: signed,
         })
     }
 
@@ -151,49 +150,41 @@ impl InstalledApp {
         })
     }
 
-    /// What the signed manifest's `[actions]` table declares; nothing for
-    /// an unreadable manifest.
+    /// What the signed manifest's `[actions]` table declares.
     #[must_use]
     pub fn declared_actions(&self) -> DeclaredActions {
-        self.signed_manifest()
-            .map(|manifest| DeclaredActions {
-                query: manifest.actions.query,
-                invoke: manifest.actions.invoke,
-            })
-            .unwrap_or_default()
+        DeclaredActions {
+            query: self.manifest.actions.query,
+            invoke: self.manifest.actions.invoke,
+        }
     }
 
     /// The resource kinds the signed manifest's `[resources]` table declares
-    /// this app's records hold; none for an unreadable manifest.
+    /// this app's records hold.
     #[must_use]
     pub fn declared_resource_kinds(&self) -> Vec<String> {
-        self.signed_manifest()
-            .map(|manifest| manifest.resources.kinds)
-            .unwrap_or_default()
+        self.manifest.resources.kinds.clone()
     }
 
     /// Whether the signed manifest's `[capabilities]` lists `capability`
-    /// (a `tilo-caps` name such as `open-uri`), required or optional; never
-    /// for an unreadable manifest.
+    /// (a `tilo-caps` name such as `open-uri`), required or optional.
     #[must_use]
     pub fn declares_capability(&self, capability: &str) -> bool {
-        self.signed_manifest().is_some_and(|manifest| {
-            let declared = manifest.capabilities;
-            declared
-                .required
-                .iter()
-                .chain(&declared.optional)
-                .any(|name| name == capability)
-        })
+        let declared = &self.manifest.capabilities;
+        declared
+            .required
+            .iter()
+            .chain(&declared.optional)
+            .any(|name| name == capability)
     }
 
     /// The icon file the signed manifest's `[package] icon` names, in the
-    /// installed payload; `None` for a package without one or an unreadable
-    /// manifest. Validation keeps the name a plain relative path inside the
-    /// payload, so the join cannot leave it.
+    /// installed payload; `None` for a package without one. Validation keeps
+    /// the name a plain relative path inside the payload, so the join cannot
+    /// leave it.
     #[must_use]
     pub fn icon_path(&self) -> Option<PathBuf> {
-        let icon = self.signed_manifest()?.package.icon?;
+        let icon = self.manifest.package.icon.as_ref()?;
         let path = self.payload_root.join(icon);
         path.is_file().then_some(path)
     }
@@ -202,14 +193,7 @@ impl InstalledApp {
     /// A claim, not an answer: [`earlier_ids`] says which of them are honoured.
     #[must_use]
     pub fn previously(&self) -> Vec<String> {
-        self.signed_manifest()
-            .map(|manifest| manifest.package.previously)
-            .unwrap_or_default()
-    }
-
-    fn signed_manifest(&self) -> Option<tilo_app_package::manifest::Manifest> {
-        let source = std::fs::read_to_string(&self.manifest_path).ok()?;
-        tilo_app_package::manifest::Manifest::from_toml_str(&source).ok()
+        self.manifest.package.previously.clone()
     }
 }
 
@@ -443,7 +427,6 @@ pub fn store_directories() -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::fmt::Write as _;
 
     use super::*;
@@ -831,29 +814,23 @@ mod tests {
         assert_eq!(ids, ["com.evil.app"]);
     }
 
+    /// The app the manifest at `toml` describes.
+    fn app_of(root: &std::path::Path, toml: &str) -> InstalledApp {
+        InstalledApp::from_package(&install(root, "so.tilo.notes", toml))
+            .expect("the manifest reads as an app")
+    }
+
     #[test]
     fn an_apps_name_follows_the_interface_language() {
         let tmp = tempfile::tempdir().unwrap();
-        let app = InstalledApp {
-            package_id: "so.tilo.notes".into(),
-            display_name: "Notes".into(),
-            localized_names: BTreeMap::from([
-                ("de".into(), "Notizen".into()),
-                ("fr".into(), "Bloc-notes".into()),
-            ]),
-            keywords: Vec::new(),
-            category: None,
-            version: "1.0.0".into(),
-            manifest_path: tmp.path().join("manifest.toml"),
-            payload_root: tmp.path().into(),
-            has_gui: true,
-            opens_extensions: Vec::new(),
-            opens_mime_types: Vec::new(),
-            opens_uri_schemes: Vec::new(),
-            opens_secondary: false,
-            opens_resource_kinds: Vec::new(),
-            offers: Vec::new(),
-        };
+        let app = app_of(
+            tmp.path(),
+            &manifest(
+                "id = \"so.tilo.notes\"\nname = \"Notes\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
+                 [package.names]\nde = \"Notizen\"\nfr = \"Bloc-notes\"",
+                "[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n",
+            ),
+        );
         let locales = |tags: &[&str]| tags.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>();
         assert_eq!(app.name_in(&locales(&["de-DE", "de"])), "Notizen");
         // The first language the manifest names the app in wins, and one it
@@ -867,34 +844,23 @@ mod tests {
     #[test]
     fn declared_resource_kinds_come_from_the_signed_manifest() {
         let tmp = tempfile::tempdir().unwrap();
-        let signed = "[package]\nid = \"so.tilo.notes\"\nversion = \"1.0.0\"\nkind = \"app\"\n\
-             [publisher]\nidentity = \"\"\nsignature = \"\"\n\
-             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
-             [sandbox.net]\nmode = \"off\"\n";
-        let app = |manifest: &str| {
-            let path = tmp.path().join("manifest.toml");
-            std::fs::write(&path, manifest).unwrap();
-            InstalledApp {
-                package_id: "so.tilo.notes".into(),
-                display_name: "Notes".into(),
-                localized_names: BTreeMap::default(),
-                keywords: Vec::new(),
-                category: None,
-                version: "1.0.0".into(),
-                manifest_path: path,
-                payload_root: tmp.path().into(),
-                has_gui: true,
-                opens_extensions: Vec::new(),
-                opens_mime_types: Vec::new(),
-                opens_uri_schemes: Vec::new(),
-                opens_secondary: false,
-                opens_resource_kinds: Vec::new(),
-                offers: Vec::new(),
-            }
-        };
-        assert!(app(signed).declared_resource_kinds().is_empty());
-        let declared = format!("{signed}[resources]\nkinds = [\"notes.notebook\"]\n");
-        assert_eq!(app(&declared).declared_resource_kinds(), ["notes.notebook"]);
-        assert!(app("not a manifest").declared_resource_kinds().is_empty());
+        let package =
+            "id = \"so.tilo.notes\"\nname = \"Notes\"\nversion = \"1.0.0\"\nkind = \"app\"";
+        let entrypoint = "[entrypoint]\nbin = \"bin/notes\"\ntype = \"gui\"\n";
+        let plain = app_of(tmp.path(), &manifest(package, entrypoint));
+        assert!(plain.declared_resource_kinds().is_empty());
+        let declared = app_of(
+            tmp.path(),
+            &manifest(
+                package,
+                &format!("{entrypoint}[resources]\nkinds = [\"notes.notebook\"]\n"),
+            ),
+        );
+        assert_eq!(declared.declared_resource_kinds(), ["notes.notebook"]);
+        // A package whose manifest does not read is not an app at all.
+        assert!(
+            InstalledApp::from_package(&install(tmp.path(), "so.tilo.gone", "not a manifest"))
+                .is_none()
+        );
     }
 }

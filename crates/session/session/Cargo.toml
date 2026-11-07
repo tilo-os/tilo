@@ -93,7 +93,6 @@ tilo-dictation = { path = "../dictation" }
 app-catalogue = { path = "../../packaging/app-catalogue" }
 # What the session binary's search reads of the device: the installed apps,
 # the machine's own, the person's search choices.
-tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # The session's own app store, read as the launcher reads it: a development session seeds the
 # tilolang apps it installed (`crate::seeded_apps`).
 package-store = { path = "../../packaging/package-store" }
