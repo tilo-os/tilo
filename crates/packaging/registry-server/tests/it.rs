@@ -29,6 +29,8 @@ pub mod publisher_client;
 pub mod retention;
 #[path = "snapshot_cli.rs"]
 pub mod snapshot_cli;
+#[path = "support.rs"]
+pub mod support;
 #[path = "thin_payload.rs"]
 pub mod thin_payload;
 #[path = "version_index.rs"]

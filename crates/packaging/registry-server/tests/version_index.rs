@@ -12,7 +12,6 @@
     reason = "integration-test setup and assertions"
 )]
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -21,7 +20,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use app_cli::client::RegistryError;
 use app_cli::config::RegistryConfig;
 use ed25519_dalek::SigningKey;
-use registry_server::{AppState, PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
+use registry_server::{PublisherAllowlist, PublisherRow, ServerIdentity, Storage};
 use registry_types::{
     CompactRegistrySnapshot, RegistryEntry, RegistryTarget, RegistryVersion,
     SignedRegistrySnapshot, sign_entry,
@@ -155,27 +154,6 @@ impl Registry {
     }
 }
 
-fn serve(registry: &Registry) -> SocketAddr {
-    let storage = registry.storage.clone();
-    let identity = storage.load_identity().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap()
-            .block_on(async move {
-                let addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
-                let bound = registry_server::bind_and_run(addr, AppState::new(storage, identity))
-                    .await
-                    .unwrap();
-                sender.send(bound).unwrap();
-                std::future::pending::<()>().await;
-            });
-    });
-    receiver.recv().unwrap()
-}
-
 fn get(url: &str, if_none_match: Option<&str>) -> reqwest::blocking::Response {
     let mut request = tilo_net::http::blocking_client().build().unwrap().get(url);
     if let Some(etag) = if_none_match {
@@ -224,7 +202,7 @@ fn released_clients_keep_the_full_snapshot_while_new_clients_read_compact_and_in
         .unwrap();
     let (full, compact) = registry.sign();
     assert_eq!(compact.sequence, 2);
-    let addr = serve(&registry);
+    let addr = crate::support::serve(&registry.storage);
     let base_url = format!("http://{addr}");
 
     // A released client asks for /entries and gets exactly what it always
