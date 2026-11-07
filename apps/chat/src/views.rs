@@ -386,18 +386,21 @@ fn messages(c: &Channel, cx: &ViewCx) -> Node {
         .iter()
         .map(|message| message_row(c, message, cx))
         .collect();
-    // The transcript opens at its newest message and follows it, as a conversation's does.
-    ui::put(
-        ui::virtual_list(&cx.key("messages"), rows),
-        "transcript",
-        Value::Bool(true),
+    // A conversation scrolls its transcript, opening at the newest message and following it as
+    // it grows. It is a scroll rather than a list: the rows are the page's own, drawn whole, and
+    // the place scrolls them (a Rust view sends no list rows of its own).
+    let transcript = ui::ScrollBuilder::new(&cx.key("transcript"))
+        .follow_end(true)
+        .into();
+    node::with(
+        transcript,
+        vec![ui::column(&cx.key("messages"), Gap::Sibling, rows)],
     )
 }
 
 /// One message: who wrote it and when, the message it answers, what it says, the reactions on
-/// it, and what it carries.
+/// it, and what it carries. The name and the time lead it, as a conversation's messages do.
 fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
-    let key = cx.key(format!("message-{}", message.id));
     let author = c.person(&message.author);
     let mut body: Vec<Node> = Vec::new();
     if let Some(quote) = &message.reply_to {
@@ -416,6 +419,23 @@ fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
                 .into(),
         );
     }
+    // Who wrote it and when, over what it says: the name in the row's ink, the time quiet
+    // beside it.
+    let said = ui::TextBuilder::new(
+        &cx.key(format!("author-{}", message.id)),
+        author_label(author, &message.author),
+    )
+    .role(ui::TextRole::Label)
+    .into();
+    let when = ui::TextBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
+        .role(ui::TextRole::Caption)
+        .secondary(true)
+        .into();
+    body.push(ui::row(
+        &cx.key(format!("by-{}", message.id)),
+        Gap::Tight,
+        vec![said, when],
+    ));
     if !message.text.trim().is_empty() {
         body.push(
             ui::TextBuilder::new(&cx.key(format!("text-{}", message.id)), message.text.trim())
@@ -445,28 +465,20 @@ fn message_row(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
             &cx.key(format!("reactions-{}", message.id)),
         ));
     }
-    // The row of the list stands in its default slot: what the message says, the quote over
-    // it, its attachments and its reactions, in one column. The item it shows is the message,
-    // so activating it opens the message.
+    // The message stands in one column: who wrote it, then what it says, the quote over it, its
+    // attachments and its reactions. Activating the column places the message.
     let body = ui::column(&cx.key(format!("body-{}", message.id)), Gap::Tight, body);
-    let row = match Channel::message_resource(&message.id) {
+    match Channel::message_resource(&message.id) {
         Some(target) => {
             let open = cx.open(&body, "activate", target, None);
             node::on(body, "activate", open)
         }
         None => body,
-    };
-    let mut list_item = ui::ListItemBuilder::new(&key)
-        .author(principal(author, &message.author))
-        .time(moment(message.ts));
-    if let Some(target) = Channel::message_resource(&message.id) {
-        list_item = list_item.item(target);
     }
-    node::with(list_item.into(), vec![row])
 }
 
-/// What a reply answers: who wrote it and the start of what it said, as a quote over the reply,
-/// with the quoted message a link that places it when pressed.
+/// What a reply answers: who wrote it and the start of what it said, as a quiet row over the
+/// reply that places the quoted message when pressed.
 fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     let author = c.person(&quote.author);
     let excerpt = if quote.excerpt.trim().is_empty() {
@@ -476,27 +488,29 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     } else {
         quote.excerpt.trim().to_owned()
     };
-    let mut node: Node = ui::QuoteBuilder::new(key, &excerpt).into();
-    if let Some(person) = author {
-        node = ui::put(
-            node,
-            "author",
-            Value::Principal(principal(Some(person), &quote.author)),
-        );
+    let mut builder = ui::ListRowBuilder::new(key)
+        .title(&excerpt)
+        .prefix("In reply to")
+        .icon("corner-up-left")
+        .dense(true);
+    if let Some(target) = Channel::message_resource(&quote.id) {
+        builder = builder.item(target);
     }
-    // The quoted message, as a link under the quote that places it: a quote only shows what it
-    // answers, so the reference that acts is the `ui.Link` beneath it.
-    let Some(target) = Channel::message_resource(&quote.id) else {
-        return node;
-    };
-    let link: Node = ui::LinkBuilder::new(&format!("{key}#link"), &excerpt)
-        .label("In reply to")
-        .role(ui::TextRole::Caption)
-        .item(target.clone())
-        .into();
-    let open = cx.open(&link, "activate", target, None);
-    let link = node::on(link, "activate", open);
-    ui::stack(key, Gap::Tight, vec![node, link])
+    let mut row: Node = builder.into();
+    if let Some(person) = author {
+        let secondary = person.name.trim().to_owned();
+        if !secondary.is_empty() {
+            row = ui::put(row, "secondary", Value::Text(secondary));
+        }
+    }
+    // The quoted message is what the row shows: activating it places that message.
+    match Channel::message_resource(&quote.id) {
+        Some(target) => {
+            let opened = cx.open(&row, "activate", target, None);
+            node::on(row, "activate", opened)
+        }
+        None => row,
+    }
 }
 
 /// One thing a message carries: a record it was shared from (a chip that places it), the words
@@ -564,7 +578,7 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 /// the record. Nothing of Chat's own state sits between them.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
-        .placeholder(format!("#{}", c.name))
+        .placeholder(format!("Message #{}", c.name))
         .lines(1_i64)
         .entry(true)
         .into();
@@ -586,6 +600,15 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
 fn post(cx: &ViewCx, node: Node, event: &str, channel: &str) -> Node {
     let fired = cx.action_with(&node, event, "post", vec![Arg::text(channel), Arg::Event]);
     node::on(node, event, fired)
+}
+
+/// What a message's byline says of who wrote it: their name, or their id when the channel does
+/// not name them.
+fn author_label(person: Option<&Person>, id: &str) -> String {
+    person
+        .map(|person| person.name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| id.to_owned())
 }
 
 /// A person as a component draws them: their name, or their id when the channel does not name
@@ -708,9 +731,19 @@ mod tests {
             );
         }
         assert!(
-            has_kind(&tree, "ui.VirtualList"),
-            "the messages are a transcript list"
+            has_kind(&tree, "ui.Scroll"),
+            "the messages are a scrolling transcript"
         );
+        for message in &channel.messages {
+            if message.text.trim().is_empty() {
+                continue;
+            }
+            assert!(
+                shown.iter().any(|text| text.trim() == message.text.trim()),
+                "the page shows `{}`: {shown:?}",
+                message.text
+            );
+        }
     }
 
     #[test]
@@ -718,32 +751,42 @@ mod tests {
         let channel = demo_channel();
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
-        let rows: Vec<&Node> = walk(&tree)
+        // Each message leads with its author's name and the moment it was written.
+        let named: Vec<&Node> = walk(&tree)
             .into_iter()
-            .filter(|node| node.kind == "ui.ListItem")
+            .filter(|node| node.kind == "ui.Text" && node.key.contains("@author-"))
             .collect();
         assert_eq!(
-            rows.len(),
+            named.len(),
             channel.messages.len(),
-            "every message has a row"
+            "every message names its author"
         );
-        let authors: Vec<String> = rows
+        let authors: Vec<String> = named
             .iter()
-            .filter_map(|node| match node.props.get("author") {
-                Some(Value::Principal(who)) => Some(who.name.clone()),
+            .filter_map(|node| match node.props.get("value") {
+                Some(Value::Text(name)) => Some(name.clone()),
                 _ => None,
             })
             .collect();
-        assert_eq!(authors.len(), rows.len(), "every row names its author");
         assert!(
             authors.iter().any(|name| name == "Aria Chen"),
             "the demo's people are named: {authors:?}"
         );
-        for (node, message) in rows.iter().zip(&channel.messages) {
+        assert!(
+            !authors.iter().any(|name| name.starts_with("u_")),
+            "no author shows as their id: {authors:?}"
+        );
+        // The moment each message says is its own.
+        let when: Vec<&Node> = walk(&tree)
+            .into_iter()
+            .filter(|node| node.kind == "ui.Text" && node.key.contains("@when-"))
+            .collect();
+        assert_eq!(when.len(), channel.messages.len());
+        for (node, message) in when.iter().zip(&channel.messages) {
             assert_eq!(
-                node.props.get("time"),
+                node.props.get("value"),
                 Some(&Value::Text(moment(message.ts))),
-                "the row says when the message was written"
+                "the message says when it was written"
             );
         }
     }

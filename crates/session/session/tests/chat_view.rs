@@ -163,12 +163,14 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
         session.shell_says(MESSAGE)
     });
     // The composer's field takes the keyboard, as a person's click on it puts the caret there.
-    let (x, y, w, h) = common::on_screen(&session, "design-crit").unwrap_or_else(|| {
-        panic!(
-            "the composer's field stands on screen: {:?}",
-            session.accessible_labels()
-        )
-    });
+    let (x, y, w, h) = session
+        .shell_text_bounds("Message #design-crit")
+        .unwrap_or_else(|| {
+            panic!(
+                "the composer's field stands on screen: {:?}",
+                session.accessible_labels()
+            )
+        });
     let (cx, cy) = (x + w / 2.0, y + h / 2.0);
     let socket = root.path().join("test-control.sock");
     assert_eq!(
