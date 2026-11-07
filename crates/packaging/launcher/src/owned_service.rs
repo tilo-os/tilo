@@ -21,6 +21,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A refusal that names what a caller is not allowed to make the
+/// workspace do.
+pub(crate) fn refused(message: &'static str) -> io::Error {
+    io::Error::new(io::ErrorKind::PermissionDenied, message)
+}
+
 pub(crate) mod capture;
 mod delayed_filter;
 pub(crate) mod retained_io;

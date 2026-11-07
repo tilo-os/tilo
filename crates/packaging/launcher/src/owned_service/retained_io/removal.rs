@@ -1,6 +1,8 @@
 //! Root-created private namespace on the actual admitted source filesystem.
 //! Files enter only through original-credential atomic rename, never root reads.
-use super::{RetainedIoAuthority, Token, refused, root};
+use super::{RetainedIoAuthority, Token, root};
+use crate::fd::{identity as id, open_beneath as open};
+use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::CString,
@@ -86,23 +88,6 @@ fn check_namespace(
         return Err(refused("Removal namespace is not root private"));
     }
     Ok(())
-}
-fn id(file: &File) -> io::Result<(u64, u64)> {
-    let m = file.metadata()?;
-    Ok((m.dev(), m.ino()))
-}
-fn open(parent: &File, name: &std::ffi::CStr) -> io::Result<File> {
-    let raw = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if raw < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(unsafe { File::from_raw_fd(raw) })
 }
 fn empty(file: &File) -> io::Result<bool> {
     use std::os::fd::IntoRawFd;

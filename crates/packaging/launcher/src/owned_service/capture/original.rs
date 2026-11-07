@@ -1,5 +1,6 @@
 //! Root-service bootstrap for one SAME-source original Home projection.
 //! Credentials become effective only inside the completed canonical namespace.
+use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
 use std::{
     fs::File,
@@ -24,9 +25,6 @@ const MAX_BYTES: u64 = 1024 * 1024;
 const GROUPS_LIMIT: usize = 65_536;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NS: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
-fn refused(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Original reader",
     person: workspace::Person::Delegated,

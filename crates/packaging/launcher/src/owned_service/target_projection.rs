@@ -3,6 +3,7 @@
 //! The canonical signed runner must supply NativeTrust/NamespaceOwner hooks;
 //! merely constructing this bootstrap does not launch a trusted service.
 use super::delayed_filter;
+use crate::owned_service::refused;
 use serde::{Deserialize, Serialize};
 use std::{
     ffi::OsString,
@@ -41,9 +42,6 @@ pub const PACKAGE_ID: &str = "so.tilo.imager.home-export";
 const MAX_RECORD: u64 = 16384;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NAMESPACES: [&str; 6] = ["mnt", "pid", "net", "ipc", "uts", "user"];
-fn refused(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Target projection",
     person: workspace::Person::Empty,

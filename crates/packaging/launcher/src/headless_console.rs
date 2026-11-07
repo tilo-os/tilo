@@ -2,7 +2,7 @@
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 
@@ -18,22 +18,6 @@ pub(crate) struct Namespace {
     directory: File,
     name: CString,
     cleanup_on_drop: bool,
-}
-
-fn directory_at(parent: &File, name: &CString) -> io::Result<File> {
-    // SAFETY: both descriptors and the NUL-terminated name stay live throughout openat.
-    let fd = unsafe {
-        libc::openat(
-            parent.as_raw_fd(),
-            name.as_ptr(),
-            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
-        )
-    };
-    if fd < 0 {
-        return Err(io::Error::last_os_error());
-    }
-    // SAFETY: openat returned a new descriptor whose ownership is transferred exactly once.
-    Ok(unsafe { File::from_raw_fd(fd) })
 }
 
 impl Namespace {
@@ -57,7 +41,7 @@ impl Namespace {
         if unsafe { libc::mkdirat(parent.as_raw_fd(), name.as_ptr(), 0o700) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        let directory = directory_at(&parent, &name)?;
+        let directory = crate::fd::open_beneath(&parent, &name)?;
         let metadata = directory.metadata()?;
         if metadata.uid() != owner || metadata.mode() & 0o777 != 0o700 {
             return Err(io::Error::other("console namespace is not private"));
@@ -83,7 +67,7 @@ impl Namespace {
     }
 
     fn cleanup(&self) -> io::Result<()> {
-        let current = directory_at(&self.parent, &self.name)?;
+        let current = crate::fd::open_beneath(&self.parent, &self.name)?;
         let expected = self.directory.metadata()?;
         let actual = current.metadata()?;
         if (actual.dev(), actual.ino(), actual.uid(), actual.mode())

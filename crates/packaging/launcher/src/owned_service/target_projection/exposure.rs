@@ -3,6 +3,7 @@ use super::{
     Arc, AsRawFd, File, FromRawFd, MetadataExt, OpenOptionsExt, OwnedFd, Read,
     TargetProjectionEndpoint, TargetProjectionMode, io, mount_id, refused, root,
 };
+use crate::fd::identity;
 use crate::ordinary_namespace::NamespaceWitness;
 use getrandom::rand_core::TryRng as _;
 use runtime_portal::process_binding::ExecutingPeer;
@@ -106,10 +107,6 @@ pub(super) fn clone_view(view: &File) -> io::Result<File> {
 }
 fn namespace() -> io::Result<File> {
     File::open("/proc/self/ns/mnt")
-}
-fn identity(file: &File) -> io::Result<(u64, u64)> {
-    let m = file.metadata()?;
-    Ok((m.dev(), m.ino()))
 }
 fn protected_directory(path: &std::path::Path) -> io::Result<File> {
     let file = std::fs::OpenOptions::new()

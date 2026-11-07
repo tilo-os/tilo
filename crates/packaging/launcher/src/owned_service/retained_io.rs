@@ -18,6 +18,7 @@ use std::{
 
 pub const SOURCE_PATH: &str = "/run/tilo/retained/source";
 mod removal;
+use super::refused;
 use super::workspace;
 pub use removal::RetainedNativeOwner;
 pub const REMOVAL_DIRECTORY_FD: i32 = removal::FD;
@@ -31,9 +32,6 @@ pub(crate) const TOKEN_FD: RawFd = 49;
 const MAX_TOKEN: u64 = 1024 * 1024;
 const SEALS: i32 = libc::F_SEAL_WRITE | libc::F_SEAL_GROW | libc::F_SEAL_SHRINK | libc::F_SEAL_SEAL;
 const NAMESPACES: [&str; 5] = ["mnt", "pid", "net", "ipc", "user"];
-fn refused(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
-}
 const WORKSPACE: workspace::Layout = workspace::Layout {
     label: "Retained source",
     person: workspace::Person::Empty,
