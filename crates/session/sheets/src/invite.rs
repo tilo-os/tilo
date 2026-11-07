@@ -560,6 +560,9 @@ impl ResourceApp for InviteApp {
         let link = cx.local(String::new());
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
+            // The sheet follows what the shell says of its presentation: being
+            // opened, taken down, put on another display.
+            seat.presentation.wake_with(cx.waker());
         }
         let asking = seat.clone();
         let presentation = seat.as_ref().map(|seat| seat.presentation().clone());

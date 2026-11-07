@@ -131,6 +131,19 @@ fn a_raised_notification_shows_a_banner_that_expires() {
         changed > area / 5,
         "the banner is painted on the desk: {changed} of {area} pixels changed"
     );
+    // What the banner offers answers the person like any window's buttons
+    // do: each is a control of the desk, standing on the banner.
+    let offered: Vec<String> = session
+        .controls()
+        .into_iter()
+        .filter(|(_, (x, y, w, h))| stack.contains((x + w / 2.0, y + h / 2.0)))
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        !offered.is_empty(),
+        "the banner's buttons are the desk's controls: {:?}",
+        session.controls()
+    );
 
     // Four seconds on screen are its whole life: the clock runs on and the
     // banner leaves, leaving the desk as it was.
