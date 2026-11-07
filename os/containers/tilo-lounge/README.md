@@ -101,13 +101,16 @@ entry from one commit, tests both and publishes `dev-<commit>`.
 
 `test-integration.sh` runs the image the way the deployment does and uses it:
 the entrypoint reads production-shaped `TILO_ROOMS_*` on this machine's own
-ports, the web entry is served beside it, and two headless Chromium contexts
-open it, join the Lounge through its door as two people, chat, share a desk
-and see each other present. It also starts the image on the state the
-previous release left and proves either that this build opens it (keeping the
-record it migrated) or that it refuses it by the format's name and version.
-It is the gate `publish-site` runs before publishing, so a dispatched build
-publishes nothing a person cannot use.
+ports, the web entry is served beside it, an ingress publishes the live plane
+at a host of its own and forwards to the listener, and two headless Chromium
+contexts open it, join the Lounge through its door as two people, chat, share
+a desk and see each other present through the plane they pinned. With the
+ingress taken away, a page says in its members' place that it cannot reach
+live presence and says it once in its console. It also starts the image on the
+state the previous release left and proves either that this build opens it
+(keeping the record it migrated) or that it refuses it by the format's name
+and version. It is the gate `publish-site` runs before publishing, so a
+dispatched build publishes nothing a person cannot use.
 
 ```
 bash os/containers/tilo-lounge/test-integration.sh \

@@ -10,16 +10,19 @@
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
-// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR
+// usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST
+// LIVE_HOST is the host the live plane's origin names, which the browsers
+// resolve to this machine: pages dial it through the ingress in front of the
+// plane, with the certificate `/live` told them to pin.
 // Prints a JSON report and saves what each page showed; exits non-zero when
 // the two people did not meet.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, origin, out] = process.argv.slice(2);
-if (!site || !relay || !origin || !out) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR');
+const [site, relay, origin, out, liveHost] = process.argv.slice(2);
+if (!site || !relay || !origin || !out || !liveHost) {
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -48,7 +51,8 @@ const failed = async (message, tab) => {
 };
 
 // The relay's public directory: who is in the Lounge now, as the relay
-// counts them. Its `here` is the live plane's presence.
+// counts them. Its `here` is the relay's HTTPS page sessions, not the live
+// plane's members: a page the plane never carried still counts here.
 const directory = () => new Promise((resolve, reject) => {
   const body = Buffer.from('{}');
   const ask = request(`${relay}/peer/v1/directory`, {
@@ -279,6 +283,9 @@ const open = async name => {
 const browser = await launch({args: [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
+  // The live plane's host is the deployment's, not this machine's: the page
+  // dials it, and here it is this machine's loopback behind the ingress.
+  `--host-resolver-rules=MAP ${liveHost} 127.0.0.1`,
   // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -305,8 +312,9 @@ try {
   report.distinct = true;
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
 
-  // The relay lists both as here: both pages' live planes connected and the
-  // host counts them.
+  // The relay describes both as here: both pages opened their HTTPS sessions.
+  // That is the host's own count, not the live plane's — the plane is read
+  // from each page's channel diagnostics below.
   const listed = await directory();
   const lounge = listed.workspaces?.find(workspace => workspace.room === keptA.room);
   if (!lounge) failed(`the directory does not list the workspace both joined: ${JSON.stringify(listed)}`);
@@ -348,6 +356,28 @@ try {
   console.log('ok: the window A opened is in B\'s strip');
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
+
+  // Each page joined the live plane the deployment publishes: its own channel
+  // diagnostics name the plane and the devices it reads. A page whose plane
+  // never opened lists nobody and says so there instead, so this is the pin,
+  // the host and the ingress all read from the page that used them.
+  const joinedPlane = async (person, who) => {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const channels = await person.tab.evaluate('globalThis.tiloChannels?.() ?? ""');
+      const joined = channels
+        .split('\n')
+        .find(entry => /^plane \d+: epoch \d+, reads \d+ device\(s\)/.test(entry));
+      if (joined) return joined;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-plane-${who}`);
+        failed(`${who} joined no live plane: ${channels}`, person.tab);
+      }
+      await sleep(500);
+    }
+  };
+  report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
+  console.log(`ok: both pages joined the live plane at ${liveHost}`);
 
   // Each desk shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
