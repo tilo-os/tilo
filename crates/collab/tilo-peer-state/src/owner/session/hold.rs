@@ -200,9 +200,8 @@ async fn once(
             };
             link.establishing.store(next.is_some(), Ordering::Release);
             holder.dial_failed(hint.clone(), true, error).await;
-            let stand_in = reach.clone();
             let Some(dialled) = fail_over(connect, holder, link, (own, next), |via| {
-                dial(via, stand_in.clone(), false)
+                dial(via, reach.clone(), false)
             })
             .await
             else {

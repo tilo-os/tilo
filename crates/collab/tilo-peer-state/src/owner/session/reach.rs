@@ -1,6 +1,6 @@
-//! Reaching a workspace's host: this device's own host in process, or a
-//! host's iroh endpoint. Every holder of a workspace's session reaches its
-//! host, and renews this device's membership with it, through [`Reach`].
+//! Reaching a workspace's host: this device's own host in process, or a host's
+//! iroh endpoint. Every holder of a workspace's session reaches its host, and
+//! renews this device's membership with it, through [`Reach`].
 use super::{Connect, DialError};
 use crate::join::TransportHint;
 use ed25519_dalek::SigningKey;

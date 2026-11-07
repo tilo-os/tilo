@@ -102,7 +102,7 @@ pub(super) async fn take_part_in(
     let connect = tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)
         .map_err(|error| format!("the workspace was not taken in: {error}"))?;
     plane
-        .send(NetCmd::NativeConnect(connect, None))
+        .send(NetCmd::NativeConnect(connect))
         .await
         .map_err(|_| "the collaboration plane is gone".to_owned())?;
     Ok(())
