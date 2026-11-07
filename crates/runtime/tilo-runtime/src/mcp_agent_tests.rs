@@ -75,6 +75,9 @@ struct Notes {
     /// Whether a second note carries the same action the first does: the
     /// app alone then names neither of them, and says so.
     archive_twice: Arc<Mutex<bool>>,
+    /// The rows the app's directory answers instead of the ones it would list, when a test
+    /// publishes them under kinds of its own (`tl.so.tilo.lang.notes.Note`).
+    published_kinds: Arc<Mutex<Option<Vec<CatalogueRow>>>>,
 }
 
 /// What a workspace answers about its installed apps.
@@ -116,6 +119,7 @@ impl Notes {
             names_parents: Arc::new(Mutex::new(true)),
             unpublished: false,
             archive_twice: Arc::default(),
+            published_kinds: Arc::default(),
         }
     }
 
@@ -367,6 +371,11 @@ impl Notes {
     )]
     fn rows(&self, provider: &str) -> Vec<CatalogueRow> {
         use tilo_actions::OperationKind::{Document, Effect, View};
+        if let Some(published) = self.published_kinds.lock().unwrap().as_ref()
+            && provider != WORKSPACE
+        {
+            return published.clone();
+        }
         if self.live && provider != WORKSPACE {
             return self.live_rows();
         }
@@ -2252,4 +2261,148 @@ fn a_read_in_an_app_that_names_only_its_top_level_reads_the_level() {
     ));
     assert!(!failed, "{text}");
     assert!(text.starts_with("# Todo\n"), "{text}");
+}
+
+/// A task host that answers the one thing a listing asks of it: the catalogue of what the apps
+/// declare. Its connection is a socket pair this process holds at both ends, so a test pays for
+/// the protocol and not a subprocess.
+struct CatalogueHost {
+    /// What it answers `{"catalogue": {}}` with.
+    catalogue: Value,
+}
+
+impl CatalogueHost {
+    fn new(catalogue: Value) -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { catalogue })
+    }
+}
+
+impl crate::mcp::TaskHosts for CatalogueHost {
+    fn start(&self, _workspace: &str, _task: &str) -> std::io::Result<std::os::fd::OwnedFd> {
+        let (door, host) = std::os::unix::net::UnixStream::pair()?;
+        let catalogue = self.catalogue.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead as _, Write as _};
+            let mut writer = host.try_clone().expect("the host's own end");
+            let reader = std::io::BufReader::new(host);
+            for line in reader.lines() {
+                let Ok(line) = line else { return };
+                let Ok(asked) = serde_json::from_str::<Value>(&line) else {
+                    return;
+                };
+                let answer = if asked.get("catalogue").is_some() {
+                    json!({"catalogue": catalogue.clone()})
+                } else {
+                    json!({})
+                };
+                if writeln!(writer, "{answer}").is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(std::os::fd::OwnedFd::from(door))
+    }
+}
+
+/// The catalogue of a tilolang app: its root's record type, by the name a program types it
+/// with (`notes.Note`), and how that app's actions are called.
+fn tilolang_notes_catalogue() -> Value {
+    json!({
+        "notes": {
+            "app": "so.tilo.lang.notes",
+            "signatures": [
+                {"name": "Note", "id": "tl.so.tilo.lang.notes.Note", "kind": "type",
+                 "signature": "type notes.Note", "call": "notes.Note"},
+                {"name": "Notebook", "id": "tl.so.tilo.lang.notes.Notebook", "kind": "type",
+                 "signature": "type notes.Notebook", "call": "notes.Notebook"},
+                {"name": "rename", "id": "rename_note", "kind": "action",
+                 "signature": "action notes.rename(n: Note, title: Text)",
+                 "call": "notes.rename(n: notes.Note, title: Text)", "on": "Note"},
+            ],
+        },
+    })
+}
+
+/// The directory of a live Notes (`host`) with the `Todo` page published under a kind of a
+/// tilolang app's (`tl.so.tilo.lang.notes.Note`): what a listing of it names by the program
+/// form, and the one resource of that kind there, so the name means one.
+fn tilolang_kind(host: &Notes) -> Notes {
+    const NOTE: &str = "tl.so.tilo.lang.notes.Note";
+    let live = host.clone().live();
+    // The live shape names a page by the key its notebook gives it, bound per publication.
+    let todo = live.id(&Notes::live_key(TODO));
+    let published: Vec<CatalogueRow> = live
+        .rows("1")
+        .into_iter()
+        .map(|mut row| {
+            if row.resource.id == todo {
+                row.resource.kind = NOTE.to_owned();
+                if let Some(action) = row.action.as_mut() {
+                    action.resource_kind = NOTE.to_owned();
+                }
+            }
+            row
+        })
+        .collect();
+    *live.published_kinds.lock().unwrap() = Some(published);
+    live
+}
+
+/// A name read off an `ls` row walks back to that resource: a listing prints a tilolang
+/// resource's type the way a program types it (`notes.Note`), and that name is one
+/// `tilo_ls`, `tilo_read` and `tilo_do` take back to the resource the row showed. Only the
+/// Todo page is published under that kind, so the name means one resource.
+#[test]
+fn a_name_read_off_a_listing_walks_back_to_its_resource() {
+    let host = tilolang_kind(&Notes::new(true));
+    let server = agent(&host)
+        .with_agent_run("task:1", "Tidy the notes")
+        .with_task_hosts(Some(CatalogueHost::new(tilolang_notes_catalogue())));
+    let live_todo = host.id(&Notes::live_key(TODO));
+    run(async {
+        let (listed, failed) = tool(&server, "tilo_ls", json!({"path": "notes"})).await;
+        assert!(!failed, "{listed}");
+        // The row prints its type as a program types it, not as the app publishes it.
+        let row = listed
+            .lines()
+            .find(|line| line.starts_with("Todo/"))
+            .unwrap_or_else(|| panic!("the note is listed: {listed}"));
+        assert_eq!(
+            row.split_once("  ")
+                .map(|(name, rest)| (name, rest.split("  ").next().unwrap_or(rest))),
+            Some(("Todo/", "notes.Note")),
+            "the row prints its type as a program types it: {listed}"
+        );
+
+        // The type name read off that row is a path: it names the resource the row showed.
+        let path = "notes/notes.Note";
+        let (here, failed) = tool(&server, "tilo_ls", json!({"path": path})).await;
+        assert!(!failed, "{path} reads: {here}");
+        assert!(
+            here.lines()
+                .next()
+                .unwrap_or_default()
+                .ends_with("(notes.Note)"),
+            "the path walks back: {here}"
+        );
+
+        // A program form names the resource a `tilo_do` acts on: the note's own action runs.
+        let (done, failed) = tool(
+            &server,
+            "tilo_do",
+            json!({"path": format!("{path}#rename"), "args": {"title": "Renamed"}}),
+        )
+        .await;
+        assert!(!failed, "{done}");
+        let invoked = host.invoked();
+        let (resource, action, arguments) = invoked.last().unwrap();
+        assert_eq!(*resource, live_todo);
+        assert_eq!(action, "rename");
+        assert_eq!(*arguments, json!({"title": "Renamed"}));
+
+        // And the resource a `tilo_read` reads.
+        let (read, failed) = tool(&server, "tilo_read", json!({"path": path})).await;
+        assert!(!failed, "{path} reads: {read}");
+        assert!(read.starts_with("# Todo\n"), "the note's own body: {read}");
+    });
 }

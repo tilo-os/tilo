@@ -321,14 +321,59 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         };
         cursor = next;
     }
-    for kind in [
-        "tl.so.tilo.lang.tasks.",
-        "tl.so.tilo.lang.chat.",
-        "tl.so.tilo.lang.mail.",
+    // The session's records are listed, and each row names its type the way a program types it
+    // (`tasks.Task`), which is the name this listing is for: a name read off a row walks back
+    // to that resource.
+    let row_of = |listed: &str, form: &str| -> String {
+        listed
+            .lines()
+            .find(|line| line.split("  ").any(|column| column.trim() == form))
+            .unwrap_or_else(|| panic!("the session lists the seeded {form} records: {listed}"))
+            .to_owned()
+    };
+    // A row's columns are two spaces apart: the reference a program passes it by, the name,
+    // then the type.
+    let name_of = |row: &str| -> String {
+        row.split("  ")
+            .map(str::trim)
+            .nth(1)
+            .map(|name| name.trim_end_matches('/').to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| panic!("the row names its record: {row}"))
+    };
+    // A task's type is at the top level of what the session publishes, so its row walks back
+    // to its own resource.
+    let task = row_of(&listed, "tasks.Task");
+    let task_name = name_of(&task);
+    let (task_at, failed) = repl.call(
+        &mut session,
+        "tilo_ls",
+        &json!({"path": format!("session/{task_name}")}),
+    );
+    assert!(!failed, "tasks.Task at session/{task_name}: {task_at}");
+    assert!(
+        task_at
+            .lines()
+            .next()
+            .is_some_and(|header| header.ends_with("(tasks.Task)")),
+        "the row's own name reads back as its type: {task_at}"
+    );
+    // A type name names the resources of that kind too: chat's channels and mail's mailboxes
+    // sit a level down, under their app's root, and the type name reads them there.
+    for (form, under) in [
+        ("chat.TextChannel", "chat.Conversations"),
+        ("mail.Mailbox", "mail.Mail"),
     ] {
+        let root = row_of(&listed, under);
+        let root_name = name_of(&root);
+        let (inside, failed) = repl.call(
+            &mut session,
+            "tilo_ls",
+            &json!({"path": format!("session/{root_name}/{form}")}),
+        );
         assert!(
-            listed.contains(kind),
-            "the session lists the seeded {kind} records: {listed}"
+            !failed || !inside.contains(&format!("no {form} in")),
+            "a type name read off a row resolves in a path: {inside}"
         );
     }
 

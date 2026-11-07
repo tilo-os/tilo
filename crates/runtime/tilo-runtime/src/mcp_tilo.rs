@@ -195,12 +195,16 @@ fn literal_id(id: &str) -> bool {
 }
 
 /// How the task's programs write what the apps declare: each action as it is called, and each
-/// type by its name. Read from the task host's catalogue, so a listing and a program agree.
+/// type by its name. Read from the task host's catalogue, so a listing, a path and a program
+/// name a type with one name: [`Self::kind`] says what a listing prints for a resource's kind
+/// (`tasks.Task`), and [`Self::answers`] reads that same name back as its published kind, which
+/// is how a path walks to the resource a listing showed. One table serves both.
 #[derive(Default)]
 pub(crate) struct ProgramForms {
     /// By action id, each app's action of that id.
     actions: BTreeMap<String, Vec<Declared>>,
-    /// `(app, type name)` → `notes.Note`.
+    /// `(app, type name)` → `notes.Note`: a published kind's `tl.<app>.<Type>` as a program
+    /// types it, and the only mapping between the two.
     types: BTreeMap<(String, String), String>,
 }
 
@@ -288,6 +292,22 @@ impl ProgramForms {
         self.types
             .get(&(app.to_owned(), ty.to_owned()))
             .map(String::as_str)
+    }
+
+    /// Whether `name`, a segment of a path (`tasks.Task`), names the type of a resource of
+    /// `kind`, as a listing prints it ([`Self::kind`]): the same table read backwards, so a name
+    /// read off a row walks back to that resource. `false` for a kind no program types
+    /// (`notes.notebook`), and for one the task holds no package of.
+    pub(crate) fn answers(&self, name: &str, kind: &str) -> bool {
+        let Some((app, ty)) = kind
+            .strip_prefix("tl.")
+            .and_then(|rest| rest.rsplit_once('.'))
+        else {
+            return false;
+        };
+        self.types
+            .get(&(app.to_owned(), ty.to_owned()))
+            .is_some_and(|called| called.trim().eq_ignore_ascii_case(name.trim()))
     }
 }
 
