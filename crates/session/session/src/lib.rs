@@ -1262,10 +1262,6 @@ impl Session {
             &switcher,
         )));
         compositor.add_host(shell::under(options.shell, Held(Rc::clone(&chrome))));
-        // A press the desk takes never reaches the chrome drawn over it, so
-        // the stack judges it here: whatever the chrome or the session put
-        // up, standing where the press is not, goes down.
-        press_outside::mount(&mut compositor, &overlays);
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the desk publishes it on its next pass.
