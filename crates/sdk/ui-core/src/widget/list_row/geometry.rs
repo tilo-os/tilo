@@ -271,13 +271,16 @@ impl ListRowFace<'_> {
         self.count.map(|count| count.to_string())
     }
 
-    /// The side of the avatar in the facts column, where the row shows one. A card's facts
-    /// stand on one line of their own, so its avatar is the inline size there. A row without
-    /// one takes no room there: its other facts run on together.
+    /// The side of the avatar in the facts column, where the row shows one: the inline size,
+    /// as a fact's line is. A row without one takes no room there: its other facts run on
+    /// together.
     pub(super) fn fact_avatar(&self, theme: &Theme) -> Option<f64> {
+        // A fact stands on a line of its own height: the inline size, however many lines the
+        // row's text takes, so a person's face reads beside the other facts, not as a leading
+        // avatar over them.
         self.avatar
             .is_some()
-            .then(|| RowMetrics::avatar(theme, !self.card && self.extra_lines() > 0))
+            .then(|| RowMetrics::avatar(theme, false))
     }
 
     /// The width of the marks' run, the gaps between them included.
@@ -309,9 +312,6 @@ impl ListRowFace<'_> {
         }
         if self.status.is_some() {
             width += m.dot + m.column_gap;
-        }
-        if self.change.is_some() {
-            width += m.icon + m.column_gap;
         }
         width
     }
@@ -361,15 +361,6 @@ impl ListRowFace<'_> {
         if self.status.is_some() {
             geo.dot_x = Some(right - m.dot / 2.0);
             right -= m.dot + m.column_gap;
-        }
-        if self.change.is_some() {
-            geo.change = Some(Rect::new(
-                right - m.icon,
-                cy - m.icon / 2.0,
-                right,
-                cy + m.icon / 2.0,
-            ));
-            right -= m.icon + m.column_gap;
         }
         if let Some(width) = self.trailing_width
             && width > 0.0
@@ -428,7 +419,56 @@ impl ListRowFace<'_> {
         geo.text_right = right;
         geo.title_right = right;
         geo.second_right = right;
+        // The changer's face leads the line under the title, before the words it says.
+        geo.change = self.said_face(rect, &geo, m, text, theme);
         geo
+    }
+
+    /// Where the face of whoever changed the row sits: the start of the line under the title,
+    /// as tall as an icon, the words it leads after it. `None` while the row says nothing of a
+    /// change.
+    fn said_face(
+        &self,
+        rect: Rect,
+        geo: &RowGeometry,
+        m: &RowMetrics,
+        text: &mut TextRenderer,
+        theme: &Theme,
+    ) -> Option<Rect> {
+        self.change.filter(|change| !change.said.is_empty())?;
+        let title_style = self.title_style(m);
+        let title_line = RowMetrics::line(text, &title_style);
+        let secondary_line = RowMetrics::line(text, &m.secondary);
+        let reserved = usize::from(self.title_lines);
+        let room = self.title_room(geo, text, theme, m);
+        let shown = self.shown_title();
+        let drawn = text
+            .clamp_to_lines(&shown, &title_style, room, reserved)
+            .len()
+            .clamp(1, reserved);
+        // The row keeps the height of every title line it allows; the lines it draws centre
+        // the block, as the row paints them.
+        let unused = reserved - drawn;
+        let block = self.text_block(text, m) - title_line * crate::num::f64_of_usize(unused);
+        let text_top = if self.card {
+            self.card_content_top(rect, m, text, theme)
+        } else {
+            rect.center().y - block / 2.0
+        };
+        let mut top = text_top + title_line * crate::num::f64_of_usize(drawn);
+        if self.subtitle.is_some() {
+            top += RowMetrics::line(text, &m.subtitle);
+        }
+        if self.secondary.is_some() {
+            top += secondary_line * f64::from(self.secondary_lines);
+        }
+        let cy = top + secondary_line / 2.0;
+        Some(Rect::new(
+            geo.text_x,
+            cy - m.icon / 2.0,
+            geo.text_x + m.icon,
+            cy + m.icon / 2.0,
+        ))
     }
 
     /// Where a card's content starts: under its own padding, and centred in the card where
@@ -651,22 +691,36 @@ impl ListRowFace<'_> {
     pub fn leading_rect(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Rect {
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
-        match self.leading {
-            Some(RowLeading::Checkbox { icon: None, .. }) => {
-                // The whole leading column, row-tall: a box is a small target.
-                Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1)
-            }
-            Some(RowLeading::Checkbox { icon: Some(_), .. }) => {
-                // Only the box takes the press: the glyph after it is what the row is.
-                Rect::new(
-                    geo.leading.x0 - m.bleed,
-                    rect.y0,
-                    geo.leading.x0 + m.icon,
-                    rect.y1,
-                )
-            }
-            _ => geo.leading,
-        }
+        let Some(RowLeading::Checkbox { icon, .. }) = self.leading else {
+            return geo.leading;
+        };
+        let hit = match icon {
+            // The whole leading column, row-tall: a box is a small target.
+            None => Rect::new(geo.leading.x0 - m.bleed, rect.y0, geo.text_x, rect.y1),
+            // Only the box takes the press; the glyph after it is what the row is, unless the
+            // target grown below reaches it.
+            Some(_) => Rect::new(
+                geo.leading.x0 - m.bleed,
+                rect.y0,
+                geo.leading.x0 + m.icon,
+                rect.y1,
+            ),
+        };
+        // `rect` is the row's band, which bleeds into the list's gutter as the rest of the row
+        // does: a press on the box stays in it.
+        self.reach_target(hit, checkbox_box(geo.leading, icon, &m), rect)
+    }
+
+    /// `hit` grown about `boxed` to the smallest target a pointer needs, kept inside `row` by
+    /// moving it, never by shrinking it: a press at the row's edge still reaches all of it.
+    fn reach_target(&self, hit: Rect, boxed: Rect, row: Rect) -> Rect {
+        let side = self.check_target;
+        let grown = hit.union(Rect::from_center_size(boxed.center(), (side, side)));
+        let width = grown.width().min(row.width());
+        let height = grown.height().min(row.height());
+        let x0 = grown.x0.clamp(row.x0, row.x1 - width);
+        let y0 = grown.y0.clamp(row.y0, row.y1 - height);
+        Rect::new(x0, y0, x0 + width, y0 + height)
     }
 
     /// Where the title starts: the inset separator starts here too.
@@ -678,5 +732,19 @@ impl ListRowFace<'_> {
         theme: &Theme,
     ) -> f64 {
         self.geometry(rect, m, text, theme).text_x
+    }
+}
+
+/// Where a row draws the box it leads with, in `slot` (its leading column): first in the column,
+/// with the glyph after it where the row says what kind of thing it is.
+pub(super) fn checkbox_box(slot: Rect, icon: Option<crate::icons::Icon>, m: &RowMetrics) -> Rect {
+    match icon {
+        Some(_) => Rect::new(
+            slot.x0,
+            slot.center().y - m.icon / 2.0,
+            slot.x0 + m.icon,
+            slot.center().y + m.icon / 2.0,
+        ),
+        None => Rect::from_center_size(slot.center(), (m.icon, m.icon)),
     }
 }

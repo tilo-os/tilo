@@ -267,22 +267,19 @@ fn ask(
         sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
             show_picked_tab(seat, fed, &tab);
         }
-        sheet::WorkspaceSettingsEffect::DismissNotice => {
-            seat.dismiss_notice();
-            let shown = seat.settings();
-            let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-            show(seat, fed, shown.tab, review.as_deref());
-        }
+        sheet::WorkspaceSettingsEffect::DismissNotice => dismiss_notice(seat, fed),
         // Closing is the sheet's own.
         sheet::WorkspaceSettingsEffect::Close => {}
-        sheet::WorkspaceSettingsEffect::AddAgent { name } => add_agent(seat, fed, &name),
+        sheet::WorkspaceSettingsEffect::AddAgent {
+            name,
+            model,
+            colour,
+        } => add_agent(seat, fed, &name, &model, &colour),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(seat, fed, &device);
         }
         sheet::WorkspaceSettingsEffect::Rename { name } => {
-            intents
-                .borrow_mut()
-                .push(ChromeIntent::RenameWorkspace { name });
+            intent(intents, ChromeIntent::RenameWorkspace { name });
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
         sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
@@ -316,11 +313,9 @@ fn ask(
             });
         }
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
-            intents.borrow_mut().push(ChromeIntent::ShowActivity(None));
+            intent(intents, ChromeIntent::ShowActivity(None));
         }
-        sheet::WorkspaceSettingsEffect::Invite => {
-            intents.borrow_mut().push(ChromeIntent::Invite);
-        }
+        sheet::WorkspaceSettingsEffect::Invite => intent(intents, ChromeIntent::Invite),
         sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
             next_workspace_default(seat, fed, &resource);
         }
@@ -329,15 +324,11 @@ fn ask(
         }
         // The workspace leaves this device's desktop; it stays for
         // everyone in it, on their devices.
-        sheet::WorkspaceSettingsEffect::Delete => {
-            intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
-        }
+        sheet::WorkspaceSettingsEffect::Delete => intent(intents, ChromeIntent::LeaveWorkspace),
         // The person answered the sheet's own question: the desk deletes the
         // workspace with everything in it, and tells the session it went.
         sheet::WorkspaceSettingsEffect::DeleteWorkspace => {
-            intents
-                .borrow_mut()
-                .push(ChromeIntent::DeleteWorkspaceConfirmed);
+            intent(intents, ChromeIntent::DeleteWorkspaceConfirmed);
         }
         sheet::WorkspaceSettingsEffect::AddEmoji
         | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
@@ -363,9 +354,29 @@ fn ask(
         sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
             set_agent_model(seat, fed, &agent, &model);
         }
+        sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { agent, dollars } => {
+            set_agent_limit(seat, fed, &agent, &dollars);
+        }
+        sheet::WorkspaceSettingsEffect::SetAgentColour { agent, colour } => {
+            set_agent_colour(seat, fed, &agent, &colour);
+        }
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(seat, fed, &bot),
     }
+}
+
+/// Put the sheet's notice away and draw the tab it stands over again, review
+/// and all.
+fn dismiss_notice(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>) {
+    seat.dismiss_notice();
+    let shown = seat.settings();
+    let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
+    show(seat, fed, shown.tab, review.as_deref());
+}
+
+/// Say what the desk does next, for the sheet.
+fn intent(intents: &RefCell<Vec<ChromeIntent>>, what: ChromeIntent) {
+    intents.borrow_mut().push(what);
 }
 
 /// Open the Store's bots, where a member finds one and asks the workspace's
@@ -618,11 +629,23 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
 /// Make an agent called `name` where the workspace keeps its agents: the
 /// record is the agent's admission, and Chat's grants decide who may make
 /// one.
-fn add_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, name: &str) {
+fn add_agent(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    name: &str,
+    model: &str,
+    colour: &str,
+) {
     let workspace = workspace_in_front(fed);
+    let colour =
+        ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok());
     // The record is the admission: the agent works here because Chat's
     // record names it and this person keeps it.
-    if let Err(reason) = fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
+    if let Err(reason) = fed
+        .tabs
+        .agents
+        .create(workspace.as_ref(), fed.person, name, model, colour)
+    {
         refuse(seat, fed, &reason);
     }
 }
@@ -664,6 +687,64 @@ fn set_agent_model(
         Ok(()) => {
             let shown = seat.settings();
             show(seat, fed, shown.tab, Some(agent));
+        }
+        Err(reason) => refuse(seat, fed, &reason),
+    }
+}
+
+/// Set what an agent may spend a day, as its keeper: what its field held, in
+/// dollars, or no limit at all where it held nothing.
+fn set_agent_limit(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    agent: &str,
+    dollars: &str,
+) {
+    let limit_micros = if dollars.is_empty() {
+        None
+    } else {
+        let Some(micros) = ui::format::parse_money(dollars) else {
+            refuse(seat, fed, &t("workspace-settings-agent-limit-not-amount"));
+            return;
+        };
+        Some(micros)
+    };
+    let workspace = workspace_in_front(fed);
+    match fed
+        .tabs
+        .agents
+        .set_limit(workspace.as_ref(), fed.person, agent, limit_micros)
+    {
+        Ok(()) => {
+            let shown = seat.settings();
+            show(seat, fed, shown.tab, Some(agent));
+        }
+        Err(reason) => refuse(seat, fed, &reason),
+    }
+}
+
+/// Draw an agent in the colour its keeper picked, as their devices run it.
+fn set_agent_colour(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    agent: &str,
+    colour: &str,
+) {
+    let Some(colour) =
+        ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok())
+    else {
+        tracing::debug!(%colour, "no such presence colour: nothing changed");
+        return;
+    };
+    let workspace = workspace_in_front(fed);
+    match fed
+        .tabs
+        .agents
+        .set_colour(workspace.as_ref(), fed.person, agent, colour)
+    {
+        Ok(()) => {
+            let shown = seat.settings();
+            show(seat, fed, shown.tab, None);
         }
         Err(reason) => refuse(seat, fed, &reason),
     }

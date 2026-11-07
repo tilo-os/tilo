@@ -67,6 +67,11 @@ impl App {
         synthesized_touch: bool,
     ) -> bool {
         crate::widget::context_menu::note_input(&event);
+        // What this event opens or closes follows it: a press moves, a key
+        // lands at once. A host that shows an app on a surface of its own
+        // (the session's desk, its panels and sheets) reaches the toolkit
+        // through here, and would otherwise land everything at once.
+        crate::motion::note_input(&event);
         // Controls swapped in or moved under a still pointer learn it is
         // there before the press or release that follows.
         #[cfg(test)]

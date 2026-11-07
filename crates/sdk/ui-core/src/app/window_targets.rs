@@ -13,6 +13,25 @@ use crate::window_targets::{MAX_TARGETS, TargetAction, WindowTarget};
 
 impl App {
     /// The controls of this window's content as its accessibility tree
+    /// exports them now, in reading order, each with where it stands in
+    /// logical pixels and how wide and tall it is: what a surface of the
+    /// session names and presses, a sheet's and an app's window alike.
+    ///
+    /// The same list [`Self::window_targets`] hands a window's own app to
+    /// the desktop, read with one rule.
+    #[cfg(feature = "native")]
+    #[must_use]
+    pub fn window_controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        self.window_targets()
+            .into_iter()
+            .map(|target| {
+                let [x0, y0, x1, y1] = target.rect;
+                (target.name, (x0, y0, x1 - x0, y1 - y0))
+            })
+            .collect()
+    }
+
+    /// The controls of this window's content as its accessibility tree
     /// exports them now, in reading order: named ones, with where each is
     /// drawn and what it answers.
     ///

@@ -58,9 +58,15 @@ thread_local! {
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
 }
 
+/// Bring `host` up to date with the record and every chunk of it a replica holds: the store reads
+/// and writes the resources each chunk holds where the record's manifest places them.
+fn sync_record(host: &Host, record: &InstanceRecord) {
+    host.sync(record.chunks());
+}
+
 /// Who invokes, as the runtime reads the invoker the broker admitted.
 #[must_use]
-pub fn caller_of(invoker: &ActionInvoker) -> Caller {
+fn caller_of(invoker: &ActionInvoker) -> Caller {
     Caller {
         actor: invoker.actor.clone(),
         agent: invoker.kind != ActorKind::Person,
@@ -119,6 +125,10 @@ impl Surface {
         );
         let mut publications = Publications::new(host);
         publications.set_waker(wake.clone());
+        // This surface is a window's: it publishes the records the window draws and the
+        // resources its invocations name, not the whole workspace. What a caller that asks the
+        // directory reads is read from the workspace on demand (`everything`).
+        publications.window();
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
             app: app.to_owned(),
@@ -774,13 +784,24 @@ impl Hosted {
             .revert_step(&mut self.instance, resource, kind, invoker, ambient, change)
     }
 
-    /// What this instance holds that the workspace was not handed yet: its part of an action
-    /// ([`Self::share_under`]). None when the workspace holds all of it.
-    pub fn unsent_change(&mut self) -> Option<DocumentMutation> {
-        match self.record.unsent_change() {
-            DocumentMutation::Incremental(bytes) if bytes.is_empty() => None,
-            change => Some(change),
-        }
+    /// What this instance holds that the workspace was not handed yet, as its parts
+    /// ([`Self::share_under`]): one per chunk an action wrote, each named by the record it travels
+    /// on. Empty when the workspace holds all of it.
+    pub fn unsent_parts(&self) -> Vec<(String, DocumentMutation)> {
+        self.record
+            .unsent_parts()
+            .into_iter()
+            .filter(|(_, change)| match change {
+                DocumentMutation::Incremental(bytes) => !bytes.is_empty(),
+                DocumentMutation::Snapshot(_) => true,
+            })
+            .map(|(chunk, change)| {
+                (
+                    self.record.chunk_route(chunk).record.unwrap_or_default(),
+                    change,
+                )
+            })
+            .collect()
     }
 
     /// Send this instance's unsent change on its own: the workspace takes it as this unit's
@@ -801,7 +822,7 @@ impl Hosted {
         if let Some(why) = unshared {
             self.instance.unshared(why);
         }
-        self.instance.sync(Some(self.record.doc()));
+        self.instance.sync_chunks(self.record.chunks());
     }
 
     /// Publish the app's resources to the session's persistent search index, over the
@@ -831,7 +852,7 @@ impl Hosted {
         let Some(host) = self.instance.host() else {
             return;
         };
-        host.sync_from(self.record.doc());
+        sync_record(&host, &self.record);
         // An index still being built off the frame holds nothing yet: the frame that takes it
         // in publishes what it holds, which is why nothing is marked as sent here.
         if !host.index_ready() {
@@ -920,7 +941,7 @@ impl Hosted {
                 let Some(host) = self.instance.host() else {
                     return true;
                 };
-                host.sync_from(self.record.doc());
+                sync_record(&host, &self.record);
                 tilolang_tilo::search::read(
                     &host.store().snapshot(),
                     &tilolang_tilo::search::catalogue(&host),
@@ -1309,7 +1330,7 @@ impl Hosted {
             let action: DynAction = serde_json::from_slice(&encoded.payload)
                 .map_err(|error| Refused::new("action_invalid_arguments", error.to_string()))?;
             self.record
-                .apply_invoked(&mut self.instance, &action, invoker, ambient)
+                .apply_invoked(&mut self.instance, &action, &invoker, ambient)
                 .map_err(|error| Refused::new("action_failed", error.to_string()))?;
             return Ok(returned(&host, &action));
         }
@@ -1324,12 +1345,7 @@ impl Hosted {
                 .map_err(|error| Refused::new("action_failed", error))?;
             for committed in host.take_committed_from(first) {
                 self.record
-                    .apply_invoked(
-                        &mut self.instance,
-                        &committed.action,
-                        invoker.clone(),
-                        ambient,
-                    )
+                    .apply_invoked(&mut self.instance, &committed.action, &invoker, ambient)
                     .map_err(|error| Refused::new("action_failed", error.to_string()))?;
             }
             return Ok(output);
@@ -1383,7 +1399,7 @@ impl Hosted {
                 .instance
                 .host()
                 .ok_or_else(|| "the app has not started yet".to_owned())?;
-            host.sync_from(self.record.doc());
+            sync_record(&host, &self.record);
             host.read_content(item)?
         };
         Ok(tilo_actions::ActionOutput {
@@ -1541,33 +1557,32 @@ impl Hosted {
         }
     }
 
-    /// Run what the person chose from the window's command palette as their own step: the same
-    /// door an invocation the broker delivered for them takes, so the action runs for them
-    /// however it reached the app. Whether anything changed.
+    /// Run the next action the person chose at the window as their own step: the same door an
+    /// invocation the broker delivered for them takes, so the action runs for them however it
+    /// reached the app. One a frame, so what a press opened is sent, and the window hears it
+    /// ran, before the press after it. Whether there was one.
     fn chosen(&mut self) -> bool {
-        let chosen = self.instance.take_chosen();
-        if chosen.is_empty() {
+        let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
-        }
+        };
         let invoker = ActionInvoker::actor(self.spec.person.clone());
-        let mut changed = false;
-        for (address, argument) in chosen {
-            let opens_what_it_made = self.is_primary(&address);
-            match self.invoke(&address, argument.as_deref(), invoker.clone(), None) {
-                Ok(output) => {
-                    changed = true;
-                    // Choosing what a press of a primary action does asks for the same: what
-                    // it made opens beside the list.
-                    if opens_what_it_made {
-                        for anchor in output.resources {
-                            self.instance.opens_what_it_made(anchor);
-                        }
+        let opens_what_it_made = self.is_primary(&address);
+        match self.invoke(&address, argument.as_deref(), invoker, None) {
+            Ok(output) => {
+                // Choosing what a press of a primary action does asks for the same: what it
+                // made opens beside the list.
+                if opens_what_it_made {
+                    for anchor in output.resources {
+                        self.instance.opens_what_it_made(anchor);
                     }
                 }
-                Err(refused) => self.instance.action_refused(refused.message),
             }
+            Err(refused) => self.instance.action_refused(refused.message),
         }
-        changed
+        // The press ran: the frame after it sends what it opened, then tells the window it
+        // ran, so what the person typed after it goes there.
+        self.instance.press_ran(press);
+        true
     }
 
     /// Whether the app declares the action `address` names `primary`: what it made opens when
@@ -1835,7 +1850,7 @@ impl Applier {
     pub fn turn(&mut self) -> bool {
         let mut changed = self.record.take_in_record();
         if changed {
-            self.host.sync_from(self.record.doc());
+            sync_record(&self.host, &self.record);
         }
         self.surface.update();
         let state = std::mem::replace(&mut self.applying, Applying::Answered);
@@ -1956,10 +1971,10 @@ impl Applier {
         self.whole = true;
         for committed in self.host.take_committed() {
             self.record
-                .apply_change(&committed.action, invoker.clone(), ambient.as_ref())
+                .apply_change(&committed.action, &invoker, ambient.as_ref())
                 .map_err(|error| error.to_string())?;
         }
-        self.host.sync_from(self.record.doc());
+        sync_record(&self.host, &self.record);
         self.surface.update();
         Ok(true)
     }
@@ -1984,7 +1999,7 @@ impl Applier {
             }
         };
         // The record as the workspace holds it now: requirements are decided on what others wrote.
-        self.host.sync_from(self.record.doc());
+        sync_record(&self.host, &self.record);
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
         // An agent asks of the resource it names, whatever a window shows: the workspace is not
         // published for one change, and an applier shows nothing.
@@ -2016,7 +2031,7 @@ impl Applier {
                 Ok(edit) => edit,
                 Err(error) => return serde_json::json!({"failed": error.to_string()}),
             };
-            let before = self.record.heads();
+            let before = self.record.marks();
             return match self.record.history_at_origin(
                 &edit,
                 &address.resource,
@@ -2025,13 +2040,9 @@ impl Applier {
                 ambient.as_ref(),
             ) {
                 Ok(value) => {
-                    self.host.sync_from(self.record.doc());
+                    sync_record(&self.host, &self.record);
                     // What it wrote, for the task to read back at once, as a change's answer.
-                    let wrote = {
-                        use base64::Engine as _;
-                        base64::engine::general_purpose::STANDARD
-                            .encode(self.record.changes_since(&before))
-                    };
+                    let wrote = self.wrote_since(&before);
                     serde_json::json!({"ok": {"value": value, "resources": []}, "change": wrote})
                 }
                 Err(error) => serde_json::json!({"failed": error.to_string()}),
@@ -2049,27 +2060,33 @@ impl Applier {
         };
         // What it wrote includes the root it made for it, which the task's read lacks.
         let before = if std::mem::take(&mut self.whole) {
-            Vec::new()
+            tilolang_tilo::chunk::Stamps::new()
         } else {
-            self.record.heads()
+            self.record.marks()
         };
-        if let Err(error) = self.record.apply_change(&action, invoker, ambient.as_ref()) {
+        if let Err(error) = self
+            .record
+            .apply_change(&action, &invoker, ambient.as_ref())
+        {
             return serde_json::json!({"failed": error.to_string()});
         }
-        self.host.sync_from(self.record.doc());
+        sync_record(&self.host, &self.record);
         let output = returned(&self.host, &action);
         let differs = change.preview.as_ref().is_some_and(|preview| {
             serde_json::to_value(&action).is_ok_and(|applied| applied != *preview)
         });
         // What it wrote, for the task to read back at once: the workspace takes it in its own time.
-        let wrote = {
-            use base64::Engine as _;
-            base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(&before))
-        };
+        let wrote = self.wrote_since(&before);
         serde_json::json!({
             "ok": {"value": output.value, "resources": output.resources},
             "differs": differs,
             "change": wrote,
         })
+    }
+
+    /// What the record wrote since it held `before`, as the change a caller reads back.
+    fn wrote_since(&self, before: &tilolang_tilo::chunk::Stamps) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(self.record.changes_since(before))
     }
 }

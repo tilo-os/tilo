@@ -29,7 +29,7 @@ use ui::widget::{
     Button, ButtonRole, Column, Element, ListRow, ModalDialog, Row, Text, TextInput, Widget,
 };
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, presented};
 use crate::{t, t_args};
 
 /// The app the shell mounts the sheet as.
@@ -826,14 +826,15 @@ fn sheet(shown: &Shown, parts: &Parts) -> Element {
         Text::new(&t("wireless-protocols")).with_role(TextRole::Caption),
     ));
     let close = parts.clone();
-    Box::new(
+    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    Box::new(presented(
+        presentation,
         ModalDialog::new(t("display-sheet-title"), body)
             .with_test_id("display-sheet")
             .with_description(sheet.description())
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .on_dismiss(move || close.send(&DisplaysEffect::Close)),
-    )
+    ))
 }
 
 /// The layouts the displays allow, or why there are none.

@@ -211,6 +211,8 @@ pub struct Session {
     outstanding: outstanding::Outstanding,
     /// The turn the run in progress answers, as its reply is being told.
     record: Option<conversation::Record>,
+    /// What the run in progress may spend today, as its keeper counted it.
+    spending: Option<agent_loop::Spending>,
 }
 
 /// Ask the broker to select one current holder of this exact route. Safe to
@@ -305,6 +307,7 @@ impl Session {
             turn: None,
             outstanding: outstanding::Outstanding::default(),
             record: None,
+            spending: None,
         })
     }
 

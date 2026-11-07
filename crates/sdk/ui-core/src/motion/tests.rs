@@ -125,7 +125,13 @@ fn reduced_motion_lands_movement_and_keeps_fades() {
     let settles = p.settles_at().expect("a popover still fades in");
     assert!(settles <= now + fast + Duration::from_millis(1));
     let mid = p.progress(ms(now, 40));
-    let pose = Appear::pose(mid, Point::new(10.0, 0.0), reduced());
+    let pose = Appear::pose(
+        mid,
+        Direction::Enter,
+        Rect::new(0.0, 0.0, 40.0, 20.0),
+        Point::new(10.0, 0.0),
+        reduced(),
+    );
     assert_eq!(pose.transform, vello::kurbo::Affine::IDENTITY, "no scale");
     assert!(pose.opacity > 0.0 && pose.opacity < 1.0, "but a fade");
     let drill = Drill::pose(0.4, 360.0, reduced());
@@ -206,16 +212,54 @@ fn presence_intent_changes_at_once_while_the_drawing_follows() {
 }
 
 #[test]
-fn appear_scales_about_its_origin_and_leads_with_opacity() {
-    let origin = Point::new(300.0, 0.0);
-    let pose = Appear::pose(0.5, origin, on());
-    assert_eq!(pose.to_drawn(origin), origin, "the origin stays put");
+fn appear_comes_from_its_anchor_and_goes_back_to_it() {
+    let surface = Rect::new(100.0, 40.0, 500.0, 600.0);
+    let anchor = Point::new(480.0, 12.0);
+    let origin = Appear::origin(surface, anchor);
+    assert_eq!(origin, Point::new(480.0, 40.0));
+
+    // Arriving: from nothing, 92 % of its size, 8 px toward the anchor.
+    let first = Appear::coming(0.0, Direction::Enter, surface, anchor, on());
+    assert_eq!(first.opacity, 0.0, "it starts invisible");
+    assert!((first.scale - 0.92).abs() < 1e-9, "{}", first.scale);
     assert!(
-        (pose.opacity - 0.833).abs() < 0.01,
-        "opacity leads: {}",
-        pose.opacity
+        (first.offset.hypot() - Appear::REACH).abs() < 1e-9,
+        "8 px toward it: {:?}",
+        first.offset
     );
-    let corner = Point::new(0.0, 400.0);
+    assert!(
+        first.offset.x > 0.0 && first.offset.y < 0.0,
+        "up and to the right, the way the anchor is: {:?}",
+        first.offset
+    );
+    let half = Appear::coming(0.5, Direction::Enter, surface, anchor, on());
+    assert!(
+        (half.opacity - 0.25).abs() < 1e-6,
+        "the motion is eased: a quarter of the way in halfway through: {}",
+        half.opacity
+    );
+    assert!((half.scale - 0.94).abs() < 1e-9, "{}", half.scale);
+    assert!(
+        (half.offset.hypot() - Appear::REACH * 0.75).abs() < 1e-9,
+        "{:?}",
+        half.offset
+    );
+    // The first frames after a press show the least of it: whatever a frame
+    // catches in the first fifth of the motion, it is faint and still small.
+    let early = Appear::coming(0.35, Direction::Enter, surface, anchor, on());
+    assert!(early.opacity < 0.15, "{}", early.opacity);
+    assert!(early.scale < 0.94, "more than 6 % smaller: {}", early.scale);
+    assert!(Appear::pose(1.0, Direction::Enter, surface, anchor, on()).is_rest());
+
+    // The rest closes in on the origin, which itself leans the same way.
+    let pose = Appear::pose(0.5, Direction::Enter, surface, anchor, on());
+    let leant = Point::new(origin.x + half.offset.x, origin.y + half.offset.y);
+    assert!(
+        (pose.to_drawn(origin) - leant).hypot() < 1e-9,
+        "the point it scales about travels with the lean: {:?}",
+        pose.to_drawn(origin)
+    );
+    let corner = Point::new(100.0, 400.0);
     let drawn = pose.to_drawn(corner);
     assert!(
         drawn.x > corner.x && drawn.y < corner.y,
@@ -225,14 +269,22 @@ fn appear_scales_about_its_origin_and_leads_with_opacity() {
         (pose.to_local(drawn) - corner).hypot() < 1e-9,
         "hit testing inverts it"
     );
-    assert!(Appear::pose(1.0, origin, on()).is_rest());
-    assert!(!Appear::pose(0.0, origin, on()).is_visible());
-    assert_eq!(
-        Appear::origin(
-            Rect::new(100.0, 40.0, 500.0, 600.0),
-            Point::new(480.0, 12.0)
-        ),
-        Point::new(480.0, 40.0)
+
+    // Leaving: to nothing and 97 % of its size, the same 8 px back, and its
+    // opacity given up at a steady rate so the way out is seen.
+    let leaving = Appear::coming(0.0, Direction::Exit, surface, anchor, on());
+    assert_eq!(leaving.opacity, 0.0);
+    assert!((leaving.scale - 0.97).abs() < 1e-9, "{}", leaving.scale);
+    assert!((leaving.offset.hypot() - Appear::REACH).abs() < 1e-9);
+    let half_way_out = Appear::coming(0.5, Direction::Exit, surface, anchor, on());
+    assert!(
+        (half_way_out.opacity - 0.5).abs() < 1e-6,
+        "half of the way out, half of it still shows: {}",
+        half_way_out.opacity
+    );
+    assert!(
+        !Appear::pose(0.0, Direction::Enter, surface, anchor, on()).is_visible(),
+        "the first frame of its arrival shows nothing"
     );
 }
 
@@ -634,7 +686,7 @@ fn a_cursor_merely_moving_asks_for_nothing() {
 }
 
 #[test]
-fn an_appearing_surface_scales_about_the_point_nearest_its_control() {
+fn an_appearing_surface_leans_from_its_nearest_edge_toward_its_control() {
     use crate::time::testing::with_monotonic_time;
     let start = crate::time::now();
     let surface = Rect::new(100.0, 60.0, 300.0, 260.0);
@@ -647,10 +699,16 @@ fn an_appearing_surface_scales_about_the_point_nearest_its_control() {
     });
     with_monotonic_time(ms(start, 20), || {
         let pose = menu.pose(surface, button);
-        let origin = Point::new(140.0, 60.0);
+        let near = Point::new(140.0, 60.0);
+        let drawn = pose.to_drawn(near);
         assert!(
-            (pose.to_drawn(origin) - origin).hypot() < 1e-9,
-            "the edge under the button stays put"
+            (drawn - button).hypot() < (near - button).hypot(),
+            "the edge under the control comes toward it"
+        );
+        assert!(
+            (drawn - near).hypot() <= Appear::REACH + 1e-9,
+            "by no more than the reach: {:?}",
+            drawn
         );
         let far = Point::new(300.0, 260.0);
         assert!(

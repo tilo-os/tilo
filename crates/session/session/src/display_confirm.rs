@@ -211,7 +211,6 @@ impl Confirmation {
         let Some(asked) = &self.asked else {
             if presentation.is_drawn() {
                 presentation.close();
-                presentation.gone();
             }
             return;
         };

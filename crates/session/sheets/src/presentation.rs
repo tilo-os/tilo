@@ -5,7 +5,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use ui::motion::Appearance;
+use ui::tokens::MotionSource;
 use ui::vello::kurbo::Rect;
+use ui::widget::{ModalDialog, Widget};
 
 /// Where a sheet is in its life.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -34,7 +37,6 @@ pub trait Seat: Clone + Default + 'static {
 #[derive(Clone, Default)]
 pub struct Presentation(Rc<Inner>);
 
-#[derive(Default)]
 struct Inner {
     phase: Cell<Phase>,
     /// How many times the shell opened the sheet: the sheet shows each
@@ -51,14 +53,68 @@ struct Inner {
     every_display: Cell<bool>,
     /// Wakes the sheet's app when the shell changes the phase.
     wake: RefCell<Option<ui::WakeHandle>>,
+    /// The motion the card moves on: the person's setting, which the shell
+    /// says when it mounts the sheet. No draw of the card has happened yet
+    /// when it first arrives, so nothing else could.
+    motion: Cell<ui::tokens::EffectiveMotion>,
+    /// The card's arrival and leaving, kept here rather than in the app's
+    /// tree: the app builds a new tree whenever its state changes, and a
+    /// card that took its motion with the tree would replay its arrival on
+    /// every rebuild, and drop out of sight on the rebuild that closed it.
+    appear: Rc<Cell<ui::motion::Appearing>>,
+}
+
+impl Default for Inner {
+    fn default() -> Self {
+        Self {
+            phase: Cell::default(),
+            openings: Cell::default(),
+            by_keyboard: Cell::default(),
+            place: Cell::default(),
+            every_display: Cell::default(),
+            wake: RefCell::default(),
+            motion: Cell::new(ui::tokens::EffectiveMotion::default()),
+            appear: Rc::new(Cell::new(ui::motion::Appearing::closed())),
+        }
+    }
 }
 
 impl Presentation {
+    /// The card's arrival and leaving, which the sheet's dialog draws with
+    /// ([`presented`]): one handle for every tree the sheet's app builds.
+    #[must_use]
+    pub fn appearance(&self) -> Appearance {
+        Appearance::Shared(Rc::clone(&self.0.appear))
+    }
+
+    /// Move the card towards `open` as `source` asked, on the motion the
+    /// person allows (reduced motion only fades it).
+    fn show(&self, open: bool, source: MotionSource) {
+        let mut appear = self.0.appear.get();
+        appear.follow_from(open, self.0.motion.get(), source);
+        self.0.appear.set(appear);
+    }
+
+    /// Move the card on `motion`: what the shell says when it mounts the
+    /// sheet, before the card has ever been drawn to read it from its theme.
+    pub fn set_motion(&self, motion: ui::tokens::EffectiveMotion) {
+        self.0.motion.set(motion);
+    }
+
     /// The shell puts the sheet up; `by_keyboard` when a key asked.
     pub fn open(&self, by_keyboard: bool) {
         self.0.phase.set(Phase::Open);
         self.0.openings.set(self.0.openings.get().wrapping_add(1));
         self.0.by_keyboard.set(by_keyboard);
+        let source = if by_keyboard {
+            MotionSource::Keyboard
+        } else {
+            MotionSource::Pointer
+        };
+        // Its card arrives with the shell's own answer, however long ago the
+        // app built the tree that draws it: a key that asked lands at once,
+        // a press moves it.
+        self.show(true, source);
         self.wake();
     }
 
@@ -67,6 +123,7 @@ impl Presentation {
         let open = self.is_open();
         if open {
             self.0.phase.set(Phase::Leaving);
+            self.show(false, MotionSource::Pointer);
             self.wake();
         }
         open
@@ -136,6 +193,7 @@ impl Presentation {
     pub fn dismissed(&self) {
         if self.is_open() {
             self.0.phase.set(Phase::Leaving);
+            self.show(false, MotionSource::Pointer);
             self.wake();
         }
     }
@@ -162,5 +220,55 @@ impl std::fmt::Debug for Presentation {
             .field("phase", &self.phase())
             .field("openings", &self.openings())
             .finish_non_exhaustive()
+    }
+}
+
+/// The sheet's card, `dialog`, as `presentation` shows it: up while the
+/// shell has the sheet open, arriving once on the presentation's own
+/// appearance however often the app rebuilds its tree, and leaving until it
+/// has gone rather than vanishing on the rebuild that closed it.
+///
+/// `None` is a sheet nothing lends a presentation to — a capture, a test's
+/// fixture — which stands open at rest.
+pub fn presented<C: Widget + 'static>(
+    presentation: Option<&Presentation>,
+    dialog: ModalDialog<C>,
+) -> ModalDialog<C> {
+    let Some(presentation) = presentation else {
+        return dialog.open(true);
+    };
+    // Its card is up while the presentation says so, wherever it is in its
+    // arrival or leaving: the handle carries that across every tree the
+    // app builds, so a rebuild never closes or replays it.
+    dialog.appearing(presentation.appearance())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        reason = "in a test this is the assertion, not a hazard"
+    )]
+    use super::*;
+
+    /// The card moves on the motion the shell says: the person's reduced
+    /// motion takes the travel out of its arrival, before any frame of the
+    /// sheet has drawn to read a theme.
+    #[test]
+    fn the_card_moves_on_the_motion_the_shell_says() {
+        let presentation = Presentation::default();
+        presentation.set_motion(ui::Theme::dark().with_reduce_motion(true).motion());
+        presentation.open(false);
+        let appearance = presentation.appearance();
+        assert!(appearance.is_moving(), "it arrives");
+        let pose = appearance.pose(
+            ui::vello::kurbo::Rect::new(0.0, 0.0, 400.0, 300.0),
+            ui::vello::kurbo::Point::new(400.0, 0.0),
+        );
+        assert_eq!(
+            pose.transform,
+            ui::vello::kurbo::Affine::IDENTITY,
+            "reduced motion: it does not travel"
+        );
     }
 }

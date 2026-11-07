@@ -1369,6 +1369,7 @@ mod tests {
                         ),
                         stop_reason: StopReason::EndTurn,
                         usage: Usage::default(),
+                        cost_micros: 0,
                     })
                 })
             }

@@ -28,6 +28,7 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
         },
         stop_reason: StopReason::OutputLimit,
         usage: Usage::default(),
+        cost_micros: 0,
     };
     let mut f = fixture(
         "write hello",
@@ -1534,6 +1535,7 @@ fn execution_fixture(
         presentation_version: Some(1),
         execution_budget: budget,
         action_context: serde_json::Value::Null,
+        spend: None,
     };
     bind_context(&mut run);
     let surfaces = world.borrow().surfaces();
@@ -1573,6 +1575,7 @@ fn execution_fixture(
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
+        spending: None,
     };
     Fixture {
         session,
@@ -1624,6 +1627,8 @@ mod native_pipeline;
 mod pictures;
 #[path = "agent_loop/tests/programs.rs"]
 mod programs;
+#[path = "agent_loop/tests/spending.rs"]
+mod spending;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 

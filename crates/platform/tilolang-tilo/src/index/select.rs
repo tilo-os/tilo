@@ -10,24 +10,75 @@
 //! sorted.
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::rc::Rc;
 
 use tilolang_runtime::query::Order;
-use tilolang_runtime::store::{FieldRead, Listing, Lit, Pred, StoreError, lit_of, ordered_cmp};
+use tilolang_runtime::store::{
+    FieldRead, Listing, Lit, PagedItems, Pred, StoreError, lit_of, ordered_cmp,
+};
 
 use super::columns::{
     self, Access, after_value, reversed_list, scope_entry, scope_list, type_list, value_run,
 };
 use super::derive::{column_field, member_list};
 use super::lists::Pages;
-use super::merged::{Base, Filtered, Keep, Merged, PAGE, Partition};
+use super::merged::{Base, Filtered, Keep, Merged, PAGE, Partition, Shape};
 use super::view::{View, child, index_error};
 use super::{IndexError, Snapshot, TYPE};
 use crate::schema::{ColumnKind, TypeSchema};
 
 /// The entries the open writes put into a run, and those they take out of it.
 type Moved = (Vec<super::lists::Entry>, Vec<super::lists::Entry>);
+
+/// The parts of a listing ordered by two keys: one per run of the key before the last, each the
+/// column and the value it is the run of ([`View::order_parts`]).
+type Parts = Vec<Option<(crate::schema::ColumnSchema, String)>>;
+
+/// What a query shows, and the listing it read, when a later change may keep what it checked
+/// ([`Filtered::spliced`]).
+pub struct Answer {
+    pub listing: Listing,
+    pub carry: Option<Rc<Filtered>>,
+}
+
+impl Answer {
+    /// The answer is the listing, read whole: a change reads it anew.
+    fn shown(listing: Listing) -> Self {
+        Self {
+            listing,
+            carry: None,
+        }
+    }
+
+    /// The answer is the listing `filtered`, whose checks a change of the items it names keeps.
+    fn carried(filtered: Filtered) -> Self {
+        let filtered = Rc::new(filtered);
+        Self {
+            listing: Listing::paged(Rc::clone(&filtered) as Rc<dyn PagedItems>),
+            carry: Some(filtered),
+        }
+    }
+}
+
+/// The listing a query read before a change, and the items the change wrote: what a query read
+/// the same way again keeps of it rather than checking again.
+pub struct Carried<'a> {
+    pub before: &'a Filtered,
+    pub touched: &'a BTreeSet<String>,
+}
+
+/// The listing a run read page by page is of, as [`Filtered::spliced`] compares it: the read
+/// that names the run and the checks it leaves.
+fn shape_of(kind: &str, run: &str, (descending, absent_last): (bool, bool), part: &str) -> Shape {
+    let flags = |flag: bool| if flag { "1" } else { "0" };
+    let mut out = String::from(kind);
+    for held in [run, part, flags(descending), flags(absent_last)] {
+        out.push(columns::SEP);
+        out.push_str(held);
+    }
+    Rc::from(out)
+}
 
 /// The predicate's conjuncts that read a field; `None` when one that reads none does not hold.
 fn conjuncts(pred: Option<&Pred>) -> Result<Option<Vec<&Pred>>, StoreError> {
@@ -144,10 +195,10 @@ impl View<'_> {
         (resource, field): (&str, &str),
         schema: &TypeSchema,
         (pred, order): (Option<&Pred>, Option<&Order>),
-        evaluated: &Cell<u64>,
-    ) -> Result<Listing, StoreError> {
+        (carried, evaluated): (Option<&Carried<'_>>, &Cell<u64>),
+    ) -> Result<Answer, StoreError> {
         let Some(conj) = conjuncts(pred)? else {
-            return Ok(Listing::default());
+            return Ok(Answer::shown(Listing::default()));
         };
         // A named filter keeps a column holding whether its predicate does: the column answers
         // the predicate whole, so its run is read rather than a conjunct of it, which names
@@ -197,13 +248,15 @@ impl View<'_> {
         if let Some((at, access, count)) = narrow.clone()
             && count <= PAGE
         {
-            return self.read_whole(
-                (resource, field),
-                schema,
-                (&conj, Some(&(at, access))),
-                order,
-                (&touched, evaluated),
-            );
+            return self
+                .read_whole(
+                    (resource, field),
+                    schema,
+                    (&conj, Some(&(at, access))),
+                    order,
+                    (&touched, evaluated),
+                )
+                .map(Answer::shown);
         }
         let chosen = narrow.map(|(at, access, _)| (at, access)).or(chosen);
         let order_column = order.and_then(|o| schema.column(&o.field));
@@ -222,7 +275,7 @@ impl View<'_> {
                 schema,
                 (&conj, *at, a, run),
                 (order, order_column),
-                (Some(bound).flatten(), &touched, evaluated),
+                (Some(bound).flatten(), &touched, carried, evaluated),
             )?
         } else {
             None
@@ -236,14 +289,17 @@ impl View<'_> {
                 (resource, field),
                 schema,
                 (&conj, order),
-                (&touched, evaluated),
+                (&touched, carried, evaluated),
             )?;
             if let Some(listing) = answer {
                 return Ok(listing);
             }
         }
         if conj.is_empty() && order.is_none() {
-            return self.listing(resource, field).map_err(index_error);
+            return self
+                .listing(resource, field)
+                .map(Answer::shown)
+                .map_err(index_error);
         }
         self.read_whole(
             (resource, field),
@@ -252,6 +308,115 @@ impl View<'_> {
             order,
             (&touched, evaluated),
         )
+        .map(Answer::shown)
+    }
+
+    /// The items of the collection `field` of `resource` under the item `node` (above it, for
+    /// `down` false) by the reference field `parent`: the items under it in the order the
+    /// collection keeps them, the items above it from the nearest, each with the type it is
+    /// (the collection's `schema`).
+    ///
+    /// The field's column holds its values as runs ([`super::columns`]): the run of the node
+    /// names its children, and each child's run the items under it, so what a walk reads is
+    /// the subtree it answers, never the collection. `None` when the field is no column of the
+    /// type, and the caller's own walk runs instead.
+    ///
+    /// # Errors
+    ///
+    /// The index cannot be read.
+    pub fn relatives(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        parent: &str,
+        node: &str,
+        down: bool,
+    ) -> Result<Option<Vec<(String, String)>>, StoreError> {
+        let Some(column) = schema.column(parent).filter(|column| {
+            column.kind == ColumnKind::Ref && !column.many && column.pred.is_none()
+        }) else {
+            return Ok(None);
+        };
+        let member = member_list(resource, field);
+        let touched = self.overlay.touched_reading(
+            &member,
+            &|path| self.is_item_of(path, (resource, field)),
+            &|written| written == parent,
+        );
+        let mut found: Vec<(String, Rc<str>)> = Vec::new();
+        let mut walked: HashSet<String> = HashSet::from([node.to_owned()]);
+        if down {
+            let mut above = vec![node.to_owned()];
+            while let Some(at) = above.pop() {
+                for (key, id) in self.children((resource, field), schema, column, &at, &touched)? {
+                    if walked.insert(id.to_string()) {
+                        above.push(id.to_string());
+                        found.push((key, id));
+                    }
+                }
+            }
+            found.sort_by(|(a, ai), (b, bi)| (a.as_str(), &**ai).cmp(&(b.as_str(), &**bi)));
+        } else {
+            let mut at = node.to_owned();
+            while let Lit::Ref(held) = self.lit_of_field(&child(resource, &at), schema, parent)? {
+                let Some(id) = super::derive::id_of(&held).map(str::to_owned) else {
+                    break;
+                };
+                if !walked.insert(id.clone()) {
+                    break;
+                }
+                found.push((String::new(), Rc::from(id.as_str())));
+                at = id;
+            }
+        }
+        Ok(Some(
+            found
+                .into_iter()
+                .map(|(_, id)| (id.to_string(), schema.id.clone()))
+                .collect(),
+        ))
+    }
+
+    /// The items of the collection `field` of `resource` whose `parent` column holds `above`,
+    /// as the open writes leave them: their collection order key and id.
+    fn children(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        column: &crate::schema::ColumnSchema,
+        above: &str,
+        touched: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<(String, Rc<str>)>, StoreError> {
+        let here = child(resource, above);
+        let list = scope_list(resource, field, &column.name);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let run = columns::value_run(&here);
+        let (start, end) =
+            run_bounds(self.snapshot, (&list, &pages), Some(column), &run).map_err(index_error)?;
+        let mut out = Vec::with_capacity(end.saturating_sub(start));
+        for index in start..end {
+            let Some((key, id)) = pages.entry(index) else {
+                break;
+            };
+            // What an open write changed it to is read below, as it is now.
+            if touched.contains(&*id) {
+                continue;
+            }
+            out.push((after_value(&key).to_owned(), id));
+        }
+        for id in touched {
+            let path = child(resource, id);
+            let Some(key) = self.key_in(&path, (resource, field)).map_err(index_error)? else {
+                continue;
+            };
+            let now = self
+                .column_values(&path, schema, column)
+                .map_err(index_error)?;
+            if now.contains(&here) {
+                out.push((key, Rc::from(id.as_str())));
+            }
+        }
+        Ok(out)
     }
 
     /// [`Self::query`]'s run read page by page, when the chosen run is in the collection's order
@@ -264,12 +429,13 @@ impl View<'_> {
         schema: &TypeSchema,
         (conj, at, a, run): (&[&Pred], usize, &Access, &(String, String)),
         (order, order_column): (Option<&Order>, Option<&crate::schema::ColumnSchema>),
-        (bound, touched, evaluated): (
+        (bound, touched, carried, evaluated): (
             Option<usize>,
-            &std::collections::BTreeSet<String>,
+            &BTreeSet<String>,
+            Option<&Carried<'_>>,
             &Cell<u64>,
         ),
-    ) -> Result<Option<Listing>, StoreError> {
+    ) -> Result<Option<Answer>, StoreError> {
         let column = schema.column(&a.column);
         let descending = order.is_some_and(|o| o.descending);
         // A run is read in one order; an order over another one, or one with the items without
@@ -295,7 +461,9 @@ impl View<'_> {
         )?;
         let locate = self.locate((resource, field), Some((&schema.id, &a.column)));
         let Some(residual) = rest(conj, Some(at)) else {
-            return Ok(Some(Listing::paged(Rc::new(run.locating(locate)))));
+            return Ok(Some(Answer::shown(Listing::paged(Rc::new(
+                run.locating(locate),
+            )))));
         };
         // The listing outlives this read, so it holds the snapshot and the schema itself: a
         // check of the run reads the index's fields, which hold the open writes too.
@@ -317,8 +485,58 @@ impl View<'_> {
         });
         // The most the listing can hold: the run's own count, or the count of a narrower
         // conjunct of the predicate, which the run is read against item by item.
-        let filtered = Filtered::new(run, keep).locating(locate).bounded(bound);
-        Ok(Some(Listing::paged(Rc::new(filtered))))
+        let shape = shape_of(
+            "run",
+            &format!("{at}{}{}", columns::SEP, a.column),
+            (descending, false),
+            "",
+        );
+        let filtered = Self::spliced(carried, run, keep, shape, touched);
+        Ok(Some(Answer::carried(
+            filtered.locating(locate).bounded(bound),
+        )))
+    }
+
+    /// A part per run of the key before the last one: a column an item stands in once, whose
+    /// runs follow one another in its values' order. `None` when the key is not such a column, or
+    /// a write the change names may have moved an item between its runs.
+    fn order_parts(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        before: Option<&Order>,
+        touched: &BTreeSet<String>,
+    ) -> Result<Option<Parts>, StoreError> {
+        let Some(before) = before else {
+            return Ok(Some(vec![None]));
+        };
+        if !touched.is_empty() {
+            return Ok(None);
+        }
+        let Some(column) = schema
+            .column(&before.field)
+            .filter(|column| columns::counted(column))
+        else {
+            return Ok(None);
+        };
+        let list = scope_list(resource, field, &column.name);
+        let mut values: Vec<String> = self
+            .snapshot
+            .counts(&list)
+            .map_err(index_error)?
+            .into_iter()
+            .filter(|(_, count)| *count > 0)
+            .map(|(value, _)| value)
+            .collect();
+        if before.descending {
+            values.reverse();
+        }
+        Ok(Some(
+            values
+                .into_iter()
+                .map(|value| Some((column.clone(), value)))
+                .collect(),
+        ))
     }
 
     /// [`Self::query`]'s order read from the index's columns: the key the order falls back to
@@ -334,8 +552,8 @@ impl View<'_> {
         (resource, field): (&str, &str),
         schema: &TypeSchema,
         (conj, order): (&[&Pred], &Order),
-        (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
-    ) -> Result<Option<Listing>, StoreError> {
+        (touched, carried, evaluated): (&BTreeSet<String>, Option<&Carried<'_>>, &Cell<u64>),
+    ) -> Result<Option<Answer>, StoreError> {
         let levels = order.levels();
         let Some((scan, outer)) = levels.split_last() else {
             return Ok(None);
@@ -356,39 +574,9 @@ impl View<'_> {
             [one] => Some(*one),
             _ => return Ok(None),
         };
-        // A part per run of the key before it: a column an item stands in once, whose runs
-        // follow one another in its values' order.
-        let mut parts: Vec<Option<(crate::schema::ColumnSchema, String)>> = Vec::new();
-        if let Some(before) = before {
-            if !touched.is_empty() {
-                return Ok(None);
-            }
-            let Some(column) = schema
-                .column(&before.field)
-                .filter(|column| columns::counted(column))
-            else {
-                return Ok(None);
-            };
-            let list = scope_list(resource, field, &column.name);
-            let mut values: Vec<String> = self
-                .snapshot
-                .counts(&list)
-                .map_err(index_error)?
-                .into_iter()
-                .filter(|(_, count)| *count > 0)
-                .map(|(value, _)| value)
-                .collect();
-            if before.descending {
-                values.reverse();
-            }
-            parts.extend(
-                values
-                    .into_iter()
-                    .map(|value| Some((column.clone(), value))),
-            );
-        } else {
-            parts.push(None);
-        }
+        let Some(parts) = self.order_parts((resource, field), schema, before, touched)? else {
+            return Ok(None);
+        };
         // The listing outlives this read: it holds the snapshot and the schema itself, as the
         // check of a run does ([`Self::paged_run`]).
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
@@ -397,6 +585,8 @@ impl View<'_> {
         // The most items the conjuncts can name, from the columns' runs: what a list sized
         // before its pages are read costs, where reading its pages whole costs the workspace.
         let bound = self.run_count((resource, field), schema, conj, touched)?;
+        let counted =
+            self.counted_whole((resource, field), schema, (conj, before.is_none()), touched)?;
         let residual = rest(conj, None);
         let mut reads: Vec<Filtered> = Vec::new();
         let mut most = None;
@@ -422,16 +612,95 @@ impl View<'_> {
                 evaluated,
             );
             let locate = self.locate((resource, field), Some((&schema.id, &scan_column.name)));
-            reads.push(Filtered::new(run, keep).locating(locate).bounded(bound));
+            let shape = shape_of(
+                "order",
+                &scan_column.name,
+                (scan.descending, scan.absent_last),
+                &part
+                    .as_ref()
+                    .map(|(column, value)| format!("{}{}{value}", column.name, columns::SEP))
+                    .unwrap_or_default(),
+            );
+            let filtered = Self::spliced(carried, run, keep, shape, touched);
+            let filtered = match counted {
+                Some(count) => filtered.known(count),
+                None => filtered,
+            };
+            reads.push(filtered.locating(locate).bounded(bound));
         }
         if parts.len() == 1 {
             let Some(one) = reads.pop() else {
                 return Ok(None);
             };
-            return Ok(Some(Listing::paged(Rc::new(one))));
+            return Ok(Some(Answer::carried(one)));
         }
         let most = bound.unwrap_or_else(|| most.unwrap_or(0));
-        Ok(Some(Listing::paged(Rc::new(Partition::new(reads, most)))))
+        Ok(Some(Answer::shown(Listing::paged(Rc::new(
+            Partition::new(reads, most),
+        )))))
+    }
+
+    /// How many items one exact run of one column holds, when one conjunct answers the whole
+    /// predicate: the count the index keeps of it, so a list sized before its pages are read
+    /// costs a count rather than a read of every item.
+    fn counted_whole(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        (conj, alone): (&[&Pred], bool),
+        touched: &BTreeSet<String>,
+    ) -> Result<Option<usize>, StoreError> {
+        let [one] = conj else {
+            return Ok(None);
+        };
+        if !alone {
+            return Ok(None);
+        }
+        let id = |f: &FieldRead| f.spec.id.clone();
+        let accesses = columns::access(schema, one, &id, false);
+        let Some([a]) = accesses.as_deref() else {
+            return Ok(None);
+        };
+        let [run] = a.runs.as_slice() else {
+            return Ok(None);
+        };
+        if !a.exact || a.repeats {
+            return Ok(None);
+        }
+        let run = self.run_as_written(
+            (resource, field),
+            schema,
+            (&a.column, None),
+            run,
+            false,
+            touched,
+        )?;
+        Ok(Some(run.len()))
+    }
+
+    /// The listing of the run `base` kept by `keep`, of the read `shape`: what `carried` kept of
+    /// the run it read before, when the change left it the same read, or the run checked here.
+    fn spliced(
+        carried: Option<&Carried<'_>>,
+        base: Merged,
+        keep: Keep,
+        shape: Shape,
+        touched: &BTreeSet<String>,
+    ) -> Filtered {
+        let Some(carried) = carried else {
+            return Filtered::new(base, keep).shaped(shape);
+        };
+        // The items the change wrote, and those the open writes have written since: either may
+        // have moved an entry of the run.
+        let mut touched = touched.clone();
+        touched.extend(carried.touched.iter().cloned());
+        match Filtered::spliced(carried.before, base, keep, shape.clone(), &touched) {
+            Ok(spliced) => spliced,
+            Err(boxed) => {
+                let (base, keep) = *boxed;
+                Filtered::new(base, keep).shaped(shape)
+            }
+        }
     }
 
     /// The entries of the column `column` of the collection `field` of `resource` as a listing
@@ -785,7 +1054,13 @@ impl View<'_> {
     ) -> Result<Lit, StoreError> {
         let Some(f) = schema.field(field) else {
             let Some(f) = super::reflect::field(field) else {
-                return Ok(Lit::Absent);
+                // When a field last changed, which the index keeps as a pseudo-field of its
+                // own: by the time of the stamp it holds.
+                if super::reflect::field_of_changed(field).is_none() {
+                    return Ok(Lit::Absent);
+                }
+                let held = self.field(path, field).map_err(index_error)?;
+                return Ok(held.map_or(Lit::Absent, |held| super::reflect::at_lit(&held)));
             };
             let held = self.field(path, &f.id).map_err(index_error)?;
             return Ok(held.map_or(Lit::Absent, |held| super::reflect::at_lit(&held)));

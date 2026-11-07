@@ -75,7 +75,7 @@ fn youtube_connector_child() {
         }
     });
     // The production connector loop, over the scripted service rather than YouTube.
-    tilolang_youtube::connector::serve(tilolang_youtube::scripted(scripted()), attachments);
+    tilolang_youtube::connector::serve(&tilolang_youtube::scripted(scripted()), attachments);
 }
 
 /// The scripted YouTube service: one search's answer.
@@ -109,58 +109,11 @@ fn scripted() -> tilolang_youtube::Scripted {
     }
 }
 
-/// Install the YouTube client's package in `home`'s app store, its manifest declaring the
-/// `youtube` origin, and write the launcher the session starts it through: the stand-in runs
-/// this test binary as the connector process, on the gate the launcher is handed.
-fn installed_tube(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
-    let store = home.data().join("tilo-apps");
-    let payload = store.join("payload").join(TUBE);
-    std::fs::create_dir_all(payload.join("bin")).unwrap();
-    std::fs::write(payload.join("app.wasm"), b"").unwrap();
-    std::fs::write(payload.join("app.ids"), b"").unwrap();
-    let manifest = payload.join("manifest.toml");
-    std::fs::write(
-        &manifest,
-        format!(
-            "[package]\n\
-             id = \"{TUBE}\"\n\
-             version = \"1.0.0\"\n\
-             kind = \"app\"\n\
-             name = \"YouTube\"\n\
-             \n\
-             [publisher]\n\
-             identity = \"ed25519:{key}\"\n\
-             signature = \"\"\n\
-             \n\
-             [sandbox]\n\
-             namespaces = [\"user\", \"net\"]\n\
-             seccomp = \"tilo-default\"\n\
-             landlock = \"strict\"\n\
-             \n\
-             [sandbox.net]\n\
-             mode = \"host\"\n\
-             \n\
-             [entrypoint]\n\
-             runtime = \"tilolang/0.1.0+tilolang\"\n\
-             bin = \"bin/tilolang-app\"\n\
-             type = \"gui\"\n\
-             origins = [\"youtube\"]\n\
-             \n\
-             [providers]\n",
-            key = "22".repeat(32),
-        ),
-    )
-    .unwrap();
-    std::fs::write(
-        store.join("registry.toml"),
-        format!(
-            "[[entry]]\nid = \"{TUBE}\"\nversion = \"1.0.0\"\n\
-             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
-            payload = payload.display(),
-            manifest = manifest.display(),
-        ),
-    )
-    .unwrap();
+/// Write the launcher the session starts the apps' connectors through: the stand-in runs this
+/// test binary as the connector process, on the gate the launcher is handed. The apps are the
+/// ones installed in `home`'s own store ([`common::install_apps_in`]), the YouTube client's
+/// signed package among them; its manifest declares the `youtube` origin.
+fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the
     // connector process, keeping the gate it was handed as stdin.
     tilo_test_env::stand_in(
@@ -177,9 +130,12 @@ fn installed_tube(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
 }
 
 /// A headless session with the shell as the whole screen and the seeded apps published (the
-/// YouTube client among them), its apps started through `home`'s launcher.
+/// YouTube client among them), its apps started through `home`'s launcher. The apps are the
+/// ones installed in `home`'s own app store, as a device's are: the client's package is a
+/// signed `.tapp` whose manifest declares the `youtube` origin, so the session plans its
+/// connector the way it plans any installed app's.
 fn session(
-    _home: &tilo_test_env::TestHome,
+    home: &tilo_test_env::TestHome,
     root: &Path,
     launcher: &tilo_test_env::StandIn,
 ) -> Session {
@@ -188,7 +144,8 @@ fn session(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let seeded = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let store = home.data().join("tilo-apps");
+    let seeded = common::seeded_apps_in(&store);
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -213,8 +170,13 @@ fn session(
 #[test]
 fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().expect("a home");
-    let launcher = installed_tube(&home);
+    let mut home = tilo_test_env::TestHome::new().expect("a home");
+    // The apps a development session runs, installed in this test's own store: the YouTube
+    // client's signed package is one of them, with the manifest that declares its origin.
+    let store = home.data().join("tilo-apps");
+    common::install_apps_in(&store, &home.state().join("tilolang"));
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+    let launcher = connector_launcher(&home);
     let root = private_home();
     let mut session = session(&home, root.path(), &launcher);
 

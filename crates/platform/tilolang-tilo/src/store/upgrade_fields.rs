@@ -61,52 +61,12 @@ impl Inner {
         let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
             return false;
         };
-        // The record, and every item of it whose own type keeps a field as rich text.
-        let mut targets: Vec<(ResourceRef, automerge::ObjId, Vec<String>)> = Vec::new();
-        let own = rich_fields(schema);
-        if !own.is_empty() {
-            targets.push((
-                ResourceRef::root(doc.to_owned(), schema.id.clone()),
-                root.clone(),
-                own,
-            ));
-        }
-        let items = Items::scan(mirror, &root, schema);
-        for (id, found) in &items.found {
-            let Some(obj) = found.obj.clone() else {
-                continue;
-            };
-            let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
-                continue;
-            };
-            let rich = rich_fields(item_schema);
-            if rich.is_empty() {
-                continue;
-            }
-            targets.push((
-                ResourceRef::root(doc.to_owned(), schema.id.clone())
-                    .item(id, item_schema.id.clone()),
-                obj,
-                rich,
-            ));
-        }
+        let targets = self.upgrade_targets(app, doc, schema, &root);
         // What each record and item of it holds as plain text, read before any of it is written.
-        let plans: Vec<(ResourceRef, Vec<(String, String)>)> = targets
-            .into_iter()
-            .map(|(at, obj, fields)| {
-                let plain = fields
-                    .into_iter()
-                    .filter_map(|field| {
-                        let plain = plain_text_at(Some(mirror), &obj, &field)?;
-                        Some((field, plain))
-                    })
-                    .collect();
-                (at, plain)
-            })
-            .collect();
+        let plans = self.upgrade_plans(targets, mirror);
         let mut edits: Vec<DynEdit> = Vec::new();
         let mut args = serde_json::Map::new();
-        for (at, plain) in plans {
+        for (at, chunk, plain) in plans {
             let Ok(prefix) = self.prefix_of(&at) else {
                 continue;
             };
@@ -114,13 +74,23 @@ impl Inner {
                 let mut path = prefix.clone();
                 path.push(tilo_resource::Segment::Field(field.clone()));
                 let seed = format!("upgrade:{doc}:{field}").into_bytes();
-                let edit = DynEdit::Edit {
-                    id: doc.to_owned(),
-                    edit: tilo_resource::Edit::new(path, plain_text_edit(&plain)),
-                };
+                let edit = DynEdit::routed_at(
+                    &self.chunks,
+                    DynEdit::Edit {
+                        id: doc.to_owned(),
+                        edit: tilo_resource::Edit::new(path, plain_text_edit(&plain)),
+                    },
+                    chunk,
+                );
                 let key = tilolang_runtime::store::FieldKey::new(&at, field.clone());
                 if self
-                    .write(app, edit.clone(), seed, vec![key], (Vec::new(), Vec::new()))
+                    .write(
+                        app,
+                        vec![edit.clone()],
+                        &seed,
+                        &[key],
+                        (Vec::new(), Vec::new()),
+                    )
                     .is_err()
                 {
                     continue;
@@ -146,7 +116,78 @@ impl Inner {
         });
         true
     }
+
+    /// The record `doc` and every item of it whose own type keeps a field as rich text, each with
+    /// the chunk its map is stored in.
+    fn upgrade_targets(
+        &self,
+        app: &str,
+        doc: &str,
+        schema: &'static TypeSchema,
+        root: &automerge::ObjId,
+    ) -> Vec<Target> {
+        let mut targets = Vec::new();
+        let own = rich_fields(schema);
+        if !own.is_empty() {
+            targets.push((
+                ResourceRef::root(doc.to_owned(), schema.id.clone()),
+                self.chunks.chunk(doc),
+                root.clone(),
+                own,
+            ));
+        }
+        let items = Items::across(&self.chunks, app, doc, schema);
+        for (id, found) in &items.found {
+            let (Some(obj), Some(item_schema)) =
+                (found.obj.clone(), found.ty.as_deref().and_then(lookup))
+            else {
+                continue;
+            };
+            let rich = rich_fields(item_schema);
+            if rich.is_empty() {
+                continue;
+            }
+            targets.push((
+                ResourceRef::root(doc.to_owned(), schema.id.clone())
+                    .item(id, item_schema.id.clone()),
+                found.chunk,
+                obj,
+                rich,
+            ));
+        }
+        targets
+    }
+
+    /// What each target holds as plain text, read before any of it is written.
+    fn upgrade_plans(&self, targets: Vec<Target>, record: &tilo_resource::Doc) -> Vec<Plan> {
+        targets
+            .into_iter()
+            .map(|(at, chunk, obj, fields)| {
+                let source = self.chunks.mirror(chunk).unwrap_or(record);
+                let plain = fields
+                    .into_iter()
+                    .filter_map(|field| {
+                        let plain = plain_text_at(Some(source), &obj, &field)?;
+                        Some((field, plain))
+                    })
+                    .collect();
+                (at, chunk, plain)
+            })
+            .collect()
+    }
 }
+
+/// A field holder a build's text upgrade writes: the record or item, the chunk its map is
+/// stored in, its map there, and the fields it holds as rich text now.
+type Target = (
+    ResourceRef,
+    crate::chunk::ChunkNo,
+    automerge::ObjId,
+    Vec<String>,
+);
+
+/// What an upgrade writes of one [`Target`]: the plain text each of its fields holds.
+type Plan = (ResourceRef, crate::chunk::ChunkNo, Vec<(String, String)>);
 
 /// The fields of `schema` it keeps as rich text.
 fn rich_fields(schema: &'static TypeSchema) -> Vec<String> {

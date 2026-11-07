@@ -1,0 +1,47 @@
+[Unit]
+Description=Make the staged deployment the one that boots next
+Documentation=file:///usr/share/doc/tilo/recovery.md
+# Started by tilo-deployment once the staged entry carries its try counter, and
+# at every boot for a staged deployment whose shutdown never came (a machine that
+# was switched off rather than shut down). It writes the ESP and bootc's state,
+# which the units that only inspect the boot plan keep read-only, so the step has
+# a unit of its own.
+RequiresMountsFor=/boot /boot/efi
+After=local-fs.target
+# Repair mode must not rewrite the ESP it may be about to be used to repair.
+ConditionKernelCommandLine=!tilo.mode=repair
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo-deployment finalize
+# ESP and storage work yields to the login burst, the compositor and games, as the
+# boot-entry pass does.
+Nice=10
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+# bootc remounts the ESP writable inside a mount namespace of its own; this keeps
+# whatever it does to the disk out of the rest of the system's view until it is
+# done.
+PrivateMounts=yes
+UMask=0077
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectHome=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal+console

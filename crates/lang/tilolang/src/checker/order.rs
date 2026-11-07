@@ -1,6 +1,7 @@
 //! `sort_by` over a collection, answered by the store: by a field of the items (`.due`,
-//! `x -> x.title`) or by their versions (`x -> updated(x)`, `x -> created(x)`, ordered by their
-//! time), oldest or smallest first, or with `desc` the latest or largest first.
+//! `x -> x.title`), by their versions (`x -> updated(x)`, `x -> created(x)`, ordered by their
+//! time), or by when one of their fields last changed (`x -> changed(x, .done)?.at`), oldest or
+//! smallest first, or with `desc` the latest or largest first.
 //!
 //! A store with an index keeps a column per such field and per version in each collection, so
 //! a list in that order opens by reading one page. The order is handed to the host beside the
@@ -18,6 +19,8 @@ use crate::types::Ty;
 /// The pseudo-fields naming a resource's versions in an order the store answers.
 pub(super) const CREATED: &str = "$created";
 pub(super) const UPDATED: &str = "$updated";
+/// What the pseudo-field holding when a field last changed begins with.
+pub(super) const CHANGED: &str = "$changed";
 
 /// What a `sort_by` key reads of an item.
 pub(super) enum SortKey {
@@ -25,12 +28,16 @@ pub(super) enum SortKey {
     Field { id: String, optional: bool },
     /// Its first (`created`) or last (`updated`) version.
     Version { last: bool },
+    /// When a field of it last changed (`changed(x, .field)?.at`), under the pseudo-field the
+    /// index keeps it at. An item that never changed it has no moment of one, which stands
+    /// before every moment.
+    Changed { id: String },
 }
 
 impl SortKey {
     fn field(&self) -> &str {
         match self {
-            Self::Field { id, .. } => id,
+            Self::Field { id, .. } | Self::Changed { id } => id,
             Self::Version { last: true } => UPDATED,
             Self::Version { last: false } => CREATED,
         }
@@ -73,6 +80,35 @@ impl Checker<'_> {
                     return self.sort_key(elem, inner, &closure.body);
                 }
                 None
+            }
+            // When a field last changed, which the index keeps by its time.
+            ExprKind::OptChain { base, name, .. } if name.name == "at" => {
+                let ExprKind::Call { callee, args, .. } = &base.kind else {
+                    return None;
+                };
+                let ExprKind::Ident(callee) = &callee.kind else {
+                    return None;
+                };
+                let [r, f] = args.as_slice() else {
+                    return None;
+                };
+                if callee != "changed" || r.name.is_some() || !is_param(&r.value) {
+                    return None;
+                }
+                let ExprKind::Variant {
+                    name: field,
+                    args: None,
+                } = &f.value.kind
+                else {
+                    return None;
+                };
+                let Ty::Record(key) = elem else {
+                    return None;
+                };
+                let field = self.env.type_info(key)?.field(&field.name)?;
+                Some(SortKey::Changed {
+                    id: format!("{CHANGED}.{}", field.id),
+                })
             }
             ExprKind::Field { base, name } if is_param(base) => {
                 let Ty::Record(key) = elem else {

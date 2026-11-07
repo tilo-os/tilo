@@ -144,7 +144,13 @@ impl Agents {
                 authority: t("workspace-settings-view-only"),
             },
             add: t("workspace-settings-add-agent"),
+            create: t("workspace-settings-create-agent"),
+            cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
+            colour: t("workspace-settings-agent-colour"),
+            colour_hint: t("workspace-settings-agent-colour-hint"),
+            model: t("workspace-settings-agent-model"),
+            model_default: t("workspace-settings-agent-model-default-choice"),
             manage: false,
             header: t("workspace-settings-agents-header"),
             empty: (
@@ -168,15 +174,21 @@ impl Agents {
         let me = record.me();
         let manage = workspace.may_administer(person);
         let config = agent_provider_config::ProviderConfig::load();
-        let yours = t("workspace-settings-agent-yours");
         let agents: Vec<sheet::Agent> = state
             .active()
-            .map(|agent| sheet::Agent {
-                key: agent.id.0.clone(),
-                name: agent.name.clone(),
-                status: keeper_line(names, workspace, record, &agent.keeper),
-                tag: same_person(&agent.keeper, me).then(|| yours.clone()),
-                model: model_line(&config, &agent.id.0, agent.model.as_deref()),
+            .map(|agent| {
+                let mine = same_person(&agent.keeper, me);
+                sheet::Agent {
+                    key: agent.id.0.clone(),
+                    name: agent.name.clone(),
+                    colour: agent.slot(),
+                    mine,
+                    status: subtitle(
+                        keeper_line(names, workspace, record, &agent.keeper),
+                        spend_line(agent),
+                    ),
+                    model: model_line(&config, &agent.id.0, agent.model.as_deref()),
+                }
             })
             .collect();
         let count = agents.len();
@@ -207,7 +219,26 @@ impl Agents {
                 },
             },
             add: t("workspace-settings-add-agent"),
+            create: t("workspace-settings-create-agent"),
+            cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
+            colour: t("workspace-settings-agent-colour"),
+            colour_hint: t("workspace-settings-agent-colour-hint"),
+            model: t("workspace-settings-agent-model"),
+            model_default: t("workspace-settings-agent-model-default-choice"),
+            models: agent_access::agent_models(&config, "")
+                .map(|models| {
+                    models
+                        .offered
+                        .into_iter()
+                        .map(|option| sheet::ModelChoice {
+                            key: option.key(),
+                            label: option.label,
+                            in_use: false,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             manage,
             header: t("workspace-settings-agents-header"),
             agents,
@@ -218,6 +249,7 @@ impl Agents {
                 t("workspace-settings-agents-empty-detail"),
             ),
             bots_header: t("workspace-settings-bots-header"),
+            bots_help: t("workspace-settings-bots-help"),
             add_bot: t("workspace-settings-add-bot"),
             bot_tag: t("workspace-settings-bot-tag"),
             remove_bot: t("workspace-settings-remove-bot"),
@@ -296,15 +328,14 @@ impl Agents {
         // record holds the choice.
         let offered = agent_access::agent_models(config, agent);
         let keeps = same_person(&kept.keeper, record.me());
+        let keeper = domain::member_row_name(names, workspace, record.me(), &kept.keeper);
+        let limit = limit_of(kept, keeps, &keeper);
         let note = if keeps {
             t("workspace-settings-agent-model-keeper-you")
         } else {
             t_args(
                 "workspace-settings-agent-model-keeper",
-                &[(
-                    "name",
-                    domain::member_row_name(names, workspace, record.me(), &kept.keeper).into(),
-                )],
+                &[("name", keeper.into())],
             )
         };
         let chosen = kept.model.as_deref();
@@ -338,6 +369,7 @@ impl Agents {
             apps: Self::access_apps(&rows),
             empty: t("workspace-settings-agent-access-empty"),
             models: Some(models),
+            limit: Some(limit),
             use_model: t("workspace-settings-agent-model-use"),
             in_use: t("workspace-settings-agent-model-in-use"),
             exceptions_title: t_args(
@@ -516,6 +548,7 @@ impl Agents {
                 keeper: Some(keeper),
                 id: Some(agent.clone()),
                 model,
+                colour: None,
             }));
             if let Err(refusal) = made {
                 // ignored-failure: the tab still lists the agent from its
@@ -570,6 +603,8 @@ impl Agents {
         workspace: Option<&Workspace>,
         person: &UserId,
         name: &str,
+        model: &str,
+        colour: Option<u8>,
     ) -> Result<String, String> {
         let record = self
             .record(workspace, person)
@@ -582,7 +617,8 @@ impl Agents {
                 name,
                 keeper: None,
                 id: Some(id.clone()),
-                model: None,
+                model: (!model.is_empty()).then(|| model.to_owned()),
+                colour,
             }))
             .map_err(|error| error.to_string())?;
         Ok(id)
@@ -610,6 +646,29 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
+    /// Choose the colour the agent `agent` is drawn in, as its keeper.
+    ///
+    /// # Errors
+    /// The workspace's agents could not be opened here, Chat's grants refuse
+    /// the change, or the person does not keep the agent.
+    pub(crate) fn set_colour(
+        &self,
+        workspace: Option<&Workspace>,
+        person: &UserId,
+        agent: &str,
+        colour: u8,
+    ) -> Result<(), String> {
+        let record = self
+            .record(workspace, person)
+            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
+        record
+            .invoke(&Record::SET_AGENT_COLOUR.with(actions::SetAgentColour {
+                agent: Id::from_raw(agent.to_owned()),
+                colour,
+            }))
+            .map_err(|error| error.to_string())
+    }
+
     /// Choose the model the agent `agent` plans with, as its keeper.
     ///
     /// # Errors
@@ -632,6 +691,113 @@ impl Agents {
             }))
             .map_err(|error| error.to_string())
     }
+
+    /// Set what the agent `agent` may spend a day, as its keeper: `None`
+    /// spends unmetered.
+    ///
+    /// # Errors
+    /// The workspace's agents could not be opened here, Chat's grants refuse
+    /// the change, or the person does not keep the agent.
+    pub(crate) fn set_limit(
+        &self,
+        workspace: Option<&Workspace>,
+        person: &UserId,
+        agent: &str,
+        limit_micros: Option<u64>,
+    ) -> Result<(), String> {
+        let record = self
+            .record(workspace, person)
+            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
+        record
+            .invoke(
+                &Record::SET_AGENT_SPEND_LIMIT.with(actions::SetAgentSpendLimit {
+                    agent: Id::from_raw(agent.to_owned()),
+                    limit_micros,
+                }),
+            )
+            .map_err(|error| error.to_string())
+    }
+}
+
+/// Today, as a day's counter keeps it: this device's clock, which is its
+/// keeper's on the device that runs the agent.
+fn today() -> String {
+    ui::clock::today().to_string()
+}
+
+/// What an agent may spend a day, as its review shows it: its keeper's limit,
+/// what it spent of it, and — for its keeper, `keeps`, `keeper` being who
+/// keeps it — the way to set it.
+fn limit_of(
+    agent: &tilo_app::tilo_workspace_agent::Agent,
+    keeps: bool,
+    keeper: &str,
+) -> sheet::Limit {
+    sheet::Limit {
+        title: t("workspace-settings-agent-limit"),
+        summary: limit_summary(agent.spend_limit_micros),
+        today: t_args(
+            "workspace-settings-agent-limit-today",
+            &[("spent", ui::format::money(agent.spent_on(&today())).into())],
+        ),
+        note: if keeps {
+            t("workspace-settings-agent-limit-keeper-you")
+        } else {
+            t_args(
+                "workspace-settings-agent-limit-keeper",
+                &[("name", keeper.into())],
+            )
+        },
+        placeholder: t("workspace-settings-agent-limit-placeholder"),
+        set: t("workspace-settings-agent-limit-set"),
+        can_choose: keeps,
+    }
+}
+
+/// What an agent's row says under its name: who keeps it, and what it spent
+/// of the day its keeper allows where there is a day to read.
+fn subtitle(status: String, spend: String) -> String {
+    if spend.is_empty() {
+        status
+    } else {
+        t_args(
+            "workspace-settings-agent-subtitle",
+            &[("status", status.into()), ("spend", spend.into())],
+        )
+    }
+}
+
+/// What `agent` spends against its keeper's day, as its row reads it: the
+/// money it spent today beside what it may, or only the money where its
+/// keeper set no limit.
+fn spend_line(agent: &tilo_app::tilo_workspace_agent::Agent) -> String {
+    let spent = ui::format::money(agent.spent_on(&today()));
+    match agent.spend_limit_micros {
+        Some(limit) => t_args(
+            "workspace-settings-agent-spend-of",
+            &[
+                ("spent", spent.into()),
+                ("limit", ui::format::money(limit).into()),
+            ],
+        ),
+        None if agent.spent_on(&today()) > 0 => {
+            t_args("workspace-settings-agent-spend", &[("spent", spent.into())])
+        }
+        None => String::new(),
+    }
+}
+
+/// What an agent may spend a day, as its review reads it.
+fn limit_summary(limit_micros: Option<u64>) -> String {
+    limit_micros.map_or_else(
+        || t("workspace-settings-agent-limit-none"),
+        |limit| {
+            t_args(
+                "workspace-settings-agent-limit-amount",
+                &[("limit", ui::format::money(limit).into())],
+            )
+        },
+    )
 }
 
 /// Who keeps `agent`, as its row reads it: the person whose devices run it.

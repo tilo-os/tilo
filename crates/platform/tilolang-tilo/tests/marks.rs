@@ -121,7 +121,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     // What each marked row says under its title: the change in words.
     assert_eq!(
         said(marked(&marks, &made.id_string()).unwrap()),
-        "created this"
+        "created it"
     );
     assert!(
         said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
@@ -477,16 +477,20 @@ fn a_day_away() -> Away {
     Away { ada, paper, survey }
 }
 
-/// A day away, read at a glance: the header names everyone who changed anything and says how
-/// much, each marked row says in words what happened to it, and the catch-up lists every step
-/// with who made it and when.
-#[test]
-fn a_day_away_reads_at_a_glance_who_changed_what() {
-    let Away { ada, paper, survey } = a_day_away();
-    let mut tasks = ada.view(crate::legibility::TASKS_APP);
-    // Today, where the mail she was given and the survey her agent moved stand.
+/// Ada's day away, opened at Today, where the mail she was given and the survey her agent moved
+/// stand, with the mark the window's header shows.
+fn a_day_away_at_today() -> (Away, ViewInstance, UiNode) {
+    let away = a_day_away();
+    let mut tasks = away.ada.view(crate::legibility::TASKS_APP);
     crate::tasks::go_to(&mut tasks, "Today");
     let window = window_mark(&mut tasks);
+    (away, tasks, window)
+}
+
+/// A day away at a glance: the header names everyone who changed anything and says how much.
+#[test]
+fn a_day_away_names_in_its_header_who_changed_what() {
+    let (_away, _tasks, window) = a_day_away_at_today();
     let mut who = principals(&window);
     who.sort();
     assert_eq!(
@@ -503,27 +507,36 @@ fn a_day_away_reads_at_a_glance_who_changed_what() {
         Some(&Value::Int(3)),
         "three changes fill the header: {window:?}"
     );
+}
 
-    // Each marked row says what happened to it, in its own words.
+/// Each marked row says what happened to it, in its own words.
+#[test]
+fn a_day_away_says_on_each_row_what_was_done_to_it() {
+    let (Away { paper, survey, .. }, mut tasks, _window) = a_day_away_at_today();
     let marks = row_marks(&mut tasks);
     let paper = marked(&marks, &paper.id_string())
         .unwrap_or_else(|| panic!("the mail Ada was given is marked: {marks:?}"));
     let survey = marked(&marks, &survey.id_string())
         .unwrap_or_else(|| panic!("the survey her agent moved is marked: {marks:?}"));
-    assert!(
-        said(paper).contains("assign"),
-        "the mail says it was assigned: {:?}",
-        said(paper)
+    assert_eq!(
+        said(paper),
+        "assigned it to you",
+        "the mail says what was done to it, and who holds it now"
     );
-    assert!(
-        said(survey).contains("due"),
-        "the survey says its day moved: {:?}",
+    assert_eq!(
+        said(survey),
+        "set the due date to 2026-10-29",
+        "the survey says the day its agent gave it: {:?}",
         said(survey)
     );
     assert_ne!(said(paper), said(survey), "each row says its own change");
+}
 
-    // What the header opens: every step, grouped by the item, newest first, each with who made
-    // it and when, and the one move that marks them all seen.
+/// What the header opens: every step, grouped by the item, newest first, each with who made it
+/// and when.
+#[test]
+fn a_day_away_opens_a_catch_up_of_a_step_per_change() {
+    let (_away, _tasks, window) = a_day_away_at_today();
     let content = catch_up(&window);
     assert!(
         texts(&content, "heading")
@@ -558,24 +571,102 @@ fn a_day_away_reads_at_a_glance_who_changed_what() {
         !all(&content, "ui.Time").is_empty(),
         "each step says when it happened: {content:?}"
     );
+}
 
-    // Opening it marks nothing: only the footer's one action does, and its undo gives the marks
-    // back.
+/// Each step reads as a sentence, then when it happened at the line's end, out of its way,
+/// led by the changer's face.
+#[test]
+fn a_day_aways_catch_up_puts_the_time_at_the_lines_end() {
+    let (_away, _tasks, window) = a_day_away_at_today();
+    let content = catch_up(&window);
+    let mut steps = Vec::new();
+    find_all(&content, "row", &mut steps);
+    steps.retain(|step| {
+        step.children
+            .first()
+            .is_some_and(|child| child.kind == "ui.Avatar")
+    });
+    assert_eq!(
+        steps.len(),
+        3,
+        "the catch-up lists a step per change: {content:?}"
+    );
+    for step in &steps {
+        let kids = &step.children;
+        let said = kids
+            .iter()
+            .position(|child| child.kind == "ui.Text")
+            .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
+        let at = kids
+            .iter()
+            .position(|child| child.kind == "ui.Time")
+            .unwrap_or_else(|| panic!("a step says when: {step:?}"));
+        assert!(said < at, "what was done reads before when: {step:?}");
+        assert_eq!(
+            at,
+            kids.len() - 1,
+            "the time stands at the line's end: {step:?}"
+        );
+        assert_eq!(
+            kids.get(at - 1).map(|child| child.kind.as_str()),
+            Some("spacer"),
+            "the sentence is kept clear of the time: {step:?}"
+        );
+        assert_eq!(
+            kids.first().map(|child| child.kind.as_str()),
+            Some("ui.Avatar"),
+            "the changer's face leads the line: {step:?}"
+        );
+    }
+}
+
+/// What it says is history's words: a flag marked, a person given to the reader, and the item
+/// itself as "it", never "this".
+#[test]
+fn a_day_aways_catch_up_says_each_step_in_historys_words() {
+    let (_away, _tasks, window) = a_day_away_at_today();
+    let content = catch_up(&window);
+    let lines: Vec<String> = all(&content, "ui.Text")
+        .into_iter()
+        .filter_map(|text| match text.props.get("value") {
+            Some(Value::Text(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    let joined = lines.join(" | ");
+    assert!(joined.contains("marked it done"), "{joined}");
+    assert!(joined.contains("assigned it to you"), "{joined}");
     assert!(
-        ada.host.runtime().take_seen().is_empty(),
+        !joined.contains("this"),
+        "no sentence says \"this\": {joined}"
+    );
+    assert!(
+        !joined.contains("done to"),
+        "a flag shows no value: {joined}"
+    );
+}
+
+/// Opening it marks nothing: only the footer's one action does, and its undo gives the marks
+/// back.
+#[test]
+fn a_day_aways_catch_up_marks_all_seen_at_once_and_undo_brings_them_back() {
+    let (away, mut tasks, window) = a_day_away_at_today();
+    let content = catch_up(&window);
+    assert!(
+        away.ada.host.runtime().take_seen().is_empty(),
         "opening the catch-up marks nothing"
     );
     let footer = labelled(&content, "Mark all seen").expect("the catch-up's footer");
     tasks.fire(&footer.key, "press").unwrap();
     tasks.poll_patches().unwrap();
-    let wrote = ada.host.runtime().take_seen();
+    let wrote = away.ada.host.runtime().take_seen();
     assert_eq!(wrote.len(), 3, "one action marks all three seen: {wrote:?}");
     assert!(
         row_marks(&mut tasks).iter().all(|(_, mark)| mark.is_none()),
         "every mark goes at once"
     );
     assert!(
-        ada.host.runtime().undo_seen("ada"),
+        away.ada.host.runtime().undo_seen("ada"),
         "the catch-up is undone"
     );
     tasks.poll_patches().unwrap();

@@ -467,8 +467,13 @@ impl Badge {
     ) {
         let content = self.drawn_content();
         let motion = self.feel.over(theme.motion());
-        let pose =
-            crate::motion::Appear::pose(self.presence.progress(now), self.rect.center(), motion);
+        let pose = crate::motion::Appear::pose(
+            self.presence.progress(now),
+            crate::motion::Direction::of(self.presence.is_open()),
+            self.rect,
+            self.rect.center(),
+            motion,
+        );
         let modified = matches!(content, BadgeContent::Modified);
         let bounds = self.rect.inflate(1.0, 1.0);
         let style = self.style;
@@ -1111,7 +1116,13 @@ mod tests {
         });
         let progress = badge.presence.progress(ms(t0, 40));
         assert!(progress > 0.0 && progress < 1.0, "appearing: {progress}");
-        let pose = crate::motion::Appear::pose(progress, badge.rect.center(), theme.motion());
+        let pose = crate::motion::Appear::pose(
+            progress,
+            crate::motion::Direction::Enter,
+            badge.rect,
+            badge.rect.center(),
+            theme.motion(),
+        );
         assert!(
             pose.to_drawn(badge.rect.center())
                 .distance(badge.rect.center())
@@ -1133,6 +1144,8 @@ mod tests {
         // Reduced motion: only the fade.
         let calm = crate::motion::Appear::pose(
             0.5,
+            crate::motion::Direction::Enter,
+            badge.rect,
             badge.rect.center(),
             Theme::dark().with_reduce_motion(true).motion(),
         );

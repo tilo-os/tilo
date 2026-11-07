@@ -18,10 +18,14 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use automerge::{ObjId, ObjType, ReadDoc, Value as AmValue};
+use serde_json::Value as Json;
+use tilo_resource::Model as _;
+use tilo_resource::ModelError;
 use tilo_resource::collection::{collection_entries, read_entry};
 use tilolang_runtime::ids::{DocId, ItemId, TypeId};
 use tilolang_runtime::place::{self, Held, ITEMS_KEY, Place, Placement, Resolved};
 
+use crate::chunk::{ChunkNo, Chunks, FIRST};
 use crate::reads::{map_at, type_at};
 use crate::schema::{MergeKind, TypeSchema, lookup};
 
@@ -43,6 +47,22 @@ pub struct Found {
     pub held: Option<Held>,
     /// Where an item of an older record is nested; empty for a flat item.
     pub nesting: Nesting,
+    /// The chunk its map is stored in: the document a read of its fields goes to.
+    pub chunk: ChunkNo,
+}
+
+/// The copy of an item that is later in the record's order: of two chunks holding an item of the
+/// same id (a move made on two replicas at once), the one whose placing change comes later.
+fn later(held: Option<Found>, next: Found) -> Found {
+    fn written(found: &Found) -> (u64, &[u8]) {
+        found.held.as_ref().map_or((0, &[][..]), |held| {
+            (held.written.0, held.written.1.as_slice())
+        })
+    }
+    match held {
+        Some(held) if written(&held) > written(&next) => held,
+        _ => next,
+    }
 }
 
 /// Where the items of records written before items were flat are, per record: found by one
@@ -204,6 +224,7 @@ pub fn find(
             held: place::held_at(doc, &obj),
             obj: Some(obj),
             nesting: Vec::new(),
+            chunk: FIRST,
         });
     }
     let nesting = nested.of(doc, doc_id, root, schema).get(id)?.clone();
@@ -229,7 +250,43 @@ pub fn find(
         ty,
         held,
         nesting,
+        chunk: FIRST,
     })
+}
+
+/// The item `id` of the record `doc` (of `app`), in whichever chunk the store holds holding it:
+/// the copy that is later in the record's order, as [`Items::across`] reads it.
+#[must_use]
+pub fn find_across(
+    chunks: &Chunks,
+    app: &str,
+    doc: &str,
+    schema: &TypeSchema,
+    nested: &Nested,
+    id: &str,
+) -> Option<Found> {
+    let mut found: Option<Found> = None;
+    for (chunk, held) in chunks.docs() {
+        let Some(root) = crate::reads::resource_obj(held, app, doc) else {
+            continue;
+        };
+        // An item of a record written before items were flat is nested in the record's own map.
+        let next = if chunk == FIRST {
+            find(held, (doc, &root, schema), nested, id)
+        } else {
+            flat(held, &root, id).map(|obj| Found {
+                ty: type_at(held, &obj),
+                held: place::held_at(held, &obj),
+                obj: Some(obj),
+                nesting: Vec::new(),
+                chunk,
+            })
+        };
+        if let Some(next) = next {
+            found = Some(later(found.take(), next));
+        }
+    }
+    found
 }
 
 /// The item type of the collection the last step of `nesting` is in.
@@ -255,7 +312,7 @@ impl Items {
     /// nested in a record written before items were flat. An id held twice is read once, the
     /// first time it is met; the others are set aside.
     #[must_use]
-    pub fn scan(doc: &Doc, root: &ObjId, schema: &TypeSchema) -> Self {
+    pub fn scan(doc: &Doc, root: &ObjId, schema: &TypeSchema, chunk: ChunkNo) -> Self {
         let mut found = BTreeMap::new();
         if let Some(items) = map_at(doc, root, ITEMS_KEY) {
             for id in doc.keys(&items) {
@@ -269,6 +326,7 @@ impl Items {
                         held: place::held_at(doc, &obj),
                         obj: Some(obj),
                         nesting: Vec::new(),
+                        chunk,
                     },
                 );
             }
@@ -300,10 +358,30 @@ impl Items {
                     ty: entry.ty.clone(),
                     held,
                     nesting: nesting.to_vec(),
+                    chunk,
                 },
             );
         });
         Self { found }
+    }
+
+    /// Every item of the record `doc` (of `app`) across the chunks the store holds: the items
+    /// of a collection are stored in the chunk of the run they are in, so a record's items are
+    /// read from each chunk that holds some. An id held in two chunks (a move made on two
+    /// replicas at once) reads as the copy that is later in the record's order.
+    #[must_use]
+    pub fn across(chunks: &Chunks, app: &str, doc: &str, schema: &TypeSchema) -> Self {
+        let mut items = Self::default();
+        for (chunk, held) in chunks.docs() {
+            let Some(root) = crate::reads::resource_obj(held, app, doc) else {
+                continue;
+            };
+            for (id, found) in Self::scan(held, &root, schema, chunk).found {
+                let was = items.found.remove(&id);
+                items.found.insert(id, later(was, found));
+            }
+        }
+        items
     }
 
     /// The items resolved into the collections they are in, the record being of `schema`.
@@ -328,6 +406,27 @@ impl Items {
             fits(holder, field, item_ty)
         })
     }
+}
+
+/// The item `found` as JSON, for the edit that makes the item's copy in another chunk: every
+/// field of it as stored, without the items of its collections, which stay where they are.
+///
+/// # Errors
+/// The chunk holding it is not held, or a field does not read.
+pub fn item_json(chunks: &Chunks, found: &Found) -> Result<Json, ModelError> {
+    let doc = chunks
+        .mirror(found.chunk)
+        .ok_or_else(|| ModelError::invalid("the chunk holding the item is not loaded"))?;
+    let schema = found
+        .ty
+        .as_deref()
+        .and_then(lookup)
+        .ok_or_else(|| ModelError::invalid("the item's type is not registered"))?;
+    let record = match &found.obj {
+        Some(obj) => crate::record::DynRecord::read_own_fields(doc, obj)?,
+        None => crate::record::DynRecord::empty(schema)?,
+    };
+    Ok(record.to_json())
 }
 
 /// Whether the collection `field` of a resource of `holder` may hold an item of `item`.

@@ -67,7 +67,8 @@ mod cases {
             patches,
             vec![Patch::Remove {
                 parent: vec!["col".into()],
-                key: before[1].clone()
+                key: before[1].clone(),
+                at: None,
             }]
         );
 

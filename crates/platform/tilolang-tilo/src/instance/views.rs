@@ -362,6 +362,19 @@ impl Instance {
                 ViewEvent::Undo(tilolang_runtime::UndoAsk::Run { run }) => {
                     self.history.push(HistoryAsk::UndoRun(run));
                 }
+                // One move marked a catch-up seen: the window says how much, and offers to take
+                // it back while it says it.
+                ViewEvent::Seen { count } => {
+                    self.seen_offer = true;
+                    self.out.push(ToUi::Notice {
+                        words: Words::Phrase {
+                            id: "tilolang-marked-seen".to_owned(),
+                            args: vec![("count".to_owned(), count.to_string())],
+                        },
+                        kind: ui::NoticeKind::Info,
+                        undo: true,
+                    });
+                }
             }
         }
     }

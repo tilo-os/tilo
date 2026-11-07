@@ -33,12 +33,20 @@ impl Described for KeyHints {
     type Props = KeyHintsProps;
 
     fn from_props(_key: &str, props: KeyHintsProps) -> Self {
-        Self::new(
-            props
-                .hints
-                .into_iter()
-                .map(|hint| KeyHint::new(hint.keys.iter().map(String::as_str), hint.label))
-                .collect(),
-        )
+        Self::new(hints(props.hints))
     }
+
+    /// The hints change where the strip stands.
+    fn set_props(&mut self, props: KeyHintsProps) -> bool {
+        self.set_hints(hints(props.hints));
+        true
+    }
+}
+
+/// The drawn keycaps of each hint, in the person's own legends.
+fn hints(props: Vec<KeyHintProps>) -> Vec<KeyHint> {
+    props
+        .into_iter()
+        .map(|hint| KeyHint::new(hint.keys.iter().map(String::as_str), hint.label))
+        .collect()
 }

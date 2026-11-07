@@ -81,7 +81,7 @@ impl Core {
                 if let Some(Value::Ref(r)) = node.props.get("of").cloned()
                     && let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)?
                 {
-                    self.fill_mark(node, &r.target, std::slice::from_ref(&unseen), acc);
+                    self.fill_mark(node, &r.target, std::slice::from_ref(&unseen), viewer, acc);
                 }
                 Ok(())
             }
@@ -108,7 +108,13 @@ impl Core {
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
                 mark.props
                     .insert("of".to_owned(), Value::resource(&r.target));
-                self.fill_mark(&mut mark, &r.target, std::slice::from_ref(&unseen), acc);
+                self.fill_mark(
+                    &mut mark,
+                    &r.target,
+                    std::slice::from_ref(&unseen),
+                    viewer,
+                    acc,
+                );
                 node.children.push(slot("change", &node.key, mark));
                 Ok(())
             }
@@ -184,7 +190,7 @@ impl Core {
             item.children.push(row);
             let mut mark = UiNode::empty(CHANGE_MARK, &format!("{key}~change"));
             mark.props.insert("of".to_owned(), Value::resource(&at));
-            self.fill_mark(&mut mark, &at, &unseen, acc);
+            self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
             item.children.push(slot("change", &key, mark));
             rows.push(item);
         }
@@ -257,7 +263,14 @@ impl Core {
     /// Fill a change mark of `at` from what is unseen of it: who made the newest change, in
     /// which run, what it did, how many there are, everyone who made one of them, and what
     /// activating it does.
-    fn fill_mark(&self, mark: &mut UiNode, at: &ResourceRef, unseen: &[Version], acc: &mut Acc) {
+    fn fill_mark(
+        &self,
+        mark: &mut UiNode,
+        at: &ResourceRef,
+        unseen: &[Version],
+        viewer: &Principal,
+        acc: &mut Acc,
+    ) {
         let Some(newest) = unseen.last() else {
             return;
         };
@@ -281,7 +294,7 @@ impl Core {
         // a row says it under its title, and the catch-up lists it step by step.
         mark.props.insert(
             "said".to_owned(),
-            Value::Text(self.version_line(newest, at)),
+            Value::Text(self.version_line(newest, at, &viewer.0)),
         );
         // What one item of it is called, plural, for a window's count: the type's own name, or
         // of what it holds when it is a document (a window of tasks says "tasks"). A window's
@@ -537,7 +550,7 @@ impl Core {
         if more {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
-        self.fill_mark(&mut mark, &at, &unseen, acc);
+        self.fill_mark(&mut mark, &at, &unseen, viewer, acc);
         // The count is what changed, one per item: what the person catches up on.
         mark.props.insert(
             "count".to_owned(),
@@ -547,13 +560,18 @@ impl Core {
         // the run of the newest step.
         mark.events.remove("activate");
         // The catch-up: what changed, item by item, each step in the words history says it in.
-        let content = self.catch_up(&mark.key.clone(), &groups, acc);
+        let content = self.catch_up(&mark.key.clone(), &groups, viewer, acc);
         mark.children
             .push(slot("content", &mark.key.clone(), content));
-        // First among the header's actions, beside the title: where the window lists items
-        // beside what they open, the list's bar, which is the one in front in a narrow window.
-        let listed = place(node, OVERVIEW_ACTIONS).is_some();
-        let name = if listed { OVERVIEW_ACTIONS } else { ACTIONS };
+        // First among the actions of the title it marks: a window that lists items beside what
+        // they open has a header over its list, and a window narrow enough to show one column
+        // shows that one, so the mark stands there whatever the width and wherever the app put
+        // its own actions. A window of one surface says it in its content header.
+        let name = if place(node, "overview").is_some() || place(node, OVERVIEW_ACTIONS).is_some() {
+            OVERVIEW_ACTIONS
+        } else {
+            ACTIONS
+        };
         match place(node, name) {
             Some(actions) => actions.children.insert(0, mark),
             None => node.children.push(slot(name, &node.key, mark)),
@@ -564,7 +582,13 @@ impl Core {
     /// The catch-up a window's mark opens (*Since you looked*): the changes it counts, grouped
     /// by the item they changed, newest first, each step in the words history says it in, and
     /// the one move that marks them all seen.
-    fn catch_up(&self, key: &str, groups: &[(ResourceRef, Vec<Version>)], acc: &mut Acc) -> UiNode {
+    fn catch_up(
+        &self,
+        key: &str,
+        groups: &[(ResourceRef, Vec<Version>)],
+        viewer: &Principal,
+        acc: &mut Acc,
+    ) -> UiNode {
         let mut stack = UiNode::empty("stack", &format!("{key}~since"));
         stack.props.insert("gap".to_owned(), Value::text("related"));
         let mut title = UiNode::empty("ui.Text", &format!("{key}~since-title"));
@@ -604,6 +628,7 @@ impl Core {
                     &format!("{group_key}~step-{step}"),
                     rid,
                     version,
+                    viewer,
                 ));
             }
             // A step of a task run offers the run, as the mark did: pressing it shows what the
@@ -638,6 +663,9 @@ impl Core {
             "label".to_owned(),
             Value::Text(self.word("tilolang-mark-all-seen", "Mark all seen")),
         );
+        // The one move of the whole catch-up: it reads as the panel's action, not as a line of
+        // the list above it.
+        all.props.insert("role".to_owned(), Value::text("primary"));
         let ids = groups
             .iter()
             .map(|(rid, _)| Value::text(rid.id_string()))
@@ -659,7 +687,13 @@ impl Core {
 
     /// One step of a catch-up: the face of who made it, what they did in the words history
     /// says it in, and when.
-    fn step_line(&self, key: &str, of: &ResourceRef, version: &Version) -> UiNode {
+    fn step_line(
+        &self,
+        key: &str,
+        of: &ResourceRef,
+        version: &Version,
+        viewer: &Principal,
+    ) -> UiNode {
         let mut line = UiNode::empty("row", key);
         line.props.insert("gap".to_owned(), Value::text("tight"));
         line.props.insert("align".to_owned(), Value::text("center"));
@@ -669,13 +703,27 @@ impl Core {
             Value::Principal(Principal(version.who.clone())),
         );
         line.children.push(face);
+        // The line leads with the name, as history writes a sentence: name, then what they did
+        // ("Scout marked it done"). A face alone does not say who.
+        let mine = version.task.is_none() && viewer.0 == version.who;
+        let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
+        who.props.insert(
+            "value".to_owned(),
+            Value::Text(self.actor(&version.who, mine)),
+        );
+        who.props.insert("role".to_owned(), Value::text("label"));
+        line.children.push(who);
         let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
         said.props.insert(
             "value".to_owned(),
-            Value::Text(self.version_line(version, of)),
+            Value::Text(self.version_line(version, of, &viewer.0)),
         );
         said.props.insert("truncate".to_owned(), Value::Bool(true));
         line.children.push(said);
+        // The time stands at the line's end, out of the sentence's way: what they did reads
+        // first, and when it happened lines up down the panel's edge.
+        line.children
+            .push(UiNode::empty("spacer", &format!("{key}~gap")));
         let mut at = UiNode::empty("ui.Time", &format!("{key}~at"));
         at.props.insert("at".to_owned(), Value::text(&version.at));
         at.props.insert("role".to_owned(), Value::text("caption"));

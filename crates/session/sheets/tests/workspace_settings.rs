@@ -173,7 +173,11 @@ fn closing_saves_a_typed_name_first() {
             WorkspaceSettingsEffect::Close,
         ]
     );
-    assert!(!seat.presentation().is_drawn());
+    assert_eq!(
+        seat.presentation().phase(),
+        tilo_sheets::Phase::Leaving,
+        "the card leaves the screen; the shell hears it is gone once it has"
+    );
 }
 
 #[test]
@@ -321,13 +325,13 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
     for text in [
         "3 agents",
         "Claude",
-        "Yours",
-        "Can read and change, asks before acting outside",
+        "Kept by you",
+        "Kept by Ada",
         "Model: Sonnet from Anthropic",
         "Reviewer",
         "Encrypted backup",
-        "Reads encrypted content",
         "Bots",
+        "Bots run small programs here on their own",
         "Standup",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
@@ -340,8 +344,9 @@ fn the_agents_tab_lists_agents_and_bots_apart() {
 fn agent_and_bot_controls_name_what_they_act_on() {
     let (mut app, seat) = seated("agents");
     press(&mut app, "ws-agents-review-claude");
-    // A press with no name asks nothing: there is no agent to make.
-    press(&mut app, "ws-agents-add");
+    // One button opens the form; a press with no name in it asks nothing.
+    press(&mut app, "ws-agents-new");
+    press(&mut app, "ws-agents-create");
     assert_eq!(
         seat.take_asked(),
         [WorkspaceSettingsEffect::ReviewAgent {
@@ -357,16 +362,22 @@ fn agent_and_bot_controls_name_what_they_act_on() {
         .unwrap();
     app.settle();
     assert!(
-        says(&mut app, "Name a new agent"),
-        "the field invites the agent's name"
+        says(&mut app, "Analyst"),
+        "the form holds the name typed into it"
     );
-    press(&mut app, "ws-agents-add");
+    assert!(says(
+        &mut app,
+        "Its colour comes from its name until you pick one."
+    ));
+    press(&mut app, "ws-agents-create");
     press(&mut app, "ws-bots-add");
     assert_eq!(
         seat.take_asked(),
         [
             WorkspaceSettingsEffect::AddAgent {
-                name: "Analyst".to_owned()
+                name: "Analyst".to_owned(),
+                model: String::new(),
+                colour: String::new(),
             },
             WorkspaceSettingsEffect::AddBot,
         ]
@@ -384,7 +395,11 @@ fn a_requested_bot_is_removed_here_and_a_hosts_bot_is_not() {
         .into_iter()
         .filter(|(_, node)| node.label() == Some("Remove"))
         .count();
-    assert_eq!(removes, 1, "only the bot a member asked for has Remove");
+    // One per agent, and one for the only bot a member asked for.
+    assert_eq!(
+        removes, 4,
+        "only the bot a member asked for has a bot's Remove"
+    );
     press(&mut app, "ws-bots-remove-so.tilo.bots.standup");
     assert_eq!(
         seat.take_asked(),
@@ -405,7 +420,7 @@ fn an_agent_review_shows_its_answers_model_and_exceptions() {
         "Set here",
         "Sonnet from Anthropic",
         "Notes: Delete for good",
-        "Retire",
+        "Remove",
     ] {
         assert!(says(&mut app, text), "{text:?} is shown");
     }
@@ -474,6 +489,110 @@ fn a_review_asks_for_answers_models_and_resets_by_key() {
                 agent: "claude".to_owned(),
             },
         ]
+    );
+}
+
+/// What an agent spends and may spend reads on its row; its keeper sets the
+/// day from its review, where a typed amount is taken by Set and by Enter.
+#[test]
+fn an_agents_day_is_read_on_its_row_and_set_in_its_review() {
+    let (mut app, _) = seated("agents");
+    assert!(
+        says(&mut app, "Kept by you · $0.42 of $5 today"),
+        "the row counts the day on its line under the name, where who keeps it reads"
+    );
+    assert!(
+        says(&mut app, "Kept by Ada · $1.20 today"),
+        "an unmetered agent says what it spent on that line too"
+    );
+
+    let (mut app, seat) = seated("agent-review");
+    assert!(
+        says(&mut app, "$5 a day"),
+        "the review says the day's limit"
+    );
+    assert!(says(&mut app, "$0.42 today"), "and what it spent of it");
+    // The field takes the room and Set keeps its own at the row's right end,
+    // both on the one line.
+    let drawn = app.harness().targets();
+    let field = drawn["ws-agent-limit-field"];
+    let button = drawn["ws-agent-limit-set"];
+    assert!(
+        field.width() >= button.width() * 3.0,
+        "the field grows beside Set: field {field:?}, button {button:?}"
+    );
+    assert!(
+        (field.center().y - button.center().y).abs() <= 1.0,
+        "the field and Set share a line: field {field:?}, button {button:?}"
+    );
+    assert!(
+        button.x0 >= field.x1 && button.x0 - field.x1 <= 16.0,
+        "Set sits at the field's right end: field {field:?}, button {button:?}"
+    );
+    app.harness()
+        .perform_named(
+            "ws-agent-limit-field",
+            &A11yAction::SetValue("12.50".to_owned()),
+        )
+        .unwrap();
+    app.settle();
+    press(&mut app, "ws-agent-limit-set");
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::SetAgentSpendLimit {
+            agent: "claude".to_owned(),
+            dollars: "12.50".to_owned(),
+        }]
+    );
+
+    // Enter in the field takes it too, and an empty field asks for no limit.
+    app.harness()
+        .perform_named("ws-agent-limit-field", &A11yAction::SetValue(String::new()))
+        .unwrap();
+    app.settle();
+    app.harness()
+        .perform_named("ws-agent-limit-field", &A11yAction::Focus)
+        .unwrap();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        seat.take_asked(),
+        [WorkspaceSettingsEffect::SetAgentSpendLimit {
+            agent: "claude".to_owned(),
+            dollars: String::new(),
+        }]
+    );
+}
+
+/// What an agent may spend a day is its keeper's to set, as its model is: a
+/// review someone else opens says who sets it and offers no field.
+#[test]
+fn a_review_offers_the_day_to_the_agents_keeper_alone() {
+    let mut settings = staged_settings("agent-review");
+    let limit = settings
+        .agents
+        .review
+        .as_mut()
+        .expect("a review")
+        .limit
+        .as_mut()
+        .expect("the agent's day");
+    limit.can_choose = false;
+    limit.note = "Only Ada sets what it may spend a day.".to_owned();
+    let seat = WorkspaceSettingsSeat::default();
+    seat.show(settings);
+    seat.presentation().open(false);
+    let mut app =
+        HeadlessApp::<WorkspaceSettingsApp>::for_person_with_lent("person", seat).unwrap();
+    app.harness().resize(VIEWPORT).unwrap();
+    app.settle();
+
+    assert!(says(&mut app, "Only Ada sets what it may spend a day."));
+    assert!(
+        app.harness()
+            .perform_named("ws-agent-limit-field", &A11yAction::Focus)
+            .is_err(),
+        "someone who is not keeper is offered no field"
     );
 }
 

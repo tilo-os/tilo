@@ -687,7 +687,7 @@ view tinted_row(item: Item, tint: Text) {
                 } if parent.last().map(String::as_str) == Some(list) => {
                     held.insert(*index, node.key.clone());
                 }
-                Patch::Remove { parent, key }
+                Patch::Remove { parent, key, .. }
                     if parent.last().map(String::as_str) == Some(list) =>
                 {
                     let at = held.iter().position(|k| k == key).unwrap();

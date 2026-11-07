@@ -596,7 +596,7 @@ view home(t: Tasks) {
     // The tasks of the place that name a parent, read once: a row counts its own under them.
     let kids = found.filter(x -> x.parent != .none)
     let shown = if done_place {
-        found.sort_by(x -> finished_at(x), desc)
+        found.sort_by(x -> changed(x, .done)?.at, desc)
     } else if folds { ordered.sort_by(x -> folded(found, x)) } else { ordered }
     let title = if let p = project { p.name } else { chosen?.label ?? "Tasks" }
     // What waits in the place: what it holds, less what is done in a project's place, never a

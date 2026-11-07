@@ -40,6 +40,11 @@ const FORWARDED: &[&str] = &[
     "TILO_APPS_SYSTEM_PAYLOAD_DIR",
     "TILO_RUNTIME_BUNDLE_DIR",
     "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
+    // The interfaces this build of the system serves: a session started from a build under
+    // test launches the apps that build made, which speak this tree's interface versions and
+    // not the image's older ones. Absent from an installed session, whose launcher reads the
+    // image's own declaration.
+    "TILO_SYSTEM_INTERFACES",
     // Their account and shell.
     "HOME",
     "USER",
@@ -53,6 +58,9 @@ const FORWARDED: &[&str] = &[
     "LC_CTYPE",
     "LC_MESSAGES",
     "TZ",
+    // How much an app (and the connector the system runs for one) logs, as the session's own
+    // log says: a development session's log is all a connector without a window has.
+    "RUST_LOG",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",

@@ -123,6 +123,7 @@ imports! {
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
+    CollRelatives = "coll_relatives" ([H, H, H, H, I32] -> [H]);
     CollCount = "coll_count" ([H] -> [I64]);
     CollEmpty = "coll_empty" ([H] -> [I32]);
     SetAdd = "set_add" ([H, H, H] -> []);

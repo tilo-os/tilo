@@ -26,7 +26,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::widget::{Column, Element, ListRow, MediaAspect, MediaSource, ModalDialog, Toggle};
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -205,7 +205,8 @@ impl ResourceApp for AddApp {
             *seat.shown.borrow_mut() = Some(shown.clone());
             *seat.moved.borrow_mut() = Some(moved.clone());
         }
-        let answering = seat;
+        let answering = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: AddAppEffect, _cx| match &answering {
             Some(seat) => {
                 seat.asked.borrow_mut().push(effect);
@@ -214,7 +215,9 @@ impl ResourceApp for AddApp {
             None => Err("no apps to add this program to here".to_owned()),
         });
         let dispatch = cx.dispatcher();
-        cx.switch(&shown, move |_cx, offer| card(offer, &moved, &dispatch))
+        cx.switch(&shown, move |_cx, offer| {
+            card(offer, &moved, &dispatch, presentation.as_ref())
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -238,7 +241,12 @@ impl ResourceApp for AddApp {
 
 /// The question about `offer`: the app as it will be listed, the move when
 /// the file may move, and the two answers.
-fn card(offer: &Offer, moved: &LocalState<bool>, dispatch: &Dispatcher<AddToApps>) -> Element {
+fn card(
+    offer: &Offer,
+    moved: &LocalState<bool>,
+    dispatch: &Dispatcher<AddToApps>,
+    presentation: Option<&Presentation>,
+) -> Element {
     let title = crate::t_args(
         "add-app-title",
         &[("name", ui::i18n::ArgValue::Text(offer.name.clone()))],
@@ -273,11 +281,11 @@ fn card(offer: &Offer, moved: &LocalState<bool>, dispatch: &Dispatcher<AddToApps
     let toggled = moved.clone();
     let declining = dispatch.clone();
     let dismissed = dispatch.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(title, body)
             .with_test_id(SHEET)
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .primary_action(t("add-app-add"), move || {
                 adding.effect(&AddAppEffect::Add {
                     move_to_applications: toggled.get().then_some(true),
@@ -287,7 +295,7 @@ fn card(offer: &Offer, moved: &LocalState<bool>, dispatch: &Dispatcher<AddToApps
                 declining.effect(&AddAppEffect::Decline);
             })
             .on_dismiss(move || dismissed.effect(&AddAppEffect::Decline)),
-    )
+    ))
 }
 
 /// The pictures the rows lead with: the artwork each program brings, read

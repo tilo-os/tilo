@@ -592,6 +592,8 @@ pub struct Session {
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The quick settings panel coming and going, which the compositor draws.
+    quick_settings_panel: quick_settings::PanelMotion,
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     warmth: window_warmth::Windows,
@@ -1961,6 +1963,9 @@ impl Session {
             capture_io,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            quick_settings_panel: quick_settings::PanelMotion::new(
+                (options.presentation)().theme.motion(),
+            ),
             warmth,
             language: mount::language::Language::new(),
             night_light,

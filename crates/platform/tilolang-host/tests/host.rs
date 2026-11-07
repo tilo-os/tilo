@@ -512,14 +512,19 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         "published on its own connection"
     );
 
-    // The person presses + in the window: the instance runs it and commits it as their step.
+    // The person presses + in the window: its control is bound to the instance's own action, so
+    // the window sends the invocation, and the instance runs it and commits it as their step.
     let before = documents_sent(&sent);
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
+    let address = hosted
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
     }]);
     settle(&mut host, &mut window);
     let hosted = host.instances().next().unwrap();

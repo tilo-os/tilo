@@ -808,6 +808,12 @@ impl SurfaceHost for WidgetHost {
 
     fn prepare_frame(&mut self) -> bool {
         if self.asked.replace(false) {
+            // What asked for this pass is outside the tree and needs the tree
+            // to have taken it: a widget that reads something the host holds
+            // (the overlays the chrome draws, a model an action wrote) hears of
+            // it in its update, which a redraw of what it last showed never
+            // runs. The frame below then draws what the pass settled.
+            self.with_reports(ui::headless::FrameHarness::relayout);
             self.owe();
         }
         let now = Instant::now();

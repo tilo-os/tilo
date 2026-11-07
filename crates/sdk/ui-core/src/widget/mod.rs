@@ -3262,9 +3262,7 @@ pub use date_indexed_scrollbar::{
     ProjectedDateMarker,
 };
 pub mod board;
-mod board_component;
-pub use board::{Board, BoardDrop};
-pub use board_component::{BoardCardProps, BoardLaneProps, BoardProps};
+pub use board::{Board, BoardCardProps, BoardDrop, BoardLaneProps, BoardProps};
 pub use drag_bus::{InFlight, Landed};
 pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
 pub use drag_run_component::{DragItemProps, DragRunProps};
@@ -3578,9 +3576,7 @@ pub use media_transport_component::{DeclaredTransport, MediaTransportProps};
 pub mod now_playing;
 pub use now_playing::{Scrub, Song, SongFace};
 pub mod drop_zone;
-mod drop_zone_component;
-pub use drop_zone::{DropZone, DropZoneFace};
-pub use drop_zone_component::DropZoneProps;
+pub use drop_zone::{DropZone, DropZoneFace, DropZoneProps};
 pub mod file_open;
 pub use file_open::{FileOpenEvent, FileOpenSurface};
 pub mod skeleton;
@@ -3603,8 +3599,8 @@ pub use property_list::{
 pub mod list_row;
 pub use list_row::{
     CARD_TITLE_LINES, CardBody, ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps,
-    RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction,
-    SwipeActionProps, badge_column_width,
+    RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, ShownChange,
+    SwipeAction, SwipeActionProps, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
@@ -3656,11 +3652,9 @@ pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice, Ban
 mod disclosure_band;
 pub use disclosure_band::{DisclosureBand, DisclosureBandProps};
 pub mod chip;
-mod chip_component;
-pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipStyle, REFERENCE_LEAD};
-pub use chip_component::ChipProps;
+pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipProps, ChipStyle, REFERENCE_LEAD};
 pub mod change_mark;
-pub use change_mark::ChangeMarkProps;
+pub use change_mark::{ChangeMark, ChangeMarkProps};
 pub mod conversation;
 pub use conversation::{
     AttachmentAction, AttachmentFace, AttachmentKind, AttachmentSummary, ComposerIntent,

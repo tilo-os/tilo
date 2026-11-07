@@ -21,6 +21,7 @@ use tilo_resource::{
     Settable, Slot, edit_whole, read_key, write_key,
 };
 
+use crate::chunk::Chunks;
 use crate::schema::{APP_KEY, FieldSchema, MergeKind, TYPE_KEY, TypeSchema, lookup};
 
 /// The value of one field of a [`DynRecord`], in the concrete model of its merge kind.
@@ -103,21 +104,53 @@ impl DynRecord {
         }
     }
 
-    /// The record at the map `obj` whole, of the type its map holds: every field, and each
-    /// collection with the items placed in it ([`crate::items`]), each whole.
+    /// The resource `id` of `app` whole: every field, and each collection with the items placed
+    /// in it ([`crate::items`]), each whole. Its fields are read in the chunk the manifest of
+    /// `chunks` (the store's documents) places it in, and its items in the chunks their runs
+    /// are in.
     ///
     /// # Errors
-    /// The map holds no registered type, or a field that does not read.
-    pub fn read_whole(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
-        let schema = Self::type_at(doc, obj)?;
-        let items = crate::items::Items::scan(doc, obj, schema);
+    /// The store does not hold the chunk holding it, the map holds no registered type, or a
+    /// field that does not read.
+    pub fn read_whole(chunks: &Chunks, app: &str, id: &str) -> Result<Self, ModelError> {
+        let doc = chunks
+            .doc(id)
+            .ok_or_else(|| ModelError::invalid(format!("the chunk holding {id} is not loaded")))?;
+        let obj = crate::reads::resource_obj(doc, app, id)
+            .ok_or_else(|| ModelError::invalid(format!("there is no resource `{id}`")))?;
+        let schema = Self::type_at(doc, &obj)?;
+        let items = crate::items::Items::across(chunks, app, id, schema);
         let resolved = items.resolve(schema);
-        Self::assemble(doc, Some(obj), schema, (None, &items, &resolved))
+        Self::assemble(chunks, doc, Some(&obj), schema, (None, &items, &resolved))
+    }
+
+    /// The fields of the map `obj` of the record, with each collection field empty: for the
+    /// edit that makes the item's copy in another chunk, whose collection items stay where they
+    /// are.
+    ///
+    /// # Errors
+    /// A field does not read.
+    pub fn read_own_fields(doc: &Doc, obj: &ObjId) -> Result<Self, ModelError> {
+        let mut record = Self::read_fields(doc, obj)?;
+        let collections: Vec<String> = record
+            .schema
+            .fields
+            .iter()
+            .filter(|f| f.kind == MergeKind::Collection)
+            .map(|f| f.id.clone())
+            .collect();
+        for field in collections {
+            record
+                .fields
+                .insert(field, DynValue::Collection(Collection::default()));
+        }
+        Ok(record)
     }
 
     /// The resource at the map `obj` (none: every field its default) of `schema`, the item
     /// `holder` of its record (`None` for the record), with its collections' items.
     fn assemble(
+        chunks: &Chunks,
         doc: &Doc,
         obj: Option<&ObjId>,
         schema: &'static TypeSchema,
@@ -147,8 +180,11 @@ impl DynRecord {
                 let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
                     continue;
                 };
+                // The item's fields are read in the chunk its map is stored in.
+                let source = chunks.mirror(found.chunk).unwrap_or(doc);
                 let item = Self::assemble(
-                    doc,
+                    chunks,
+                    source,
                     found.obj.as_ref(),
                     item_schema,
                     (Some(&id), items, resolved),

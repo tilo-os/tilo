@@ -175,7 +175,7 @@ fn the_seeded_apps_publish_their_records_to_the_session() {
             walk(&resource.children, kinds);
         }
     }
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the apps load and seed");
+    let apps = common::seeded_apps();
     let resources = apps.resources();
     let mut kinds = std::collections::BTreeSet::new();
     walk(&resources, &mut kinds);
@@ -452,7 +452,7 @@ fn a_note_placed_on_the_canvas_is_drawn_in_the_snapshot() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let note = apps
         .resources()
         .iter()

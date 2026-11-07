@@ -54,6 +54,23 @@ const MAX_MODEL: usize = 200;
 /// The most rules one bound holds.
 pub const MAX_BOUND: usize = 64;
 
+/// The most a keeper may let an agent spend in a day, in millionths of the
+/// currency: ten thousand, far past what a day's work costs.
+pub const MAX_SPEND_LIMIT_MICROS: u64 = 10_000_000_000;
+
+/// What an agent spent on one day, as its keeper counted it.
+///
+/// The counter is kept per day, so a day that ends starts it again: a later
+/// day's first charge replaces it, and no reading of an old day is a reading
+/// of this one ([`Agent::spent_on`]).
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Spent {
+    /// The day it counts, `YYYY-MM-DD` by its keeper's clock.
+    pub day: String,
+    /// What it spent that day, in millionths of the currency.
+    pub cost_micros: u64,
+}
+
 /// One rule of an agent's bound, as the record stores it: the node, the
 /// action kinds and the answer, each in the text form
 /// [`tilo_action_policy::Rule`] is stored and sent in.
@@ -140,9 +157,9 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// Its presence colour: a slot of the palette people are drawn in
-    /// ([`PresenceHue`]), taken from its identity when it is made.
-    pub colour: u8,
+    /// Its presence colour as its keeper chose it: a slot of the palette
+    /// people are drawn in ([`PresenceHue`]). `None` follows its identity.
+    pub colour: Option<u8>,
     /// Who keeps it: the member whose devices run it and whose model
     /// credentials pay. Only they choose its model.
     pub keeper: String,
@@ -152,6 +169,11 @@ pub struct Agent {
     /// What it may do, narrowed from its keeper's grants; empty follows the
     /// default.
     pub bound: Vec<Bound>,
+    /// The most its keeper lets it spend in a day, in millionths of the
+    /// currency; `None` spends unmetered.
+    pub spend_limit_micros: Option<u64>,
+    /// What it spent on the last day its keeper counted.
+    pub spent: Option<Spent>,
     /// Whether it works here.
     pub state: AgentState,
     /// When it was made, in milliseconds since the Unix epoch.
@@ -171,10 +193,19 @@ impl Agent {
         format!("agent:{}", self.id.0)
     }
 
+    /// Its presence colour's slot: the one its keeper chose, or the one its
+    /// identity gives it.
+    #[must_use]
+    pub fn slot(&self) -> u8 {
+        self.colour.unwrap_or_else(|| {
+            u8::try_from(PresenceHue::of_identity(&self.identity()).slot()).unwrap_or(0)
+        })
+    }
+
     /// Its presence colour, as people's colours are chosen.
     #[must_use]
     pub fn hue(&self) -> PresenceHue {
-        PresenceHue::from_slot(usize::from(self.colour))
+        PresenceHue::from_slot(usize::from(self.slot()))
     }
 
     /// The colour it is drawn in, as sRGB.
@@ -187,6 +218,24 @@ impl Agent {
     #[must_use]
     pub fn is_active(&self) -> bool {
         self.state == AgentState::Active
+    }
+
+    /// What it spent on `day`, in millionths of the currency: nothing on a
+    /// day its keeper has not charged, so a new day starts it at zero.
+    #[must_use]
+    pub fn spent_on(&self, day: &str) -> u64 {
+        self.spent
+            .as_ref()
+            .filter(|spent| spent.day == day)
+            .map_or(0, |spent| spent.cost_micros)
+    }
+
+    /// Whether it may still spend on `day`: its keeper's limit is not
+    /// reached yet, or there is none.
+    #[must_use]
+    pub fn within_budget(&self, day: &str) -> bool {
+        self.spend_limit_micros
+            .is_none_or(|limit| self.spent_on(day) < limit)
     }
 
     /// What it may do, as the policy reads it: the stored narrowing, or
@@ -253,9 +302,10 @@ impl WorkspaceAgents {
     ///
     /// A name people read (at most 64 characters), the member who keeps it
     /// (whoever asks here when none is named) and optionally a model as
-    /// `provider/model`. Its colour follows its id, as a person's follows
-    /// theirs. Its id is the caller's (`claude-code` for a client that named
-    /// itself, an agent admitted before records were) or a fresh one.
+    /// `provider/model` and the colour it is drawn in. Its colour follows its
+    /// id, as a person's follows theirs, unless one is named. Its id is the
+    /// caller's (`claude-code` for a client that named itself, an agent
+    /// admitted before records were) or a fresh one.
     #[action]
     pub fn create_agent(
         &mut self,
@@ -265,6 +315,8 @@ impl WorkspaceAgents {
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the keeper's default")]
         model: Option<String>,
+        #[param("Its colour: a slot of the presence palette; none for one derived from its id")]
+        colour: Option<u8>,
     ) -> Result<(), Refusal> {
         if self.agents.len() >= MAX_AGENTS {
             return Err(Refusal::new(format!(
@@ -288,17 +340,111 @@ impl WorkspaceAgents {
             }
         };
         let model = chosen_model(model)?;
-        let hue = PresenceHue::of_identity(&format!("agent:{id}"));
+        let colour = colour_slot(colour)?;
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            colour: u8::try_from(hue.slot()).unwrap_or(0),
+            colour,
             keeper,
             model,
             bound: Vec::new(),
+            spend_limit_micros: None,
+            spent: None,
             state: AgentState::Active,
             created_at: cx.now_ms(),
         });
+        Ok(())
+    }
+
+    /// Set the most an agent may spend in a day.
+    ///
+    /// The keeper's to choose, as the model is: their credentials pay for it.
+    /// A limit of zero stops it working until its keeper raises it again;
+    /// none spends unmetered. The day is its keeper's clock's, so a limit
+    /// counts from midnight where the keeper sits.
+    #[action(item = agents)]
+    pub fn set_agent_spend_limit(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param(
+            "The most it may spend in a day, in millionths of the currency; none for no limit"
+        )]
+        limit_micros: Option<u64>,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper sets the most it may spend in a day",
+            ));
+        }
+        found.spend_limit_micros = checked_limit(limit_micros)?;
+        Ok(())
+    }
+
+    /// Charge what an agent spent to the day's counter.
+    ///
+    /// The keeper's to write, on the device that runs the agent, from what the
+    /// model gateway charged for each call: an agent never counts its own
+    /// spending. A later day than the one counted starts the counter again; an
+    /// earlier one is already over and changes nothing.
+    #[action(item = agents)]
+    pub fn record_agent_spend(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("The day counted, YYYY-MM-DD by its keeper's clock")] day: String,
+        #[param("What it spent that day, in millionths of the currency")] cost_micros: u64,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let day = checked_day(&day)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper counts what it spends",
+            ));
+        }
+        let counted = match &found.spent {
+            Some(spent) if spent.day == day => Some(Spent {
+                day,
+                cost_micros: spent.cost_micros.saturating_add(cost_micros),
+            }),
+            Some(spent) if spent.day.as_str() > day.as_str() => return Ok(()),
+            _ => Some(Spent { day, cost_micros }),
+        };
+        found.spent = counted;
+        Ok(())
+    }
+
+    /// Set the colour an agent is drawn in.
+    ///
+    /// The keeper's to choose, as the model is: it is part of the agent's
+    /// identity, the one its face and presence are drawn in everywhere.
+    #[action(item = agents)]
+    pub fn set_agent_colour(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("Its colour: a slot of the presence palette")] colour: u8,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper chooses the colour it is drawn in",
+            ));
+        }
+        found.colour = colour_slot(Some(colour))?;
         Ok(())
     }
 
@@ -403,7 +549,10 @@ impl WorkspaceAgents {
         for agent in &self.agents {
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
-            if usize::from(agent.colour) >= PRESENCE_LEN {
+            if agent
+                .colour
+                .is_some_and(|colour| usize::from(colour) >= PRESENCE_LEN)
+            {
                 return Err(Refusal::new(format!(
                     "{:?} wears a colour the palette does not have",
                     agent.name
@@ -412,6 +561,10 @@ impl WorkspaceAgents {
             person(&agent.keeper)?;
             if let Some(model) = &agent.model {
                 check_model(model)?;
+            }
+            checked_limit(agent.spend_limit_micros)?;
+            if let Some(spent) = &agent.spent {
+                checked_day(&spent.day)?;
             }
             if agent.bound.len() > MAX_BOUND {
                 return Err(Refusal::new(format!(
@@ -565,6 +718,19 @@ fn given_id(id: &str) -> Result<String, Refusal> {
     Ok(id.to_owned())
 }
 
+/// A colour the presence palette has, or `None` following the agent's id.
+fn colour_slot(colour: Option<u8>) -> Result<Option<u8>, Refusal> {
+    let Some(colour) = colour else {
+        return Ok(None);
+    };
+    if usize::from(colour) >= PRESENCE_LEN {
+        return Err(Refusal::new(format!(
+            "{colour} is not a colour the presence palette has"
+        )));
+    }
+    Ok(Some(colour))
+}
+
 fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     let Some(model) = model.map(|model| model.trim().to_owned()) else {
         return Ok(None);
@@ -574,6 +740,30 @@ fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     }
     check_model(&model)?;
     Ok(Some(model))
+}
+
+/// The most a keeper may set as a day's limit, or `None` for no limit.
+fn checked_limit(limit: Option<u64>) -> Result<Option<u64>, Refusal> {
+    match limit {
+        Some(limit) if limit > MAX_SPEND_LIMIT_MICROS => Err(Refusal::new(format!(
+            "a day's limit is at most {} dollars",
+            MAX_SPEND_LIMIT_MICROS / 1_000_000
+        ))),
+        limit => Ok(limit),
+    }
+}
+
+/// A day as the counter keeps it, `YYYY-MM-DD` by its keeper's clock.
+fn checked_day(day: &str) -> Result<String, Refusal> {
+    let day = day.trim();
+    let digits = day.split('-').map(str::len).collect::<Vec<_>>();
+    let shaped = digits == [4, 2, 2] && day.chars().all(|c| c.is_ascii_digit() || c == '-');
+    if !shaped {
+        return Err(Refusal::new(
+            "a day is counted as YYYY-MM-DD, by the keeper's clock",
+        ));
+    }
+    Ok(day.to_owned())
 }
 
 fn check_model(model: &str) -> Result<(), Refusal> {

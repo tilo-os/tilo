@@ -47,6 +47,12 @@ impl<T> LocalState<T> {
         }
     }
 
+    /// Whether both handles are one state, not two that happen to hold the same value: a
+    /// control following a binding asks this to tell a new binding from the one it follows.
+    pub fn same_state(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// Read the current value without exposing the backing lock.
     pub fn with<R>(&self, read: impl FnOnce(&T) -> R) -> R {
         let value = self.inner.value.read_recover();
@@ -166,6 +172,11 @@ impl<T: Clone> LocalBinding<T> {
     /// the next [`Self::poll`] would return, without taking it.
     pub(crate) fn changed(&self) -> bool {
         self.state.revision() != self.observed_revision
+    }
+
+    /// Whether this binding follows `state`.
+    pub(crate) fn follows(&self, state: &LocalState<T>) -> bool {
+        self.state.same_state(state)
     }
 
     pub(crate) fn poll(&mut self) -> Option<T> {

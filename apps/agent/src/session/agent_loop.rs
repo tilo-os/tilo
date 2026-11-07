@@ -761,7 +761,61 @@ fn refused_report(error: String) -> InvokeReport {
     }
 }
 
+/// What the run in progress may spend today, as its keeper counted it, and
+/// what the run's own calls cost: the run stops at the limit rather than
+/// after it.
+#[derive(Clone, Debug)]
+pub(super) struct Spending {
+    /// The day, the limit and the spend the keeper counted when the run was
+    /// admitted.
+    allowed: runtime_collab::TaskRunSpend,
+    /// What this run's calls cost by now, in millionths of the currency.
+    run: u64,
+}
+
+/// What the gateway charged for the answer `body`, when its answer says.
+fn charged(body: &str) -> Option<u64> {
+    serde_json::from_str::<serde_json::Value>(body)
+        .ok()?
+        .get("cost_micros")?
+        .as_u64()
+}
+
 impl Session {
+    /// Why the run may make no further model call: the limit its keeper set
+    /// for the day is used up.
+    fn spend_exhausted(&self) -> Option<String> {
+        let spending = self.spending.as_ref()?;
+        let left = spending.allowed.left(&ui::clock::today().to_string())?;
+        (spending.run >= left).then(|| {
+            let used = ui::format::money(spending.allowed.limit_micros.unwrap_or_default());
+            format!(
+                "{} has used today's {used}; ask its keeper to raise it",
+                self.cfg.name
+            )
+        })
+    }
+
+    /// Add what the gateway charged for this turn to what its run spent, and
+    /// tell the host the run's total, as its keeper counts the day by.
+    fn charge_turn(&mut self, run: &runtime_collab::TaskRunEnvelope, body: &str) -> Result<()> {
+        let Some(spending) = self.spending.as_mut() else {
+            return Ok(());
+        };
+        let Some(cost) = charged(body) else {
+            return Ok(());
+        };
+        if cost == 0 {
+            return Ok(());
+        }
+        spending.run = spending.run.saturating_add(cost);
+        let total = spending.run;
+        self.report_task(
+            run,
+            runtime_collab::TaskRunUpdate::Spent { cost_micros: total },
+        )
+    }
+
     /// Replace the broker catalogue and invalidate the cached survey.
     pub(super) fn set_broker_surfaces(
         &mut self,
@@ -923,6 +977,10 @@ impl Session {
         run: &runtime_collab::TaskRunEnvelope,
     ) -> Result<LoopEnd> {
         let mut state = LoopState::new();
+        self.spending = run
+            .spend
+            .clone()
+            .map(|allowed| Spending { allowed, run: 0 });
         self.task_deadline = run.execution_budget.map(|budget| {
             ui::time::now()
                 .checked_add(Duration::from_millis(u64::from(budget.total_ms)))
@@ -933,6 +991,7 @@ impl Session {
         // turns and authenticated steering only.
         let result = self.run_task_loop_with(run, &mut state);
         self.task_deadline = None;
+        self.spending = None;
         result
     }
 
@@ -1229,6 +1288,9 @@ impl Session {
         if self.task_cancelled(run)? {
             return Ok(Some(LoopEnd::Cancelled("Cancelled before planning".into())));
         }
+        if let Some(message) = self.spend_exhausted() {
+            return Ok(Some(LoopEnd::Failed(message)));
+        }
         self.incorporate_native_directions(run, conversation)?;
         let body = conversation.body(&tools::typed_loop_definitions());
         // The model starts first. The cancellation poll is a round trip to
@@ -1380,6 +1442,7 @@ impl Session {
                 ))));
             }
         };
+        self.charge_turn(run, &body)?;
         let (assistant, calls) = match conversation.calls(&body) {
             Ok(parsed) => {
                 // Debug capture (the launcher keeps the agent's stderr):

@@ -956,39 +956,44 @@ fn a_shell_that_searches_its_sidebar_hands_the_search_its_list() {
     );
 }
 
-/// The window has one bar over its columns: the column with something to say takes the room of
-/// the columns after it while they have nothing to say, so its actions stand at the window's
-/// trailing edge; a column that says something of its own keeps its room, and the one before it
-/// its own.
+/// A header's actions stand at the trailing edge of their own column, whether the columns after
+/// it are quiet or say something of their own: they stay beside what they act on, and they do not
+/// move as a person selects and deselects an item in the column beside them.
 #[test]
-fn a_headers_actions_stand_at_the_windows_end_while_the_columns_after_it_are_quiet() {
+fn a_headers_actions_stand_at_their_columns_trailing_edge() {
+    let theme = Theme::dark();
+    let gutter = crate::chrome::column_gutter(&theme);
     let shell = NavShell::new()
         .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0)
         .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")]);
-    let mut h = harness(shell, 1024, 700, Theme::dark());
+    let mut h = harness(shell, 1024, 700, theme);
     settle(&mut h, 1024, 700);
-    let alone = part_rect(&h, Part::Action(Column::Overview, 0));
+    let edge = h.root::<NavShell>().geometry().overview_column.x1;
     assert!(
-        alone.width() > 0.0 && alone.x1 > 1024.0 - 40.0,
-        "the window's only section reaches the window's end: {alone:?}"
+        edge < 1024.0 - 40.0,
+        "the detail beside the list stands in the window: the list ends at {edge}"
     );
-    let shell = NavShell::new()
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
-        .overview_header("Inbox", vec![icon("search", Icon::Send, "Search")])
-        .content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
-    let mut h = harness(shell, 1024, 700, Theme::dark());
+    let ends_at =
+        |rect: Rect, edge: f64| rect.width() > 0.0 && (rect.x1 - (edge - gutter)).abs() < 0.5;
+    let quiet = part_rect(&h, Part::Action(Column::Overview, 0));
+    assert!(
+        ends_at(quiet, edge),
+        "the list's action ends at the list's edge {edge} while the detail is quiet: {quiet:?}"
+    );
+    // A selection fills the detail's header beside the list.
+    h.root_mut::<NavShell>()
+        .set_content_header("Move flat", vec![icon("board", Icon::Send, "Board")]);
     settle(&mut h, 1024, 700);
-    let before = part_rect(&h, Part::Action(Column::Overview, 0));
-    let after = part_rect(&h, Part::Action(Column::Content, 0));
-    let content = h.root::<NavShell>().geometry().content_column.x0;
+    let selected = part_rect(&h, Part::Action(Column::Overview, 0));
     assert!(
-        before.width() > 0.0 && before.x1 <= content,
-        "a column with a title after it keeps its own room: {before:?} before {content}"
+        (selected.x0 - quiet.x0).abs() < 0.5 && (selected.x1 - quiet.x1).abs() < 0.5,
+        "the list's action keeps its place when an item is selected beside it: {quiet:?} then {selected:?}"
     );
+    let content = h.root::<NavShell>().geometry().content_column.x1;
+    let own = part_rect(&h, Part::Action(Column::Content, 0));
     assert!(
-        after.width() > 0.0 && after.x1 > 1024.0 - 40.0,
-        "and the last section reaches the window's end: {after:?}"
+        ends_at(own, content),
+        "the detail's action ends at the detail's edge {content}: {own:?}"
     );
 }

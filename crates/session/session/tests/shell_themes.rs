@@ -129,7 +129,7 @@ impl Theme {
 /// service beside them, which publishes the appearance section the theme is
 /// chosen through.
 fn session() -> Session {
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -486,6 +486,7 @@ fn assert_different_frames(frames: &[(Theme, Screenshot)]) {
 /// not its layout.
 #[test]
 fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
+    // This test's own home, beside the run's app store the session's apps come from.
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     // The bar draws the time, and a minute turning over is a change, not idle

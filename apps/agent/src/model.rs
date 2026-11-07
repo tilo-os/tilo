@@ -1724,6 +1724,7 @@ mod tests {
             },
             stop_reason: StopReason::ToolCalls,
             usage: agent_provider_config::protocol::Usage::default(),
+            cost_micros: 0,
         };
         let (assistant, calls) = conversation
             .calls(&serde_json::json!(response).to_string())

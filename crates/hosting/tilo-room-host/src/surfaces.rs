@@ -3,23 +3,41 @@
 //! A change's op names the content hash of its app's `surface.toml`; the
 //! registry serves every reviewed package's payload blobs by hash, so the
 //! relay fetches a surface it has not seen from there, in the background,
-//! and holds the ops naming it until it has arrived.
+//! and holds the ops naming it until it has arrived. What it fetched stays
+//! here by hash, whichever version of the app it is: members read a record
+//! started by an older version with that version's surface
+//! ([`Workspaces::content_answer`](crate::workspaces::Workspaces::content_answer)).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use tilo_lock::MutexRecover as _;
+
 /// The registry relays fetch surfaces from unless `TILO_REGISTRY` names one.
 pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
+
+/// How long answering a member's request waits for a registry fetch: a
+/// surface is a few kilobytes, and a member that waited longer asks again.
+const FETCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// What the relay has of each surface: its bytes, or a fetch under way.
 type Fetched = Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>;
 
-/// The surface `hash` of `record`'s app, when this host runs the app in
-/// its own process (a bot's apps) and that is the surface it runs.
-#[cfg(feature = "agents")]
-fn carried(record: &collab_types::Record<'_>, hash: &str) -> Option<Vec<u8>> {
-    surface_of(record.app, hash)
+/// The surfaces this host fetches from `registry`: one cache for deciding the
+/// changes that name them and for answering the members that read them.
+struct Surfaces {
+    registry: String,
+    runtime: Option<tokio::runtime::Handle>,
+    bytes: Fetched,
+    /// Signalled when a fetch finishes, so a member's request for a surface
+    /// this host is still fetching is answered by that one fetch rather than
+    /// by the next request.
+    fetched: std::sync::Condvar,
 }
+
+/// This process's surfaces, once [`decide_receipt_from_registry`] installed
+/// them.
+static SURFACES: Mutex<Option<Arc<Surfaces>>> = Mutex::new(None);
 
 /// The surface `hash` of `app` when it is the one this host runs `app`
 /// with.
@@ -31,8 +49,78 @@ pub fn surface_of(app: &str, hash: &str) -> Option<Vec<u8>> {
         .flatten()
 }
 
+/// A host that runs no app in its own process runs the surface of none.
 #[cfg(not(feature = "agents"))]
-const fn carried(_: &collab_types::Record<'_>, _: &str) -> Option<Vec<u8>> {
+pub const fn surface_of(_: &str, _: &str) -> Option<Vec<u8>> {
+    None
+}
+
+/// The bytes of the surface `hash` of `app` this host keeps: the one it runs
+/// `app` with, or one the registry fetched for a change that named it, whoever
+/// ran that version. A surface it holds neither is asked of the registry, and
+/// this says `None` until it arrives.
+pub(crate) fn kept(app: &str, hash: &str) -> Option<Vec<u8>> {
+    surface_of(app, hash).or_else(|| request(hash))
+}
+
+/// The bytes of the surface `hash` of `app` a member asked this host for,
+/// waiting for the registry's answer when the host has not seen it yet: what
+/// a record started by an older version of an app reads its writes with.
+///
+/// Blocks until the fetch lands or [`FETCH_WAIT`] passes, so it is called off
+/// the async threads that serve members.
+pub(crate) fn answer(app: &str, hash: &str) -> Option<Vec<u8>> {
+    if let Some(bytes) = surface_of(app, hash) {
+        return Some(bytes);
+    }
+    let surfaces = SURFACES.lock_recover().clone()?;
+    // One fetch for every member asking at once: the one already under way,
+    // or this one.
+    let _ = request(hash);
+    let (known, _) = surfaces
+        .fetched
+        .wait_timeout_while(surfaces.bytes.lock_recover(), FETCH_WAIT, |known| {
+            matches!(known.get(hash), Some(None))
+        })
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    known.get(hash).cloned().flatten()
+}
+
+/// What this host fetched for the surface `hash`, or a fetch started for it.
+fn request(hash: &str) -> Option<Vec<u8>> {
+    let surfaces = SURFACES.lock_recover().clone()?;
+    let mut known = surfaces.bytes.lock_recover();
+    if let Some(known) = known.get(hash) {
+        return known.clone();
+    }
+    // ignored-failure: a hash that is not one names no surface; the member asking is told so.
+    let Some(blob) = hex::decode(hash)
+        .ok()
+        .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
+    else {
+        tracing::warn!(%hash, "a surface is asked for by a hash that is not one");
+        return None;
+    };
+    let runtime = surfaces.runtime.clone()?;
+    known.insert(hash.to_owned(), None);
+    drop(known);
+    let blobs = tilo_app_registry_blobs(&surfaces.registry);
+    let hash = hash.to_owned();
+    runtime.spawn(async move {
+        let result = blobs.fetch_all(&[tilo_app_package::BlobHash(blob)]).await;
+        let mut known = surfaces.bytes.lock_recover();
+        if let Some(bytes) = result.ok().and_then(|mut all| all.pop()) {
+            known.insert(hash, Some(bytes.to_vec()));
+            drop(known);
+            surfaces.fetched.notify_all();
+            arrived();
+        } else {
+            // Asked again by the next op or member that names it.
+            known.remove(&hash);
+            drop(known);
+            surfaces.fetched.notify_all();
+        }
+    });
     None
 }
 
@@ -54,51 +142,15 @@ const fn signed_surface(_: &str) -> Option<[u8; 32]> {
 /// `registry`. Call it once, on the runtime the relay runs on, before the
 /// relay starts.
 pub fn decide_receipt_from_registry(registry: &str) {
-    let blobs = tilo_app_registry_blobs(registry);
-    let fetched: Fetched = Arc::default();
-    let runtime = tokio::runtime::Handle::try_current().ok();
-    let read = move |record: &collab_types::Record<'_>, hash: &str| -> Option<Vec<u8>> {
-        if let Some(bytes) = carried(record, hash) {
-            return Some(bytes);
-        }
-        let mut known = fetched.lock().ok()?;
-        match known.get(hash) {
-            Some(Some(bytes)) => return Some(bytes.clone()),
-            Some(None) => return None,
-            None => {}
-        }
-        let Ok(Ok(blob)) = hex::decode(hash).map(<[u8; 32]>::try_from) else {
-            tracing::warn!(%hash, "a record names a surface blob by a hash that is not one");
-            return None;
-        };
-        let runtime = runtime.as_ref()?;
-        known.insert(hash.to_owned(), None);
-        drop(known);
-        let blobs = blobs.clone();
-        let fetched = Arc::clone(&fetched);
-        let hash = hash.to_owned();
-        runtime.spawn(async move {
-            let result = blobs.fetch_all(&[tilo_app_package::BlobHash(blob)]).await;
-            let Ok(mut known) = fetched.lock() else {
-                return;
-            };
-            match result.ok().and_then(|mut all| all.pop()) {
-                Some(bytes) => {
-                    known.insert(hash, Some(bytes.to_vec()));
-                    drop(known);
-                    arrived();
-                }
-                // Asked again by the next op that names it.
-                None => {
-                    known.remove(&hash);
-                }
-            }
-        });
-        None
-    };
+    *SURFACES.lock_recover() = Some(Arc::new(Surfaces {
+        registry: registry.trim_end_matches('/').to_owned(),
+        runtime: tokio::runtime::Handle::try_current().ok(),
+        bytes: Fetched::default(),
+        fetched: std::sync::Condvar::new(),
+    }));
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
-            read,
+            |record: &collab_types::Record<'_>, hash: &str| kept(record.app, hash),
         ))),
         signed_surface,
     );

@@ -475,7 +475,15 @@ impl HostContext {
     /// one connection (`docs/architecture/apps.md` §8 step 2).
     #[must_use]
     pub fn hosted(&self) -> bool {
-        self.hosted
+        self.hosted_resource.is_some()
+    }
+
+    /// The resource address the session's document host publishes this app's record at, when it
+    /// keeps it ([`Self::hosted`]): what the app reads its state from and submits its actions
+    /// against.
+    #[must_use]
+    pub fn hosted_resource(&self) -> Option<&str> {
+        self.hosted_resource.as_deref()
     }
 
     /// Supply the connection the app reads the session's readings over and
@@ -529,8 +537,7 @@ impl HostContext {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         match records.canonical_namespace() {
             Some((_, package, _)) if package == definition.app_id() => {}
-            Some(_) => return Err(LaunchError::BindingMismatch),
-            None => return Err(LaunchError::BindingMismatch),
+            _ => return Err(LaunchError::BindingMismatch),
         }
         for required in &definition.required {
             if !permissions.borrow().check(required) {
@@ -583,7 +590,7 @@ impl HostContext {
             launch_options: Vec::new(),
             private: false,
             lent: Vec::new(),
-            hosted: true,
+            hosted_resource: Some(resource.to_owned()),
             connection: None,
         })
     }
@@ -605,7 +612,7 @@ impl HostContext {
             device_id: self.device_id.clone(),
             records: self.records.clone(),
             checkout: self.record.clone(),
-            hosted: self.hosted,
+            hosted: self.hosted_resource.is_some(),
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             host_person: self.host_person.clone(),

@@ -198,6 +198,12 @@ known by (the registry's keywords: "youtube" for an app called Tube) are not par
   its `count` is how many it holds, which reads the run it is drawn from to its end once, so a
   lane's header says the cards it drew for the cards it holds, and a workspace's list of
   everything shows the most it can hold rather than read itself.
+- **A checked listing is kept across a change.** A listing remembers the run it read and what
+  it found of each entry: a change checks the items it wrote again, takes out those that left
+  the run, and keeps every other entry's place and membership, so a step costs what it changed
+  rather than the workspace. A change the run cannot explain — an entry moved by a write that
+  named no item, a read of another run, a run not yet checked whole — drops it, and the listing
+  is read again.
 - **Versions are indexed too.** Per resource the list index keeps its first and last version
   (who, when, which action: `created(r)`, `updated(r)`) and the last change of each of its
   fields (`changed(r, .field)`), taken change by change from the log, and per collection a

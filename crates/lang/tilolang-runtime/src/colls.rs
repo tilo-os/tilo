@@ -18,7 +18,7 @@ use std::rc::Rc;
 use crate::core::{Core, HResult, trap};
 use crate::meta::FieldKind;
 use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
-use crate::value::{CollRef, Value};
+use crate::value::{CollRef, RefValue, Value};
 
 /// What a view saw of one collection: its length, its first and last item, the item at each
 /// index it read (an item by its id), and the item right before each item it asked for. It
@@ -350,6 +350,72 @@ impl Core {
         }))
     }
 
+    /// `coll_relatives(holder, field, parent, node, down)`: the items of the collection `field`
+    /// of `holder` under `node` (above it, for `down` 0) by the reference field `parent`, those
+    /// under it in the order the collection keeps them and those above it from the nearest, as
+    /// a list (some); none when the store cannot follow that field, and the caller's walk runs
+    /// instead.
+    ///
+    /// A view is not answered: what it depends on is the `parent` field of every item that is
+    /// not under the one it asks after, which the walk reads and records one item at a time.
+    pub(crate) fn coll_relatives(
+        &self,
+        holder: i32,
+        field: i32,
+        parent: i32,
+        node: i32,
+        down: i32,
+    ) -> HResult<Value> {
+        if self.frames.borrow().view().is_some() {
+            return Ok(Value::none());
+        }
+        let Ok(holder) = self.ref_arg(holder) else {
+            return Ok(Value::none());
+        };
+        let Ok(node) = self.ref_arg(node) else {
+            return Ok(Value::none());
+        };
+        let (Ok(field), Ok(parent)) = (self.text(field), self.text(parent)) else {
+            return Ok(Value::none());
+        };
+        let Ok((_, collection)) = self.lookup_field(&holder.target, &field) else {
+            return Ok(Value::none());
+        };
+        let Ok(item) = self.item_type(&collection.ty) else {
+            return Ok(Value::none());
+        };
+        let Some(parent) = item.field_by_id_or_name(&parent) else {
+            return Ok(Value::none());
+        };
+        let Some(found) = self
+            .store
+            .borrow()
+            .relatives(
+                &holder.target,
+                &collection.id,
+                &parent.id,
+                &node.target,
+                down != 0,
+            )
+            .map_err(|e| e.to_string())?
+        else {
+            return Ok(Value::none());
+        };
+        let author = Some(self.module_of_frame()?);
+        let holder = holder.target;
+        Ok(Value::some(Value::List(
+            found
+                .into_iter()
+                .map(|(id, ty)| {
+                    Value::Ref(RefValue {
+                        target: Rc::new(holder.item(&id, ty)),
+                        author: author.clone(),
+                    })
+                })
+                .collect(),
+        )))
+    }
+
     /// `coll_ordered(list, order)`: the items of the collection `list` in the order written
     /// `order` (`{"field": id, "descending": bool, "absent_last": bool, "then": {...}}`, each
     /// field a declared one or a version, `$created` or `$updated`), as a collection the store
@@ -441,8 +507,10 @@ impl Core {
     }
 
     /// How long `coll` is: what its listing knows of its length without reading it. A filter
-    /// that checks items one by one as it reads them knows only the most it can hold, and says
-    /// that rather than claim it exact ([`crate::store::Listing::len_is_exact`]).
+    /// that checks items one by one as it reads them knows only the most it can hold until it
+    /// has read them all, and says that rather than claim it exact
+    /// ([`crate::store::Listing::len_is_exact`]); how many it holds is [`Self::coll_count`],
+    /// which a view asks for where it shows a count rather than a list's extent.
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
         let listing = self.coll_listing(coll)?;
         let len = listing.len();

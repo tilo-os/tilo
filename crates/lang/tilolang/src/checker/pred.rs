@@ -32,7 +32,7 @@ impl Checker<'_> {
     /// `looped`, the loop of a `filter` or `count` over the collection `held` (kept in the local
     /// `list`, which the loop reads), behind the store's answer to `pred`: `coll_where` hands
     /// back the collection's matching items when the host can list them (a collection read in a
-    /// view), and the loop runs when it cannot.
+    /// view, or a list read of one), and the loop runs when it cannot.
     pub(super) fn where_or_loop(
         &mut self,
         list: u32,

@@ -304,6 +304,165 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
     })
 }
 
+/// Leave `sealed` on `site`'s shelf, for the link that names it and carries
+/// its key: what a person hands over instead of the invitation's kilobytes.
+///
+/// The site is given the ciphertext, when the invitation lapses, and the
+/// secret that takes it back — never the key, which is in the link alone.
+///
+/// # Errors
+/// Why the site did not keep it: it could not be reached, or refused.
+pub(crate) async fn leave(
+    client: &Client,
+    site: &url::Url,
+    sealed: &tilo_workspace_join::sealed::Sealed,
+    expires_at_ns: u64,
+) -> Result<String, String> {
+    let url = site
+        .join(&format!("i/{}", sealed.handle))
+        .map_err(|_| "that is not a web address".to_owned())?;
+    let stored = tilo_relay_protocol::sealed_invitations::Stored {
+        sealed: sealed.sealed_text(),
+        expires_at_ns,
+        delete: sealed.delete.clone(),
+    };
+    let response = client
+        .post(url.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .json(&stored)
+        .send()
+        .await
+        .map_err(|error| {
+            said(
+                "a site's shelf could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(said(
+            "a site did not keep the invitation",
+            status,
+            "directory-error-status",
+        ));
+    }
+    sealed.link(site.as_str())
+}
+
+/// Take `sealed` back off `site`'s shelf, with the secret it was left with:
+/// the link admits nobody from now on.
+///
+/// # Errors
+/// Why the site did not take it back: it could not be reached, refused, or
+/// holds nothing there any more.
+pub(crate) async fn take_back(
+    client: &Client,
+    site: &url::Url,
+    handle: &str,
+    delete: &str,
+) -> Result<(), String> {
+    let url = site
+        .join(&format!("i/{handle}"))
+        .map_err(|_| "that is not a web address".to_owned())?;
+    let response = client
+        .delete(url.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .json(&tilo_relay_protocol::sealed_invitations::TakeBack {
+            delete: delete.to_owned(),
+        })
+        .send()
+        .await
+        .map_err(|error| {
+            said(
+                "a site's shelf could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
+    let status = response.status().as_u16();
+    if !(200..300).contains(&status) {
+        return Err(said(
+            "a site did not take the invitation back",
+            status,
+            "directory-error-status",
+        ));
+    }
+    Ok(())
+}
+
+/// The invitation a sealed `link` names, fetched from the site that keeps it
+/// and opened with the key the link carries: its text, as every build hands
+/// one over.
+///
+/// # Errors
+/// Why there is none: the site could not be reached, holds nothing under the
+/// handle any more, or the key does not open what it answered with.
+pub(crate) async fn redeem(
+    client: &Client,
+    link: &tilo_workspace_join::sealed::SealedLink,
+) -> Result<String, String> {
+    let site = web_origin(&format!("{}/", link.site))?;
+    let url = site
+        .join(&format!("i/{}", link.handle))
+        .map_err(|_| "that is not a web address".to_owned())?;
+    let response = client
+        .get(url.as_str())
+        .timeout(ANSWER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| {
+            said(
+                "a site's shelf could not be reached",
+                error,
+                "directory-error-unreachable",
+            )
+        })?;
+    let status = response.status().as_u16();
+    if status == tilo_relay_protocol::sealed_invitations::GONE {
+        return Err(said(
+            "a sealed invitation is gone",
+            status,
+            "directory-error-invitation-gone",
+        ));
+    }
+    if !(200..300).contains(&status) {
+        return Err(said(
+            "a site did not answer with the invitation",
+            status,
+            "directory-error-status",
+        ));
+    }
+    let bytes = response
+        .bytes_limited(MAX_ANSWER_BYTES)
+        .await
+        .map_err(|error| {
+            said(
+                "a site's answer could not be read",
+                error,
+                "directory-error-unreadable",
+            )
+        })?;
+    let fetched: tilo_relay_protocol::sealed_invitations::Fetched = serde_json::from_slice(&bytes)
+        .map_err(|error| {
+            said(
+                "a site answered with something that is not an invitation",
+                error,
+                "directory-error-unreadable",
+            )
+        })?;
+    let invitation =
+        tilo_workspace_join::sealed::open_sealed(&fetched.sealed, &link.handle, &link.key)
+            .map_err(|error| {
+                said(
+                    "a sealed invitation did not open",
+                    error,
+                    "directory-error-invitation-broken",
+                )
+            })?;
+    Ok(tilo_workspace_join::encode_invitation_text(&invitation))
+}
+
 /// The workspace an invitation for this person joins, without redeeming it:
 /// what a session the host set up for a workspace knows before the join
 /// settles.
@@ -516,6 +675,20 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
             },
             granted: verify_invitation(&text, person),
         },
+        // The link carries a key and a place; the invitation itself waits at
+        // the site, sealed under that key. The site's address names the join
+        // until the workspace it brings is known.
+        Pasted::Sealed { link } => Taken {
+            name: url::Url::parse(&format!("{}/", link.site))
+                .map(|site| host_of(&site))
+                .unwrap_or_default(),
+            granted: match client {
+                Err(error) => Err(format!("no network to join over: {error}")),
+                Ok(client) => redeem(client, &link)
+                    .await
+                    .and_then(|text| verify_invitation(&text, person)),
+            },
+        },
         Pasted::Site { entry, workspace } => match client {
             Err(error) => Taken {
                 name: host_of(&entry),
@@ -580,6 +753,11 @@ enum Pasted {
         text: String,
         entry: Option<url::Url>,
     },
+    /// A sealed invitation's link: the site that keeps it, the handle it is
+    /// under, and the key that opens it — which the site was never given.
+    Sealed {
+        link: tilo_workspace_join::sealed::SealedLink,
+    },
     /// A site, whose home workspace its door admits people to; with the workspace
     /// a link named, which must be that workspace.
     Site {
@@ -588,12 +766,15 @@ enum Pasted {
     },
 }
 
-/// Read what the person pasted: an invitation's text, a workspace link, or a
-/// site.
+/// Read what the person pasted: a sealed link, an invitation's text, a
+/// workspace link, or a site.
 fn classify(text: &str) -> Result<Pasted, String> {
     let text = text.trim();
     if text.is_empty() {
         return Err("that is not a link or a code".to_owned());
+    }
+    if let Some(link) = tilo_workspace_join::sealed::parse_link(text) {
+        return Ok(Pasted::Sealed { link });
     }
     if is_invitation(text) {
         return Ok(Pasted::Invitation {
@@ -711,4 +892,211 @@ async fn get_json<T: serde::de::DeserializeOwned>(
             "directory-error-no-workspace",
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::expect_used,
+        clippy::indexing_slicing,
+        clippy::unwrap_used,
+        reason = "a fixture that cannot mint its invitation or read its own reply has no fallback"
+    )]
+
+    use super::*;
+    use test_http::{Reply, Responder};
+
+    const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+
+    /// An invitation for `person` to [`WORKSPACE`], minted as a host mints
+    /// one: a real signed invitation, kilobyte and all.
+    fn invitation_for(person: [u8; 32]) -> String {
+        let host = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
+        let host_device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut issuer = tilo_user_identity::DeviceCert {
+            user_public_key: host.verifying_key().to_bytes(),
+            device_public_key: host_device.verifying_key().to_bytes(),
+            device_label: "The book club's host".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: now,
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
+        let grant = tilo_workspace_join::InviteGrant {
+            workspace_id: tilo_workspace_join::room_workspace_id(WORKSPACE)
+                .expect("a workspace's id"),
+            room: WORKSPACE.to_owned(),
+            issuer,
+            role: tilo_workspace_join::MemberRole::Viewer,
+            nonce: [0x33; 16],
+            recipient_user_public_key: Some(person),
+            invitee_name: None,
+            expires_at_ns: now.saturating_add(3_600_000_000_000),
+            transport: Vec::new(),
+        };
+        let signed = tilo_workspace_join::issue_invitation(grant, &host_device)
+            .expect("a signed invitation");
+        tilo_workspace_join::encode_invitation_text(&signed)
+    }
+
+    /// `responder` as a site's origin, trailing slash and all.
+    fn site(responder: &Responder) -> url::Url {
+        url::Url::parse(&format!("{}/", responder.url())).expect("the site's address")
+    }
+
+    /// The key a link's fragment carries.
+    fn key_of(link: &str) -> String {
+        link.rsplit_once('#')
+            .expect("a link carries a key")
+            .1
+            .to_owned()
+    }
+
+    #[test]
+    fn a_short_link_comes_back_as_the_invitation_it_was_sealed_from() {
+        let person = Person {
+            user: [0x21; 32],
+            name: "Ada Lovelace".to_owned(),
+        };
+        let text = invitation_for(person.user);
+        let bytes = tilo_workspace_join::invitation_bytes(&text).expect("the invitation's bytes");
+        let sealed = tilo_workspace_join::sealed::seal(&bytes).expect("a sealed invitation");
+        let responder = Responder::start(vec![
+            Reply::status(204),
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(
+                    serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
+                        sealed: sealed.sealed_text(),
+                    })
+                    .expect("a shelf's answer"),
+                ),
+            Reply::status(204),
+        ]);
+        let site = site(&responder);
+        let client = client().expect("a client");
+        let now = tilo_clock::unix_now_ns();
+        let (link, redeemed) = tilo_rt::block_on(async {
+            let link = leave(
+                &client,
+                &site,
+                &sealed,
+                now.saturating_add(3_600_000_000_000),
+            )
+            .await?;
+            let read = tilo_workspace_join::sealed::parse_link(&link)
+                .ok_or("the link the site answered with does not read back")?;
+            let redeemed = redeem(&client, &read).await?;
+            Ok::<_, String>((link, redeemed))
+        })
+        .expect("the app runtime")
+        .expect("a shelf round trip");
+
+        // What comes back is the signed invitation itself, so it verifies as
+        // one: the same workspace, for the person it was granted to.
+        assert_eq!(
+            redeemed, text,
+            "the link carries the invitation byte for byte"
+        );
+        let granted = verify_invitation(&redeemed, &person).expect("the invitation verifies");
+        assert_eq!(granted.workspace, WORKSPACE);
+        assert_eq!(
+            verify_invitation(&text, &person).expect("the invitation verifies"),
+            granted
+        );
+
+        // The site was given ciphertext, when it lapses and the secret that
+        // takes it back: never the key.
+        let key = key_of(&link);
+        let post = responder.next_request();
+        assert_eq!(post.method, "POST");
+        assert_eq!(post.target, format!("/i/{}", sealed.handle));
+        let body = post.body_text();
+        assert!(body.contains(&sealed.sealed_text()), "{body}");
+        assert!(body.contains(&sealed.delete), "{body}");
+        assert!(!body.contains(&key), "the key stays in the link: {body}");
+        let fetch = responder.next_request();
+        assert_eq!(fetch.method, "GET");
+        assert_eq!(fetch.target, format!("/i/{}", sealed.handle));
+        assert!(
+            !fetch.target.contains(&key),
+            "a fragment is never sent: {}",
+            fetch.target
+        );
+        assert!(
+            !body.contains(&text),
+            "the site never holds the invitation itself"
+        );
+
+        // Taking it back is the delete secret's alone: the link names nothing
+        // from then on, and the key is not what asks for that.
+        tilo_rt::block_on(take_back(&client, &site, &sealed.handle, &sealed.delete))
+            .expect("the app runtime")
+            .expect("the shelf takes it back");
+        let taken = responder.next_request();
+        assert_eq!(taken.method, "DELETE");
+        assert_eq!(taken.target, format!("/i/{}", sealed.handle));
+        let body = taken.body_text();
+        assert!(body.contains(&sealed.delete), "{body}");
+        assert!(!body.contains(&key), "the key takes nothing back: {body}");
+    }
+
+    #[test]
+    fn a_link_whose_invitation_was_taken_back_says_so() {
+        let responder = Responder::start(vec![Reply::status(
+            tilo_relay_protocol::sealed_invitations::GONE,
+        )]);
+        let site = site(&responder);
+        let sealed =
+            tilo_workspace_join::sealed::seal(b"an invitation").expect("a sealed invitation");
+        let link = sealed.link(site.as_str()).expect("the link");
+        let read = tilo_workspace_join::sealed::parse_link(&link).expect("the link reads back");
+        let client = client().expect("a client");
+        let refused = tilo_rt::block_on(redeem(&client, &read))
+            .expect("the app runtime")
+            .expect_err("an invitation taken back");
+        assert_eq!(
+            refused,
+            tilo_sheets::word("directory-error-invitation-gone"),
+            "the person is told it lapsed or was taken back, not a status code"
+        );
+    }
+
+    #[test]
+    fn a_pasted_short_link_joins_through_its_site() {
+        let person = Person {
+            user: [0x24; 32],
+            name: "Grace".to_owned(),
+        };
+        let text = invitation_for(person.user);
+        let sealed = tilo_workspace_join::sealed::seal(
+            &tilo_workspace_join::invitation_bytes(&text).expect("the invitation's bytes"),
+        )
+        .expect("a sealed invitation");
+        let responder = Responder::start(vec![
+            Reply::status(200)
+                .header("Content-Type", "application/json")
+                .body(
+                    serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
+                        sealed: sealed.sealed_text(),
+                    })
+                    .expect("a shelf's answer"),
+                ),
+        ]);
+        let link = sealed.link(site(&responder).as_str()).expect("the link");
+        let client = client().expect("a client");
+        let taken = tilo_rt::block_on(take(&Ok(client), &link, &person)).expect("the app runtime");
+        assert_eq!(
+            taken.name, "127.0.0.1",
+            "the site the link names stands in for the workspace until it joins"
+        );
+        let granted = taken.granted.expect("a granted join");
+        assert_eq!(granted.workspace, WORKSPACE);
+        assert_eq!(
+            granted.invitation, text,
+            "what the sheet joins with is the invitation the site never read"
+        );
+    }
 }

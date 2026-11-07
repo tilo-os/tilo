@@ -852,7 +852,10 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         );
         let lead = face.leading_rect(rect, &mut text, &theme);
         assert!(lead.width() > 0.0, "{kind:?} has a column");
-        assert!(face.text_x(rect, &m, &mut text, &theme) >= lead.x1 - 0.01);
+        assert!(
+            rect.x0 - 0.01 <= lead.x0 && lead.x1 <= rect.x1 + 0.01,
+            "{kind:?} is pressed inside its row"
+        );
     }
     assert!(painted.get(), "a leading painter runs");
     // A wide thumbnail takes a wider column than a square one.
@@ -869,6 +872,78 @@ fn every_leading_kind_paints_in_its_column_and_titles_line_up() {
         rect,
     );
     assert!(wide.leading.width() > square.leading.width());
+}
+
+/// The box a row leads with is a control of its own: a finger's press on it reaches the target a
+/// finger needs, inside the row, while the box it draws keeps the size of its column and the row
+/// keeps its height.
+#[test]
+fn a_rows_box_presses_as_far_as_the_pointer_needs() {
+    use crate::interaction::InteractionEnvironment;
+    let theme = Theme::dark();
+    let row = || {
+        ListRow::new("milk", "Milk")
+            .checkbox(false, |_| {})
+            .on_activate(|| {})
+    };
+    let mut widths = Vec::new();
+    for (name, input) in [
+        ("a pointer", InteractionEnvironment::POINTER),
+        ("a finger", InteractionEnvironment::TOUCH),
+    ] {
+        let mut h = FrameHarness::for_root(
+            crate::State::new(),
+            Column::new().push(Box::new(row())),
+            (360, 300),
+            theme.clone(),
+        );
+        h.set_interaction_environment(input);
+        h.relayout_at((360, 300)).expect("layout");
+        let inspection = h.inspection();
+        let node = find(&inspection.root, "ListRow").expect("the row");
+        let row_rect = rect_of(node);
+        let boxed = node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| {
+                semantics
+                    .children
+                    .iter()
+                    .find(|child| child.role == crate::a11y::Role::Checkbox)
+            })
+            .expect("the row's box is a control of its own")
+            .bounds
+            .expect("a box a reader presses says where it stands")
+            .to_rect();
+        let target = f64::from(input.minimum_target());
+        assert!(
+            boxed.width() >= target - 0.5 && boxed.height() >= target - 0.5,
+            "as {name} presses it, the box takes a press {target}×{target} wide: {boxed:?}"
+        );
+        // The row's lift, which bleeds into the list's gutter as the row does.
+        let lift = row_rect.inflate(crate::chrome::row_bleed(&theme), 0.0);
+        assert!(
+            lift.x0 - 0.5 <= boxed.x0
+                && boxed.x1 <= lift.x1 + 0.5
+                && lift.y0 - 0.5 <= boxed.y0
+                && boxed.y1 <= lift.y1 + 0.5,
+            "the box's press stays inside its row as {name} presses it: {boxed:?} in {lift:?}"
+        );
+        assert!(
+            boxed.width() > m_icon(&theme),
+            "the press reaches past the box it draws, {boxed:?}"
+        );
+        widths.push(boxed.width());
+    }
+    assert!(
+        widths[1] > widths[0],
+        "a finger's press on the box is wider than a mouse's: {widths:?}"
+    );
+}
+
+/// The edge a row draws its leading box at, from the theme's metrics.
+fn m_icon(theme: &Theme) -> f64 {
+    f64::from(theme.tokens.metrics.icon_control)
 }
 
 #[test]

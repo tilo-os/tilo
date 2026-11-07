@@ -154,4 +154,17 @@ impl Described for MediaGrid {
         }
         grid
     }
+
+    /// The cards, their size and how they stand change where the grid stands.
+    fn set_props(&mut self, props: MediaGridProps) -> bool {
+        let MediaGridProps {
+            size,
+            justified,
+            items,
+        } = props;
+        self.set_justified(justified);
+        self.set_size(size.unwrap_or_default());
+        self.set_cards(items.into_iter().map(card).collect());
+        true
+    }
 }

@@ -31,7 +31,7 @@ mod views;
 pub mod wire;
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -278,9 +278,12 @@ pub struct Instance {
     pending: Pending,
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
-    /// The actions the person chose from the window's command palette, in order, until the
-    /// host runs them as the person's own steps.
-    chosen: Vec<(ActionAddress, Option<String>)>,
+    /// The window's notice offers to take back the marks the person just moved seen, not the
+    /// record's last change: it is about what the window said last.
+    seen_offer: bool,
+    /// The actions the person chose at the window (a press, the palette), with the press each
+    /// is, in order, until the host runs them as the person's own steps.
+    chosen: VecDeque<(u64, ActionAddress, Option<String>)>,
     /// The scenario a capture stages, until the host runs it.
     staged: Option<String>,
     /// Why the scenario a capture staged did not run whole, until the capture takes it: a
@@ -305,9 +308,18 @@ pub struct Instance {
     /// The window's keyboard focus: the bound control it is in.
     focus: Option<(Lane, String)>,
     composing: bool,
-    /// How many presses the window sent (`ToApp::Fire`) the instance ran, and how many of
-    /// them it told the window it ran (`ToUi::Took`).
+    /// How many presses the window sent (`ToApp::Fire`, `ToApp::Invoke`) the instance: the
+    /// number each press goes by, in the order they came.
     fired: u64,
+    /// The number of the last press of a view's own control the instance made: its frame runs
+    /// it, where an invocation is run by the host after the presses it came with.
+    last_fire: u64,
+    /// How many presses the instance ran in order: an invocation is run by the host after the
+    /// presses it came with, so a later press can run before it.
+    ran: u64,
+    /// The presses that ran while one before them had not, kept until it does.
+    ran_ahead: BTreeSet<u64>,
+    /// How many of them it told the window it ran (`ToUi::Took`).
     fired_told: u64,
     /// How many times the window was sent what changed of the tree it shows, one per frame
     /// whose change reached it (a tree's patches, or the rows of its lists): the first tree
@@ -373,7 +385,8 @@ impl Instance {
             origins: Rc::default(),
             pending: Pending::default(),
             history: Vec::new(),
-            chosen: Vec::new(),
+            seen_offer: false,
+            chosen: VecDeque::new(),
             staged: None,
             stage_failed: None,
             started: false,
@@ -388,6 +401,9 @@ impl Instance {
             focus: None,
             composing: false,
             fired: 0,
+            last_fire: 0,
+            ran: 0,
+            ran_ahead: BTreeSet::new(),
             fired_told: 0,
             patches_sent: 0,
             form: None,
@@ -663,11 +679,13 @@ impl Instance {
         std::mem::take(&mut self.history)
     }
 
-    /// The actions the person chose from the window's command palette since last asked, in the
-    /// order they chose them, with the argument the palette collected: the host runs each as
-    /// the person's own step, the way it runs any invocation of an action it publishes.
-    pub fn take_chosen(&mut self) -> Vec<(ActionAddress, Option<String>)> {
-        std::mem::take(&mut self.chosen)
+    /// The next action the person chose at the window, with the press it is and the argument
+    /// the palette collected: the host runs it as the person's own step, the way it runs any
+    /// invocation of an action it publishes, and tells the instance it ran
+    /// ([`Instance::press_ran`]). One a frame: what a press made opens, and the window hears
+    /// it ran, before the press after it.
+    pub fn take_chosen(&mut self) -> Option<(u64, ActionAddress, Option<String>)> {
+        self.chosen.pop_front()
     }
 
     /// Send the window `message` with this frame's batch: what the host knows of the actions it
@@ -1051,6 +1069,9 @@ impl Instance {
     // ----- the door ------------------------------------------------------------------------
 
     fn notice(&mut self, words: Words, kind: ui::NoticeKind) {
+        // The window shows one notice at a time: what the one before offered to take back is
+        // gone with it.
+        self.seen_offer = false;
         self.out.push(ToUi::Notice {
             words,
             kind,
@@ -1254,6 +1275,7 @@ impl Instance {
             (Some(error), _) => self.notice(Words::Plain(error), ui::NoticeKind::Error),
             (None, Some(words)) => {
                 // A destructive action is undone rather than confirmed.
+                self.seen_offer = false;
                 self.out.push(ToUi::Notice {
                     words,
                     kind: ui::NoticeKind::Info,
@@ -1329,7 +1351,17 @@ impl Instance {
     /// the instance carries out on the record ([`Self::take_history`]).
     fn window_told(&mut self, told: ToApp) {
         match told {
-            ToApp::Undo => self.history.push(HistoryAsk::Undo),
+            // The notice in front takes back what it reported: the marks the person just moved
+            // seen, where it was that notice, else the record's last change.
+            ToApp::Undo => {
+                let taken = std::mem::take(&mut self.seen_offer)
+                    && self
+                        .host()
+                        .is_some_and(|host| host.runtime().undo_seen(&self.me));
+                if !taken {
+                    self.history.push(HistoryAsk::Undo);
+                }
+            }
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,
@@ -1412,10 +1444,12 @@ impl Instance {
                 Ok(())
             }
             ToApp::Invoke { address, argument } => {
-                // The palette offered the person the actions the host publishes for this
-                // window; the host runs what they chose, so it holds the address and the
-                // argument until its next frame.
-                self.chosen.push((address, argument));
+                // The window's own bar, its palette and anyone else took an action of this
+                // window: a press, which the host runs as the person's own step, so it holds
+                // the address and the argument until its next frame.
+                self.fired = self.fired.saturating_add(1);
+                let press = self.fired;
+                self.chosen.push_back((press, address, argument));
                 Ok(())
             }
         };
@@ -1439,16 +1473,33 @@ impl Instance {
             // ran: what the person typed after it goes to what it opened, never to what a later
             // press of the same batch opens.
             self.take_open_requests();
+            self.press_ran(self.last_fire);
             self.tell_took();
+        }
+    }
+
+    /// The press `at` ran: what it made was sent before, or is sent by the frame that followed
+    /// it. The window hears how many presses ran in order, so what a person typed after a
+    /// press never goes to one still to run.
+    pub fn press_ran(&mut self, at: u64) {
+        if at != self.ran.saturating_add(1) {
+            if at > self.ran {
+                self.ran_ahead.insert(at);
+            }
+            return;
+        }
+        self.ran = at;
+        while self.ran_ahead.remove(&self.ran.saturating_add(1)) {
+            self.ran = self.ran.saturating_add(1);
         }
     }
 
     /// Tell the window how many of its presses ran, when that changed: what they opened was
     /// sent before.
     fn tell_took(&mut self) {
-        if self.fired != self.fired_told {
-            self.fired_told = self.fired;
-            self.out.push(ToUi::Took { fired: self.fired });
+        if self.ran != self.fired_told {
+            self.fired_told = self.ran;
+            self.out.push(ToUi::Took { fired: self.ran });
         }
     }
 
@@ -1483,6 +1534,7 @@ impl Instance {
     ) -> Result<(), Words> {
         // Counted whatever comes of it: the window waits for every press it sent.
         self.fired = self.fired.saturating_add(1);
+        self.last_fire = self.fired;
         let Some(view) = self.view(lane) else {
             return Ok(());
         };
@@ -1854,6 +1906,26 @@ impl Instance {
     }
 
     // ----- frames --------------------------------------------------------------------------
+
+    /// The first half of a frame over the record's chunks: every chunk of the record this
+    /// replica holds into the store, which reads and writes there the resources the record's
+    /// manifest places in it ([`Host::sync`]), and the record's frame
+    /// ([`Self::sync`]).
+    pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
+        let mut moved = false;
+        if let Some(host) = self.host.borrow().as_ref().cloned() {
+            moved |= host.sync(chunks);
+        }
+        // The record's frame reads the store the chunks were brought into, and opens the host
+        // when it was not there yet: the chunks go in again after it, then.
+        self.sync(chunks.first());
+        if let Some(host) = self.host.borrow().as_ref().cloned() {
+            moved |= host.sync(chunks);
+        }
+        if moved {
+            self.moved = true;
+        }
+    }
 
     /// The first half of a frame: bring the runtime up to date with the workspace record `record`
     /// (`None` while the instance opens over the workspace's indexes), open the root once the

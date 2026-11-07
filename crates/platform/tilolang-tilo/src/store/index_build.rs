@@ -3,13 +3,13 @@
 //! reflects, and putting a fresh one in place of a broken one. What is built here is what the
 //! store's reads answer from ([`Inner::view`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 
-use super::reading::{build, everything, mirror_of};
+use super::reading::{build, everything, mirror_of, scan};
 use super::{Doc, Inner, TiloStore};
 use crate::background::{Pending, Poll};
 use crate::chunk::{self, ChunkNo, Stamps};
@@ -189,6 +189,36 @@ impl TiloStore {
             inner.changed();
             inner.notify_all();
         }
+        // An index built over fewer chunks than the manifest names answers no row in the ones
+        // it does not, and a window would show a list shorter than the workspace's: a store
+        // that can load them loads every chunk, as one that was sent them opens. An index kept
+        // from an open over every chunk needs none of this.
+        drop(inner);
+        let short: Vec<ChunkNo> = {
+            let held = self.held();
+            let reflected: BTreeSet<ChunkNo> = held
+                .apps
+                .values()
+                .filter(|app| app.ready())
+                .flat_map(|app| app.heads.keys().copied())
+                .collect();
+            if held.chunk_loader.is_none() || !held.chunks.has_record() {
+                Vec::new()
+            } else {
+                held.chunks
+                    .placement()
+                    .chunks()
+                    .iter()
+                    .copied()
+                    .filter(|chunk| !reflected.contains(chunk))
+                    .collect()
+            }
+        };
+        for chunk in short {
+            if let Err(error) = self.load_chunk(chunk) {
+                tracing::warn!(%error, chunk, "a chunk the index does not reflect is not loaded");
+            }
+        }
         any
     }
 
@@ -237,18 +267,28 @@ impl Inner {
     }
 
     /// Take the document `doc` as chunk `chunk`: the store's mirror of it is a copy of it, the
-    /// resources it holds are read again, and each index catches up with it.
+    /// resources it holds are read again, and each index catches up with what that chunk's
+    /// changes made — nothing when the index already reflects them, which is how a workspace
+    /// opens over the index an earlier run left. The chunks the store holds beside it are not
+    /// read again: opening a workspace of many chunks costs what those chunks hold, once.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
+        self.stats.attaches = self.stats.attaches.saturating_add(1);
         self.versions = None;
         self.nested.clear();
         let mirror = mirror_of(doc);
-        self.chunks
-            .set_seen(chunk, mirror.committed_document().get_heads());
+        let seen = mirror.committed_document().get_heads();
+        let now = scan(&mirror);
+        let before: Vec<DocId> = self
+            .chunks
+            .mirror(chunk)
+            .map(|held| scan(held).into_keys().collect())
+            .unwrap_or_default();
+        self.chunks.set_seen(chunk, seen);
         self.chunks.insert(chunk, mirror);
         if chunk == chunk::FIRST {
             self.chunks.reread_placement();
         }
-        self.rescan();
+        self.scan_chunk(chunk, now, before);
         let apps: Vec<AppId> = self.apps.keys().cloned().collect();
         for app in apps {
             self.bring_up(&app);
@@ -403,8 +443,11 @@ impl Inner {
         }
     }
 
-    /// Apply to the index of `app` what the store's documents gained since the heads it
-    /// reflects.
+    /// Apply to the index of `app` what the chunks the store holds gained since the heads it
+    /// reflects: the changes of each chunk the index does not reflect yet, and only those.
+    /// Nothing when it reflects them all — the open over the index an earlier run left. A chunk
+    /// the index reflects and the store was not sent asks for nothing here: what reads its rows
+    /// loads it.
     fn catch_up(&mut self, app: &str) {
         if !self.chunks.has_record() {
             return;
@@ -412,15 +455,17 @@ impl Inner {
         let Some(held) = self.apps.get(app) else {
             return;
         };
-        let now = self.chunks.heads();
-        if held.heads == now {
+        let from = held.heads.clone();
+        let moved: Vec<ChunkNo> = self
+            .chunks
+            .docs()
+            .filter(|(chunk, doc)| from.get(chunk) != Some(&doc.committed_document().get_heads()))
+            .map(|(chunk, _)| chunk)
+            .collect();
+        if moved.is_empty() {
             return;
         }
-        // A chunk the index was not built from holds records it never derived: it is built anew.
-        if !held.heads.keys().eq(now.keys()) || !self.chunks.holds(&held.heads) {
-            self.rebuild(app);
-            return;
-        }
+        let now = stamps_after(&self.chunks, &from);
         // Named against the records the index held: a record made since is derived whole.
         let mut before: BTreeMap<DocId, (AppId, TypeId)> = BTreeMap::new();
         for (doc, ty, _chunk) in held.snapshot.docs().unwrap_or_default() {
@@ -429,12 +474,13 @@ impl Inner {
         let mut ends: BTreeMap<String, idx::reflect::Ends> = BTreeMap::new();
         let mut placed = idx::reflect::Placed::new();
         let mut changed = crate::reads::Changed::default();
-        for (chunk, heads) in &held.heads {
+        for chunk in &moved {
             let Some(doc) = self.chunks.mirror(*chunk) else {
-                self.rebuild(app);
-                return;
+                continue;
             };
-            let since = doc.committed_document().get_changes(heads);
+            let since = doc
+                .committed_document()
+                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
             ends.extend(idx::reflect::ends_of(&since, doc, &self.index));
             placed.extend(idx::reflect::placed_by(&since));
             changed.take_in(changed_by(&since, doc, &before));
@@ -442,6 +488,9 @@ impl Inner {
         for doc in &changed.nested {
             self.nested.forget(doc);
         }
+        // A change that laid the record out again may have read anything: every record the
+        // store holds is derived again, the ones it was not sent keeping what the index has
+        // ([`Derive::record`] leaves them as they are).
         let reached = if changed.unplaced || changed.layout {
             everything(&before, &self.index)
         } else {
@@ -476,4 +525,14 @@ impl Inner {
             Err(_) => self.rebuild(app),
         }
     }
+}
+
+/// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
+/// and the stamps of the chunks it was not sent, which its index still reflects.
+fn stamps_after(chunks: &crate::chunk::Chunks, from: &Stamps) -> Stamps {
+    let mut now = from.clone();
+    for (chunk, doc) in chunks.docs() {
+        now.insert(chunk, doc.committed_document().get_heads());
+    }
+    now
 }

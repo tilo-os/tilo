@@ -13,6 +13,19 @@ use vello::peniko::{Color, Fill};
 
 use crate::theme::Theme;
 
+/// `rect` with its edges on the device pixels the frame draws on: a panel
+/// placed against a measured label width or a rounded row would otherwise
+/// stand between two pixels and be painted soft across both. Its leading
+/// edges round out and its trailing edges up, so a snap never takes room
+/// from a row.
+#[must_use]
+pub fn on_device_pixels(rect: Rect) -> Rect {
+    let scale = f64::from(crate::widget::device_scale()).max(f64::MIN_POSITIVE);
+    let down = |edge: f64| (edge * scale).floor() / scale;
+    let up = |edge: f64| (edge * scale).ceil() / scale;
+    Rect::new(down(rect.x0), down(rect.y0), up(rect.x1), up(rect.y1))
+}
+
 /// The corner radius of a floating Panel.
 #[must_use]
 pub fn radius(theme: &Theme) -> f64 {

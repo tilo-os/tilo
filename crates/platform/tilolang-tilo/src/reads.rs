@@ -67,6 +67,8 @@ pub struct Located {
     pub obj: Option<ObjId>,
     pub schema: &'static TypeSchema,
     pub item: Option<crate::items::Found>,
+    /// The chunk its map is read in: the item's, or the resource's own.
+    pub chunk: crate::chunk::ChunkNo,
 }
 
 /// Locate the resource `at`, given the app and type of its document: the record's map, or the
@@ -77,6 +79,7 @@ pub struct Located {
 /// `NotFound` for a document the record does not hold, or an item it holds none of.
 pub fn locate_ref(
     doc: &Doc,
+    chunks: Option<&crate::chunk::Chunks>,
     (app, ty): (&AppId, &TypeId),
     at: &ResourceRef,
     nested: &crate::items::Nested,
@@ -85,14 +88,21 @@ pub fn locate_ref(
         resource_obj(doc, app, &at.doc).ok_or_else(|| not_found(format!("resource {}", at.doc)))?;
     let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
     let Some(item) = &at.item else {
+        let chunk = chunks.map_or(crate::chunk::FIRST, |chunks| chunks.chunk(&at.doc));
         return Ok(Located {
             obj: Some(root),
             schema,
             item: None,
+            chunk,
         });
     };
-    let found = crate::items::find(doc, (&at.doc, &root, schema), nested, item)
-        .ok_or_else(|| not_found(format!("item `{item}`")))?;
+    // An item is stored in the chunk of the run it is in: found across the store's chunks, so a
+    // read of its fields goes to the chunk that holds its map.
+    let found = match chunks {
+        Some(chunks) => crate::items::find_across(chunks, app, &at.doc, schema, nested, item),
+        None => crate::items::find(doc, (&at.doc, &root, schema), nested, item),
+    }
+    .ok_or_else(|| not_found(format!("item `{item}`")))?;
     let item_schema = found
         .ty
         .as_deref()
@@ -101,6 +111,7 @@ pub fn locate_ref(
     Ok(Located {
         obj: found.obj.clone(),
         schema: item_schema,
+        chunk: found.chunk,
         item: Some(found),
     })
 }

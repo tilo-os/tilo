@@ -740,8 +740,8 @@ impl NavShared {
             let _ = action.emit(());
         } else if self.view.is_some() {
             // A list that answers through its view action opens the place
-            // itself: the row was selected on the way here, as an
-            // activation's selection is, so no choice of its own is due.
+            // itself: an activation chooses like a press, whether or not the
+            // row was already chosen.
             self.choose(key);
         }
     }
@@ -809,6 +809,8 @@ pub struct NavList {
     semantic_key: Option<String>,
     /// The actions at the trailing edge of every item that offers them.
     row_actions: Vec<NavAction>,
+    /// The key the list was built under: what its sections are addressed by.
+    key: String,
     /// A drag staged for a capture, shown once the rows stand placed
     /// ([`Self::stage_drag`]).
     staged_drag: Option<(String, String)>,
@@ -892,6 +894,7 @@ impl NavList {
             feed: None,
             semantic_key: None,
             row_actions: Vec::new(),
+            key: String::new(),
             staged_drag: None,
         };
         list.refresh_shared();
@@ -921,7 +924,9 @@ impl NavList {
     /// Give the list a stable id for tests and inspection.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.list = Box::new(self.list.with_id(id));
+        let id = id.into();
+        self.list = Box::new(self.list.with_id(id.clone()));
+        self.key = id;
         self
     }
 
@@ -1009,11 +1014,17 @@ impl NavList {
     #[must_use]
     pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
         let id = id.into();
+        self.set_on_view(id.clone(), f);
+        self.with_id(id)
+    }
+
+    /// [`Self::on_view`] after construction: what choosing a destination does.
+    fn set_on_view(&self, id: impl Into<String>, f: impl FnMut(String) + 'static) {
+        let id = id.into();
         self.shared.borrow_mut().view = Some(NavView {
-            choice: crate::widget::view_choice::ViewChoice::new(id.clone(), "Go to"),
+            choice: crate::widget::view_choice::ViewChoice::new(id, "Go to"),
             handler: Box::new(f),
         });
-        self.with_id(id)
     }
 
     /// The published selection ([`Self::on_view`]), offering the current
@@ -1107,8 +1118,13 @@ impl NavList {
     /// trailing action is pressed.
     #[must_use]
     pub fn on_section_action(self, f: impl FnMut(&str, &str) + 'static) -> Self {
-        self.shared.borrow_mut().on_section_action = Some(Box::new(f));
+        self.set_section_action(f);
         self
+    }
+
+    /// [`Self::on_section_action`] after construction.
+    fn set_section_action(&self, f: impl FnMut(&str, &str) + 'static) {
+        self.shared.borrow_mut().on_section_action = Some(Box::new(f));
     }
 
     /// Report renames to `f`: how a [`NavFeed`] hears of them.

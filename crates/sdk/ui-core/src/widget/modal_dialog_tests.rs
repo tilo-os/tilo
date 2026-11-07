@@ -1920,6 +1920,116 @@ fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
     });
 }
 
+/// A dialog its host hands one [`crate::motion::Appearance`] arrives on the
+/// first tree it builds open, however often the host rebuilds that tree, and
+/// leaves until nothing of it is drawn rather than vanishing on the rebuild
+/// that closed it: what a shell whose surface is a modal sheet needs.
+#[test]
+fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
+    use crate::motion::{Appearance, note_source};
+    use crate::time::testing::with_monotonic_time;
+    use crate::tokens::MotionSource;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let appearance = Appearance::shared();
+    let build = |open: bool| {
+        ModalDialog::new("Settings", TestContent)
+            .appearing(appearance.clone())
+            .open(open)
+    };
+
+    // The app's first tree, built open: it arrives.
+    note_source(MotionSource::Pointer);
+    let mut d = with_monotonic_time(t0, || build(true));
+    with_monotonic_time(t0, || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(
+            d.appear.is_moving() && d.appear.progress() < 0.05,
+            "built open on a shared appearance, it arrives: moving {}, progress {}",
+            d.appear.is_moving(),
+            d.appear.progress()
+        );
+    });
+    // The app rebuilds its tree a frame later: the same motion, no replay.
+    with_monotonic_time(at(80), || {
+        let mut rebuilt = build(true);
+        lay_out(&mut rebuilt, WINDOW, &theme);
+        let _ = present(&mut rebuilt, WINDOW, &theme);
+        let progress = rebuilt.appear.progress();
+        assert!(
+            progress > 0.0 && progress < 1.0,
+            "the rebuild carries the arrival on: {progress}"
+        );
+        d = rebuilt;
+    });
+    with_monotonic_time(at(400), || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.needs_animation_frame(), "it rests");
+        assert!(d.presents_modal());
+    });
+    // The shell takes the sheet down: the rebuild the close causes keeps it
+    // drawn while it leaves.
+    note_source(MotionSource::Pointer);
+    with_monotonic_time(at(420), || {
+        let mut leaving = build(false);
+        lay_out(&mut leaving, WINDOW, &theme);
+        let shown = present(&mut leaving, WINDOW, &theme);
+        assert!(!shown.encoding().is_empty(), "drawn while it leaves");
+        assert!(leaving.presents_modal(), "and still the sheet's modal");
+        d = leaving;
+    });
+    with_monotonic_time(at(900), || {
+        let mut gone = build(false);
+        lay_out(&mut gone, WINDOW, &theme);
+        let after = present(&mut gone, WINDOW, &theme);
+        assert!(after.encoding().is_empty(), "and then it has gone");
+        assert!(!gone.presents_modal());
+    });
+}
+
+/// A dialog moves on the motion the person allows: with reduced motion it
+/// fades where it stands, and nothing of it travels.
+#[test]
+fn a_dialog_moves_on_the_motion_the_person_allows() {
+    use crate::time::testing::with_monotonic_time;
+    let theme = Theme::dark().with_reduce_motion(true);
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let mut d = ModalDialog::new("Settings", TestContent);
+    with_monotonic_time(t0, || {
+        d.set_open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+    });
+    // Its frames read the theme's motion; by the time it rests it has one.
+    with_monotonic_time(at(600), || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.appear.is_moving(), "it rests");
+    });
+    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    with_monotonic_time(at(620), || d.set_open(false));
+    with_monotonic_time(at(660), || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        let card = Rect::new(0.0, 0.0, 400.0, 300.0);
+        let pose = d.appear.pose(card, Point::new(400.0, 0.0));
+        assert_eq!(
+            pose.transform,
+            Affine::IDENTITY,
+            "reduced motion: it does not travel"
+        );
+        assert!(
+            pose.opacity > 0.0 && pose.opacity < 1.0,
+            "but it fades: {}",
+            pose.opacity
+        );
+    });
+}
+
 /// Dismissal is the dialog's close control: a view action published while
 /// the dialog is open, under its test id, that an agent invokes as a person
 /// presses Escape, and that nothing records in history.

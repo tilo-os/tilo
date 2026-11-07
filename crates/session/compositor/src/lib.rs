@@ -119,6 +119,7 @@ pub use input::{
     TabletPadEvent, TabletPhase,
 };
 pub use keys::{KeyClaim, KeyRepeat};
+pub use layer::LayerPose;
 
 /// How close to the whole timeout a park must be to have ended on the
 /// deadline rather than on arriving work.
@@ -594,7 +595,8 @@ impl Compositor {
     /// Host a surface app above the windows (and above earlier hosts), or
     /// under them when it says so ([`SurfaceHost::below_windows`]).
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
-        host.outputs_changed(&self.data.state.hosted_outputs());
+        let outputs = self.data.state.hosted_outputs();
+        host.outputs_changed(&outputs);
         self.data.state.hosts.push(host);
         self.data.state.mark_redraw_all();
     }
@@ -2263,6 +2265,21 @@ impl Compositor {
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
         self.data.state.layer_shown(namespace)
+    }
+
+    /// Whether the app of the layer surface `namespace` has drawn it: a
+    /// surface shows nothing before its first buffer, so a motion about it
+    /// starts with that frame.
+    #[must_use]
+    pub fn layer_drawn(&self, namespace: &str) -> bool {
+        self.data.state.layer_drawn(namespace)
+    }
+
+    /// Draw the layer surface `namespace` as `pose` says from the next frame
+    /// on, or as it stands again for `None`: how the session moves a panel
+    /// of its own, whose app cannot know it was shown or hidden.
+    pub fn set_layer_pose(&mut self, namespace: &str, pose: Option<LayerPose>) {
+        self.data.state.set_layer_pose(namespace, pose);
     }
 
     /// The mapped windows and their logical rectangles `(x, y, w, h)`,

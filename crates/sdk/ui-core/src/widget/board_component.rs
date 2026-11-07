@@ -281,100 +281,153 @@ fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> boo
     show_as_card(children.remove(0), selected, activate)
 }
 
+/// The lanes `props` describe, as the board takes them, and what a drop on the board needs to
+/// resolve where a card lands.
+struct Lanes {
+    /// Each lane's key, heading, cards and foot, in order.
+    columns: Vec<(
+        String,
+        Option<Element>,
+        Vec<(String, Element)>,
+        Option<Element>,
+    )>,
+    /// What each card stands for.
+    items: HashMap<String, ResourceId>,
+    /// What lands before each card that takes drops itself.
+    before: HashMap<String, Event>,
+    /// Each lane's own drop, with the keys of its cards in order.
+    lane_drops: HashMap<String, (Event, Vec<String>)>,
+}
+
+/// Build the lanes of `props`.
+fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
+    // Whether any lane of the board heads itself: a lane nobody named heads nothing, but
+    // keeps a heading's height while a lane beside it has one, so the lanes' cards line up.
+    // On a board no lane heads, no lane keeps it, and the cards start where a list's first
+    // row stands.
+    let headed = lanes.iter().any(|lane| lane.title.is_some());
+    let mut built = Lanes {
+        columns: Vec::with_capacity(lanes.len()),
+        items: HashMap::new(),
+        before: HashMap::new(),
+        lane_drops: HashMap::new(),
+    };
+    for lane in lanes {
+        let BoardLaneProps {
+            key: lane_key,
+            item: _,
+            title,
+            count,
+            action,
+            cards,
+            foot,
+            act,
+            drop,
+        } = lane;
+        let named = title.is_some();
+        let heading = (named || headed).then(|| {
+            let heading = SectionHeader::group(title.unwrap_or_default());
+            match count {
+                Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
+                None => heading,
+            }
+            .into_element()
+        });
+        // The one add stands at the lane's foot, where the cards end, not in its heading:
+        // a lane gives its own entry there, or the label of its adding action.
+        let foot = foot.or_else(|| {
+            let label = action?;
+            let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
+                .with_icon(Icon::Plus);
+            let button = match act {
+                Event::None => button,
+                Event::Action(binding) => button.on_action(binding),
+                Event::View(intent) => button.on_view(intent.sender()),
+            };
+            Some(Box::new(button) as Element)
+        });
+        let mut widgets = Vec::with_capacity(cards.len());
+        let mut order = Vec::with_capacity(cards.len());
+        for props in cards {
+            let (card_key, widget, item, drop) = card(props);
+            if let Some(item) = item {
+                built.items.insert(card_key.clone(), item);
+            }
+            if !matches!(drop, Event::None) {
+                built.before.insert(card_key.clone(), drop);
+            }
+            order.push(card_key.clone());
+            widgets.push((card_key, widget));
+        }
+        built.lane_drops.insert(lane_key.clone(), (drop, order));
+        built.columns.push((lane_key, heading, widgets, foot));
+    }
+    built
+}
+
+/// Answer a card dropped on the board: the card it lands before, or the lane it lands in and its
+/// place among that lane's other cards.
+fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
+    let Lanes {
+        columns: _,
+        items,
+        before,
+        lane_drops,
+    } = built;
+    let (items, before, lane_drops) = (items.clone(), before.clone(), lane_drops.clone());
+    Box::new(
+        move |BoardDrop {
+                  card,
+                  lane,
+                  before: next,
+              }| {
+            let Some(moved) = items.get(&card) else {
+                return;
+            };
+            let moved = Value::Resource(moved.0.clone());
+            if let Some(target) = next.as_ref().and_then(|next| before.get(next)) {
+                target.fire(Some(moved));
+                return;
+            }
+            let Some((drop, order)) = lane_drops.get(&lane) else {
+                return;
+            };
+            // Its place among the lane's other cards: before `next`, or after them all.
+            let others = order.iter().filter(|key| **key != card);
+            let at = match &next {
+                Some(next) => others.take_while(|key| *key != next).count(),
+                None => others.count(),
+            };
+            let at = i64::try_from(at).unwrap_or(i64::MAX);
+            drop.fire(Some(Value::List(vec![moved, Value::Int(at)])));
+        },
+    )
+}
+
 impl Described for Board {
     type Props = BoardProps;
 
     fn from_props(key: &str, props: BoardProps) -> Self {
         let BoardProps { name, lanes } = props;
+        let built = lanes_of(lanes);
+        let on_drop = drop_handler(&built);
         let mut board = Self::new().with_id(key.to_owned());
         board.name = name;
-        // Whether any lane of the board heads itself: a lane nobody named heads nothing, but
-        // keeps a heading's height while a lane beside it has one, so the lanes' cards line up.
-        // On a board no lane heads, no lane keeps it, and the cards start where a list's first
-        // row stands.
-        let headed = lanes.iter().any(|lane| lane.title.is_some());
-        // What each card stands for and what lands before it, and each lane's drop and its
-        // cards in order, by key.
-        let mut items: HashMap<String, ResourceId> = HashMap::new();
-        let mut before: HashMap<String, Event> = HashMap::new();
-        let mut lane_drops: HashMap<String, (Event, Vec<String>)> = HashMap::new();
-        for lane in lanes {
-            let BoardLaneProps {
-                key: lane_key,
-                item: _,
-                title,
-                count,
-                action,
-                cards,
-                foot,
-                act,
-                drop,
-            } = lane;
-            let named = title.is_some();
-            let heading = (named || headed).then(|| {
-                let heading = SectionHeader::group(title.unwrap_or_default());
-                match count {
-                    Some(count) => heading.count(usize::try_from(count).unwrap_or(0)),
-                    None => heading,
-                }
-                .into_element()
-            });
-            // The one add stands at the lane's foot, where the cards end, not in its heading:
-            // a lane gives its own entry there, or the label of its adding action.
-            let foot = foot.or_else(|| {
-                let label = action?;
-                let button = crate::widget::Button::new(&format!("{lane_key}-act"), &label)
-                    .with_icon(Icon::Plus);
-                let button = match act {
-                    Event::None => button,
-                    Event::Action(binding) => button.on_action(binding),
-                    Event::View(intent) => button.on_view(intent.sender()),
-                };
-                Some(Box::new(button) as Element)
-            });
-            let mut widgets = Vec::with_capacity(cards.len());
-            let mut order = Vec::with_capacity(cards.len());
-            for props in cards {
-                let (card_key, widget, item, drop) = card(props);
-                if let Some(item) = item {
-                    items.insert(card_key.clone(), item);
-                }
-                if !matches!(drop, Event::None) {
-                    before.insert(card_key.clone(), drop);
-                }
-                order.push(card_key.clone());
-                widgets.push((card_key, widget));
-            }
-            lane_drops.insert(lane_key.clone(), (drop, order));
-            board = board.lane(lane_key, heading, widgets, foot);
-        }
-        board.on_drop(
-            move |BoardDrop {
-                      card,
-                      lane,
-                      before: next,
-                  }| {
-                let Some(moved) = items.get(&card) else {
-                    return;
-                };
-                let moved = Value::Resource(moved.0.clone());
-                if let Some(target) = next.as_ref().and_then(|next| before.get(next)) {
-                    target.fire(Some(moved));
-                    return;
-                }
-                let Some((drop, order)) = lane_drops.get(&lane) else {
-                    return;
-                };
-                // Its place among the lane's other cards: before `next`, or after them all.
-                let others = order.iter().filter(|key| **key != card);
-                let at = match &next {
-                    Some(next) => others.take_while(|key| *key != next).count(),
-                    None => others.count(),
-                };
-                let at = i64::try_from(at).unwrap_or(i64::MAX);
-                drop.fire(Some(Value::List(vec![moved, Value::Int(at)])));
-            },
-        )
+        board.set_lanes(built.columns);
+        board.set_on_drop(on_drop);
+        board
+    }
+
+    /// The lanes, their cards and what a drop does change where the board stands: the board
+    /// keeps what the person is doing with it, a card in flight included.
+    fn set_props(&mut self, props: BoardProps) -> bool {
+        let BoardProps { name, lanes } = props;
+        let built = lanes_of(lanes);
+        let on_drop = drop_handler(&built);
+        self.name = name;
+        self.set_lanes(built.columns);
+        self.set_on_drop(on_drop);
+        true
     }
 }
 

@@ -71,6 +71,13 @@ impl BannerProps {
 impl Described for Banner {
     type Props = BannerProps;
 
+    /// Its actions are buttons of their own, which hold the binding: a press is the route an
+    /// agent's invocation of the action lands on, and both run from the door. Dismissing it
+    /// closes the banner the view shows.
+    fn press_events() -> &'static [&'static str] {
+        &["act", "secondary_act"]
+    }
+
     fn from_props(key: &str, props: BannerProps) -> Self {
         let notice = props.notice();
         let BannerProps {

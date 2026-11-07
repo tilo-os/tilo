@@ -230,10 +230,7 @@ fn answer(service: &dyn Service, pending: &Pending) -> Result<Answered, ServiceE
         Pending::Subscriptions { keys } => {
             let mut pages = Vec::new();
             for key in keys {
-                match service.channel(key) {
-                    Ok(page) => pages.push(page),
-                    Err(error) => return Err(error),
-                }
+                pages.push(service.channel(key)?);
             }
             Ok(Answered::Subscriptions(pages))
         }
@@ -271,7 +268,18 @@ fn upsert_items(
         }
     }
     if !writes.is_empty() {
-        let _ = host.runtime().apply_origin("youtube", writes, None);
+        match host.runtime().apply_origin("youtube", writes, None) {
+            Ok(made) => {
+                tracing::debug!(
+                    items = made.len(),
+                    "what the service answered is in the record"
+                );
+            }
+            // An answer nobody can write is not shown, and nothing asks again: it says so.
+            Err(error) => {
+                tracing::warn!(%error, "what the service answered is not written");
+            }
+        }
     }
 }
 
@@ -474,16 +482,19 @@ impl YouTubeOrigin {
         if fields.is_empty() {
             return false;
         }
-        host.runtime()
-            .apply_origin(
-                "youtube",
-                vec![OriginWrite::Set {
-                    target: t.root.clone(),
-                    fields,
-                }],
-                None,
-            )
-            .is_ok()
+        let wrote = host.runtime().apply_origin(
+            "youtube",
+            vec![OriginWrite::Set {
+                target: t.root.clone(),
+                fields,
+            }],
+            None,
+        );
+        // An answer nobody can write leaves the app saying it still searches: it says why.
+        if let Err(error) = &wrote {
+            tracing::warn!(%error, "the state of a fetch is not written");
+        }
+        wrote.is_ok()
     }
 
     fn write_search(host: &Host, t: &Types, page: &SearchPage) -> bool {

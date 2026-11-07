@@ -789,10 +789,49 @@ jobs:
           # shellcheck disable=SC2086
           bash tools/ci/clippy-android.sh $PACKAGES
 
+  # The bundles published as the web entry, type-checked for wasm32 on every
+  # head of main. Any crate the page links can keep every native job green
+  # while its cfg(wasm32) paths stop compiling, and the release that publishes
+  # the page is cut from one commit of main, so this cannot wait for a window:
+  # it needs nothing from the plan and therefore runs before the supersede
+  # decision, including in a run whose other jobs that decision skips. It runs
+  # in the selector's image, which carries the builder's pinned compiler,
+  # wasm32 target and compiler cache, rather than in `wasm` below, whose image
+  # is resolved by the builder job a superseded run does not start.
+  web:
+    if: github.event_name == 'push'
+    runs-on: runner
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '4'
+      CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89
+    steps:
+      - name: Checkout exact change
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 1
+
+      - name: Verify native wasm-check runner architecture
+        run: bash tools/ci/assert-native-runner.sh x86_64
+
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+
+      # Carried by the selector's image, and a no-op where it already is.
+      - name: Ensure the wasm32 Rust target
+        run: rustup target add wasm32-unknown-unknown
+
+      # A type check: the lint of each crate is the `wasm` job's and nightly's.
+      - name: Check the page builds for wasm32
+        run: bash tools/ci/check-wasm.sh --check
+
   # Browser crates (anything built on wasm-bindgen) and their cfg(wasm32)
   # code paths, which no native job compiles, type-checked; and the selected
   # web-capable examples, built for the web. The browser bundle build and its
-  # tests run elsewhere.
+  # tests run elsewhere; the page builds themselves are checked on every head
+  # by `web` above, so this job adds the crates and examples a window selects.
   wasm:
     if: ${{ !cancelled() && needs.builder.result == 'success' && needs.select.result == 'success' && needs.select.outputs.wasm_required == 'true' }}
     needs: [builder, select]
@@ -920,7 +959,7 @@ jobs:
   checks:
     # A superseded run has nothing to aggregate; it still finishes successfully.
     if: ${{ always() && needs.supersede.outputs.superseded != 'true' }}
-    needs: [supersede, builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
+    needs: [supersede, web, builder, select, security, test, check, clippy, android, wasm, suites, vendored, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -931,6 +970,7 @@ jobs:
         env:
           BUILDER_RESULT: ${{ needs.builder.result }}
           SELECT_RESULT: ${{ needs.select.result }}
+          WEB_RESULT: ${{ needs.web.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           TEST_RESULT: ${{ needs.test.result }}
           CHECK_RESULT: ${{ needs.check.result }}
@@ -963,6 +1003,16 @@ jobs:
           esac
           test "$BUILDER_RESULT" = success
           test "$SELECT_RESULT" = success
+          # The page build is checked on every main head; other events leave it
+          # to the `wasm` job, which follows what a window selects.
+          case "$EVENT_NAME:$WEB_RESULT" in
+            push:success) ;;
+            *:skipped) ;;
+            *)
+              echo '::error::The page build check for wasm32 failed or was skipped unexpectedly.'
+              exit 1
+              ;;
+          esac
           case "$EVENT_NAME:$SECURITY_REQUIRED:$SECURITY_RESULT" in
             *:true:success)
               ;;

@@ -54,11 +54,13 @@ impl TiloStore {
         let hash: ChangeHash = change
             .parse()
             .map_err(|_| not_found(format!("change {change}")))?;
-        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested)?;
+        let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
         let Some(obj) = located.obj.as_ref() else {
             // An item stored as its order key alone: no change wrote a field of it.
             return Ok(Vec::new());
         };
+        // The change is the item's: it is in the chunk that holds the item's map.
+        let mirror = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         let committed = mirror.committed_document();
         let made = committed
             .get_change_by_hash(&hash)

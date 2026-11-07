@@ -1,7 +1,7 @@
 //! [`InputHint`] as a described component.
 
 use crate::component::{Component, Described};
-use crate::input::KeyboardBinding;
+use crate::input::{InputBinding, KeyboardBinding};
 
 use super::InputHint;
 
@@ -19,8 +19,17 @@ impl Described for InputHint {
     type Props = InputHintProps;
 
     fn from_props(_key: &str, props: InputHintProps) -> Self {
-        Self::keyboard(KeyboardBinding::from_keys(
-            props.keys.iter().map(String::as_str),
-        ))
+        Self::keyboard(binding(props.keys))
     }
+
+    /// Another chord shows where the hint stands, its keycaps drawn for it.
+    fn set_props(&mut self, props: InputHintProps) -> bool {
+        self.set_binding(InputBinding::Keyboard(binding(props.keys)));
+        true
+    }
+}
+
+/// The chord of the keys, in the person's own legends.
+fn binding(keys: Vec<String>) -> KeyboardBinding {
+    KeyboardBinding::from_keys(keys.iter().map(String::as_str))
 }

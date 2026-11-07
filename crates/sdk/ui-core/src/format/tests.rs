@@ -338,6 +338,32 @@ fn counts_group_digits_by_language_until_a_number_style_is_chosen() {
 }
 
 #[test]
+fn money_reads_whole_amounts_without_cents() {
+    speak("en-US");
+    assert_eq!(H24.money(0), "$0");
+    assert_eq!(H24.money(4_999), "$0", "less than a cent reads as none");
+    assert_eq!(H24.money(420_000), "$0.42");
+    assert_eq!(H24.money(1_500_000), "$1.50");
+    assert_eq!(H24.money(5_000_000), "$5");
+    assert_eq!(H24.money(1_250_000_000), "$1,250");
+    speak("de-DE");
+    assert_eq!(H24.money(420_000), "$0,42");
+    assert_eq!(H24.money(1_250_000_000), "$1.250");
+}
+
+#[test]
+fn an_amount_typed_back_reads_as_the_money_written() {
+    assert_eq!(super::parse_money("5"), Some(5_000_000));
+    assert_eq!(super::parse_money(" 12.5 "), Some(12_500_000));
+    assert_eq!(super::parse_money("0.50"), Some(500_000));
+    assert_eq!(super::parse_money("$5"), Some(5_000_000));
+    assert_eq!(super::parse_money("0"), Some(0));
+    for none in ["", "twelve", "5.", ".50", "5.123", "1,250", "-5", "5x"] {
+        assert_eq!(super::parse_money(none), None, "{none:?} names no amount");
+    }
+}
+
+#[test]
 fn relative_times_bucket_at_their_boundaries() {
     speak("en-US");
     for (secs, want) in [

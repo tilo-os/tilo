@@ -132,7 +132,9 @@ impl Profile {
 /// One framework app mounted headlessly: a test, a fixture seeder or an
 /// inspection tool drives it through the real runtime.
 pub struct HeadlessApp<A: ResourceApp> {
-    harness: Option<FrameHarness>,
+    harness: FrameHarness,
+    /// Whether the app is closed: its record written and its components closed, once.
+    closed: bool,
     records: RecordStore,
     checkout: RecordCheckout,
     instance: u64,
@@ -149,6 +151,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: SharedPermissions,
+    /// The window is a capture: every motion in it reads arrived while this
+    /// is held, so what it photographs is the window at rest.
+    _settled: Option<ui_core::motion::testing::Settled>,
     marker: std::marker::PhantomData<A>,
 }
 
@@ -313,15 +318,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
         )?;
         context.provide_content(super::app::profile_content(profile.path()));
         context.provide_connection(super::Connection::in_process(answers));
-        // The launch names the resource the session publishes: the same
-        // variable the session sets on a launch it serves
-        // (`ui::application::HOSTED_RESOURCE_ENV`).
-        let previous = std::env::var_os(ui_core::application::HOSTED_RESOURCE_ENV);
-        // SAFETY: the test binary runs this one app at a time, and the
-        // previous value is put back below.
-        unsafe {
-            std::env::set_var(ui_core::application::HOSTED_RESOURCE_ENV, resource);
-        }
         let target = ui_core::application::LaunchTarget::Record {
             checkout: RecordCheckout::new(
                 RecordId::package_primary(),
@@ -330,20 +326,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
             reveal: None,
         };
         let component =
-            definition.instantiate(context, target, ui_core::application::RestoreInput::None);
-        // SAFETY: as above; the launch's own value is the one that stands
-        // again.
-        unsafe {
-            match previous {
-                Some(value) => std::env::set_var(ui_core::application::HOSTED_RESOURCE_ENV, value),
-                None => std::env::remove_var(ui_core::application::HOSTED_RESOURCE_ENV),
-            }
-        }
-        let component = component?;
+            definition.instantiate(context, target, ui_core::application::RestoreInput::None)?;
         let inputs = ui_core::application::ComponentRunnerInputs::from_native_process();
         let harness = FrameHarness::from_component(component, (1280, 800), inputs)?;
         Ok(Self {
-            harness: Some(harness),
+            harness,
+            closed: false,
             records,
             checkout: RecordCheckout::new(
                 RecordId::package_primary(),
@@ -356,6 +344,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             last_effect: None,
             workspace: None,
             permissions,
+            _settled: None,
             marker: std::marker::PhantomData,
         })
     }
@@ -737,6 +726,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
         let mut configure = Some(configure);
+        // A capture photographs the window at rest: a surface drawn for one
+        // is the surface settled, not the frame of its arrival the moment the
+        // shutter opens.
+        let settled = capture
+            .as_ref()
+            .filter(|(capture, _)| !capture.is_driven())
+            .map(|_| ui_core::motion::testing::settled());
         let opened = open_app(
             &Opening::of::<A>(),
             Launch {
@@ -757,7 +753,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
         let mut harness = opened.harness;
         serve_kept::<A>(&mut harness, &opened.profile.settings(), author);
         Ok(Self {
-            harness: Some(harness),
+            harness,
+            closed: false,
             records: opened.records,
             checkout: opened.checkout,
             instance: opened.instance,
@@ -767,6 +764,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             last_effect: None,
             workspace: None,
             permissions: opened.permissions,
+            _settled: settled,
             marker: std::marker::PhantomData,
         })
     }
@@ -992,10 +990,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// The record the window shows now: the one it was opened on, or one
     /// its view opened in its place ([`RecordEnv::open_here`](super::RecordEnv::open_here)).
     fn checkout(&self) -> &RecordCheckout {
-        self.harness
-            .as_ref()
-            .and_then(FrameHarness::component_record)
-            .unwrap_or(&self.checkout)
+        self.harness.component_record().unwrap_or(&self.checkout)
     }
 
     /// Consume the hosted window's explicit save-retry request, as its
@@ -1014,9 +1009,10 @@ impl<A: ResourceApp> HeadlessApp<A> {
     }
 
     fn close(&mut self) -> Result<(), LaunchError> {
-        if let Some(mut harness) = self.harness.take() {
-            harness.flush_component_records().map_err(operation)?;
-            harness.close_components();
+        if !self.closed {
+            self.harness.flush_component_records().map_err(operation)?;
+            self.harness.close_components();
+            self.closed = true;
         }
         Ok(())
     }
@@ -1034,9 +1030,8 @@ impl<A: ResourceApp> HeadlessApp<A> {
 
     /// The headless frame harness, for input-level tests (`click_named`,
     /// `type_text`, `targets`).
-    #[allow(clippy::expect_used, reason = "closing consumes the TestApp")]
     pub fn harness(&mut self) -> &mut FrameHarness {
-        self.harness.as_mut().expect("app is open")
+        &mut self.harness
     }
 
     /// Every text the window shows now, as assistive technology reads it:
@@ -1067,8 +1062,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     pub fn submit(&mut self, submit: impl super::Submit<A::Resource>) -> Result<(), String> {
         let refused = self
             .harness
-            .as_mut()
-            .expect("app is open")
             .with_widget_mut(|root: &mut ResourceRoot| {
                 let Some(typed) = root.typed::<A::Resource>() else {
                     return Err("the window's root is another resource type".to_owned());
@@ -2028,8 +2021,9 @@ impl<A: ResourceApp> Drop for HeadlessApp<A> {
         // its frames again, so whatever failed it cannot fail closing too
         // and abort the whole test binary.
         if std::thread::panicking() {
-            if let Some(mut harness) = self.harness.take() {
-                harness.close_components();
+            if !self.closed {
+                self.closed = true;
+                self.harness.close_components();
             }
             return;
         }

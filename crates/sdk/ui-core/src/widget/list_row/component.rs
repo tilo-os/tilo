@@ -120,6 +120,13 @@ impl ListRowProps {
 impl Described for ListRow {
     type Props = ListRowProps;
 
+    /// The check and the activation are the row's own actions: the widget holds their bindings,
+    /// so a press is a route an agent's invocation of the action lands on, and both run from the
+    /// door. A swipe uncovers a command drawn as its own control.
+    fn press_events() -> &'static [&'static str] {
+        &["check", "activate"]
+    }
+
     fn from_props(key: &str, props: ListRowProps) -> Self {
         let mut row = Self::new(key, String::new());
         row.apply(props);
@@ -240,6 +247,12 @@ impl ListRow {
         self.feel = motion.unwrap_or(crate::motion::Feel::Standard);
         self.dense = dense;
         self.check_binding = None;
+        self.check_action = match check.clone() {
+            // The app's own action for what a check is: the box holds it, so pressing the box
+            // and an agent's invocation of the action are the one route.
+            Event::Action(binding) => Some(crate::widget::ActionEmitter::new(binding)),
+            Event::None | Event::View(_) => None,
+        };
         self.leading = if let Some(bound) = checkbox {
             // The box follows the value it is bound to: one set elsewhere (another device, an
             // agent, an undo) shows in the row rather than only in the state behind it.

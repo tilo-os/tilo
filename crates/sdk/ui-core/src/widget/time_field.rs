@@ -49,6 +49,8 @@ enum Waiting {
 pub struct TimeField {
     inner: Stack,
     id: String,
+    /// The state the field follows, when a view binds it: another state, and it follows that.
+    source: Option<crate::LocalState<String>>,
     value: Option<NaiveTime>,
     picked: Picked,
     on_change: Option<Box<dyn FnMut(Option<NaiveTime>)>>,
@@ -68,6 +70,7 @@ impl TimeField {
         Self {
             inner: row(id, value, &picked, &accessible_name),
             id: id.to_owned(),
+            source: None,
             value,
             picked,
             on_change: None,
@@ -83,6 +86,7 @@ impl TimeField {
         let (value, binding) = derived(state, |text: &String| time_in(Some(text)));
         let mut field = Self::new(id, value);
         field.bound = Some(binding);
+        field.source = Some(state.clone());
         field
     }
 

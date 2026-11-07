@@ -1,11 +1,22 @@
 #!/usr/bin/env bash
 # Run the tilolang shell as the whole screen of a headless tilo-session, the way a
 # person uses it, and see it: rendered by Mesa's software Vulkan driver (lavapipe),
-# never this machine's GPU; with the tilolang notes, tasks, chat and mail apps
-# filled with their seed data (`--seed-apps`); with the agent door admitting
+# never this machine's GPU; with the tilolang apps installed as packages and their
+# scenario data in their records (`--seed-apps`); with the agent door admitting
 # `tilolang repl` to act as the person (`--admit-repl`); and with the development
 # test-control socket `tilo-control snapshot PATH` writes a PNG of the screen over
 # (`--test-control`).
+#
+# The Tilo runtime the apps run on, and the tilolang runtime whose binary runs them, are this
+# tree's: the thin app build in `target/thin-app` (made by `dist/dev/nested-session-build.sh`)
+# is baked into a signed runtime bundle of its own, and the tilolang binary beside it into the
+# tilolang runtime bundle. So a session started here runs what this tree built.
+#
+# The apps are installed the way a person's device installs an app: each is
+# `tilolang build` from `apps/tl/<name>` into a signed `.tapp`, and `tilo-install`
+# puts it in the session's own app store. The session runs them through the launcher
+# like any installed app, and plans each origin connector its manifest declares, so
+# Mail's sync and the YouTube client's search reach their services.
 #
 # Nothing touches the person's own desktop: the session gets a scratch HOME and XDG
 # tree, a private XDG_RUNTIME_DIR, no D-Bus and no X11. It prints where its agent
@@ -27,12 +38,20 @@
 # Drive it from another terminal with the commands it prints:
 #   target/debug/tilolang repl --door "$TILO_AGENT_DOOR"
 #   TILO_TEST_CONTROL=... target/debug/tilo-control snapshot /tmp/shot.png
+#
+# The tilolang runtime the apps run on: this tree's thin-app build
+# (`dist/dev/tilolang-runtime-build.sh`, or `dist/dev/nested-session-build.sh`), baked into a
+# signed runtime bundle of its own. The Tilo runtime it runs on is this tree's too, baked of
+# `target/thin-app` beside it.
 set -euo pipefail
 
 repo_root=$(cd "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 say() { printf '==> %s\n' "$*" >&2; }
 die() { printf 'shell-run: %s\n' "$*" >&2; exit 1; }
 
+# The tilolang apps a development session installs, by the directory under `apps/tl`:
+# the package id of each is its `app` declaration's.
+tl_apps=(discussion notes tasks chat mail tube)
 build=1
 size=1280x800
 apps=(--seed-apps)
@@ -50,18 +69,39 @@ done
 
 bin=$repo_root/target/debug
 if ((build)); then
-    say "building tilo-session, tilolang and tilo-control"
+    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
     session_features=()
     ((rust_views)) && session_features=(--features dev-rust-views)
     (cd "$repo_root" && cargo build --locked -p tilo-session --bin tilo-session \
         "${session_features[@]}" \
-        -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control)
+        -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
+        -p launcher --bin tilo-launcher -p install --bin tilo-install \
+        -p runtime-bundle --bin tilo-runtime-bundle)
 fi
-for tool in tilo-session tilolang tilo-control; do
+for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-runtime-bundle; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
+# The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
+# makes one in `target/thin-app` (the shared runtime library, its engines and the tilolang
+# binary), and `dist/dev/tilolang-runtime-build.sh` one in `target/tilolang-runtime` of the
+# tilolang binary alone. A tree with neither runs no app at all.
+thin=$repo_root/target/thin-app
+[[ -f $thin/libruntime_dylib.so && -f $thin/runtime-engines ]] \
+    || die "no thin-app build in $thin: run dist/dev/nested-session-build.sh"
+# The tilolang binary a runtime bundle is baked of: the one `dist/dev/tilolang-runtime-build.sh`
+# built last, which is newer than the thin-app one when a source changed since.
+tilolang_bin=$thin/tilolang-app
+if [[ -x $repo_root/target/tilolang-runtime/tilolang-app ]]; then
+    tilolang_bin=$repo_root/target/tilolang-runtime/tilolang-app
+fi
+[[ -x $tilolang_bin ]] || die "no tilolang binary: run dist/dev/tilolang-runtime-build.sh"
+# The runtime bundle carries the exact libstd the runtime links, so the session needs no local
+# Rust toolchain.
+needed_std=$(readelf -dW "$thin/libruntime_dylib.so" | sed -n 's/.*Shared library: \[\(libstd-[^]]*\)\].*/\1/p')
+[[ -n $needed_std ]] || die "$thin/libruntime_dylib.so links no libstd"
+[[ -f $thin/$needed_std ]] || cp -p "$(rustc --print target-libdir)/$needed_std" "$thin/$needed_std"
 
 # Lavapipe's loader manifest: the session, and everything it starts, loads this
 # driver alone, and an empty TILO_DMABUF_DEVICE advertises no render node, so
@@ -84,6 +124,10 @@ home=$scratch/home
 runtime=$scratch/run
 mkdir -m 700 "$home" "$runtime"
 log=$scratch/session.log
+store=$scratch/apps
+runtimes=$scratch/runtimes
+keys=$scratch/keys
+mkdir -m 700 "$store" "$runtimes" "$keys"
 
 session_pid=
 group=
@@ -122,6 +166,83 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 trap 'exit 129' HUP
 
+# The publisher key every package and runtime here is signed with, and the file the
+# launcher trusts it through: the session's own, as a development image's is.
+identity=$keys/publisher.json
+[[ -f $identity ]] || "$bin/tilo-runtime-bundle" key generate --out "$identity" >/dev/null
+pubkey=$("$bin/tilo-runtime-bundle" key pubkey --identity "$identity")
+[[ $pubkey =~ ^[0-9a-fA-F]{64}$ ]] || die "cannot read the development publisher key"
+trust=$keys/runtime-publishers.txt
+printf '%s\n' "$pubkey" > "$trust"
+
+# The Tilo runtime the apps run on: this tree's own, baked and signed as
+# `dist/dev/nested-session.sh` bakes one — the thin app build's shared runtime library, its
+# engines, the exact libstd it links and the keyboard library, all folded into one signed
+# bundle. The session and every app it starts run on it, so what they link is what this tree
+# built.
+say "baking the Tilo runtime bundle"
+fonts=$scratch/fonts
+python3 "$repo_root/tools/font-catalog.py" prepare \
+    "$repo_root/crates/sdk/ui-core/assets/fonts" "$fonts" --scope product
+keyboard_library=$(ldconfig -p | awk '/libxkbcommon\.so\.0 .*(x86-64|AArch64)/ && !found {print $NF; found=1}')
+[[ -f $keyboard_library ]] || die "libxkbcommon.so.0 is not installed"
+runtime_libs=("$thin/libruntime_dylib.so" "$thin/$needed_std" "$keyboard_library")
+while IFS= read -r engine; do runtime_libs+=("$thin/$engine"); done < "$thin/runtime-engines"
+mkdir -p "$scratch/work"
+OUT_DIR="$scratch/work/runtime" RUNTIME_RELEASE=2026.07 FROM=/ \
+    VERSION_OUT="$scratch/work/runtime-version" ARCH="$(uname -m)" \
+    IDENTITY_JSON="$identity" BUNDLE_BIN="$bin/tilo-runtime-bundle" \
+    FONT_CATALOG_ROOT="$fonts" EXTRA_LIBS="${runtime_libs[*]}" \
+    "$repo_root/os/scripts/bake-runtime-bundle.sh" >/dev/null
+tilo_runtime_version=$(<"$scratch/work/runtime-version")
+mv "$scratch/work/runtime/tilo-runtime/$tilo_runtime_version" "$runtimes/$tilo_runtime_version"
+rm -rf "$scratch/work"
+app_runtime=tilo-runtime/$tilo_runtime_version
+say "the apps run on $app_runtime"
+
+# The tilolang runtime bundle: the binary every tilolang app's entrypoint executes, built
+# from this tree and signed with the session's key. It holds the binaries alone
+# (`--binaries-only`): the launcher runs it on the app's Tilo runtime, whose loader and
+# libraries it links, so a loader set of its own is never read.
+tilolang_version=$(sed -n 's/^provides *= *"tilolang\/\([^"]*\)".*/\1/p' \
+    "$repo_root/apps/tilolang/tilo-runtime.toml")
+[[ -n $tilolang_version ]] || die "apps/tilolang/tilo-runtime.toml provides no tilolang version"
+say "baking the tilolang runtime bundle $tilolang_version"
+"$bin/tilo-runtime-bundle" build --binaries-only --version "$tilolang_version" \
+    --out "$runtimes/$tilolang_version" --include-bin "$tilolang_bin" \
+    --identity "$identity" >/dev/null
+tilolang_runtime=tilolang/$tilolang_version
+
+# Build each tilolang app into a signed `.tapp` and install it into the session's own app
+# store, as `tilo-install` installs a person's app: the store the session reads, with its
+# runtime taken from this scratch tree.
+install_apps() {
+    local out=$scratch/tapps
+    rm -rf "$out"
+    mkdir -p "$out"
+    for app in "${tl_apps[@]}"; do
+        # A package is a directory of `.tl` files; the packages it uses are found beside it
+        # (`apps/tl`), and each is built and installed before the one that uses it.
+        "$bin/tilolang" build "$repo_root/apps/tl/$app" \
+            --search "$repo_root/apps/tl" --out "$out" --identity "$identity" \
+            --tilo-runtime "$app_runtime" --version 0.1.0 >/dev/null
+    done
+    local tapps=("$out"/*.tapp)
+    ((${#tapps[@]})) || die "the tilolang apps built no package"
+    for tapp in "${tapps[@]}"; do
+        say "installing $(basename "$tapp")"
+        env HOME="$home" XDG_DATA_HOME="$home/.local/share" \
+            TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+            TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
+            "$bin/tilo-install" install "$tapp" --allow-self-signed \
+            >/dev/null
+    done
+    rm -rf "$out"
+}
+if ((${#apps[@]})); then
+    install_apps
+fi
+
 door=$runtime/agent.sock
 control=$runtime/test-control.sock
 # Start tilo-session headless with the arguments given, its output in $log, and
@@ -131,6 +252,10 @@ start_session() {
         HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
         XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
         XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
+        TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
+        TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
+        TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
+        TILO_SYSTEM_INTERFACES="$repo_root/os/usr/share/tilo/system-interfaces.toml" \
         TILO_AGENT_DOOR="$door" \
         setsid "$bin/tilo-session" --backend headless --size "$size" --no-x11 \
         --session-bus none --system-bus none --test-control "$control" "$@" \

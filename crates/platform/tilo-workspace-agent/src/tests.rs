@@ -14,6 +14,7 @@ fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: None,
         id: None,
         model: None,
+        colour: None,
     })
 }
 
@@ -25,6 +26,7 @@ fn restore(id: &str, keeper: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: Some(keeper.to_owned()),
         id: Some(id.to_owned()),
         model: None,
+        colour: None,
     })
 }
 
@@ -39,6 +41,28 @@ fn set_model(agent: &str, model: Option<&str>) -> tilo_resource::Invoke<Workspac
     WorkspaceAgents::SET_AGENT_MODEL.with(workspace_agents::SetAgentModel {
         agent: id(agent),
         model: model.map(str::to_owned),
+    })
+}
+
+fn set_colour(agent: &str, colour: u8) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::SET_AGENT_COLOUR.with(workspace_agents::SetAgentColour {
+        agent: id(agent),
+        colour,
+    })
+}
+
+fn set_limit(agent: &str, limit: Option<u64>) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::SET_AGENT_SPEND_LIMIT.with(workspace_agents::SetAgentSpendLimit {
+        agent: id(agent),
+        limit_micros: limit,
+    })
+}
+
+fn charge(agent: &str, day: &str, cost_micros: u64) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::RECORD_AGENT_SPEND.with(workspace_agents::RecordAgentSpend {
+        agent: id(agent),
+        day: day.to_owned(),
+        cost_micros,
     })
 }
 
@@ -95,10 +119,54 @@ fn an_agents_colour_follows_its_identity_as_a_persons_does() {
         state.agents[0].clone()
     };
     let hue = collab_types::presence::PresenceHue::of_identity(&format!("agent:{}", agent.id.0));
-    assert_eq!(agent.colour, u8::try_from(hue.slot()).unwrap());
+    assert_eq!(agent.colour, None, "nothing chosen, so its identity's");
+    assert_eq!(agent.slot(), u8::try_from(hue.slot()).unwrap());
     assert_eq!(agent.hue(), hue);
     assert_eq!(agent.rgb(), collab_types::presence::identity_rgb(hue));
     assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
+}
+
+#[test]
+fn an_agent_is_made_in_the_colour_its_keeper_picks() {
+    let mut record = as_person(ADA);
+    record
+        .apply(
+            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Claude").expect("a name"),
+                keeper: None,
+                id: None,
+                model: None,
+                colour: Some(4),
+            }),
+        )
+        .unwrap();
+    assert_eq!(record.state().unwrap().agents[0].colour, Some(4));
+    let beyond = record.apply(
+        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+            name: NonBlank::parse("Ada").expect("a name"),
+            keeper: None,
+            id: None,
+            model: None,
+            colour: Some(u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap()),
+        }),
+    );
+    let refused = beyond.unwrap_err();
+    assert!(refused.to_string().contains("palette"), "{refused}");
+}
+
+#[test]
+fn only_the_keeper_chooses_the_colour_it_is_drawn_in() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    let mut grace = record.fork().as_author(GRACE);
+    let refused = grace.apply(set_colour(&agent, 2)).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    record.apply(set_colour(&agent, 2)).unwrap();
+    assert_eq!(record.state().unwrap().agents[0].colour, Some(2));
+    let beyond = u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap();
+    let refused = record.apply(set_colour(&agent, beyond)).unwrap_err();
+    assert!(refused.to_string().contains("palette"), "{refused}");
 }
 
 #[test]
@@ -342,6 +410,116 @@ fn the_same_agent_made_on_two_devices_shares_its_record() {
     assert!(a.valid().is_ok());
 }
 
+#[test]
+fn only_the_keeper_sets_the_most_it_may_spend_in_a_day() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    let mut grace = record.fork().as_author(GRACE);
+    let refused = grace.apply(set_limit(&agent, Some(5_000_000))).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    record.apply(set_limit(&agent, Some(5_000_000))).unwrap();
+    let state = record.state().unwrap();
+    assert_eq!(state.agents[0].spend_limit_micros, Some(5_000_000));
+    assert!(
+        state.agents[0].within_budget("2026-01-01"),
+        "nothing spent yet"
+    );
+    let refused = record
+        .apply(set_limit(&agent, Some(super::MAX_SPEND_LIMIT_MICROS + 1)))
+        .unwrap_err();
+    assert!(refused.to_string().contains("limit"), "{refused}");
+    record.apply(set_limit(&agent, None)).unwrap();
+    assert_eq!(record.state().unwrap().agents[0].spend_limit_micros, None);
+}
+
+#[test]
+fn a_days_spend_adds_up_and_starts_again_the_next_day() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    record
+        .apply(set_limit(&agent, Some(5_000_000)))
+        .expect("its keeper sets a limit");
+    record
+        .apply(charge(&agent, "2026-01-01", 200_000))
+        .expect("a first charge");
+    record
+        .apply(charge(&agent, "2026-01-01", 220_000))
+        .expect("a second charge");
+    let state = record.state().unwrap();
+    assert_eq!(state.agents[0].spent_on("2026-01-01"), 420_000);
+    assert_eq!(
+        state.agents[0].spent_on("2026-01-02"),
+        0,
+        "a day no charge counted"
+    );
+    assert!(state.agents[0].within_budget("2026-01-01"));
+    // An earlier day is over: what is charged to it changes nothing.
+    record
+        .apply(charge(&agent, "2025-12-31", 1_000_000))
+        .unwrap();
+    assert_eq!(
+        record.state().unwrap().agents[0].spent_on("2026-01-01"),
+        420_000
+    );
+    // A later day starts the counter again.
+    record.apply(charge(&agent, "2026-01-02", 100_000)).unwrap();
+    let state = record.state().unwrap();
+    assert_eq!(state.agents[0].spent_on("2026-01-02"), 100_000);
+    assert_eq!(state.agents[0].spent_on("2026-01-01"), 0);
+    // Past its keeper's limit it may not spend more.
+    record
+        .apply(charge(&agent, "2026-01-02", 5_000_000))
+        .unwrap();
+    assert!(!record.state().unwrap().agents[0].within_budget("2026-01-02"));
+}
+
+#[test]
+fn only_the_keeper_counts_what_an_agent_spends() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    let mut grace = record.fork().as_author(GRACE);
+    let refused = grace
+        .apply(charge(&agent, "2026-01-01", 1_000))
+        .unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    let mut itself = record.fork().as_author(&format!("agent:{agent}"));
+    let refused = itself
+        .apply(charge(&agent, "2026-01-01", 1_000))
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("keeper"),
+        "an agent never counts its own spending: {refused}"
+    );
+    for day in ["today", "2026-1-1", "2026-01-01T00", ""] {
+        let refused = record.apply(charge(&agent, day, 1_000)).unwrap_err();
+        assert!(refused.to_string().contains("YYYY-MM-DD"), "{refused}");
+    }
+}
+
+#[test]
+fn a_record_of_before_limits_reads_without_one() {
+    let old = serde_json::json!({
+        "agents": [{
+            "id": "claude",
+            "name": "Claude",
+            "colour": 2,
+            "keeper": "ada",
+            "model": "anthropic/sonnet",
+            "bound": [],
+            "state": "active",
+            "created_at": 1
+        }]
+    });
+    let read = WorkspaceAgents::from_json(&old).expect("a record of before limits reads");
+    assert_eq!(read.agents[0].spend_limit_micros, None);
+    assert_eq!(read.agents[0].spent, None);
+    assert!(read.valid().is_ok());
+    assert!(read.agents[0].within_budget("2026-01-01"));
+}
+
 /// The record's layout as the bytes devices keep it in: the field order,
 /// the names and the enums are the format, and this build must write them
 /// back exactly.
@@ -380,6 +558,8 @@ const GOLDEN: &str = r#"{
           "answer": "allow"
         }
       ],
+      "spend_limit_micros": null,
+      "spent": null,
       "state": "active",
       "created_at": 1700000000000
     }
@@ -397,6 +577,7 @@ fn golden_state() -> WorkspaceAgents {
                 keeper: Some(ADA.to_owned()),
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
+                colour: Some(2),
             }),
         )
         .unwrap();

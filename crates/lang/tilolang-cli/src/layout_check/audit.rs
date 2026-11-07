@@ -56,10 +56,13 @@ pub enum Kind {
     /// A column's header drawing a count the sidebar beside it already draws for the place
     /// shown: the same number twice on one screen.
     RepeatedCount,
+    /// A surface hanging over the window, a popover or a sheet, reaching past the window's
+    /// edges: what it says there is cut off or cannot be pressed.
+    PastWindow,
 }
 
 impl Kind {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 20] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -79,6 +82,7 @@ impl Kind {
         Self::EmptyHeading,
         Self::ZeroCount,
         Self::RepeatedCount,
+        Self::PastWindow,
     ];
 
     pub fn name(self) -> &'static str {
@@ -102,6 +106,7 @@ impl Kind {
             Self::EmptyHeading => "empty-heading",
             Self::ZeroCount => "zero-count",
             Self::RepeatedCount => "repeated-count",
+            Self::PastWindow => "past-window",
         }
     }
 }
@@ -229,7 +234,7 @@ fn floats(widget: &str) -> bool {
 /// Whether a widget the window's top layer paints: it stands against the window it floats in,
 /// not the box that opened it, so it neither widens what its owner holds nor reaches past it.
 fn floats_in_window(widget: &str) -> bool {
-    matches!(widget, "ContextMenu" | "Tooltip")
+    matches!(widget, "ContextMenu" | "Tooltip" | "Popover")
 }
 
 /// The boxes a widget holds: what it shows inside itself. What the window's top layer paints
@@ -525,6 +530,7 @@ impl Walk<'_> {
             // opened it: it is measured from the window's edges, and its own edges and targets
             // are still checked.
             if floats_in_window(&child.widget) {
+                self.past_window(child, keys);
                 let (beyond, across, off_pixel) = (self.beyond, self.across, self.off_pixel);
                 (self.beyond, self.across, self.off_pixel) = (false, false, false);
                 self.node(
@@ -649,6 +655,34 @@ impl Walk<'_> {
             keys,
             format!("it takes {} and says nothing", size(own)),
         );
+    }
+
+    /// A surface hanging over the window whose own box reaches past the window's edges: it is
+    /// placed against the window, so it must stay inside it, whatever it holds.
+    fn past_window(&mut self, node: &InspectionNode, keys: &[String]) {
+        let own = rect(node.rect);
+        let window = self.viewport;
+        if own.x0 < window.x0 - EPSILON
+            || own.x1 > window.x1 + EPSILON
+            || own.y0 < window.y0 - EPSILON
+            || own.y1 > window.y1 + EPSILON
+        {
+            self.push(
+                Kind::PastWindow,
+                node,
+                keys,
+                format!(
+                    "it reaches from x {:.0} to {:.0} and y {:.0} to {:.0} in a window {} at ({:.0}, {:.0})",
+                    own.x0,
+                    own.x1,
+                    own.y0,
+                    own.y1,
+                    size(window),
+                    window.x0,
+                    window.y0
+                ),
+            );
+        }
     }
 
     /// A box past its container's, or past the window's sides.

@@ -135,8 +135,11 @@ impl Session {
                 presentation: None,
             } => self.record_state(run, "doing", json!({"did": message}), None),
             // A streamed presentation is the model's own output, shown where
-            // it streams; it is no state of the turn.
-            TaskRunUpdate::Progress { .. } | TaskRunUpdate::DirectionsApplied { .. } => Ok(()),
+            // it streams, and what a run spent is its keeper's count: neither
+            // is a state of the turn.
+            TaskRunUpdate::Progress { .. }
+            | TaskRunUpdate::DirectionsApplied { .. }
+            | TaskRunUpdate::Spent { .. } => Ok(()),
             TaskRunUpdate::Succeeded { message } => {
                 self.record_state(run, "provider_complete", json!({}), Some(message))
             }
@@ -332,6 +335,7 @@ mod tests {
             planning: runtime_collab::TaskRunPlanning::Model,
             presentation_version: Some(1),
             execution_budget: None,
+            spend: None,
             action_context: Value::Null,
         };
         run.action_context = serde_json::to_value(
