@@ -20614,7 +20614,6 @@ dependencies = [
  "atspi-proxies",
  "image",
  "os-actions",
- "parking_lot",
  "serde",
  "serde_json",
  "settings-store",
@@ -21468,7 +21467,6 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-quick-settings",
- "tilo-reference",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -21620,7 +21618,6 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-test-env",
- "tracing",
  "workspace-hack",
  "zeroize",
 ]

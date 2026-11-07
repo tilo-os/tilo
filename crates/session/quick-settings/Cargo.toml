@@ -24,7 +24,6 @@ audio = { package = "tilo-audio-service", path = "../audio-service", default-fea
 connectivity = { package = "tilo-connectivity-service", path = "../connectivity-service" }
 os-actions = { path = "../../system/os-actions" }
 media = { package = "tilo-media", path = "../../platform/tilo-media" }
-parking_lot.workspace = true
 serde.workspace = true
 settings-store = { path = "../../system/settings-store", features = ["watch"] }
 # The readings the power service publishes are the battery's and the sleep
