@@ -105,7 +105,6 @@ pub mod media_layout;
 pub mod media_model;
 #[cfg(target_os = "linux")]
 mod native_root;
-pub mod offline_media;
 pub mod original_admission;
 pub mod pairing;
 #[path = "setup/prepared_identity.rs"]
