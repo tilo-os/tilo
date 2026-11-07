@@ -969,7 +969,7 @@ change-window = { $count ->
    *[other] { $count } Änderungen von { $who }
 }
 change-window-changed = { $who } hat { $count ->
-    [one] eine { $one } geändert
+    [one] { $count } { $one } geändert
    *[other] { $count } { $noun } geändert
 }
 change-mark-names-two = { $first } und { $second }
@@ -985,7 +985,7 @@ change-window-more = { $who } hat mindestens { $count ->
    *[other] { $count } Änderungen geändert
 }
 change-window-changed-more = { $who } hat mindestens { $count ->
-    [one] eine { $one } geändert
+    [one] { $count } { $one } geändert
    *[other] { $count } { $noun } geändert
 }
 
