@@ -45,6 +45,7 @@ pub mod dev_env;
 mod fd;
 pub mod gpu;
 pub mod hardening;
+#[cfg(target_os = "linux")]
 mod headless_console;
 #[cfg(target_os = "linux")]
 pub mod host;
