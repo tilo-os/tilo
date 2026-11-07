@@ -2,9 +2,10 @@
 //! letter leaves once.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{MemorySink, Principal, Resolution, Value};
+use tilolang_runtime::{InvokeOutcome, MemorySink, Principal, Resolution, Value};
 
 use crate::fixtures::Replica;
+use tilolang_tilo::meta::MetaExt as _;
 
 const LETTERS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.tl");
 const LETTERS_IDS: &str = include_str!("../../../lang/tilolang/tests/fixtures/letters/app.ids");
@@ -186,4 +187,217 @@ fn a_commit_needs_what_the_action_it_carries_is() {
             .any(|committed| commit_need(&ada, committed.ticket) == (Undoable, Outside)),
         "{approved:?}"
     );
+}
+
+/// A relay app: a post that goes out at once, and the ask for who records it.
+const RELAY: &str = r#"app test.relay "Relay" (icon: .mail, category: .office)
+
+type Draft {
+    to: Text
+    sent: Bool = false
+    sealed: Bool = false
+}
+
+type Desk {
+    drafts: Collection<Draft>
+}
+
+root Desk
+
+default view desk for Desk
+
+view desk(desk: Desk) {
+    std.list(desk.drafts) { (d, at) ->
+        ui.ListItem(item: d, presence: at) {
+            text(d.to)
+        }
+    }
+}
+
+/// Starts a letter.
+action new_draft(desk: Desk) -> Draft (icon: .plus) {
+    desk.drafts.insert(Draft(to: "bo@example.org"))
+}
+
+/// Posts the letter, then asks who records it: what went out is out while a person decides.
+action post_and_record(d: Draft) {
+    d.sent = true
+    outside("post", (d.to,))
+    record(d)
+}
+
+/// Seals the posted letter in the archive.
+action record(d: Draft) {
+    outside("smtp.send", (d.to,))
+    d.sealed = true
+}
+"#;
+const RELAY_APP: &str = "test.relay";
+const WORKSPACE: &str = "workspace";
+
+/// `who`'s standing in the relay workspace: an editor of it, allowed to post, so the action runs
+/// up to the effect it queues before the ask about recording the letter.
+fn relay_standing(meta: &tilolang_runtime::meta::Meta, who: &str) -> tilo_action_policy::Standing {
+    use tilo_action_policy::{
+        Answer, Grant, KindSet, Role, Standing, Subject, TreePath, WorkspacePolicy,
+    };
+    let mut policy = WorkspacePolicy::new(WORKSPACE, "sol");
+    for member in ["ada", "grace"] {
+        policy.members.insert(member.to_owned(), Role::Editor);
+    }
+    let post = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "post_and_record")
+        .expect("the relay posts");
+    let node = TreePath::workspace(WORKSPACE)
+        .app(RELAY_APP)
+        .kind(meta.kind_of("Draft"))
+        .action(&post.id);
+    let owner = Subject::person("sol");
+    policy.grants.extend([
+        Grant::new(
+            "posts",
+            Subject::person(who),
+            node.clone(),
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            owner.clone(),
+        ),
+        // The app's own code bounds it too, and its code asks before reaching outside.
+        Grant::new(
+            "app-posts",
+            Subject::app(RELAY_APP),
+            node,
+            KindSet::OUTSIDE,
+            Answer::Allow,
+            owner,
+        ),
+    ]);
+    Standing::person(policy, who)
+}
+
+/// Two replicas of a relay workspace: ada posted a letter, and recording it waits on a person.
+fn relay_workspace() -> (Replica, Replica, tilolang_runtime::ResourceRef) {
+    // The ids the app compiles to: every replica loads the same lock, so they agree on them.
+    let (_, probe) = Replica::new("probe", AutoCommit::new(), &[(RELAY, "")]);
+    let meta = probe[0].meta.clone();
+    let ids = probe[0].ids.clone();
+    let packages = [(RELAY, ids.as_str())];
+    let (mut ada, _) = Replica::standing(
+        "ada",
+        AutoCommit::new(),
+        &packages,
+        Some(relay_standing(&meta, "ada")),
+    );
+    let desk = ada.host.root_of(RELAY_APP).unwrap();
+    ada.commit();
+    let new_draft = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "new_draft")
+        .unwrap();
+    ada.host
+        .runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (new_draft.id.as_str(), vec![Value::resource(&desk)]),
+        )
+        .unwrap();
+    ada.commit();
+    let Value::List(drafts) = ada.host.runtime().read(&desk, "drafts").unwrap() else {
+        panic!("the desk lists its drafts");
+    };
+    let Value::Ref(draft) = &drafts[0] else {
+        panic!("a draft is a reference");
+    };
+    let draft = tilolang_runtime::ResourceRef::clone(&draft.target);
+    let post = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "post_and_record")
+        .unwrap();
+    let args = vec![Value::resource(&draft)];
+    let InvokeOutcome::Suggested(suggestion) = ada
+        .host
+        .runtime()
+        .invoke_action(&Principal::new("ada"), (post.id.as_str(), args.clone()))
+        .unwrap()
+    else {
+        panic!("recording the post asks first");
+    };
+    let invocation = ada
+        .host
+        .runtime()
+        .record_suggestion(&Principal::new("ada"), post.id.as_str(), args, &suggestion)
+        .unwrap();
+    ada.commit();
+    let grace = Replica::standing(
+        "grace",
+        ada.doc.fork(),
+        &packages,
+        Some(relay_standing(&meta, "grace")),
+    )
+    .0;
+    (ada, grace, invocation)
+}
+
+#[test]
+fn a_post_that_went_out_before_the_ask_leaves_once_when_both_replicas_run_it() {
+    let (mut ada, mut grace, invocation) = relay_workspace();
+    let (by_ada, by_grace) = (MemorySink::new(), MemorySink::new());
+    ada.host.runtime().set_sink(by_ada.clone());
+    grace.host.runtime().set_sink(by_grace.clone());
+    // Ada answers: the run goes on from its journal, and the post it already queued stays one.
+    assert_eq!(
+        ada.host
+            .runtime()
+            .resolve_invocation(&invocation, &Principal::new("ada"), Resolution::Approve)
+            .unwrap(),
+        "done"
+    );
+    ada.commit();
+    // Grace holds no journal of the run: she runs the whole action again, posting once more,
+    // and reaches the same ask. Answering that goes on from the journal she made.
+    assert_eq!(
+        grace
+            .host
+            .runtime()
+            .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+            .unwrap(),
+        "suggested"
+    );
+    grace.commit();
+    assert_eq!(
+        grace
+            .host
+            .runtime()
+            .resolve_invocation(&invocation, &Principal::new("grace"), Resolution::Approve)
+            .unwrap(),
+        "done"
+    );
+    grace.commit();
+    ada.sync_with(&mut grace);
+    for replica in [&mut ada, &mut grace] {
+        replica.host.settle_outbox().unwrap();
+        replica.commit();
+    }
+    ada.sync_with(&mut grace);
+    for replica in [&mut ada, &mut grace] {
+        replica.host.settle_outbox().unwrap();
+        replica.commit();
+    }
+    let mut posted = Vec::new();
+    let mut sealed = Vec::new();
+    for (capability, payload) in by_ada.delivered().into_iter().chain(by_grace.delivered()) {
+        match capability.as_str() {
+            "post" => posted.push(payload),
+            "smtp.send" => sealed.push(payload),
+            other => panic!("nothing else leaves: {other}"),
+        }
+    }
+    assert_eq!(posted.len(), 1, "the post leaves once: {posted:?}");
+    assert_eq!(sealed.len(), 1, "the letter is sealed once: {sealed:?}");
+    assert_eq!(ada.host.store().outbox_pending_count(), 0);
+    assert_eq!(grace.host.store().outbox_pending_count(), 0);
 }

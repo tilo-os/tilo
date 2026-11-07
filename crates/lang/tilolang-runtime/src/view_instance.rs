@@ -804,7 +804,7 @@ impl ViewInstance {
             chain: vec![view_module.clone()],
             approved_by: None,
             suggested_by: None,
-            origin: None,
+            identity: None,
             from: None,
             at: None,
         };
