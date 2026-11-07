@@ -756,6 +756,7 @@ package = "tilolang-cli"
 # The copy they all stage from is `tests/support`, which names the packages' directory.
 inputs = ["apps/chat/", "apps/tl/"]
 readers = [
+  "crates/lang/tilolang-cli/src/layout_check/stage.rs",
   "crates/lang/tilolang-cli/src/layout_check.rs",
   "crates/lang/tilolang-cli/tests/support/mod.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
@@ -818,7 +819,9 @@ readers = [
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/links.rs",
   "crates/platform/tilolang-tilo/tests/make_from.rs",
+  "crates/platform/tilolang-tilo/tests/marks.rs",
   "crates/platform/tilolang-tilo/tests/naming.rs",
+  "crates/platform/tilolang-tilo/tests/notices.rs",
   "crates/platform/tilolang-tilo/tests/outbox.rs",
   "crates/platform/tilolang-tilo/tests/outcomes.rs",
   "crates/platform/tilolang-tilo/tests/policy.rs",
@@ -1467,9 +1470,15 @@ inputs = [
   "crates/sdk/tilo-model-abi/",
   "crates/sdk/tilo-model-guest/",
   "crates/sdk/tilo-model-host/",
+  # The catalogues the locale-leak test reads words of: the toolkit's, which
+  # every window carries, and the Settings index's, which every window offers.
+  "crates/sdk/ui-core/locales/en-US.ftl",
+  "crates/system/settings-store/locales/en-US.ftl",
+  "crates/system/settings-store/locales/de-DE.ftl",
 ]
 readers = [
   "crates/session/session/src/channels/vault.rs",
+  "crates/session/session/tests/no_locale_leaks.rs",
   "crates/session/session/src/mount/doors.rs",
   "crates/session/session/src/plane.rs",
   "crates/session/session/src/seeded_apps.rs",

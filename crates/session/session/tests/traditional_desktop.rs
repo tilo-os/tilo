@@ -280,7 +280,7 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     // The window in front is named twice: once by its frame on the desk, which stands where it
     // was placed, and once by the menu the top bar carries it as. The bar's stands on the bar's
     // row, above every frame.
-    let bar = session
+    session
         .shell_controls(&name)
         .into_iter()
         .find(|&(_, y, _, _)| y < 40.0)

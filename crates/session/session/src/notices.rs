@@ -1596,33 +1596,6 @@ mod tests {
     /// whole at the banner's own width, never cut with an ellipsis.
     #[test]
     fn a_version_mismatch_notice_reads_whole_on_its_banner() {
-        // The card painted at a given width: its glyphs and its runs, where
-        // every run is one line of one field.
-        fn painted(
-            text: &mut ui::text_render::TextRenderer,
-            theme: &ui::theme::Theme,
-            card: &ui::widget::toast::ToastCard<'_>,
-            width: f64,
-        ) -> (usize, usize) {
-            let rect = ui::vello::kurbo::Rect::new(
-                0.0,
-                0.0,
-                width,
-                ui::widget::toast::card_height(text, theme, card, width),
-            );
-            let mut scene = ui::vello::Scene::new();
-            ui::widget::toast::paint_card(
-                &mut scene,
-                ui::vello::kurbo::Affine::IDENTITY,
-                text,
-                theme,
-                rect,
-                card,
-            );
-            let runs = &scene.encoding().resources.glyph_runs;
-            let glyphs = runs.iter().map(|run| run.glyphs.len()).sum();
-            (glyphs, runs.len())
-        }
         let ours: u32 = 30;
         let newer = crate::network::VersionMismatch {
             endpoint: "zpeerexample".into(),
@@ -1636,23 +1609,24 @@ mod tests {
         for mismatch in [&newer, &older] {
             for device in [Some("Framework 16"), None] {
                 let notice = version_mismatch_notice(mismatch, device);
-                let card = ui::widget::toast::ToastCard::new(
-                    &notice.title,
-                    ui::widget::toast::ToastKind::Info,
-                )
-                .body(&notice.body)
-                .caption(&notice.app)
-                .icon(Some(ui::icons::Icon::AppWindow))
-                .time("now")
-                .closable(true);
                 let mut text = ui::text_render::TextRenderer::new();
                 let theme = ui::theme::Theme::dark();
+                let words = |text: &mut ui::text_render::TextRenderer, width| {
+                    ui::widget::toast::painted_words(
+                        text,
+                        &theme,
+                        &notice.title,
+                        &notice.body,
+                        &notice.app,
+                        width,
+                    )
+                };
                 // A banner card is 360 points wide; at 2000 points nothing
                 // needs eliding or clamping. A line break may drop the space
                 // that ended it, so the banner may paint exactly one glyph
                 // fewer per extra line and not one more.
-                let (banner_glyphs, banner_lines) = painted(&mut text, &theme, &card, 360.0);
-                let (whole_glyphs, whole_lines) = painted(&mut text, &theme, &card, 2000.0);
+                let (banner_glyphs, banner_lines) = words(&mut text, 360.0);
+                let (whole_glyphs, whole_lines) = words(&mut text, 2000.0);
                 assert_eq!(
                     banner_glyphs + (banner_lines - whole_lines),
                     whole_glyphs,

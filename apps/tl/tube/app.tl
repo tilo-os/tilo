@@ -284,8 +284,8 @@ action resume(v: Video) uses time (icon: .play, label: "Resume") {
     progress(v, watched_before(yt, v)?.progress ?? 0.0)
 }
 
-/// Records how far into the video the person is — and that they watched it now: it moves to the
-/// front of the history — and asks the service for the address its bytes play from when that is
+/// Records how far into the video the person is, and that they watched it now: it moves to the
+/// front of the history, and asks the service for the address its bytes play from when that is
 /// not known yet. Starting a video, resuming it and moving the playhead as it plays are one
 /// action, so a video has one place it is played from.
 action progress(v: Video, at: Float) uses time {
