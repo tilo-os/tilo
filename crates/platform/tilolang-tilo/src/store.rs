@@ -13,7 +13,7 @@
 //!   ([`TiloStore::take_committed`]). The mirror keeps what the store wrote as its open
 //!   transaction, never as a change of its own;
 //! * when the workspace record moves on (the executor applied the queued action, or a peer's change
-//!   arrived), [`TiloStore::sync_from`] drops the mirror's open transaction and the overlay,
+//!   arrived), [`TiloStore::sync`] drops the mirror's open transaction and the overlay,
 //!   applies the record's new changes to the mirror, derives what they changed into each index
 //!   (stamped with the record's heads) and tells each subscriber exactly which fields of which
 //!   resources they changed, and how each collection's listing moved.
@@ -21,7 +21,7 @@
 //! Lists, filters and the fields rows show are read from the index, page by page, so opening a
 //! window reads what it shows and not the record. The store may even open before the record is
 //! loaded ([`TiloStore::detached`]): it reads indexes stamped with the heads they reflect, and
-//! takes the record when it is had ([`TiloStore::sync_from`], or the loader the host gave it
+//! takes the record when it is had ([`TiloStore::sync`], or the loader the host gave it
 //! for a write or a field no index holds), catching each index up from its heads.
 //!
 //! **The unsaved layer.** What an origin derives from nothing at every start (the clock, the
@@ -29,7 +29,7 @@
 //! is never put in the record. Its writes go into the same mirror open transaction as any
 //! write, and so are read at once, but committing them queues nothing: they stay in the
 //! mirror's open transaction and its overlay, which is what reads answer from. The record
-//! moving on ([`TiloStore::sync_from`]) drops the store's saved writes (the record has them)
+//! moving on ([`TiloStore::sync`]) drops the store's saved writes (the record has them)
 //! and leaves the derived ones where they are, so an origin's update never round-trips through
 //! the record: no action is committed, no peer replays it, and no index is rebuilt for it.
 //!
@@ -38,7 +38,7 @@
 //!
 //! **Chunks.** The record may be split: resources it does not hold itself are in chunk documents
 //! above it ([`crate::chunk`]), each a document of its own the host sends when it is wanted. The
-//! store holds the chunks it was sent ([`TiloStore::sync_chunk`]) beside the record, and every
+//! store holds the chunks it was sent ([`TiloStore::sync`]) beside the record, and every
 //! read and write of a resource is routed to the chunk the record's manifest places it in, so a
 //! write reaches one document. A record written before chunks is one chunk whose manifest is
 //! empty, and reads and writes as it always did.
@@ -2480,7 +2480,7 @@ impl Store for TiloStore {
             touched.entry(doc).or_default().extend(keys);
         }
         // What changed is told to those who read the mirror once, when the record brings the
-        // change back and the indexes hold what it derives ([`TiloStore::sync_from`]): told
+        // change back and the indexes hold what it derives ([`TiloStore::sync`]): told
         // here, it would be a second note of the same step, and one lacking what the record's
         // derivation adds. Until then the write is the mirror's open transaction, read through
         // the overlay like any other.

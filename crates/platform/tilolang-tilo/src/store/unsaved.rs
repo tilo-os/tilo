@@ -6,7 +6,7 @@
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.
 //!
-//! The record moving on ([`crate::store::TiloStore::sync_from`]) drops the store's saved writes
+//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's saved writes
 //! (the record has them) and leaves the derived ones: [`Inner::drop_committed_local`] takes the
 //! saved ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs known,
 //! and [`Inner::reapply_derived`] writes them onto the record's new copy again. An origin's

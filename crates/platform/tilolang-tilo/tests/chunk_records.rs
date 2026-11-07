@@ -1141,3 +1141,152 @@ fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_a_hundred_thousand_c
         );
     }
 }
+
+/// The record a replica opens from the copies it keeps on disk, on the route `route`.
+fn opened_from_disk(
+    route: &RouteSpec,
+    documents: &Rc<dyn durable_store::DurableStore>,
+    me: &str,
+) -> InstanceRecord {
+    let mut manager = CollaborationManager::with_peer_transport(Routed {
+        me: me.to_owned(),
+        wire: Wire::default(),
+        mine: Rc::default(),
+        primary: None,
+        answer: None,
+    });
+    assert!(manager.send(CollabRequest::Hello {
+        app_id: route.app_id.clone(),
+        cluster_id: route.cluster_id,
+        record: route.record.clone(),
+        record_kind: None,
+        handle: Some(me.to_owned()),
+    }));
+    let _ = manager.poll();
+    InstanceRecord::open(manager, documents, me).unwrap()
+}
+
+#[test]
+fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() {
+    let (_host, _docs, meta, root, ids) = board();
+    let field = field_id(&meta, "Board", "left");
+    let schema = board_schema(&meta);
+    let route = RouteSpec::app(BOARD_APP, uuid::Uuid::new_v4());
+    let profile = tempfile::tempdir().unwrap();
+    let documents: Rc<dyn durable_store::DurableStore> =
+        Rc::new(app_state::FsStore::new(profile.path()));
+    let mut record = opened_from_disk(&route, &documents, "ada");
+
+    // The board's root in the record's own chunk, then one card into chunk 2, as the door writes
+    // them: nothing of this reaches another replica.
+    let board_ty = meta
+        .types
+        .iter()
+        .find(|declared| declared.name == "Board")
+        .unwrap()
+        .id
+        .clone();
+    let root_action = DynAction {
+        app: BOARD_APP.to_owned(),
+        kind: board_ty.clone(),
+        action_id: "create".to_owned(),
+        args: json!({}),
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Create {
+            id: root.clone(),
+            record: DynRecord::empty(lookup(&board_ty).unwrap())
+                .unwrap()
+                .to_json(),
+        }],
+    };
+    record
+        .apply_change(&root_action, &ActionInvoker::actor("ada"), None)
+        .unwrap();
+    let card_ty = card_type(&meta);
+    let card = "c0".to_owned();
+    let put = DynAction {
+        app: BOARD_APP.to_owned(),
+        kind: card_ty.clone(),
+        action_id: "add".to_owned(),
+        args: json!({}),
+        authorship: Authorship::default(),
+        edits: vec![
+            DynEdit::RunChunk {
+                holder: root.clone(),
+                field: field.clone(),
+                chunk: 2,
+                last: "0000000000".to_owned(),
+                len: 1,
+            },
+            DynEdit::Insert {
+                id: root.clone(),
+                item: card.clone(),
+                record: DynRecord::empty(lookup(&card_ty).unwrap())
+                    .unwrap()
+                    .to_json(),
+                at: Placement::At {
+                    place: Place {
+                        parent: None,
+                        field: field.clone(),
+                        key: "0000000000".to_owned(),
+                    },
+                    was: None,
+                }
+                .encode(),
+            }
+            .in_chunk(2),
+        ],
+    };
+    record
+        .apply_change(&put, &ActionInvoker::actor("ada"), None)
+        .unwrap();
+    assert!(
+        record.chunk(2).is_some(),
+        "the record holds the chunk it wrote"
+    );
+    record.flush();
+    assert_eq!(
+        record.save_status(),
+        collaboration::record::RecordSaveStatus::Saved
+    );
+    drop(record);
+
+    // Opened again from the same copies, with no change from anyone: the chunk comes with the
+    // record, and the card is where it was written.
+    let reopened = opened_from_disk(&route, &documents, "ada");
+    assert!(
+        reopened.chunk(2).is_some(),
+        "the chunk's own copy was opened with the record"
+    );
+    assert_eq!(held_in(reopened.chunks(), 2, &root, &schema), 1);
+    assert_eq!(
+        Items::across(reopened.chunks(), BOARD_APP, &root, &schema)
+            .resolve(&schema)
+            .items(None, &field),
+        vec![card.clone()]
+    );
+
+    // And a window over it reads the card through the record's change.
+    let platform = Rc::new(Board {
+        ids: RefCell::new(ids),
+    });
+    let (app_end, _patches) = pair();
+    let mut instance = Instance::new(
+        Config {
+            app: BOARD_APP.to_owned(),
+            me: "ada".to_owned(),
+            mode: Mode::Live,
+            device: None,
+            index_dir: None,
+            record_loader: None,
+            root: RootView::default(),
+            sink: Some(Box::new(MemorySink::new())),
+        },
+        Rc::clone(&platform) as Rc<dyn Platform>,
+        Rc::new(Alone),
+        Box::new(app_end),
+    );
+    instance.sync_chunks(reopened.chunks());
+    instance.update();
+    assert_eq!(left(&instance.host().unwrap(), &root, &field), [card]);
+}

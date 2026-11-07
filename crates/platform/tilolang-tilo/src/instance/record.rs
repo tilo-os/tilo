@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 
-use app_state::DocWriter;
+use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
 use collaboration::history_source::authors::{
@@ -21,7 +21,8 @@ use collaboration::history_source::authors::{
 use collaboration::history_source::steps::{self, Scope};
 use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit};
 use collaboration::history_source::words::HistoryWords;
-use collaboration::record::RecordSaveStatus;
+use collaboration::record::save::{open_stored, record_document};
+use collaboration::record::{RecordId, RecordSaveStatus};
 use collaboration::{
     CollabEvent, CollabRequest, CollaborationManager, DocumentMutation, RouteSpec,
 };
@@ -98,8 +99,9 @@ pub struct InstanceRecord {
     unshared: Option<String>,
     /// The words its history verbs speak in.
     words: HostWords,
-    /// The writer of the record's on-disk copy; `None` keeps it in memory only.
-    writer: Option<DocWriter>,
+    /// The on-disk copies of the chunks this replica holds, each a document of its own written
+    /// as the record's own is; `None` keeps them in memory only.
+    writers: Option<Writers>,
     /// Whether this device governs the workspace: the record's origin (convergence.md §1), whose
     /// copy needs no committed read from another host.
     governs: bool,
@@ -107,6 +109,71 @@ pub struct InstanceRecord {
     /// on from it ([`DynAction::continues`]) is a change of the same gesture, which undo takes
     /// back with it as one step. Any other step, an undo or a redo closes it.
     gesture: Option<(tilo_actions::ActionId, DynAction)>,
+}
+
+/// The on-disk copies of the record's chunks: the store the record was opened from, and the
+/// writer of each chunk it holds. Chunk [`FIRST`] is the record's own copy, which the record
+/// opens; every chunk above it is a document of its own, kept beside the record's.
+struct Writers {
+    /// Where the copies live: what a chunk this replica comes to hold later is kept in.
+    documents: Rc<dyn DurableStore>,
+    /// The writer of each chunk this replica holds, the record first.
+    chunks: BTreeMap<ChunkNo, DocWriter>,
+}
+
+impl Writers {
+    /// The copies kept in `documents`, with the writer the record's own chunk
+    /// ([`FIRST`]) was opened with.
+    fn of(documents: &Rc<dyn DurableStore>, record: DocWriter) -> Self {
+        Self {
+            documents: Rc::clone(documents),
+            chunks: BTreeMap::from([(FIRST, record)]),
+        }
+    }
+
+    /// The copy of chunk `chunk` of `route` this device kept, as it was left, with the writer
+    /// that keeps it from here on: `None` when this device holds none, or it cannot be read.
+    fn held(&self, route: &RouteSpec, chunk: ChunkNo) -> Option<(Doc, DocWriter)> {
+        let store = copy_document(&self.documents, route, chunk)?;
+        let stored = store.has_stored().ok()?;
+        stored.then(|| open_stored(store))
+    }
+
+    /// The writer of chunk `chunk`, started when this replica comes to hold a chunk it kept no
+    /// copy of: what it writes there is on disk from then on.
+    fn start(&mut self, route: &RouteSpec, chunk: ChunkNo) -> Option<&mut DocWriter> {
+        if !self.chunks.contains_key(&chunk) {
+            let writer = copy_document(&self.documents, route, chunk).map_or_else(
+                || DocWriter::disabled("the chunk's copy could not be opened"),
+                DocStore::writer,
+            );
+            self.chunks.insert(chunk, writer);
+        }
+        self.chunks.get_mut(&chunk)
+    }
+}
+
+/// The document the copy of chunk `chunk` of `route`'s record is kept in, in `documents`: the
+/// record of the chunk above the record ([`RecordId::chunk`]), a record of its own beside the
+/// record's copy. `None` for the record's own chunk, which the record itself opens, and for a
+/// route whose record is no record id.
+fn copy_document(
+    documents: &Rc<dyn DurableStore>,
+    route: &RouteSpec,
+    chunk: ChunkNo,
+) -> Option<DocStore> {
+    if chunk == FIRST {
+        return None;
+    }
+    let base = RecordId::from_route(route.record.as_deref().unwrap_or(""))?;
+    let key = base.chunk(chunk).storage_key();
+    record_document(
+        documents,
+        &route.app_id,
+        &route.cluster_id.to_string(),
+        &key,
+    )
+    .ok()
 }
 
 impl InstanceRecord {
@@ -137,7 +204,7 @@ impl InstanceRecord {
 
     fn holding(
         chunks: Chunks,
-        writer: Option<DocWriter>,
+        writers: Option<Writers>,
         manager: CollaborationManager,
         route: RouteSpec,
         person: String,
@@ -160,7 +227,7 @@ impl InstanceRecord {
             joined: BTreeSet::new(),
             unshared: None,
             words: HostWords::new("en-US"),
-            writer,
+            writers,
             governs: true,
             gesture: None,
         }
@@ -229,8 +296,7 @@ impl InstanceRecord {
     ) -> Result<Self, RecordError> {
         use collaboration::native_initial::{self, NativeConstruction};
         use collaboration::record::save::{
-            open_stored, open_stored_adopting, open_with_committed_read, record_document,
-            workspace_document,
+            open_stored_adopting, open_with_committed_read, workspace_document,
         };
         let route = manager
             .primary_route()
@@ -287,7 +353,19 @@ impl InstanceRecord {
             .ok_or_else(|| RecordError::Open("the connection was not handed back".to_owned()))?;
         drop(construction);
         let person = person.into();
-        let mut record = Self::holding(Chunks::of(doc), Some(writer), manager, route, person);
+        let mut writers = Writers::of(documents, writer);
+        let mut chunks = Chunks::of(doc);
+        // Every chunk the record's manifest names that this device kept a copy of is read with
+        // it: what was written into it here and not handed to the workspace yet is still there,
+        // and what comes next reaches it as any change does.
+        let named: Vec<ChunkNo> = chunks.placement().chunks().into_iter().collect();
+        for chunk in named {
+            if let Some((copy, writer)) = writers.held(&route, chunk) {
+                chunks.insert(chunk, copy);
+                writers.chunks.insert(chunk, writer);
+            }
+        }
+        let mut record = Self::holding(chunks, Some(writers), manager, route, person);
         record.governs = governs;
         if handed_nothing {
             record.sent.clear();
@@ -339,14 +417,25 @@ impl InstanceRecord {
         &self.route
     }
 
-    /// Whether the record's changes are stored: in memory only without an on-disk copy.
+    /// Whether the record's changes are stored: in memory only without an on-disk copy. Every
+    /// chunk is stored to its own copy, so the record is stored when all of them are.
     #[must_use]
     pub fn save_status(&self) -> RecordSaveStatus {
-        self.writer
-            .as_ref()
-            .map_or(RecordSaveStatus::MemoryOnly, |writer| {
-                RecordSaveStatus::of_writer(self.doc(), writer)
-            })
+        let Some(writers) = &self.writers else {
+            return RecordSaveStatus::MemoryOnly;
+        };
+        let mut status = RecordSaveStatus::Saved;
+        for (chunk, writer) in &writers.chunks {
+            let Some(doc) = self.chunks.mirror(*chunk) else {
+                continue;
+            };
+            match RecordSaveStatus::of_writer(doc, writer) {
+                failure @ RecordSaveStatus::Failed(_) => return failure,
+                RecordSaveStatus::Saving => status = RecordSaveStatus::Saving,
+                RecordSaveStatus::Saved | RecordSaveStatus::MemoryOnly => {}
+            }
+        }
+        status
     }
 
     /// Whether the record holds changes the workspace was not handed yet: they go with the next
@@ -377,12 +466,61 @@ impl InstanceRecord {
         self.unshared.as_deref()
     }
 
-    /// Write what the record holds to its on-disk copy now, as a window does before it closes.
+    /// Write what the record holds to its on-disk copies now, as a window does before it closes:
+    /// every chunk it holds, each to its own.
     pub fn flush(&mut self) {
-        if let (Some(writer), Some(doc)) = (&mut self.writer, self.chunks.first_mut()) {
-            writer.request(doc);
+        let Self {
+            writers, chunks, ..
+        } = self;
+        let Some(writers) = writers.as_mut() else {
+            return;
+        };
+        for (chunk, writer) in &mut writers.chunks {
+            if let Some(doc) = chunks.mirror_mut(*chunk) {
+                writer.request(doc);
+            }
             writer.flush();
         }
+    }
+
+    /// Have the on-disk copy of chunk `chunk` keep what it holds: the chunk's change goes in the
+    /// same durable step as the commit that made it, as the record's own does.
+    fn keep(&mut self, chunk: ChunkNo) {
+        let Self {
+            writers,
+            chunks,
+            route,
+            ..
+        } = self;
+        let Some(writers) = writers.as_mut() else {
+            return;
+        };
+        let Some(doc) = chunks.mirror_mut(chunk) else {
+            return;
+        };
+        if let Some(writer) = writers.start(route, chunk) {
+            writer.request(doc);
+        }
+    }
+
+    /// The chunk `chunk`, to write into: the one this replica holds, or the one it starts here
+    /// (a write into a run that begins there, before that chunk arrives), with the writer that
+    /// keeps it on disk like the record's own.
+    fn open_chunk(&mut self, chunk: ChunkNo) -> &mut Doc {
+        let Self {
+            writers,
+            chunks,
+            route,
+            ..
+        } = self;
+        if let Some(writers) = writers.as_mut()
+            && !writers.chunks.contains_key(&chunk)
+        {
+            // A chunk this replica writes to keeps its own copy: it is started before the doc
+            // is written, so the change goes to disk with the record's own.
+            let _ = writers.start(route, chunk);
+        }
+        chunks.open(chunk)
     }
 
     /// Whether the person at the window has a step to undo, or an undo to redo.
@@ -759,7 +897,7 @@ impl InstanceRecord {
             payload: serde_json::to_vec(edit)
                 .map_err(|error| RecordError::Refused(error.to_string()))?,
         };
-        let before = self.chunks.open(chunk).get_heads();
+        let before = self.open_chunk(chunk).get_heads();
         // The verb's change is a step of its own, or a part of the one action an undo or redo
         // across chunks is (`ambient`'s invocation).
         let invocation = ambient
@@ -828,11 +966,12 @@ impl InstanceRecord {
     }
 
     fn send(&mut self, commit: Option<&collab_types::WorkspaceCommit>) -> Option<String> {
-        if self.unsent_chunks().is_empty() {
+        let unsent = self.unsent_chunks();
+        if unsent.is_empty() {
             return None;
         }
-        if let (Some(writer), Some(doc)) = (&mut self.writer, self.chunks.first_mut()) {
-            writer.request(doc);
+        for chunk in unsent {
+            self.keep(chunk);
         }
         if self.unshared.is_some() {
             return None;
@@ -960,11 +1099,7 @@ impl InstanceRecord {
             }
         }
         self.sent.insert(chunk, held);
-        if chunk == FIRST
-            && let (Some(writer), Some(doc)) = (&mut self.writer, self.chunks.first_mut())
-        {
-            writer.request(doc);
-        }
+        self.keep(chunk);
     }
 
     /// Note that the workspace holds chunk `chunk` as it is now.
@@ -1267,7 +1402,7 @@ impl InstanceRecord {
         let author = invoker.actor.clone();
         let context = context.with_invoker(invoker);
         let before = {
-            let doc = self.chunks.open(chunk);
+            let doc = self.open_chunk(chunk);
             let before = doc.get_heads();
             tilo_actions::apply_local_with_context(
                 doc,
@@ -1457,10 +1592,10 @@ impl InstanceRecord {
                     .unwrap_or_default();
                 let loaded = match &mutation {
                     DocumentMutation::Incremental(bytes) => {
-                        self.chunks.open(chunk).load_incoming(bytes)
+                        self.open_chunk(chunk).load_incoming(bytes)
                     }
                     DocumentMutation::Snapshot(bytes) => {
-                        self.chunks.open(chunk).load_incoming_whole(bytes)
+                        self.open_chunk(chunk).load_incoming_whole(bytes)
                     }
                 };
                 match loaded {

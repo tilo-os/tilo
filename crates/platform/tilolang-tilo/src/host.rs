@@ -1278,15 +1278,17 @@ impl Host {
         self.inner.packages.borrow().iter().find_map(find)
     }
 
-    /// Bring the runtime's view of the workspace record up to date; see [`TiloStore::sync_from`].
-    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_from(record)
+    /// Bring the runtime's view of the workspace record up to date: its own chunk
+    /// ([`crate::chunk::FIRST`]) and every chunk above it the replica holds; see
+    /// [`TiloStore::sync`].
+    pub fn sync(&self, record: &crate::chunk::Chunks) -> bool {
+        self.inner.store.sync(record)
     }
 
-    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
-    /// [`TiloStore::sync_chunk`].
-    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_chunk(chunk, doc)
+    /// Bring the runtime's view of a record kept as one document up to date; see
+    /// [`TiloStore::sync_from`].
+    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_from(record)
     }
 
     /// Whether the runtime reads exactly what the workspace record `record` holds; see

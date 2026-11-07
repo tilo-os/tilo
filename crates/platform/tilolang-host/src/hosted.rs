@@ -61,13 +61,7 @@ thread_local! {
 /// Bring `host` up to date with the record and every chunk of it a replica holds: the store reads
 /// and writes the resources each chunk holds where the record's manifest places them.
 fn sync_record(host: &Host, record: &InstanceRecord) {
-    for (chunk, doc) in record.chunks().docs() {
-        if chunk == tilolang_tilo::chunk::FIRST {
-            host.sync_from(doc);
-        } else {
-            host.sync_chunk(chunk, doc);
-        }
-    }
+    host.sync(record.chunks());
 }
 
 /// Who invokes, as the runtime reads the invoker the broker admitted.
