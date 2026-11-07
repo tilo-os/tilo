@@ -320,14 +320,22 @@ impl SharedDesktops {
                 );
                 false
             }
-            Ok(true) => self.publish(engine, room, &person, candidate, &heads, own, notes, sealed),
+            Ok(true) => self.publish(
+                engine,
+                room,
+                &person,
+                candidate,
+                (heads, own, notes),
+                sealed.as_ref(),
+            ),
         }
     }
 
     /// Publish the record this device just wrote to the workspace, as the
     /// workspace's own copy of it: what the workspace takes is the record
     /// the next look writes on, and what it refuses is dropped, so the next
-    /// look writes it again on what the workspace holds.
+    /// look writes it again on what the workspace holds. `written` is what
+    /// this write replaced, as the look notes it.
     ///
     /// The desk is one of the workspace's records, so it is written the way
     /// the workspace keeps them: sealed under the record channel's keys where
@@ -344,18 +352,17 @@ impl SharedDesktops {
         room: WorkspaceId,
         person: &str,
         mut candidate: automerge::AutoCommit,
-        heads: &[ChangeHash],
-        own: u64,
-        notes: Vec<(u64, String)>,
-        sealed: Option<channel_crypto::ChannelContentKeys>,
+        written: Written,
+        sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> bool {
+        let (heads, own, notes) = written;
         // Every change a device signs says what it is and who made
         // it: the edit of the record this person just made here.
         candidate.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(shared_record::change_message(Some(person))),
         );
-        let changes = candidate.save_after(heads);
+        let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
         let founding = heads.is_empty();
         let artifact =
@@ -364,7 +371,7 @@ impl SharedDesktops {
         let committed = engine.owner().commit_document_with_current(
             room,
             |view| {
-                let message = match &sealed {
+                let message = match sealed {
                     None => view.peer().clone().publication_mut().publish_incremental(
                         DESKTOP_APP,
                         DESKTOP_RECORD,
