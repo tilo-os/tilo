@@ -7,8 +7,7 @@ use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use super::{
-    CHANGE_WASH, ListRowFace, RowGeometry, RowLeading, RowMark, RowMetrics, RowValue, SwipeAction,
-    found_spans,
+    ListRowFace, RowGeometry, RowLeading, RowMark, RowMetrics, RowValue, SwipeAction, found_spans,
 };
 use crate::chrome::{RowJoin, SelectionState, paint_row_selection_joined};
 use crate::icons::Icon;
@@ -134,23 +133,6 @@ impl ListRowFace<'_> {
             };
             (raised, under)
         } else {
-            // Someone else's change the person has not seen: their colour, faintly, under the row.
-            let ground = match self.change {
-                Some(change) => {
-                    let wash =
-                        crate::tokens::colors::mix8(ground, change.colour(theme), CHANGE_WASH);
-                    ctx.scene.fill(
-                        Fill::NonZero,
-                        ctx.transform,
-                        wash,
-                        None,
-                        &RoundedRect::from_rect(frame_row, f64::from(theme.tokens.radii.control)),
-                    );
-                    wash
-                }
-                None => ground,
-            };
-
             let lifted = self.selected || self.interaction.pressed;
             let hovered = self.interaction.hovered && !self.interaction.disabled;
             // Selected takes the accent's tint; a press is the neutral lift.
@@ -227,13 +209,6 @@ impl ListRowFace<'_> {
         }
         if let (Some(r), Some(true)) = (geo.check, self.checked) {
             Icon::Check.draw(ctx.scene, ctx.transform, r, theme.text_primary);
-        }
-        if let (Some(change), Some(r)) = (self.change, geo.change) {
-            let cy = Self::dot_cy(&geo, row, extra, title_cy);
-            let face = Rect::from_center_size(Point::new(r.center().x, cy), r.size());
-            crate::widget::avatar::AvatarFace::new(change.name, change.identity)
-                .presence(change.colour(theme))
-                .paint(ctx, face);
         }
         if let (Some(status), Some(x)) = (self.status, geo.dot_x) {
             let cy = Self::dot_cy(&geo, row, extra, title_cy);
@@ -408,16 +383,19 @@ impl ListRowFace<'_> {
                 );
             }
         }
-        if let Some(change) = self.change.filter(|change| !change.said.is_empty()) {
-            // What someone else did to it stands under its title, in the quietest ink: the row
-            // still reads as its own item, with the change noted under it.
+        if let (Some(change), Some(face)) = (self.change, geo.change)
+            && !change.said.is_empty()
+        {
+            // What someone else did stands under the title in the quietest ink, led by their
+            // face: who did it, then what they did, then the row's other lines.
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
             let y = if self.secondary.is_some() {
                 y + f64::from(self.secondary_lines) * secondary_line
             } else {
                 y
             };
-            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
+            let words = face.x1 + m.column_gap;
+            let width = crate::num::f32_of_f64((geo.second_right - words).max(0.0));
             let line = ctx
                 .text
                 .elide_to_width_style(change.said, width, &m.secondary);
@@ -425,9 +403,12 @@ impl ListRowFace<'_> {
                 &line,
                 &m.secondary,
                 theme.text_tertiary,
-                Point::new(text_x, y),
+                Point::new(words, y),
                 None,
             );
+            crate::widget::avatar::AvatarFace::new(change.name, change.identity)
+                .presence(change.colour(theme))
+                .paint(ctx, face);
         }
         if let Some(note) = self.note {
             // What waits on the item stands under its text, in the quieter ink: a proposal is
@@ -486,7 +467,7 @@ impl ListRowFace<'_> {
     /// The width the title is set in: its column, less the quiet word before it and the tags
     /// after it. The title keeps at least half its line; the tags take the rest and drop off
     /// before the title elides further.
-    fn title_room(
+    pub(super) fn title_room(
         &self,
         geo: &RowGeometry,
         text: &mut TextRenderer,
@@ -501,7 +482,7 @@ impl ListRowFace<'_> {
 
     /// The room the row's quiet word before the title takes, with the gap after it: none for
     /// a row that names none.
-    fn prefix_width(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
+    pub(super) fn prefix_width(&self, text: &mut TextRenderer, m: &RowMetrics) -> f64 {
         match &self.prefix {
             Some(prefix) => {
                 f64::from(text.measure_style(prefix, None, &self.title_style(m)).0) + m.tag_gap
@@ -571,7 +552,7 @@ impl ListRowFace<'_> {
             .is_none_or(|line| line.ends_with('\u{2026}') && !self.title.ends_with('\u{2026}'))
     }
 
-    fn tags_width(&self, text: &mut TextRenderer, theme: &Theme, m: &RowMetrics) -> f64 {
+    pub(super) fn tags_width(&self, text: &mut TextRenderer, theme: &Theme, m: &RowMetrics) -> f64 {
         self.tags
             .iter()
             .map(|(label, _)| BadgeFace::intrinsic_width(label, text, theme) + m.tag_gap)

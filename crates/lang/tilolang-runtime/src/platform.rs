@@ -464,10 +464,10 @@ impl Core {
         let declared_did = self.declared_did(&v);
         let did = match v.kind {
             crate::store::VersionKind::Created if declared_did.is_empty() => {
-                self.word("tilolang-did-created", "created this")
+                self.word("tilolang-did-created", "created it")
             }
             crate::store::VersionKind::Removed if declared_did.is_empty() => {
-                self.word("tilolang-did-removed", "removed this")
+                self.word("tilolang-did-removed", "removed it")
             }
             _ => declared_did,
         };
@@ -486,7 +486,7 @@ impl Core {
                 .map_or_else(|| who.0.clone(), |host| host.name(&who))
         });
         let changes = match &info {
-            Some(info) => self.changes_value(&v, of, info)?,
+            Some(info) => self.changes_value(&v, of, info, self.looking_now().as_deref())?,
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
@@ -532,7 +532,12 @@ impl Core {
     /// (`std.version_said`), its values as their types show them in a phrase. A row says it
     /// under its title, and a step of a catch-up popover reads it, so what a person reads is
     /// worded once wherever it stands.
-    pub(crate) fn version_line(&self, v: &crate::store::Version, of: &ResourceRef) -> String {
+    pub(crate) fn version_line(
+        &self,
+        v: &crate::store::Version,
+        of: &ResourceRef,
+        viewer: &str,
+    ) -> String {
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         if v.count > 1 {
             let kind = info.as_ref().map_or_else(String::new, |info| {
@@ -553,10 +558,10 @@ impl Core {
         }
         match v.kind {
             crate::store::VersionKind::Created => {
-                return self.word("tilolang-did-created", "created this");
+                return self.word("tilolang-did-created", "created it");
             }
             crate::store::VersionKind::Removed => {
-                return self.word("tilolang-did-removed", "removed this");
+                return self.word("tilolang-did-removed", "removed it");
             }
             crate::store::VersionKind::Changed => {}
         }
@@ -564,7 +569,7 @@ impl Core {
             return self.action_label(&v.action);
         };
         let said: Vec<String> = self
-            .changes_value(v, of, &info)
+            .changes_value(v, of, &info, Some(viewer))
             .unwrap_or_default()
             .into_iter()
             .filter_map(|change| {
@@ -592,7 +597,7 @@ impl Core {
 
     /// What proposing `action` with `args` would change, in the words history says a change
     /// with ([`crate::did`]): one line per argument it names, over the field of its type
-    /// ("set the due date to Saturday", "assigned this to Bo"), holding the value the type
+    /// ("set the due date to Saturday", "assigned it to Bo"), holding the value the type
     /// shows it as when the words speak of one. A parameter that names no value says nothing.
     pub(crate) fn proposal_lines(&self, action: &str, args: &[Value]) -> Vec<Says> {
         let params = {
@@ -607,6 +612,7 @@ impl Core {
             }
         };
         let (app, params) = params;
+        let looking = self.looking_now();
         let mut out = Vec::new();
         for (param, arg) in params.iter().zip(args) {
             if matches!(arg, Value::Unit | Value::Opt(None)) {
@@ -630,7 +636,7 @@ impl Core {
             let named = field_of_sentence(&param.name);
             // A proposal is read against nothing: as a change that sets the value.
             let nothing = self
-                .change_shown(&ty, &Value::none())
+                .change_shown(&ty, &Value::none(), looking.as_deref())
                 .unwrap_or_else(|_| Value::none());
             let verbs = crate::did::said(&field, &named, &nothing, arg);
             let fills: Vec<(String, String)> = verbs
@@ -644,7 +650,7 @@ impl Core {
             };
             let voices = self.words.borrow().word(verbs.key, &fills, &source);
             let value = match verbs.shows {
-                crate::did::Shows::After => self.change_shown(&ty, arg).ok(),
+                crate::did::Shows::After => self.change_shown(&ty, arg, looking.as_deref()).ok(),
                 _ => None,
             };
             out.push(Says {
@@ -716,6 +722,7 @@ impl Core {
         v: &crate::store::Version,
         of: &ResourceRef,
         info: &crate::registry::TypeInfo,
+        viewer: Option<&str>,
     ) -> HResult<Vec<Value>> {
         if v.fields.is_empty() || v.change.is_empty() {
             return Ok(Vec::new());
@@ -749,7 +756,7 @@ impl Core {
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
-                self.change_shown(&field.ty, &value)
+                self.change_shown(&field.ty, &value, viewer)
             };
             held.push((field, side(before)?, side(after)?));
         }
@@ -808,7 +815,12 @@ impl Core {
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
     /// the kind of thing it is, what stands for it, and what goes with it (a case's icon, a
     /// person's name). A list of these for a set or a list.
-    fn change_shown(&self, ty: &tilolang::types::Ty, value: &Value) -> HResult<Value> {
+    fn change_shown(
+        &self,
+        ty: &tilolang::types::Ty,
+        value: &Value,
+        viewer: Option<&str>,
+    ) -> HResult<Value> {
         use tilolang::types::Ty;
         let one = |kind: &str, value: Value, icon: Option<String>| {
             Value::Tuple(vec![
@@ -819,15 +831,22 @@ impl Core {
         };
         Ok(match (ty, value) {
             (Ty::Option(_), Value::Opt(None)) => one("none", Value::Unit, None),
-            (Ty::Option(inner), Value::Opt(Some(held))) => return self.change_shown(inner, held),
+            (Ty::Option(inner), Value::Opt(Some(held))) => {
+                return self.change_shown(inner, held, viewer);
+            }
             (Ty::Date, Value::Text(day)) => one("date", Value::Text(day.clone()), None),
             (Ty::Time, Value::Text(at)) => one("time", Value::Text(at.clone()), None),
             (Ty::Principal, Value::Principal(who)) => {
-                let name = self
-                    .names
-                    .borrow()
-                    .as_ref()
-                    .map_or_else(|| who.0.clone(), |host| host.name(who));
+                // A person is named as a sentence names them: the person looking as the word
+                // for them ("assigned it to you"), anyone else by their name.
+                let name = if viewer == Some(who.0.as_str()) {
+                    self.word("tilolang-you-lower", "you")
+                } else {
+                    self.names
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| who.0.clone(), |host| host.name(who))
+                };
                 one("principal", Value::Principal(who.clone()), Some(name))
             }
             (_, Value::Bool(flag)) => one("bool", Value::Bool(*flag), None),
@@ -857,7 +876,7 @@ impl Core {
             (Ty::Set(inner) | Ty::List(inner), Value::List(items)) => Value::List(
                 items
                     .iter()
-                    .map(|item| self.change_shown(inner, item))
+                    .map(|item| self.change_shown(inner, item, viewer))
                     .collect::<HResult<_>>()?,
             ),
             // A map: each entry as its key and what it holds, as people read it ("👍 Ada, Bo").
@@ -867,7 +886,7 @@ impl Core {
                     .map(|entry| match entry {
                         Value::Tuple(pair) => match pair.as_slice() {
                             [Value::Text(key), held] => {
-                                let shown = self.said(&self.change_shown(inner, held)?);
+                                let shown = self.said(&self.change_shown(inner, held, viewer)?);
                                 Ok(one("text", Value::Text(format!("{key} {shown}")), None))
                             }
                             _ => trap("a map entry is a key and its value"),

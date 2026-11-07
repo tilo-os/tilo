@@ -121,7 +121,7 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     // What each marked row says under its title: the change in words.
     assert_eq!(
         said(marked(&marks, &made.id_string()).unwrap()),
-        "created this"
+        "created it"
     );
     assert!(
         said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
@@ -510,14 +510,15 @@ fn a_day_away_reads_at_a_glance_who_changed_what() {
         .unwrap_or_else(|| panic!("the mail Ada was given is marked: {marks:?}"));
     let survey = marked(&marks, &survey.id_string())
         .unwrap_or_else(|| panic!("the survey her agent moved is marked: {marks:?}"));
-    assert!(
-        said(paper).contains("assign"),
-        "the mail says it was assigned: {:?}",
-        said(paper)
+    assert_eq!(
+        said(paper),
+        "assigned it to you",
+        "the mail says what was done to it, and who holds it now"
     );
-    assert!(
-        said(survey).contains("due"),
-        "the survey says its day moved: {:?}",
+    assert_eq!(
+        said(survey),
+        "set the due date to 2026-10-29",
+        "the survey says the day its agent gave it: {:?}",
         said(survey)
     );
     assert_ne!(said(paper), said(survey), "each row says its own change");
@@ -557,6 +558,67 @@ fn a_day_away_reads_at_a_glance_who_changed_what() {
     assert!(
         !all(&content, "ui.Time").is_empty(),
         "each step says when it happened: {content:?}"
+    );
+    // Each step reads as a sentence, then when it happened at the line's end, out of its way.
+    let mut steps = Vec::new();
+    find_all(&content, "row", &mut steps);
+    // A step leads with the changer's face; the footer's row holds the one move alone.
+    steps.retain(|step| {
+        step.children
+            .first()
+            .is_some_and(|child| child.kind == "ui.Avatar")
+    });
+    assert_eq!(
+        steps.len(),
+        3,
+        "the catch-up lists a step per change: {content:?}"
+    );
+    for step in &steps {
+        let kids = &step.children;
+        let said = kids
+            .iter()
+            .position(|child| child.kind == "ui.Text")
+            .unwrap_or_else(|| panic!("a step says what was done: {step:?}"));
+        let at = kids
+            .iter()
+            .position(|child| child.kind == "ui.Time")
+            .unwrap_or_else(|| panic!("a step says when: {step:?}"));
+        assert!(said < at, "what was done reads before when: {step:?}");
+        assert_eq!(
+            at,
+            kids.len() - 1,
+            "the time stands at the line's end: {step:?}"
+        );
+        assert_eq!(
+            kids.get(at - 1).map(|child| child.kind.as_str()),
+            Some("spacer"),
+            "the sentence is kept clear of the time: {step:?}"
+        );
+        assert_eq!(
+            kids.first().map(|child| child.kind.as_str()),
+            Some("ui.Avatar"),
+            "the changer's face leads the line: {step:?}"
+        );
+    }
+    // What it says is history's words: a flag marked, a person given to the reader, and the
+    // item itself as "it", never "this".
+    let lines: Vec<String> = all(&content, "ui.Text")
+        .into_iter()
+        .filter_map(|text| match text.props.get("value") {
+            Some(Value::Text(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .collect();
+    let joined = lines.join(" | ");
+    assert!(joined.contains("marked it done"), "{joined}");
+    assert!(joined.contains("assigned it to you"), "{joined}");
+    assert!(
+        !joined.contains("this"),
+        "no sentence says \"this\": {joined}"
+    );
+    assert!(
+        !joined.contains("done to"),
+        "a flag shows no value: {joined}"
     );
 
     // Opening it marks nothing: only the footer's one action does, and its undo gives the marks

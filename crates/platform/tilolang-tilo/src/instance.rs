@@ -278,6 +278,9 @@ pub struct Instance {
     pending: Pending,
     /// The undos and redos the person asked for, in order, not yet taken.
     history: Vec<HistoryAsk>,
+    /// The window's notice offers to take back the marks the person just moved seen, not the
+    /// record's last change: it is about what the window said last.
+    seen_offer: bool,
     /// The actions the person chose from the window's command palette, in order, until the
     /// host runs them as the person's own steps.
     chosen: Vec<(ActionAddress, Option<String>)>,
@@ -373,6 +376,7 @@ impl Instance {
             origins: Rc::default(),
             pending: Pending::default(),
             history: Vec::new(),
+            seen_offer: false,
             chosen: Vec::new(),
             staged: None,
             stage_failed: None,
@@ -1051,6 +1055,9 @@ impl Instance {
     // ----- the door ------------------------------------------------------------------------
 
     fn notice(&mut self, words: Words, kind: ui::NoticeKind) {
+        // The window shows one notice at a time: what the one before offered to take back is
+        // gone with it.
+        self.seen_offer = false;
         self.out.push(ToUi::Notice {
             words,
             kind,
@@ -1254,6 +1261,7 @@ impl Instance {
             (Some(error), _) => self.notice(Words::Plain(error), ui::NoticeKind::Error),
             (None, Some(words)) => {
                 // A destructive action is undone rather than confirmed.
+                self.seen_offer = false;
                 self.out.push(ToUi::Notice {
                     words,
                     kind: ui::NoticeKind::Info,
@@ -1329,7 +1337,17 @@ impl Instance {
     /// the instance carries out on the record ([`Self::take_history`]).
     fn window_told(&mut self, told: ToApp) {
         match told {
-            ToApp::Undo => self.history.push(HistoryAsk::Undo),
+            // The notice in front takes back what it reported: the marks the person just moved
+            // seen, where it was that notice, else the record's last change.
+            ToApp::Undo => {
+                let taken = std::mem::take(&mut self.seen_offer)
+                    && self
+                        .host()
+                        .is_some_and(|host| host.runtime().undo_seen(&self.me));
+                if !taken {
+                    self.history.push(HistoryAsk::Undo);
+                }
+            }
             ToApp::Redo => self.history.push(HistoryAsk::Redo),
             ToApp::Focus { at } => self.focus = at,
             ToApp::Composing(composing) => self.composing = composing,

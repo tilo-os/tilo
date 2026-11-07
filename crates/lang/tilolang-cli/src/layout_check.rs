@@ -201,6 +201,10 @@ pub struct Options {
     /// of its enum): the place a window stands on before anyone picks, for a shot of a state
     /// that is not the declaration's default.
     pub states: Vec<String>,
+    /// Controls pressed by the words they carry, in order, before each window is read: what a
+    /// person opens by pressing it (`--press "Since you looked"`), where a click is the only
+    /// way to reach it. A label under `keys`' rules: it reaches the window at the `dump` size.
+    pub presses: Vec<String>,
     /// Key presses sent to each window before it is read, in order, as
     /// [`ui::headless::FrameHarness::key`] names them (`Tab`, `Down`, `Space`, or a chord that
     /// holds its modifiers for the press, `Shift+F10`): the layout a person reaches by
@@ -768,6 +772,7 @@ impl Worker<'_> {
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
+            presses: &self.options.presses,
             gathered: BTreeMap::new(),
             text: &mut self.text,
             ran: 0,
@@ -956,6 +961,7 @@ struct AppCheck<'a> {
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
+    presses: &'a [String],
     gathered: BTreeMap<Identity, Finding>,
     /// Measures text as the window's pipeline does, for clipped text.
     text: &'a mut ui::TextRenderer,
@@ -1120,9 +1126,29 @@ impl AppCheck<'_> {
                 layout.input(),
                 layout.display_scale,
             )?;
-            if !pressed && !self.keys.is_empty() && Some(viewport) == read_at {
-                // The window a person reaches by keyboard leaves it laid out differently: a
-                // group folded away, a control focused and wearing its ring.
+            if !pressed
+                && Some(viewport) == read_at
+                && (!self.keys.is_empty() || !self.presses.is_empty())
+            {
+                // What a person opens first, then what they reach by keyboard: the window is
+                // laid out as they leave it, with a popover hanging and a control wearing its
+                // ring.
+                for label in self.presses {
+                    let found = {
+                        let root = &staged.harness().inspection().root;
+                        button_named(root, label)
+                            .map(|id| (id, true))
+                            .or_else(|| painted_button_named(root, label).map(|id| (id, false)))
+                    };
+                    let Some((id, clicked)) = found else {
+                        return Err(format!("--press {label:?}: no control carries it"));
+                    };
+                    if clicked {
+                        staged.press(&id, layout.size.touch)?;
+                    } else {
+                        staged.press_action(&id)?;
+                    }
+                }
                 for key in self.keys {
                     staged.key(key);
                 }
@@ -1518,6 +1544,34 @@ mod windows {
             !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
             "each step says who made it and when: {content:?}"
         );
+    }
+
+    /// What the audit finds wrong with `staged`'s window as it stands at `viewport`.
+    fn wrong_in(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<String> {
+        let inspection = staged.harness().inspection();
+        super::audit::inspect(&inspection.root, viewport, None, 1.0)
+            .into_iter()
+            .map(|problem| {
+                format!(
+                    "{}: {} in {}",
+                    problem.kind.name(),
+                    problem.detail,
+                    problem.widget
+                )
+            })
+            .collect()
+    }
+
+    /// Where the floating surface the widget `name` draws, a popover or a sheet, stands.
+    fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
+        fn find(node: &ui::headless::InspectionNode, name: &str) -> Option<Rect> {
+            if node.widget == name {
+                let [x, y, width, height] = node.rect;
+                return Some(Rect::new(x, y, x + width, y + height));
+            }
+            node.children.iter().find_map(|child| find(child, name))
+        }
+        find(&staged.harness().inspection().root, name)
     }
 
     /// The change marks the rows of the window's lists draw, by the row they stand in.
@@ -2357,6 +2411,104 @@ mod windows {
             "the window counts the three changes she has not seen: {window:?}"
         );
         the_catch_up_names_each_item_it_changed(&window);
+        // The wide window's list column carries the mark in its own header, beside the title it
+        // counts: the place a window offers its header actions.
+        let mut slots = Vec::new();
+        nodes(&composed, "slot", &mut slots);
+        let header = slots
+            .iter()
+            .find(|slot| {
+                slot.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text(
+                        "overview_actions",
+                    ))
+            })
+            .unwrap_or_else(|| panic!("the list's header holds the window's mark: {composed:?}"));
+        assert!(
+            header
+                .children
+                .iter()
+                .any(|child| child.kind == "ui.ChangeMark"),
+            "the list header's mark stands beside its title: {header:?}"
+        );
+
+        // What the mark opens hangs inside the window it belongs to, at either width: a panel
+        // under the mark where the window is wide, a sheet at its foot where it is narrow.
+        away.press(&window.key, false)
+            .expect("the window's mark opens its catch-up");
+        away.lay_out(
+            (1280, 800),
+            ui::Theme::light(),
+            ui::interaction::InteractionEnvironment::POINTER,
+            1.0,
+        )
+        .expect("the app lays out with its catch-up open");
+        let wide = floating_rect(&away, "Popover").unwrap_or_else(|| {
+            fn all(node: &ui::headless::InspectionNode, out: &mut Vec<String>) {
+                out.push(format!("{} {:?}", node.widget, node.test_id));
+                for child in &node.children {
+                    all(child, out);
+                }
+            }
+            let mut names = Vec::new();
+            all(&away.harness().inspection().root, &mut names);
+            panic!("the catch-up hangs over the window: {}", names.join(" "));
+        });
+        assert!(
+            wide.x0 >= 0.0 && wide.x1 <= 1280.0 && wide.width() <= 400.0,
+            "the catch-up stays inside a window 1280 wide, and no wider than a list panel: {wide:?}"
+        );
+        let wrong = wrong_in(&away, (1280, 800));
+        assert!(
+            wrong.is_empty(),
+            "nothing reaches past the window: {wrong:?}"
+        );
+        // A window held in the hand is staged at its own size, as a capture stages it.
+        let mut narrow = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "while you were away",
+            (390, 844),
+            ui::Theme::light(),
+            None,
+            &["place=Task.today".to_owned()],
+        )
+        .expect("the scenario stages narrow");
+        narrow
+            .lay_out(
+                (390, 844),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the app lays out narrow");
+        let narrow_window = window_mark(&narrow.composed().expect("the narrow window composed"))
+            .expect("the narrow window's header says what changed in it");
+        narrow
+            .press(&narrow_window.key, false)
+            .expect("the narrow window's mark opens its catch-up");
+        narrow
+            .lay_out(
+                (390, 844),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the app lays out narrow with its catch-up open");
+        let sheet = floating_rect(&narrow, "Popover").expect("the catch-up hangs over the window");
+        assert!(
+            sheet.x0 >= 0.0
+                && sheet.x1 <= 390.0
+                && sheet.y1 <= 844.0
+                && sheet.y1 >= 820.0
+                && sheet.width() >= 300.0,
+            "a narrow window holds the catch-up as a sheet across its foot: {sheet:?}"
+        );
+        let wrong = wrong_in(&narrow, (390, 844));
+        assert!(
+            wrong.is_empty(),
+            "the sheet reaches nothing past the window: {wrong:?}"
+        );
 
         let mut changed = stage::Staged::over(
             "so.tilo.lang.tasks",
@@ -2393,6 +2545,28 @@ mod windows {
                 Some(tilo_render_protocol::patch::Value::Principal(_))
             ),
             "the page names who changed it: {window:?}"
+        );
+        // Its catch-up hangs inside its window too, and nothing else about the window is wrong.
+        changed
+            .press(&window.key, false)
+            .expect("the page's mark opens its catch-up");
+        changed
+            .lay_out(
+                (1280, 800),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::POINTER,
+                1.0,
+            )
+            .expect("the page lays out with its catch-up open");
+        let wide = floating_rect(&changed, "Popover").expect("the catch-up hangs over the window");
+        assert!(
+            wide.x0 >= 0.0 && wide.x1 <= 1280.0,
+            "the page's catch-up stays inside its window: {wide:?}"
+        );
+        let wrong = wrong_in(&changed, (1280, 800));
+        assert!(
+            wrong.is_empty(),
+            "nothing reaches past the window: {wrong:?}"
         );
     }
 

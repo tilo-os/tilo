@@ -153,10 +153,6 @@ impl RowStatus<'_> {
     }
 }
 
-/// How strongly the colour of whoever made an unseen change washes the row: a hint, quieter
-/// than a selection.
-const CHANGE_WASH: f32 = 0.07;
-
 /// How prominent a row's trailing value is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowValue {
