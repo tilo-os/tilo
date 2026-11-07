@@ -1295,6 +1295,7 @@ impl Live {
                     Patch::Remove {
                         parent: parent.clone(),
                         key,
+                        at: None,
                     }
                 }
                 Splice::Insert { at: index, item } => {
@@ -1643,6 +1644,7 @@ impl Live {
                     patches.push(Patch::Remove {
                         parent: keys.clone(),
                         key: child.key,
+                        at: None,
                     });
                 }
             }

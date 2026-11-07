@@ -160,9 +160,9 @@ impl ListRows {
         if self.read {
             return self.keys.apply(patches);
         }
-        // A row inserted or moved says where it goes, the order before needing no read: the
-        // window takes it there at once. A row removed says where it was only in that order,
-        // which was never read ([`Self::read_keys`]).
+        // A row inserted, removed or moved says where it goes, the order before needing no
+        // read: the window takes it there at once. Only a removal whose place the view does not
+        // say is one the order it left has to be read for ([`Self::read_keys`]).
         if let Some(changes) = where_the_rows_go(patches) {
             return changes;
         }
@@ -214,7 +214,14 @@ fn where_the_rows_go(patches: &[Patch]) -> Option<Vec<RowChange>> {
                 from: u32::try_from(*from).unwrap_or(u32::MAX),
                 to: u32::try_from(*to).unwrap_or(u32::MAX),
             }),
-            Patch::Remove { .. } => return None,
+            Patch::Remove {
+                at: Some(index), ..
+            } => {
+                changes.push(RowChange::Removed {
+                    index: u32::try_from(*index).unwrap_or(u32::MAX),
+                });
+            }
+            Patch::Remove { at: None, .. } => return None,
             // Not a change of the rows themselves.
             _ => {}
         }
@@ -237,8 +244,10 @@ impl Keys {
                         key: node.key.clone(),
                     }
                 }
-                Patch::Remove { key, .. } => {
-                    let Some(index) = self.index_of(key) else {
+                Patch::Remove { key, at, .. } => {
+                    let at =
+                        at.filter(|at| self.order.get(*at).is_some_and(|held| **held == **key));
+                    let Some(index) = at.or_else(|| self.index_of(key)) else {
                         continue;
                     };
                     self.order.remove(index);
@@ -356,13 +365,23 @@ mod tests {
                 RowChange::Moved { from: 2, to: 1 },
             ])
         );
-        // A removed row stood at a place only the order it left tells: the window reads it.
+        // A removed row whose place the view does not say stood there only in the order it
+        // left: the window reads it. One whose place it does say needs no read.
+        assert_eq!(
+            where_the_rows_go(&[Patch::Remove {
+                parent: parent.clone(),
+                key: "b".to_owned(),
+                at: None,
+            }]),
+            None
+        );
         assert_eq!(
             where_the_rows_go(&[Patch::Remove {
                 parent,
                 key: "b".to_owned(),
+                at: Some(1),
             }]),
-            None
+            Some(vec![RowChange::Removed { index: 1 }])
         );
     }
 
@@ -379,6 +398,7 @@ mod tests {
             Patch::Remove {
                 parent: parent.clone(),
                 key: "b".to_owned(),
+                at: Some(1),
             },
             Patch::Insert {
                 parent: parent.clone(),
