@@ -237,10 +237,6 @@ impl TreeId {
 /// so every box stands where it stood relative to its parent. A long
 /// collection then places only what is near its [`layout_clip`]
 /// ([`placing_again`]).
-#[cfg_attr(
-    not(any(feature = "native", test)),
-    expect(dead_code, reason = "only a native host's layout pass places again")
-)]
 pub(crate) fn placing_again_in<T>(tree: TreeId, place: impl FnOnce() -> T) -> T {
     struct Restore(Option<*const ()>);
     impl Drop for Restore {

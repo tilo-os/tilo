@@ -189,28 +189,91 @@ fn since(start: Option<ui::time::Duration>, wall: ui::time::Duration) -> u64 {
         }) as u64
 }
 
-/// The host's turns and the window's frames until neither has anything left to do: the host's
-/// CPU time and the window's, in microseconds, and the frames' timings.
-fn at_rest(session: &mut Session) -> (u64, u64, Vec<ui::profiling::FrameTiming>) {
-    let (mut instance_us, mut window_us) = (0, 0);
+/// A window at rest: the host's turns and the window's frames until neither has anything left to
+/// do, the CPU time each took in microseconds, the frames' timings, and what the layout was
+/// asked to do along the way.
+#[derive(Default)]
+struct Rest {
+    instance_us: u64,
+    window_us: u64,
+    frames: Vec<ui::profiling::FrameTiming>,
+    /// The frames the window ran.
+    ran: u64,
+    /// The nodes the most demanding frame of them invalidated in the layout.
+    marked: usize,
+    /// The frames that placed every widget of the tree, not only those a view moved.
+    full: u64,
+    /// The rounds of turn and frame the wait took.
+    rounds: u32,
+}
+
+/// The frame the window runs now: the frame of what the host just did (its patches wake the
+/// window and the frame reads them), or one it owes itself (a wake, a deadline, an animation). A
+/// window at rest runs none: asking it by hand (`Window::frame`) is asking it to lay out and draw
+/// again, which is work no person's interaction made. A frame only a clock asks for is not a
+/// step's cost either — these tests settle motion — so the window runs one where it has work
+/// queued ([`ui::headless::FrameSchedule::queued_work`]), not for widget dirtiness, which leaves
+/// default to dirty and keep until a later frame draws them.
+fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
+    match &mut session.window {
+        Window::Harness(window) => {
+            if changed {
+                window.relayout();
+                return true;
+            }
+            if !window.frame_schedule().queued_work {
+                return false;
+            }
+            window.poll_frame().unwrap_or(true)
+        }
+        Window::Live(app) => {
+            Window::live_frame(app);
+            true
+        }
+    }
+}
+
+/// The host's turns and the window's frames until neither has anything left to do.
+fn at_rest(session: &mut Session) -> Rest {
+    let mut rest = Rest::default();
     let mut quiet = 0_u32;
     while quiet < 3 {
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
         let changed = session.host.turn();
-        instance_us += since(start, wall.elapsed());
+        rest.instance_us += since(start, wall.elapsed());
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
-        session.window.frame();
-        window_us += since(start, wall.elapsed());
-        if changed {
+        let framed = frame_if_asked(session, changed);
+        rest.window_us += since(start, wall.elapsed());
+        if framed {
+            rest.ran = rest.ran.saturating_add(1);
+            let stats = session.window.harness().last_relayout();
+            rest.marked = rest.marked.max(stats.marked_dirty);
+            if !stats.placed_partly {
+                rest.full = rest.full.saturating_add(1);
+            }
+        }
+        if changed || framed {
             quiet = 0;
         } else {
             quiet = quiet.saturating_add(1);
         }
+        rest.rounds = rest.rounds.saturating_add(1);
+        // A window whose work never ends is a window that never rests: the bound is far past any
+        // step's frames, and what kept it awake is what the failure says.
+        if rest.rounds > 400 {
+            let window = session.window.harness();
+            panic!(
+                "the window rested never: {:?} {:?} {:?}",
+                window.queued_work_sources(),
+                window.frame_schedule(),
+                window.last_relayout()
+            );
+        }
     }
-    let frames = session.window.harness().take_profile_samples();
-    (instance_us, window_us, frames)
+    rest.frames = session.window.harness().take_profile_samples();
+    rest
 }
 
 /// One interaction, measured from `input` reaching the window to the windows' work at rest with
@@ -220,7 +283,14 @@ fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Sess
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
     input(session);
-    let (instance_us, window_us, frames) = at_rest(session);
+    // The frames the input itself ran are the window's too.
+    let input_us = since(start, wall.elapsed());
+    let rest = at_rest(session);
+    let (frames, instance_us, window_us) = (
+        rest.frames,
+        rest.instance_us,
+        rest.window_us.saturating_add(input_us),
+    );
     let wall_us = wall.elapsed().as_micros() as u64;
     let cpu_us = start
         .zip(ui::rt::thread_cpu_time())
@@ -1635,4 +1705,115 @@ fn tmp_open_of_one_document() {
         ready_us as f64 / 1000.0
     );
     session.settle();
+}
+
+/// What a frame asked the layout for: the nodes it built, whether it recomposed the tree, and
+/// how many nodes it invalidated to be measured again.
+#[derive(Debug)]
+struct Lay {
+    built: u64,
+    rebuilt: u64,
+    ran: u64,
+    nodes: u64,
+}
+
+impl Lay {
+    fn of(session: &mut Session) -> Self {
+        let window = session.window.harness();
+        Self {
+            built: window.layout_nodes_built(),
+            rebuilt: window.rebuilt_frames(),
+            ran: window.relayout_frames(),
+            nodes: u64::try_from(window.layout_node_ids().len()).unwrap_or(u64::MAX),
+        }
+    }
+}
+
+/// A step lays out what it changes, not the window: a keystroke in the entry and a notch of the
+/// scroll recompose at most the one frame their change composes, and the frames after it place
+/// only the widgets a view moved, ask the layout to measure the field (or the row) that changed
+/// and the nodes above it, and build no node of the window's composition again. The frames a
+/// step runs are also the ones its work asks for: a window at rest runs none, and neither does a
+/// step that leaves it at rest.
+#[test]
+fn a_step_lays_out_what_it_changes() {
+    /// A step's name and the input a person gives the window.
+    type Step = (&'static str, Box<dyn FnOnce(&mut Session)>);
+
+    /// The nodes a frame may invalidate for a keystroke or a notch of the scroll: the field or
+    /// the rows that moved and the nodes above them.
+    const MEASURED: u64 = 12;
+
+    let _motion = ui::motion::testing::settled();
+    let doc = seeded_tasks(SEEDED);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    session.settle();
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    let window = Lay::of(&mut session);
+    assert!(
+        window.nodes > 40,
+        "the window's composition holds {} layout nodes, too few for a step to be measured \
+         against",
+        window.nodes
+    );
+    let first = top_title(&mut session);
+    let at = shown_at(&mut session, &first);
+    session.window.move_to(at.0, at.1);
+    session.settle();
+    let steps: [Step; 2] = [
+        (
+            "entry keystroke",
+            Box::new(|session: &mut Session| session.window.type_text("a")),
+        ),
+        (
+            "scroll",
+            Box::new(|session: &mut Session| session.window.scroll(0.0, -3.0)),
+        ),
+    ];
+    for (label, input) in steps {
+        let before = Lay::of(&mut session);
+        input(&mut session);
+        // The frames the input itself ran, then the frames its work asks the window for.
+        let rest = at_rest(&mut session);
+        let marked = rest
+            .marked
+            .max(session.window.harness().last_relayout().marked_dirty);
+        let after = Lay::of(&mut session);
+        let ran = after.ran.saturating_sub(before.ran);
+        assert!(
+            ran > 0,
+            "{label} ran none of the frames that show what it did"
+        );
+        // Whatever the step changed, one frame composes it; what comes after moves it.
+        let rebuilds = after.rebuilt.saturating_sub(before.rebuilt);
+        assert!(
+            rebuilds <= 1,
+            "{label} recomposed the layout tree in {rebuilds} of its {ran} frames"
+        );
+        // One composition measures and builds the window's nodes again; what the frames beyond it
+        // touch are the nodes a change mounts and the nodes above them.
+        let composition = rebuilds.saturating_mul(window.nodes);
+        assert!(
+            u64::try_from(marked).unwrap_or(u64::MAX) <= MEASURED.saturating_add(composition),
+            "{label} asked the layout to measure {marked} of the window's {} nodes",
+            after.nodes
+        );
+        assert!(
+            rest.full <= 1,
+            "{label} placed every widget of the window's {} in {} of the {} frames it ran",
+            after.nodes,
+            rest.full,
+            rest.ran
+        );
+        let built = after.built.saturating_sub(before.built);
+        assert!(
+            built <= MEASURED.saturating_add(composition),
+            "{label} built {built} layout nodes of the window's {}, one recompose of them and \
+             its own changes allowed",
+            after.nodes
+        );
+        session.settle();
+    }
 }
