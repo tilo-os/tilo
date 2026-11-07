@@ -196,6 +196,12 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
 /// Step the session until the lock screen's own frame is on `displays` and is
 /// not changing any more: the screen itself, not the blank or dim a locked
 /// output shows before the client's first frame arrives.
+///
+/// The lock screen is an app of its own, drawing on its own clock: the frame
+/// it covers the desk with is not yet what it drew, and how many turns of the
+/// session pass before it rests is the app's to decide. What settles it is the
+/// rule [`until_still`] reads — a screen that stopped changing — never a count
+/// of turns of the session.
 #[track_caller]
 pub(super) fn until_drawn(
     session: &mut Session,
@@ -204,7 +210,6 @@ pub(super) fn until_drawn(
 ) -> Vec<Vec<f64>> {
     let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
-    let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         waking.keep(session);
         let now = session
@@ -217,12 +222,17 @@ pub(super) fn until_drawn(
                 .all(|(now, was)| apart(now, was) > CLOSE)
         });
         if covers {
-            if settled.as_ref() == now.as_ref() {
-                return now.expect("the lock screen drew");
+            for display in displays {
+                until_still(session, display);
             }
-            settled = now;
-        } else {
-            settled = None;
+            let drawn = pictures(session, displays);
+            if drawn
+                .iter()
+                .zip(was)
+                .all(|(now, was)| apart(now, was) > CLOSE)
+            {
+                return drawn;
+            }
         }
         assert!(
             Instant::now() < deadline,
