@@ -7,7 +7,8 @@
 //! [`ShareRegistry::accept_remote_input`].
 //!
 //! `InputEvent` is the wire vocabulary peer→owner input travels in; the
-//! owner drops it if read-only, else hands it to a [`RemoteInputSink`].
+//! owner's compositor asks [`ShareRegistry::accept_remote_input`] before a
+//! remote event reaches its seat.
 
 use neighbour_wire::{PeerId, SurfaceId};
 use serde::{Deserialize, Serialize};
@@ -97,14 +98,6 @@ pub enum RemoteAction {
     KeyboardKeysym { keysym: i32, pressed: bool },
 }
 
-/// Sink the owner's compositor exposes to receive remote-input events;
-/// `State::apply_remote_input` in production and `RecordingSink` in tests.
-pub trait RemoteInputSink {
-    /// Apply a remote-input event to the owner's seat, scoped to `surface` on
-    /// behalf of `peer` — implementations own keymap translation and ignoring surfaces they no longer own.
-    fn apply(&mut self, peer: PeerId, surface: SurfaceId, event: InputEvent);
-}
-
 /// Per-share metadata held by the owner; `read_only` defaults `false` — full control until the owner narrows it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StreamingShare {
@@ -161,19 +154,6 @@ impl ShareRegistry {
             .collect()
     }
 
-    /// Stable disclosure rows for trusted chrome and semantic inspection.
-    /// Sorted so a refresh changes only when the authority changes, never
-    /// because `HashMap` iteration happened to move.
-    pub fn disclosure(&self) -> Vec<(PeerId, SurfaceId, bool)> {
-        let mut rows = self
-            .shares
-            .iter()
-            .map(|(&(peer, surface), share)| (peer, surface, !share.read_only))
-            .collect::<Vec<_>>();
-        rows.sort_unstable();
-        rows
-    }
-
     /// Flip the `read_only` flag on an existing share; no-op if absent — callers needing creation-on-toggle should `insert` first.
     pub fn set_read_only(&mut self, peer: PeerId, surface: SurfaceId, read_only: bool) {
         if let Some(share) = self.shares.get_mut(&(peer, surface)) {
@@ -189,70 +169,6 @@ impl ShareRegistry {
             None => false,
         }
     }
-
-    /// Number of live shares.
-    pub fn len(&self) -> usize {
-        self.shares.len()
-    }
-
-    /// Whether no share is live.
-    pub fn is_empty(&self) -> bool {
-        self.shares.is_empty()
-    }
-
-    /// Mark every share read-only — the registry side of the kill switch. Returns how many shares lost write access.
-    pub fn revoke_all_input(&mut self) -> usize {
-        let mut revoked: usize = 0;
-        for share in self.shares.values_mut() {
-            if !share.read_only {
-                share.read_only = true;
-                revoked = revoked.saturating_add(1);
-            }
-        }
-        revoked
-    }
-
-    /// Remove every live share after an emergency stop. This is deliberately
-    /// stronger than making rows read-only: a later firewall rebuild must not
-    /// resurrect a session the user believed they had terminated.
-    pub fn clear(&mut self) {
-        self.shares.clear();
-    }
-
-    /// Route an inbound `InputEvent` to `sink` if the registry permits it.
-    /// **Not the injection path** — only the share gate; not checked against
-    /// the surface's rect, occlusion, chords, or rate budget. A seat sink
-    /// must go through the compositor state's `review_remote_input` instead.
-    pub fn route_to<S: RemoteInputSink>(
-        &self,
-        peer: PeerId,
-        surface: SurfaceId,
-        event: InputEvent,
-        sink: &mut S,
-    ) -> bool {
-        if !self.accept_remote_input(peer, surface) {
-            return false;
-        }
-        sink.apply(peer, surface, event);
-        true
-    }
-}
-
-#[cfg(test)]
-pub(crate) mod test_support {
-    use super::*;
-
-    /// Test-only [`RemoteInputSink`] that records every applied event in arrival order.
-    #[derive(Default, Debug)]
-    pub struct RecordingSink {
-        pub events: Vec<(PeerId, SurfaceId, InputEvent)>,
-    }
-
-    impl RemoteInputSink for RecordingSink {
-        fn apply(&mut self, peer: PeerId, surface: SurfaceId, event: InputEvent) {
-            self.events.push((peer, surface, event));
-        }
-    }
 }
 
 #[cfg(test)]
@@ -262,67 +178,29 @@ pub(crate) mod test_support {
 )]
 mod tests {
     use super::*;
-    use crate::streaming::test_support::RecordingSink;
-
-    // `StreamingThrottle` unit tests moved into the `tilo_callstream` crate's `throttle` module.
 
     #[test]
-    fn remote_input_authority_is_disclosed_and_enforced() {
-        // Phase `disclosure_reports_view_and_control_authority_stably`.
-        {
-            let mut registry = ShareRegistry::new();
-            registry.insert(9, 42, StreamingShare::new());
-            registry.insert(3, 77, StreamingShare { read_only: true });
+    fn remote_input_is_gated_by_the_owners_grant() {
+        let peer: PeerId = 7;
+        let surface: SurfaceId = 42;
+        let mut registry = ShareRegistry::new();
+        registry.insert(peer, surface, StreamingShare::new());
+        assert!(registry.accept_remote_input(peer, surface));
 
-            assert_eq!(registry.disclosure(), vec![(3, 77, false), (9, 42, true)]);
+        registry.set_read_only(peer, surface, true);
+        assert!(
+            !registry.accept_remote_input(peer, surface),
+            "a read-only share leaked input"
+        );
 
-            registry.remove(9, 42);
-            assert_eq!(registry.disclosure(), vec![(3, 77, false)]);
-        }
-        // Phase `remote_input_blocked_when_read_only`.
-        // A synthesised `RemoteInput` reaches the seat when read/write; dropped when the owner flips `read_only`.
-        {
-            let peer: PeerId = 7;
-            let surface: SurfaceId = 42;
-            let mut registry = ShareRegistry::new();
-            registry.insert(peer, surface, StreamingShare::new());
-            let mut sink = RecordingSink::default();
+        registry.set_read_only(peer, surface, false);
+        assert!(registry.accept_remote_input(peer, surface));
 
-            // Read/write: event lands.
-            let ev = InputEvent::PointerMotion { x: 10.0, y: 20.0 };
-            assert!(registry.route_to(peer, surface, ev.clone(), &mut sink));
-            assert_eq!(sink.events.len(), 1);
-            assert_eq!(sink.events[0], (peer, surface, ev));
-
-            // Flip to read-only: next event drops.
-            registry.set_read_only(peer, surface, true);
-            let ev2 = InputEvent::PointerButton {
-                button: 272,
-                pressed: true,
-            };
-            assert!(!registry.route_to(peer, surface, ev2, &mut sink));
-            assert_eq!(sink.events.len(), 1, "read-only share leaked input");
-
-            // Flip back: events flow again.
-            registry.set_read_only(peer, surface, false);
-            let ev3 = InputEvent::Key {
-                keysym: 0xFF0D,
-                pressed: true,
-                modifiers: 0,
-            };
-            assert!(registry.route_to(peer, surface, ev3.clone(), &mut sink));
-            assert_eq!(sink.events.len(), 2);
-            assert_eq!(sink.events[1].2, ev3);
-        }
-        // Phase `remote_input_dropped_for_unknown_share`.
-        {
-            let mut sink = RecordingSink::default();
-            let registry = ShareRegistry::new();
-            let ev = InputEvent::PointerMotion { x: 1.0, y: 2.0 };
-            // Peer never invited; event must drop.
-            assert!(!registry.route_to(99, 99, ev, &mut sink));
-            assert!(sink.events.is_empty());
-        }
+        registry.remove(peer, surface);
+        assert!(
+            !registry.accept_remote_input(peer, surface),
+            "a dropped share leaked input"
+        );
     }
 
     #[test]

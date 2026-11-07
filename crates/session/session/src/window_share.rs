@@ -778,7 +778,7 @@ impl WindowShares {
                 }
             };
             let receivers = self.receivers_for(start.tab);
-            let share = match SharedFlatpakSession::start_with_metrics(
+            let share = match SharedFlatpakSession::start_negotiated(
                 sync.peer(),
                 start.app_id.clone(),
                 start.tab,
@@ -786,7 +786,6 @@ impl WindowShares {
                 picture.height,
                 &FlatpakShareConfig::default(),
                 &receivers,
-                None,
             ) {
                 Ok(share) => Arc::new(share.with_tab(start.tab)),
                 Err(error) => {
