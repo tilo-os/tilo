@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use tilo_net::Client;
 use tilo_sheets::directory::Status;
+use tilo_sheets::invite as sheet;
 use tilo_startup_metrics::JOIN_FLOW_TARGET;
 use tokio::sync::mpsc;
 
@@ -422,6 +423,59 @@ impl Store {
         std::mem::take(&mut *self.shelvings.borrow_mut())
     }
 
+    /// Hand over the link `invite` names, whose text is `text`: `brings` says
+    /// who it brings in and how long it works. `site` is the shelf to keep it
+    /// — the community a computer is set up with, the site a page comes from —
+    /// and `host` the origin the workspace is served from; with no shelf, as
+    /// with one that refuses it, the invitation's own text is what the person
+    /// hands over.
+    ///
+    /// # Errors
+    /// `text` is not an invitation's bytes, so no code could carry it.
+    pub fn hand_over(
+        &self,
+        made: &mut sheet::Making,
+        invite: &str,
+        text: &str,
+        expires_at_ns: u64,
+        brings: String,
+        site: Option<&url::Url>,
+        host: Option<&str>,
+    ) -> Result<(), String> {
+        let bytes = tilo_workspace_join::invitation_bytes(text)?;
+        let shelving = site.is_some_and(|site| {
+            self.shelve(invite, bytes.clone(), expires_at_ns, site, host)
+                .inspect_err(
+                    |error| tracing::warn!(%error, "the invitation was not left on its site"),
+                )
+                .is_ok()
+        });
+        made.show(
+            sheet::made(invite, text, bytes, brings, expires_at_ns),
+            shelving,
+        );
+        Ok(())
+    }
+
+    /// Take what a shelf answered since the sheet last looked: the link it
+    /// shows becomes the site's short one, or stays the invitation's own text
+    /// where the site kept nothing. Whether one answered.
+    pub fn follow_shelf(&self, made: &mut sheet::Making) -> bool {
+        let answers = self.take_shelved();
+        let answered = !answers.is_empty();
+        for (invite, answer) in answers {
+            made.shelved(&invite, answer.ok().map(|shelved| shelved.link));
+        }
+        answered
+    }
+
+    /// Take `invite` back: its site lets go of what it keeps
+    /// ([`Self::unshelve`]), and no link of this opening shows it.
+    pub fn take_back(&self, made: &mut sheet::Making, invite: &str) {
+        self.unshelve(invite);
+        made.revoked(invite);
+    }
+
     /// Seal `invitation` onto `site`'s shelf and resolve to the link that
     /// names it, for a caller that is itself async where the sheet takes the
     /// same answer on its loop ([`Self::take_shelved`]): one shelf, one seal,
@@ -607,7 +661,7 @@ impl Store {
     /// A site's answer to an invitation left on it: the link that names where
     /// it waits, kept for as long as the invitation works, or why it was not
     /// left.
-    fn left_on_shelf(&self, invite: String, result: Result<Shelved, String>) {
+    pub(crate) fn left_on_shelf(&self, invite: String, result: Result<Shelved, String>) {
         if let Ok(shelved) = &result {
             self.shelves
                 .borrow_mut()

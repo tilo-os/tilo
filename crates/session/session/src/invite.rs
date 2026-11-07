@@ -63,7 +63,8 @@ impl Shared {
     /// parts this person may hand out and the links that still work all move
     /// under it.
     pub(crate) fn refresh_invite(&self) {
-        self.follow_shelved();
+        self.directory_store
+            .follow_shelf(&mut self.invite_made.borrow_mut());
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
@@ -71,16 +72,6 @@ impl Shared {
             return;
         }
         self.show_invite();
-    }
-
-    /// Take what became of the invitations being left on a site's shelf: the
-    /// link the sheet shows becomes the short one, or stays the invitation's
-    /// own text when the site would not keep it.
-    fn follow_shelved(&self) {
-        for (invite, shelved) in self.directory_store.take_shelved() {
-            let link = shelved.ok().map(|shelved| shelved.link);
-            self.invite_made.borrow_mut().shelved(&invite, link);
-        }
     }
 
     /// Carry out what the person asked for in the sheet, and show what came of
@@ -159,41 +150,23 @@ impl Shared {
             let name = name.unwrap_or_else(|| recipient.chars().take(8).collect());
             sheet::brings(&role, Some(&name))
         };
-        // The code the sheet draws is the invitation itself: its text spells
-        // those bytes out in base64, which is longer than a code fits. It is
-        // the fallback until the invitation is on its site's shelf, when the
-        // short link replaces both.
-        let code = match tilo_workspace_join::invitation_bytes(link) {
-            Ok(code) => code,
-            Err(reason) => {
-                tracing::warn!(%reason, "the invitation's text is not the invitation's bytes");
-                self.refused("invite-failed", &reason);
-                return;
-            }
-        };
         // The person hands over a link, not an invitation's kilobytes: the
         // signed bytes are sealed under a fresh key and wait on the site this
         // computer is configured with, under a handle, and the link carries
         // the key in its fragment. A computer with no site, or one that will
-        // not keep it, shows the invitation's own text instead.
-        let shelving = crate::directory::community_site().is_some_and(|site| {
-            match self
-                .directory_store
-                .shelve(&invite, code.clone(), expires_at_ns, &site, None)
-            {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(%error, "the invitation was not left on its site");
-                    false
-                }
-            }
-        });
-        let created = sheet::made(&invite, link, code, brings, expires_at_ns);
-        // While the site is being handed the invitation, the sheet waits
-        // rather than drawing a code a whole sheet wide for a link that is
-        // about to be a short one; a site that refuses shows it in its own
-        // text, which every build still takes.
-        self.invite_made.borrow_mut().show(created, shelving);
+        // not keep it, hands over the invitation's own text instead.
+        if let Err(reason) = self.directory_store.hand_over(
+            &mut self.invite_made.borrow_mut(),
+            &invite,
+            link,
+            expires_at_ns,
+            brings,
+            crate::directory::community_site().as_ref(),
+            None,
+        ) {
+            tracing::warn!(%reason, "the invitation's text is not the invitation's bytes");
+            self.refused("invite-failed", &reason);
+        }
     }
 
     /// The name the workspace in front knows `person` by, when it knows one.
@@ -218,11 +191,10 @@ impl Shared {
         {
             Some(Ok(_)) => {
                 // The site's copy goes too: a link handed out before is not
-                // one that waits there to be fetched.
-                self.directory_store.unshelve(invite);
-                // A link taken back is not a link to hand over: the one this
-                // opening showed goes with it, and another stays.
-                self.invite_made.borrow_mut().revoked(invite);
+                // one that waits there to be fetched, and the one this
+                // opening showed goes with it.
+                self.directory_store
+                    .take_back(&mut self.invite_made.borrow_mut(), invite);
                 self.say(word("invite-revoked"), false);
             }
             Some(Err(error)) => {

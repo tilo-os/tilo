@@ -468,10 +468,10 @@ pub(crate) struct BrowserShell {
     pinned: people::PagePeople,
     /// The workspace directory, over the page while it is up: the session's
     /// own sheet, with this page's site, person and workspaces.
-    directory: crate::directory::PageDirectory,
+    directory: crate::over_page::OverPage<crate::directory::PageDirectory>,
     /// The invite sheet, over the page while it is up: the session's own,
     /// made and listed through the workspace's host.
-    invite: crate::invite::PageInvite,
+    invite: crate::over_page::OverPage<crate::invite::PageInvite>,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -626,21 +626,21 @@ impl BrowserShell {
         );
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
-        let directory = crate::directory::PageDirectory::new(
+        let directory = crate::over_page::OverPage::new(crate::directory::PageDirectory::new(
             Rc::clone(&requests),
             offers.directory.as_ref(),
             &chrome.wake,
-        );
+        ));
         // The page's invite sheet, over everything: the session's own, made
         // through the peer's workspace host (`mountDesktop({invite})`).
-        let invite = crate::invite::PageInvite::new(
+        let invite = crate::over_page::OverPage::new(crate::invite::PageInvite::new(
             Rc::clone(&requests),
             offers.invite.as_ref(),
             shared,
             Rc::clone(&chrome.here),
             peer,
             &chrome.wake,
-        );
+        ));
         Self {
             desk,
             top,
