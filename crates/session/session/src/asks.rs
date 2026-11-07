@@ -8,8 +8,8 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK,
-    SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM,
+    SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
@@ -94,11 +94,7 @@ impl Shared {
                     self.handle
                         .liveness_choice(tab, tilo_desktop_surface::LivenessChoice::ForceQuit);
                 }
-                DesktopAsk::ReportProblem => {
-                    tracing::debug!(
-                        "desk asked to report a problem; the session has no part in it yet"
-                    );
-                }
+                DesktopAsk::ReportProblem => self.report_problem(),
             }
         }
         // What the press asked is carried out: what it closed may be raised
@@ -397,6 +393,7 @@ impl Shared {
             SESSION_LOG_OUT => self.power_effect(PowerEffect::LogOut),
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
+            REPORT_PROBLEM => self.report_problem(),
             choice => {
                 // A device another of the person's devices found asks here
                 // to act as them: the banner's own buttons are its answer.
@@ -408,6 +405,24 @@ impl Shared {
                 identity::answered(choice);
             }
         }
+    }
+
+    /// A report about Tilo itself: the window the person works in opens its
+    /// box to the one place this computer sends reports
+    /// ([`crate::feedback`]), with what it picked on it, and the person
+    /// writes what went wrong. A computer told nowhere to send reports says
+    /// so where the person asked, rather than closing on nothing.
+    fn report_problem(&self) {
+        use tilo_desktop_surface::notifications::Notification;
+
+        if self.feedback.is_some() {
+            self.report_from.set(true);
+            return;
+        }
+        self.notices.post(Notification::new(
+            t("session-feedback-nowhere"),
+            t("session-feedback-nowhere-body"),
+        ));
     }
 
     /// The device another of the person's devices found asks here to act as

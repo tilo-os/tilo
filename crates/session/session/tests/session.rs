@@ -608,6 +608,7 @@ mod keys {
     pub const ESCAPE: u32 = 1;
     pub const ENTER: u32 = 28;
     pub const LEFT_META: u32 = 125;
+    pub const R: u32 = 19;
     pub const VOLUME_UP: u32 = 115;
     pub const MUTE: u32 = 113;
     /// What the microphone's key sends.

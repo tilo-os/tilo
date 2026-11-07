@@ -14,6 +14,8 @@
 //!
 //! - [`ScopedEnv`] sets and removes variables and restores every prior value
 //!   when dropped, including while unwinding from a failed assertion.
+//! - [`pin`] sets a variable for the rest of the process, for a fixture every
+//!   test of it shares.
 //! - [`TestHome`] points `HOME` and every XDG base directory at a fresh
 //!   temporary tree.
 //! - [`Fixture`] is a temporary tree a test fills with the files, documents
@@ -544,6 +546,21 @@ impl Drop for ScopedEnv {
     }
 }
 
+/// Set `key` to `value` for the rest of the process, and never restore it.
+///
+/// For a fixture every test of the process reads and whichever of them asks
+/// first builds: an app store a test run installs its apps into once, which
+/// each test's session then reads through the environment.
+///
+/// The write is taken under [`lock`], so it never lands while another thread's
+/// [`ScopedEnv`] is open. Use it for a key no scope names: a scope restores the
+/// value it opened with when it drops, which would put a pinned key back as it
+/// was before. Every variable that belongs to one test is a [`ScopedEnv`].
+pub fn pin(key: impl AsRef<OsStr>, value: impl AsRef<OsStr>) {
+    let _lock = lock();
+    write_var(key.as_ref(), Some(value.as_ref()));
+}
+
 /// A temporary home directory with every XDG base directory inside it.
 ///
 /// Sets `HOME`, `XDG_DATA_HOME`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME`,
@@ -960,6 +977,35 @@ mod tests {
             let _guard = lock();
             assert_eq!(read(KEY), None, "every scope restored the absent value");
         }
+    }
+
+    /// A pinned variable outlives the test that set it, and a scope taken
+    /// after it changes it for its own lifetime and restores the pin.
+    #[test]
+    fn a_pinned_variable_outlives_every_scope_taken_after_it() {
+        const PINNED: &str = "TILO_TEST_ENV_SELFTEST_PINNED";
+        pin(PINNED, "/tmp/shared");
+        assert_eq!(read(PINNED).as_deref(), Some("/tmp/shared"));
+        {
+            let mut env = ScopedEnv::new();
+            env.set(PINNED, "/tmp/one-test");
+            assert_eq!(read(PINNED).as_deref(), Some("/tmp/one-test"));
+        }
+        assert_eq!(
+            read(PINNED).as_deref(),
+            Some("/tmp/shared"),
+            "a scope restores the pinned value, not the one before it"
+        );
+        {
+            let mut env = ScopedEnv::new();
+            env.remove(PINNED);
+            assert_eq!(read(PINNED), None);
+        }
+        assert_eq!(
+            read(PINNED).as_deref(),
+            Some("/tmp/shared"),
+            "a scope's removal is undone too"
+        );
     }
 
     #[test]

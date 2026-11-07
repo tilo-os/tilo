@@ -88,6 +88,7 @@ mod emoji;
 mod engine;
 mod env;
 pub mod fabric;
+mod feedback;
 mod feeds;
 mod file_clipboard;
 mod fs_authority;
@@ -293,6 +294,12 @@ struct Shared {
     /// desk is between two of its own frames, so the window it was over is
     /// named then, by the desk, and never at the keypress.
     send_from: Cell<bool>,
+    /// Whether the shell's "report a problem" was asked for, waiting for the
+    /// pass that asks the window in front to open its box to the one place
+    /// this computer sends reports; and where that place is, when this
+    /// computer is told.
+    report_from: Cell<bool>,
+    feedback: Option<feedback::Destination>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether this session shows quick settings at all: its app is one of the
@@ -1421,12 +1428,16 @@ impl Session {
             uninstall,
             lock_view,
         } = mount::sheets::mount_sheets(&mut compositor, &mut doors, &options);
+        // Where a report about Tilo itself goes, as this computer is told:
+        // the box a report is written in opens to it.
+        let feedback = feedback::Destination::configured();
         // What only the session can do, offered the same way to every
         // surface that shows it: the workspace menu, the Tilo menu, search.
         host_actions::publish(
             &handle,
             mount::sheets::power_offers(&options),
             directory.is_some(),
+            feedback.is_some(),
         );
 
         // The one worker that encodes a recording and writes every capture's
@@ -1775,6 +1786,8 @@ impl Session {
             drives: options.drives,
             asks,
             send_from: Cell::default(),
+            report_from: Cell::default(),
+            feedback,
             intents,
             quick_settings: quick_settings::installed(&options.surfaces),
             panel_asks: Rc::clone(&panel_asks),

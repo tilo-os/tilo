@@ -10,8 +10,8 @@
 //! picture, and whether search may offer it before anything is typed.
 
 use tilo_desktop::desktop_host::{
-    JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART,
-    SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT,
+    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_desktop_surface::{DesktopHandle, HostAction, HostActionSource};
@@ -43,8 +43,10 @@ const SESSION_ROWS: [(PowerEffect, &str, &str); 4] = [
 /// is not offered locking.
 ///
 /// `can_join` is whether a workspace can be joined here at all, which is
-/// whether this session holds the directory a workspace is joined from.
-pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool) {
+/// whether this session holds the directory a workspace is joined from, and
+/// `can_report` is whether this computer is told where a report about Tilo
+/// itself goes.
+pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool, can_report: bool) {
     let t = tilo_desktop_surface::i18n::t;
     let offer =
         |id: &str, title: &str, description: Option<&str>, icon: Icon, source: HostActionSource| {
@@ -104,6 +106,17 @@ pub(crate) fn publish(handle: &DesktopHandle, offers: Offers, can_join: bool) {
     // them: the desk's cards, search and the catalogue agents read all read
     // these rows.
     actions.extend(LaunchpadAction::host_actions(WorkspaceScope::default()));
+    // A report about Tilo itself goes where this computer is told, so a
+    // computer told nowhere is offered no report.
+    if can_report {
+        actions.push(offer(
+            REPORT_PROBLEM,
+            "session-host-report-problem",
+            Some("session-host-report-problem-description"),
+            Icon::Flag,
+            HostActionSource::Session,
+        ));
+    }
     for (effect, id, title) in SESSION_ROWS {
         if offers.offers(effect) {
             actions.push(HostAction {

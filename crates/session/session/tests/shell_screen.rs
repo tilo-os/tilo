@@ -856,3 +856,67 @@ fn a_place_arrives_over_the_frames_between() {
     );
     keep(&mut session, "motion-place-arrived");
 }
+
+/// An app the desk opens stands on the framed canvas: the canvas draws a window group by the
+/// place the arrangement holds for it, so a group the desk launched with no place of its own is
+/// a window the person opened and never sees. The desk gives every group it holds a place, and
+/// the opened app's window is on screen.
+#[test]
+fn an_app_the_desk_opens_stands_on_the_framed_canvas() {
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _note) = session_at(WIDTH, HEIGHT);
+    until(&mut session, "the bar's controls", |session| {
+        on_screen(session, "Notifications").is_some()
+    });
+    show_preset(&mut session, "Frames");
+    until(&mut session, "the canvas's entry", |session| {
+        on_screen(session, CANVAS_ENTRY).is_some()
+    });
+
+    // Nothing stands on the canvas yet: a fresh desk holds no window.
+    assert!(
+        common::places(&session).is_empty(),
+        "a fresh desk has nothing placed: {:?}",
+        common::places(&session)
+    );
+
+    // The person opens an app, as the dock or the launcher does.
+    session
+        .invoke(
+            CHROME,
+            "open-app",
+            json!({"app": "so.tilo.lang.notes"})
+                .as_object()
+                .expect("an object"),
+        )
+        .expect("the app opens on the desk");
+
+    // Every window the desk holds stands on the canvas, and the app's window is on screen.
+    until(&mut session, "the opened window on the canvas", |session| {
+        !common::places(session).is_empty()
+    });
+    let drawn = session.handle().read(|tree| {
+        tree.active_workspace().is_some_and(|workspace| {
+            workspace
+                .strips
+                .iter()
+                .flat_map(|strip| &strip.window_groups)
+                .all(|group| workspace.arrangement.place_of(group.id).is_some())
+        })
+    });
+    assert!(
+        drawn,
+        "every window the desk holds stands on the canvas: {:?}",
+        common::places(&session)
+    );
+    // And the shell lays the window's frame on the display, not off it: the place's name is
+    // what a window's frame is called, and the canvas draws it where its point is.
+    let name = common::places(&session)
+        .first()
+        .map(|place| place.name.clone())
+        .expect("the opened window's place");
+    until(&mut session, &format!("{name} on the canvas"), |session| {
+        on_screen(session, &name).is_some()
+    });
+    keep(&mut session, "frames-opened-app");
+}

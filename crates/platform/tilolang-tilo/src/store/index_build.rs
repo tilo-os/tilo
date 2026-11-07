@@ -115,11 +115,31 @@ impl TiloStore {
     }
 
     /// [`Self::poll_index`], waiting for the indexes being built: for a host without frames.
+    /// What a wait is for is every index the store reads from: a chunk read for an index that
+    /// waits for its record starts the build of that index ([`Inner::bring_up`]), and that
+    /// build is waited for too.
     pub fn wait_index(&self) -> bool {
         self.take_in_builds(true)
     }
 
     fn take_in_builds(&self, wait: bool) -> bool {
+        let mut any = false;
+        loop {
+            any |= self.take_in_round(wait);
+            let building = self
+                .held()
+                .apps
+                .values()
+                .any(|held| matches!(held.state, IndexState::Building(_)));
+            if !wait || !building {
+                return any;
+            }
+        }
+    }
+
+    /// One pass of [`Self::take_in_builds`]: the builds that ended, the chunks no index read
+    /// from reflects, and the indexes still waiting for their record.
+    fn take_in_round(&self, wait: bool) -> bool {
         let mut inner = self.mutate();
         let apps: Vec<AppId> = inner.apps.keys().cloned().collect();
         let mut any = false;

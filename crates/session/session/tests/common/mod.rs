@@ -496,8 +496,8 @@ pub fn seeded_session(root: &Path) -> Session {
 ///
 /// The store lives under the run's temporary directory (`$TMPDIR`), which the test harness
 /// gives the run and removes with it, so a process builds the apps once. `TILO_APPS_DATA_DIR`
-/// names it for the rest of the process, behind the environment lock the other scopes take, so
-/// a test that sets its own store in a scope takes it back on drop.
+/// names it for the rest of the process ([`tilo_test_env::pin`], written under the environment
+/// lock the scopes take): the store outlives every test that reads it, as a device's does.
 ///
 /// # Panics
 /// A package does not build or install, or the host has no Tilo runtime to run them on.
@@ -513,13 +513,10 @@ pub fn app_store() -> &'static Path {
             "every app of the development session is installed: {installed:?}"
         );
         // The store the environment names is the one the session's launcher reads, and the one
-        // its connector planning plans from. Held behind the environment lock so no scope that
-        // sets the variable is running as this is written.
-        {
-            let _lock = tilo_test_env::lock();
-            // SAFETY: the lock is the one every scope that touches the environment holds.
-            unsafe { std::env::set_var("TILO_APPS_DATA_DIR", &root) };
-        }
+        // its connector planning plans from. Pinned for the rest of the process, as the store is:
+        // every later test's session reads the same one, and a scope that names its own for a
+        // test is taken after it and restores it.
+        tilo_test_env::pin("TILO_APPS_DATA_DIR", &root);
         root
     })
 }

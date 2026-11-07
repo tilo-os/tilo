@@ -93,7 +93,7 @@ pub fn install(store: &Path, scratch: &Path) -> Vec<String> {
                         Ok(package_store::Admission {
                             pinned: false,
                             attested_by: String::new(),
-                            source: source.clone(),
+                            source,
                             held: false,
                         })
                     },

@@ -924,3 +924,101 @@ fn resources_standing_as_content_stand_on_the_spaces_canvas() {
         Some(&Value::Text("x-terminal".to_owned()))
     );
 }
+
+// ----- A notice's line, as the banner says it ------------------------------------------------
+
+/// A notice the session wrote on the desk, and the banner pointed at it: `key`'s title, `body`
+/// and sender, as `session.notice` carries them.
+fn notice_shown(r: &Replica, key: &str, body: &str, origin: &str) {
+    let desk = r.host.root_record(APP, "4jk2lkpt").unwrap();
+    let meta = r.host.package(APP).unwrap().meta;
+    r.host
+        .runtime()
+        .apply_origin(
+            "session",
+            vec![
+                OriginWrite::Insert {
+                    owner: desk.clone(),
+                    field: "3vvnnztw".to_owned(),
+                    ty: "zk7pzrt2".to_owned(),
+                    fields: vec![
+                        ("key".to_owned(), Value::text(key)),
+                        ("title".to_owned(), Value::text("You joined Lounge")),
+                        ("body".to_owned(), Value::text(body)),
+                        ("origin_app".to_owned(), Value::text(origin)),
+                        ("kind".to_owned(), Value::text("info")),
+                        ("read".to_owned(), Value::Bool(false)),
+                    ],
+                },
+                OriginWrite::Set {
+                    target: desk,
+                    fields: vec![(
+                        crate::fixtures::field_id(&meta, "Desk", "banner"),
+                        Value::text(key),
+                    )],
+                },
+            ],
+            None,
+        )
+        .expect("the session writes its own notice on the desk");
+}
+
+/// What the desk's banner says under its title, as the desk lays it out: the message the banner
+/// carries on a roomy desk, else the row's secondary line on a compact one.
+fn banner_line_of(r: &Replica) -> String {
+    let mut view = desk_view(r);
+    // A desk with room for the toolkit's banner: the width a display's window has.
+    view.set_space("", tilolang_runtime::Space::from_rem(90.0, 50.0));
+    view.poll_patches().unwrap();
+    if let Some(banner) = nodes(&view, "ui.Banner").first() {
+        if let Some(Value::Text(message)) = banner.props.get("message") {
+            return message.clone();
+        }
+    }
+    let row = nodes(&view, "ui.ListRow")
+        .into_iter()
+        .find(|row| row.props.get("secondary").is_some())
+        .unwrap_or_else(|| panic!("the desk shows the notice: {:?}", view.tree()));
+    match row.props.get("secondary") {
+        Some(Value::Text(secondary)) => secondary.clone(),
+        other => panic!("the notice's line is text: {other:?}"),
+    }
+}
+
+/// The banner's line is every part the notice has, joined once: the session's own notice — one
+/// with no app behind it — says what it says and trails no separator, an app's notice says what
+/// it says and then who sent it, and one that says nothing is its sender alone. A part that is
+/// not there is not a part, never an empty one joined in.
+#[test]
+fn a_banners_line_joins_only_the_parts_the_notice_has() {
+    let mut r = workspace();
+    r.commit();
+    notice_shown(
+        &r,
+        "n-session",
+        "It is open now, with everything its people keep in it.",
+        "",
+    );
+    r.commit();
+    assert_eq!(
+        banner_line_of(&r),
+        "It is open now, with everything its people keep in it.",
+        "a notice with no sender trails no separator"
+    );
+
+    notice_shown(&r, "n-app", "From Ada", "Mail");
+    r.commit();
+    assert_eq!(
+        banner_line_of(&r),
+        "From Ada — Mail",
+        "what it says, then who sent it"
+    );
+
+    notice_shown(&r, "n-empty", "", "Mail");
+    r.commit();
+    assert_eq!(
+        banner_line_of(&r),
+        "Mail",
+        "a notice that says nothing is its sender alone"
+    );
+}

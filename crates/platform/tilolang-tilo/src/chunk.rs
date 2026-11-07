@@ -44,7 +44,7 @@ use std::sync::Arc;
 
 use automerge::ChangeHash;
 use automerge::transaction::Transactable as _;
-use automerge::{ObjType, ReadDoc, Value as AmValue};
+use automerge::{ReadDoc, Value as AmValue};
 
 use tilo_actions::ActionError;
 
@@ -119,44 +119,45 @@ impl Placement {
     #[must_use]
     pub fn read(doc: &Doc) -> Self {
         let mut placement = Self::default();
-        let Some(manifest) = map_at(doc, &automerge::ROOT, CHUNKS_KEY) else {
-            return placement;
-        };
-        if let Some((AmValue::Scalar(scalar), _)) = doc.get(&manifest, "next").ok().flatten()
-            && let automerge::ScalarValue::Uint(next) = scalar.as_ref()
-        {
-            placement.next = *next;
-        }
-        if let Some(of) = map_at(doc, &manifest, "of") {
-            for id in doc.keys(&of) {
-                if let Some((AmValue::Scalar(scalar), _)) = doc.get(&of, &id).ok().flatten()
-                    && let automerge::ScalarValue::Uint(chunk) = scalar.as_ref()
-                {
-                    placement.of.insert(id, *chunk);
+        // Every copy of the manifest, and of each map in it, a replica made before it met the
+        // others: the record keeps one of each, and what the others place is placed just the
+        // same ([`crate::containers`]). The last copy read is the one the record keeps, which
+        // is what a write goes to.
+        for manifest in crate::containers::maps(doc, &automerge::ROOT, CHUNKS_KEY) {
+            if let Some((AmValue::Scalar(scalar), _)) = doc.get(&manifest, "next").ok().flatten()
+                && let automerge::ScalarValue::Uint(next) = scalar.as_ref()
+            {
+                placement.next = placement.next.max(*next);
+            }
+            for of in crate::containers::maps(doc, &manifest, "of") {
+                for id in doc.keys(&of) {
+                    if let Some((AmValue::Scalar(scalar), _)) = doc.get(&of, &id).ok().flatten()
+                        && let automerge::ScalarValue::Uint(chunk) = scalar.as_ref()
+                    {
+                        placement.of.insert(id, *chunk);
+                    }
                 }
             }
-        }
-        if let Some(runs) = map_at(doc, &manifest, "runs") {
-            for holder in doc.keys(&runs) {
-                let Some(fields) = map_at(doc, &runs, &holder) else {
-                    continue;
-                };
-                for field in doc.keys(&fields) {
-                    let Some(chunks) = map_at(doc, &fields, &field) else {
-                        continue;
-                    };
-                    for name in doc.keys(&chunks) {
-                        let Ok(chunk) = name.parse::<ChunkNo>() else {
-                            continue;
-                        };
-                        let Some(run) = read_run(doc, &chunks, &name) else {
-                            continue;
-                        };
-                        placement
-                            .runs
-                            .entry((holder.clone(), field.clone()))
-                            .or_default()
-                            .insert(chunk, run);
+            for runs in crate::containers::maps(doc, &manifest, "runs") {
+                for holder in doc.keys(&runs) {
+                    for fields in crate::containers::maps(doc, &runs, &holder) {
+                        for field in doc.keys(&fields) {
+                            for chunks in crate::containers::maps(doc, &fields, &field) {
+                                for name in doc.keys(&chunks) {
+                                    let Ok(chunk) = name.parse::<ChunkNo>() else {
+                                        continue;
+                                    };
+                                    let Some(run) = read_run(doc, &chunks, &name) else {
+                                        continue;
+                                    };
+                                    placement
+                                        .runs
+                                        .entry((holder.clone(), field.clone()))
+                                        .or_default()
+                                        .insert(chunk, run);
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -443,24 +444,10 @@ fn read_run(doc: &Doc, chunks: &automerge::ObjId, number: &str) -> Option<Run> {
     })
 }
 
-/// The map at the root of the record that holds the manifest, made when absent.
+/// The map at the root of the record that holds the manifest, made when absent; the copies of
+/// it a replica made are folded into the one the record keeps.
 fn manifest(doc: &mut Doc) -> Result<automerge::ObjId, ActionError> {
-    match doc.get(&automerge::ROOT, CHUNKS_KEY)? {
-        Some((AmValue::Object(ObjType::Map), held)) => Ok(held),
-        _ => Ok(doc.put_object(&automerge::ROOT, CHUNKS_KEY, ObjType::Map)?),
-    }
-}
-
-/// The map under `key` of `parent`, made when absent.
-fn ensure_map(
-    doc: &mut Doc,
-    parent: &automerge::ObjId,
-    key: &str,
-) -> Result<automerge::ObjId, ActionError> {
-    match doc.get(parent, key)? {
-        Some((AmValue::Object(ObjType::Map), held)) => Ok(held),
-        _ => Ok(doc.put_object(parent, key, ObjType::Map)?),
-    }
+    crate::containers::single(doc, &automerge::ROOT, CHUNKS_KEY)
 }
 
 /// Write in the manifest that chunk `chunk` exists: the number the next new chunk takes is past
@@ -496,7 +483,7 @@ fn note_next(
 pub fn place(doc: &mut Doc, id: &str, chunk: ChunkNo) -> Result<(), ActionError> {
     let manifest = manifest(doc)?;
     note_next(doc, &manifest, chunk)?;
-    let of = ensure_map(doc, &manifest, "of")?;
+    let of = crate::containers::single(doc, &manifest, "of")?;
     doc.put(&of, id, chunk)?;
     Ok(())
 }
@@ -516,10 +503,10 @@ pub fn run(
 ) -> Result<(), ActionError> {
     let manifest = manifest(doc)?;
     note_next(doc, &manifest, chunk)?;
-    let runs = ensure_map(doc, &manifest, "runs")?;
-    let fields = ensure_map(doc, &runs, holder)?;
-    let chunks = ensure_map(doc, &fields, field)?;
-    let held = ensure_map(doc, &chunks, &chunk.to_string())?;
+    let runs = crate::containers::single(doc, &manifest, "runs")?;
+    let fields = crate::containers::single(doc, &runs, holder)?;
+    let chunks = crate::containers::single(doc, &fields, field)?;
+    let held = crate::containers::single(doc, &chunks, &chunk.to_string())?;
     doc.put(&held, "last", last)?;
     doc.put(&held, "len", len)?;
     Ok(())
@@ -535,7 +522,7 @@ pub fn for_resource(placement: &Placement, parent: Option<&str>) -> ChunkNo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use automerge::AutoCommit;
+    use automerge::{AutoCommit, ObjType};
 
     fn record() -> Doc {
         AutoCommit::new()

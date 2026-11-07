@@ -77,7 +77,8 @@ const HOST_KEY: &str = "host:";
 
 pub use crate::host_contract::{
     DELETE_WORKSPACE, DesktopAsk, DesktopRules, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
-    SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    REPORT_PROBLEM, SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN,
+    WORKSPACE_SETTINGS,
 };
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's

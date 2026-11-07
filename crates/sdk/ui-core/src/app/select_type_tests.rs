@@ -49,15 +49,52 @@ fn a_key_nothing_took_over_a_selection_opens_the_box_with_it() {
     assert!(app.handle_unconsumed_typed_key(&typed("s")));
     set_send_host_available(false);
     let opened = take_open_send_box().expect("the box was asked for");
-    assert_eq!(opened.2.as_deref(), Some("s"), "the key begins the message");
+    assert_eq!(
+        opened.draft.as_deref(),
+        Some("s"),
+        "the key begins the message"
+    );
     assert_eq!(
         opened
-            .0
+            .about
             .as_ref()
             .and_then(|about| about.anchor.place.clone()),
         Some(tilo_actions::SelectionPlace::item("row-3"))
     );
     assert!(take_open_send_box().is_none(), "asked for once");
+}
+
+/// A report asked of this window is a box about what it picked, addressed to
+/// the place the shell named: the person writes what went wrong and sends it.
+#[cfg(feature = "native")]
+#[test]
+fn a_report_asked_of_a_window_opens_the_box_about_what_it_picked() {
+    use crate::floating_surface::{FloatingSurfaceHostMessage, Recipient, RecipientKind};
+
+    let _ = take_open_send_box();
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(SelectedRow));
+    app.init_layout();
+    let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+    assert!(
+        app.apply_floating_host_messages(vec![FloatingSurfaceHostMessage::ShareSelection {
+            to: vec![destination.clone()],
+        }])
+    );
+    let opened = take_open_send_box().expect("the box was asked for");
+    assert_eq!(
+        opened
+            .about
+            .as_ref()
+            .and_then(|about| about.anchor.place.clone()),
+        Some(tilo_actions::SelectionPlace::item("row-3")),
+        "what the window picked goes with the report"
+    );
+    assert_eq!(
+        opened.to,
+        vec![destination],
+        "and it goes where the shell said"
+    );
+    assert_eq!(opened.draft, None, "the words are left to write");
 }
 
 #[cfg(feature = "native")]

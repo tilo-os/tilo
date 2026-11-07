@@ -172,12 +172,11 @@ view banner_row(d: Desk, n: Notice) {
     }
 }
 
-/// What a banner says under its title: what it says, and who sent it.
+/// What a banner says under its title: what it says, and who sent it. The parts are joined only
+/// when both are there, so a notice with no sender (the session's own) never trails a separator
+/// after what it says, and one saying nothing is the sender alone.
 fn banner_line(n: Notice) -> Text {
-    if n.body == "" {
-        return n.origin_app
-    }
-    return "{n.body} — {n.origin_app}"
+    return [n.body, n.origin_app].filter(part -> part != "").join(" — ")
 }
 
 /// The actions `n` offers, in its sender's order.

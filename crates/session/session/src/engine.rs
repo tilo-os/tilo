@@ -948,7 +948,9 @@ impl Engine {
     /// record there become the workspace's own, hosted here, instead of what
     /// this desk alone keeps. An earlier session's workspace is founded the
     /// same way, once. `endpoint` is where other devices reach this one, which
-    /// the workspace's record keeps as its own host's address.
+    /// the workspace's record keeps as its own host's address; a session with
+    /// none founds the workspace without one, and its own host is named the
+    /// next time this device has an address.
     ///
     /// A workspace this device may not own, or one that could not be
     /// published, stays the desk's own: it is not asked for again until a
@@ -967,21 +969,23 @@ impl Engine {
         if !identity.device_cert.capabilities.can_own_workspaces {
             return;
         }
-        // Without somewhere other devices reach this one, the workspace is
-        // not founded: a workspace says where its own host is reached.
-        let Some(endpoint) = endpoint else {
-            return;
-        };
-        let host_hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
-            Ok(hint) => hint,
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    %workspace,
-                    "this device's own host of the workspace could not be named"
-                );
-                return;
-            }
+        // A session with nowhere other devices reach this one founds the
+        // workspace all the same: its records and its governance are held
+        // here, and its own host's address is named in the record once this
+        // device has one ([`Self::name_own_hosts`]).
+        let host_hint = match endpoint {
+            Some(endpoint) => match self.own_host_hint(&workspace.to_string(), endpoint) {
+                Ok(hint) => Some(hint),
+                Err(error) => {
+                    tracing::warn!(
+                        %error,
+                        %workspace,
+                        "this device's own host of the workspace could not be named"
+                    );
+                    return;
+                }
+            },
+            None => None,
         };
         match self.owner.create_workspace(
             workspace,
@@ -1261,6 +1265,32 @@ mod tests {
         assert_eq!(
             hint.host.device_public_key, host,
             "the host it names is this device, whose host is in this process"
+        );
+        engine
+            .check_custody(&engine.owner, workspace)
+            .expect("its own member acts there, its host being in this process");
+    }
+
+    #[test]
+    fn a_workspace_this_device_hosts_without_an_address_commits_here() {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk", None);
+
+        assert!(
+            engine.holds(workspace),
+            "a session with nowhere other devices reach it founds its desk's workspace"
+        );
+        assert!(
+            engine
+                .owner
+                .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+                .expect("the workspace is held here"),
+            "its record names no host to reach until this device has one"
         );
         engine
             .check_custody(&engine.owner, workspace)
