@@ -1828,6 +1828,51 @@ fn a_selection_delegate_wrapped_in_its_swipe_takes_its_selection() {
     assert_eq!(selected, [false, true, false], "only the chosen row is");
 }
 
+/// A finger's tap on a row wrapped in its swipe is a click on that row all the same: the swipe
+/// holds the press, the finger lifts where it came down, and the list takes the row.
+#[test]
+fn a_tap_on_a_row_wrapped_in_its_swipe_is_its_click() {
+    let mut list = VirtualList::from_items(
+        vec![0_u32, 1, 2],
+        40.0,
+        |item| *item,
+        |item, _, _| {
+            let row = Box::new(crate::widget::Text::new(&format!("row {item}"))) as Element;
+            Box::new(crate::widget::SwipeRow::new(row, None, None)) as Element
+        },
+    )
+    .unwrap()
+    .with_viewport_height(200.0);
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let at = list.row_rect(&1).expect("the row is placed").center();
+    let send = |list: &mut VirtualList<VecListModel<u32, u32>>, event: &WindowEvent| {
+        Dispatch::new()
+            .layout(&taffy, node)
+            .send(list, event)
+            .handled
+    };
+    let touch = |phase, at: Point| {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(at.x, at.y),
+            force: None,
+            id: 7,
+        })
+    };
+    // The finger comes down on the row and lifts where it came down: the platform turns that
+    // into the pointer's press and release at the same place.
+    send(&mut list, &touch(winit::event::TouchPhase::Started, at));
+    send(&mut list, &crate::synthetic_input::cursor_moved(at.x, at.y));
+    send(&mut list, &crate::synthetic_input::mouse_press());
+    send(&mut list, &crate::synthetic_input::mouse_release());
+    send(&mut list, &touch(winit::event::TouchPhase::Ended, at));
+    assert!(
+        list.selection().is_selected(&1),
+        "the tapped row is the list's choice, not the swipe's"
+    );
+}
+
 /// A change the person just made moves the rows it displaced from where
 /// they stood (`motion::ListChange`) and fades a row they added in; a
 /// change nobody just made (a sync) and a shortcut's result land at
