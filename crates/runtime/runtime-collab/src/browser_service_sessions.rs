@@ -25,10 +25,10 @@ pub const MAX_BROWSER_SERVICE_SESSIONS: usize = 128;
 /// The longest account secret custody seals or releases.
 pub const MAX_ACCOUNT_SECRET_BYTES: usize = 2048;
 
-#[derive(Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum BrowserServiceSessionCommand {
-    List,
+    List {},
     Resolve {
         id: String,
         setup_binding: String,
@@ -52,7 +52,7 @@ pub enum BrowserServiceSessionCommand {
 impl std::fmt::Debug for BrowserServiceSessionCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::List => f.write_str("List"),
+            Self::List {} => f.write_str("List"),
             Self::Resolve { id, .. } => f.debug_struct("Resolve").field("id", id).finish(),
             Self::Forget { id, .. } => f.debug_struct("Forget").field("id", id).finish(),
             Self::StoreAccountSecret { account, .. } => f
@@ -64,42 +64,6 @@ impl std::fmt::Debug for BrowserServiceSessionCommand {
                 .field("account", account)
                 .finish(),
         }
-    }
-}
-impl<'de> Deserialize<'de> for BrowserServiceSessionCommand {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        // An internally tagged unit variant ignores extra fields in Serde.
-        // Use an empty struct variant so List has the same strict wire contract
-        // as Resolve, including refusal of caller-supplied identity claims.
-        #[derive(Deserialize)]
-        #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
-        enum Wire {
-            List {},
-            Resolve {
-                id: String,
-                setup_binding: String,
-            },
-            Forget {
-                id: String,
-                setup_binding: String,
-            },
-            StoreAccountSecret {
-                account: String,
-                password: Zeroizing<String>,
-            },
-            ReleaseAccountSecret {
-                account: String,
-            },
-        }
-        Ok(match Wire::deserialize(deserializer)? {
-            Wire::List {} => Self::List,
-            Wire::Resolve { id, setup_binding } => Self::Resolve { id, setup_binding },
-            Wire::Forget { id, setup_binding } => Self::Forget { id, setup_binding },
-            Wire::StoreAccountSecret { account, password } => {
-                Self::StoreAccountSecret { account, password }
-            }
-            Wire::ReleaseAccountSecret { account } => Self::ReleaseAccountSecret { account },
-        })
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -155,7 +119,7 @@ fn secret(value: &str) -> bool {
 impl BrowserServiceSessionCommand {
     pub fn valid(&self) -> bool {
         match self {
-            Self::List => true,
+            Self::List {} => true,
             Self::Resolve {
                 id: value,
                 setup_binding,
@@ -177,7 +141,7 @@ impl BrowserServiceSessionCommand {
     pub fn browser_only(&self) -> bool {
         matches!(
             self,
-            Self::List | Self::Resolve { .. } | Self::Forget { .. }
+            Self::List {} | Self::Resolve { .. } | Self::Forget { .. }
         )
     }
     /// # Errors
@@ -232,7 +196,7 @@ impl BrowserServiceSessionReply {
     }
     pub fn matches(&self, command: &BrowserServiceSessionCommand) -> bool {
         match (self, command) {
-            (Self::List { .. }, BrowserServiceSessionCommand::List) => self.valid(),
+            (Self::List { .. }, BrowserServiceSessionCommand::List {}) => self.valid(),
             (
                 Self::Resolved { session },
                 BrowserServiceSessionCommand::Resolve { id, setup_binding },
@@ -410,7 +374,7 @@ mod tests {
             setup_binding: "other-binding".into()
         }));
         assert!(!format!("{decoded:?}").contains("synthetic-private-value"));
-        assert!(!decoded.matches(&BrowserServiceSessionCommand::List));
+        assert!(!decoded.matches(&BrowserServiceSessionCommand::List {}));
     }
     #[test]
     fn bounds_and_deduplicates_public_descriptors() {

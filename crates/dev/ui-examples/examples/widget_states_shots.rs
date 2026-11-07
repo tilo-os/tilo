@@ -1900,7 +1900,8 @@ pub fn run(args: &[String]) {
         std::process::exit(2);
     }
     // An optional second argument names the pages to render, comma
-    // separated (`lists,tables`); without it every page renders.
+    // separated (`lists,tables,overlays,modal`); without it every page
+    // renders.
     let only: Option<Vec<String>> = args
         .get(1)
         .map(|pages| pages.split(',').map(str::to_owned).collect());
@@ -1918,6 +1919,19 @@ pub fn run(args: &[String]) {
         if wanted("tables") {
             block_page(&theme, &table_blocks(), &file("tables"));
             block_page_at(&theme, &table_blocks(), &file("tables-narrow"), 800.0);
+        }
+        if wanted("overlays") {
+            overlays(&theme, &file("overlays"), (1280, 640));
+            overlays(&theme, &file("overlays-narrow"), (800, 600));
+            overlays(
+                &theme.clone().with_reduce_transparency(true),
+                &file("overlays-opaque"),
+                (1280, 640),
+            );
+        }
+        if wanted("modal") {
+            modal(&theme, &file("modal"));
+            modal_pages(&theme, &file("modal-question"), &file("modal-tall"));
         }
         if only.is_some() {
             continue;
@@ -1945,15 +1959,6 @@ pub fn run(args: &[String]) {
             &editor_blocks(),
             &file("editor-large"),
         );
-        overlays(&theme, &file("overlays"), (1280, 640));
-        overlays(&theme, &file("overlays-narrow"), (800, 600));
-        overlays(
-            &theme.clone().with_reduce_transparency(true),
-            &file("overlays-opaque"),
-            (1280, 640),
-        );
-        modal(&theme, &file("modal"));
-        modal_pages(&theme, &file("modal-question"), &file("modal-tall"));
     }
 }
 

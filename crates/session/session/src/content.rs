@@ -1,33 +1,15 @@
-//! The content a record references: the bytes an app's record names by hash,
-//! kept on this device beside the workspace's records, and carried to the
-//! workspace's other devices on the topic the records travel.
-//!
-//! A record holds the address of its binaries — an attachment in a message, a
-//! picture in a document — never the bytes. The [broker's
-//! service](tilo_action_broker::record_content) keeps the rules: content is
-//! verified against its address, possessing an address never grants access to
-//! it, and nothing arrives unasked. What a session supplies to that service is
-//! here:
-//!
-//! - [`Shelf`]: this device's content store under the session's state, a
-//!   directory per workspace and app, so content outlives the session that
-//!   stored it as the records beside it do, and a device that starts again
-//!   reads what it kept;
-//! - [`Peers`]: the workspace's topic as the record's route. A want is
-//!   published there for the members that keep the content to answer; an
-//!   answer names the one device that asked and goes to it directly when the
-//!   workspace admits that device, else through the workspace's hosts, which
-//!   hand it to that device alone and keep nothing. On the topic, a message a
-//!   member sends is authenticated by the transport and admitted by the
-//!   workspace's policy before it gets here, so content travels between the
-//!   workspace's members as its records do — encrypted on the wire, and
-//!   fetched by a member that joins later from whichever device keeps it;
-//! - the queue: members' asks and answers reach [`RouteContent`] from a worker
-//!   thread, never from the session's loop, which walks no path;
-//! - the offload route: an action that runs on another of the person's devices
-//!   is measured here and its output is kept here, in the invoking app's scope,
-//!   so what a run elsewhere produced is read by the same addresses a run here
-//!   returns ([`Plane::media`], [`Plane::fetch`]).
+//! The content a record references: the bytes an app's record names by hash, kept
+//! on this device beside the workspace's records, and carried to the workspace's
+//! other devices on the topic the records travel.
+//! A record holds the address of its binaries, never the bytes. The
+//! [broker's service](tilo_action_broker::record_content) keeps the rules: content
+//! is verified against its address, possessing an address never grants access to
+//! it, and nothing arrives unasked. This module supplies what a session adds:
+//! [`Shelf`], a store under the session's state, a directory per workspace and app,
+//! so content outlives the session that stored it; [`Peers`], the workspace's topic
+//! as the record's route, where a want is published and an answer goes to the one
+//! device that asked; and the queue, which reaches [`RouteContent`] from a worker
+//! thread, never from the session's loop.
 
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};

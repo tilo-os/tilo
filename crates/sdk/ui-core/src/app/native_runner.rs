@@ -1,10 +1,6 @@
-//! The native event-loop runner: the winit window, render thread, AccessKit
-//! adapter and surface host around [`App`]. Compiled with the `native`
-//! feature; [`App::run`] is its entry point.
-//!
-//! It lives beside `App` rather than in [`crate::native`] because it drives
-//! `App`'s private state directly; application semantics remain on `App` and
-//! its responsibility-specific implementation units.
+//! The native event-loop runner: the winit window, render thread, AccessKit adapter and surface
+//! host around [`App`]. It lives beside `App` because it drives its private state; application
+//! semantics stay on `App`. Compiled with the `native` feature.
 
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -60,15 +56,13 @@ fn create_accessibility_adapter(
     }
 }
 
-/// How often an occluded window runs the passes nobody asks it to draw.
-/// Long enough that a window left behind another app costs nothing, short
-/// enough that work queued behind an occlusion is answered while the person
-/// waits for it.
+/// How often an occluded window runs passes nobody asks it to draw: idle enough to cost nothing,
+/// prompt enough to answer work queued behind the occlusion.
 const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
 
-/// wgpu `RenderContext`, `RenderSurface`, and `vello::Renderer` live on a
-/// dedicated worker thread (see [`crate::render_thread`]) — this struct
-/// keeps only the channel ends to ship frames and recycle scene buffers.
+/// wgpu's context, surface and vello renderer live on a dedicated worker thread
+/// ([`crate::render_thread`]); this struct keeps only the channel ends that ship frames and recycle
+/// scene buffers.
 struct AppHandler {
     app: App,
     clipboard_attachment: Option<crate::clipboard::ClipboardAttachment>,
@@ -102,33 +96,29 @@ struct AppHandler {
     /// What `suspended` took back from the render worker, for the next
     /// surface.
     suspended_renderer: Option<PreparedRenderer>,
-    /// A real, separate fullscreen output for a root widget's audience view.
-    /// It is deliberately not modelled as a floating surface: it has no
-    /// desktop-space proxy or compositor handoff and is always destroyed
-    /// before its renderer/window during stop and app teardown.
+    /// A real, separate fullscreen output for a root widget's audience view: not a floating
+    /// surface, so it has no desktop-space proxy or compositor handoff, and it is always destroyed
+    /// before its renderer and window.
     audience_presentation: Option<AudiencePresentationWindow>,
     floating_windows: Vec<NativeFloatingWindow>,
-    /// `None` until `resumed` creates the window (must be built while
-    /// hidden); lazy, so the hot path pays nothing with no screen reader
-    /// running.
+    /// `None` until `resumed` creates the window (it must be built hidden); lazy, so no screen
+    /// reader means no cost.
     a11y_adapter: Option<PrimaryA11yAdapter>,
     /// Also carries host-chrome requests back into the loop.
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
     ime_state: Option<NativeImeWindowState>,
-    /// A real preedit belongs to the primary Wayland text-input resource.
-    /// During an exact compositor-authorised Float handoff, keep that
-    /// protocol resource active and route only its keyboard/IME events to the
-    /// same retained editor now painted in the secondary surface.
+    /// A real preedit belongs to the primary Wayland text-input resource: during an exact Float
+    /// handoff keep that resource active and route only its keyboard/IME events to the retained
+    /// editor now painted in the secondary surface.
     primary_preedit_active: bool,
     /// Winit emits an empty preedit before a commit from the same Wayland
     /// `done` batch. Retire at loop idle only if no commit followed it.
     primary_preedit_clear_pending: bool,
     floating_ime_continuation: Option<String>,
-    /// Reverse counterpart: an exact suspended child keeps the real
-    /// text-input protocol until its live composition commits, while its
-    /// keyboard/IME events reach the reattached primary editor.
+    /// The reverse: an exactly suspended child keeps the real text-input protocol until its
+    /// composition commits, while its keyboard/IME events reach the reattached primary editor.
     floating_ime_return_continuation: Option<String>,
     private_input: private_text_input::Bridge,
     /// Wheel deltas of this wake, routed as one event ([`wheel_batch`]).
@@ -146,9 +136,8 @@ struct AppHandler {
     /// A view panned in the last frame: the next is drawn as layers
     /// (`crate::strip_layers`), so its worker pans the view by copying.
     panning: bool,
-    /// The generation of the last frame drawn as layers, and whether it was
-    /// the frame submitted just before: what the next one's chrome damage is
-    /// measured from.
+    /// The generation of the last frame drawn as layers and whether it was the frame submitted just
+    /// before: what the next one's chrome damage is measured from.
     layers_drawn: (u64, bool),
     /// The collaborators' marks painted over the widgets, as last submitted,
     /// so a frame damages only the marks that changed.
@@ -161,9 +150,8 @@ struct AppHandler {
     /// `None` waits for the next primary submission; `Some(sequence)` waits
     /// until that exact-or-newer frame is reported Presented by the worker.
     floating_source_clear_frames: std::collections::HashMap<String, Option<u64>>,
-    /// Reverse ownership gate. A suspended native surface remains covered by
-    /// its compositor-frozen final frame until one primary app frame with the
-    /// reattached widget is reported Presented.
+    /// Reverse ownership gate: a suspended native surface stays covered by its compositor-frozen
+    /// final frame until one primary frame with the reattached widget is reported Presented.
     floating_destination_present_frames: std::collections::HashMap<String, Option<u64>>,
     /// Maps one-finger taps onto the existing pointer event contract so every
     /// standard and app-local control gets touch without bespoke branches.
@@ -201,9 +189,8 @@ struct AppHandler {
     /// Lives for the event loop so an idle app still hears Theme Studio
     /// and compositor appearance writes.
     _settings_watch: Option<settings_store::watch::SettingsWatch>,
-    /// What this window held the launch's place for arrived (its
-    /// workspace's join): the loop ends with the window kept for the launch
-    /// to open the app in.
+    /// What this window held the launch's place for arrived (its workspace's join): the loop ends
+    /// with the window kept for the launch to open the app in.
     handing_over: bool,
     /// The window is done: the last window of the process ends its loop, any
     /// other closes alone ([`process_windows`]).
@@ -252,11 +239,9 @@ impl AppHandler {
 }
 
 impl AppHandler {
-    /// Tell the app how far the compositor's input reached it: what the person did in the
-    /// window's bar after that input runs now, in its place among the window's own input.
-    ///
-    /// Only the Wayland host delivers a serial. The receiver stays `&mut self` on every
-    /// target so the places that deliver input call this without a `cfg` of their own.
+    /// Tell the app how far the compositor's input reached it, to run in its place among the
+    /// window's own input; only the Wayland host delivers a serial, and the receiver stays `&mut
+    /// self` on every target so callers need no `cfg`.
     #[allow(
         clippy::needless_pass_by_ref_mut,
         reason = "the Wayland host mutates the app through this; other targets have nothing to do"
@@ -367,9 +352,9 @@ struct NativeFloatingWindow {
     coordinate_offset: Vec2,
     window: Arc<Window>,
     render: Option<RenderThreadHandle>,
-    /// Device/surface creation is much slower than a frame on software and
-    /// headless backends.  Keeping it off the winit thread lets the frozen
-    /// compositor proxy continue following the pointer during handoff.
+    /// Device and surface creation is far slower than a frame on software and headless backends;
+    /// off the winit thread, the frozen compositor proxy keeps following the pointer during
+    /// handoff.
     render_init: Option<mpsc::Receiver<Result<RenderThreadHandle, String>>>,
     prepared_at: Instant,
     lifecycle: NativeFloatingSurfaceLifecycle,
@@ -397,18 +382,16 @@ impl NativeFloatingSurfaceLifecycle {
     fn resume(&mut self, root: &mut dyn Widget, id: &str, native_focused: bool) {
         self.adopted = false;
         self.suspended = false;
-        // Hiding the retained surface clears its editor's focus, but the
-        // native seat may still own this exact window. Reconcile its current
-        // focus: resuming does not necessarily produce another focus edge.
+        // Hiding the surface clears its editor's focus, but the native seat may still own this
+        // window, and resuming need not produce another focus edge.
         self.focused = native_focused;
         root.on_floating_surface_focus_changed(Some(id), native_focused);
     }
 }
 
-/// Resolve the drawable presentation region inside a transparent native
-/// floating allocation. The intersection is deliberate: a presentation
-/// update and a platform resize can cross for one frame, but neither may paint
-/// outside the buffer that is actually being submitted.
+/// Resolve the drawable region inside a transparent native floating allocation: a presentation
+/// update and a platform resize can cross for one frame, but neither may paint outside the buffer
+/// being submitted.
 fn native_floating_window_clip(window: KurboRect, presentation: KurboRect) -> Option<KurboRect> {
     if !window.x0.is_finite()
         || !window.y0.is_finite()
@@ -497,10 +480,9 @@ fn dispatch_native_surface_accessibility(
     root.perform_floating_surface_accessibility_action(id, target, &action, state, path)
 }
 
-/// App-owned surfaces remain fixed to their live presentation rectangle.
-/// Winit's non-resizable Wayland window captures min/max at creation; a
-/// later request_inner_size does not advance those hints. Keep them aligned
-/// so the next activation configure cannot restore the transfer-frame size.
+/// Keep an app-owned surface's sizing hints on its live rectangle: winit's non-resizable Wayland
+/// window captures min/max at creation, so a later `request_inner_size` does not, and the next
+/// activation configure would restore the transfer-frame size.
 fn resize_native_floating_window(window: &Window, rect: KurboRect) {
     let size = native_floating_logical_size(rect);
     window.set_min_inner_size(Some(size));
@@ -592,10 +574,9 @@ fn draw_debug_outlines(app: &mut App, scene: &mut Scene, transform: Affine) {
     );
 }
 
-/// Whether this windowing system shows a window icon the app sets. winit's
-/// Wayland backend drops it (`set_window_icon` is empty there; compositors
-/// take the icon from the app id), so reading and decoding one before the
-/// first frame would be wasted.
+/// Whether this windowing system shows a window icon the app sets: winit's Wayland backend drops it
+/// (`set_window_icon` is empty, compositors use the app id), so decoding one before the first frame
+/// would be wasted.
 fn takes_window_icon(event_loop: &ActiveEventLoop) -> bool {
     use winit::raw_window_handle::{HasDisplayHandle, RawDisplayHandle};
     !event_loop
@@ -611,9 +592,8 @@ pub(super) fn slow_event_threshold_ms() -> Option<u64> {
         .and_then(|value| value.trim().parse::<u64>().ok())
 }
 
-/// The Wayland application id (X11 `WM_CLASS`) of the primary window: the
-/// app's own (`explicit`, an input surface's), else its package's. See
-/// `resolve_app_id`: a shared id collapses per-app compositor lookups.
+/// The Wayland application id (X11 `WM_CLASS`) of the primary window: the app's own `explicit` one,
+/// else its package's, so compositor lookups collapse per app.
 fn primary_window_app_id(explicit: Option<&str>) -> String {
     let package_id = std::env::var("TILO_PACKAGE_ID").ok();
     resolve_app_id(
@@ -636,13 +616,11 @@ fn primary_window_attributes(
     let window_attributes = Window::default_attributes()
         .with_title(title)
         .with_window_icon(icon)
-        // A window that stands on nothing shows what lies under it wherever
-        // its content paints nothing, which the compositor can only blend
-        // when the window's own surface carries alpha.
+        // A window that stands on nothing shows what lies under it wherever its content paints
+        // nothing, which the compositor can only blend with alpha on the window's own surface.
         .with_transparent(transparent)
-        // Draggable title bar on compositors with no server-side
-        // decorations (e.g. GNOME/mutter); explicit though it's the
-        // winit default, so the intent is unmistakable.
+        // Draggable title bar on compositors with no server-side decorations (e.g. GNOME): explicit
+        // though it is winit's default, so the intent is unmistakable.
         .with_decorations(true)
         .with_visible(false)
         .with_inner_size(winit::dpi::LogicalSize::new(800.0, 600.0));
@@ -665,13 +643,10 @@ fn primary_window_attributes(
     #[cfg(target_os = "linux")]
     let window_attributes = {
         use winit::platform::wayland::WindowAttributesExtWayland;
-        /// Where a session puts a surface app's window: on a layer of the output,
-        /// placed by the app's own anchors instead of by the desktop.
-        ///
-        /// The session owns placement — which output, which edge, how much room the
-        /// desktop leaves free — so it says so in the environment of the process it
-        /// starts, beside the socket it hands the app. An app launched without it is
-        /// an ordinary window.
+        /// Where a session puts a surface app's window: on a layer of an output, placed by the
+        /// app's anchors instead of the desktop. The session owns placement, so it says so in the
+        /// environment beside the socket it hands the app; without it the app is an ordinary
+        /// window.
         fn layer_surface_from_env() -> Option<winit::platform::wayland::LayerSurfaceAttributes> {
             use winit::platform::wayland::{
                 Anchor, KeyboardInteractivity, Layer, LayerSurfaceAttributes,
@@ -767,9 +742,8 @@ fn primary_window_attributes(
             })
         }
 
-        /// Whether the session starts this process as its lock screen: while it
-        /// runs, the window asks the compositor for the session's lock and draws on
-        /// it instead of being a window the desktop places.
+        /// Whether the session starts this process as its lock screen: the window then asks the
+        /// compositor for the session's lock instead of being placed by the desktop.
         fn session_lock_from_env() -> bool {
             std::env::var("TILO_SURFACE_LOCK").is_ok_and(|value| {
                 let value = value.trim();
@@ -785,9 +759,8 @@ fn primary_window_attributes(
                 .with_session_lock()
         } else {
             match layer_surface_from_env() {
-                // A layer surface has no title bar of ours: it says where it
-                // goes by its anchors, and the compositor composites it like
-                // any other client's surface.
+                // A layer surface says where it goes by its anchors, with no title bar of ours; the
+                // compositor composites it like any other client.
                 Some(placement) => window_attributes
                     .with_decorations(false)
                     .with_layer_surface(placement),
@@ -859,9 +832,8 @@ thread_local! {
     /// `resumed` takes it.
     static EARLY_WINDOW: std::cell::RefCell<Option<(String, Arc<Window>)>> =
         const { std::cell::RefCell::new(None) };
-    /// The device and renderer a window that gave its place (`hand_over`)
-    /// drew with, until the window after it takes them: the app drawn in its
-    /// place starts drawing without making them again.
+    /// The device and renderer a window that gave its place drew with, until the window after it
+    /// takes them, so the app drawn in its place starts without making them again.
     static HANDED_RENDERER: std::cell::RefCell<Option<PreparedRenderer>> =
         const { std::cell::RefCell::new(None) };
 }
@@ -890,21 +862,18 @@ fn window_surface(
     ))
     .map_err(|e| format!("could not create a drawing surface: {e}"))?;
     if transparent {
-        // `Auto` commonly resolves to Opaque on Wayland even when winit's
-        // window was created transparent. Floating surfaces paint
-        // premultiplied Vello output, so request the matching compositor mode
-        // explicitly; otherwise the transparent gutter becomes a black box.
+        // `Auto` commonly resolves to Opaque on Wayland even for a transparent window; floating
+        // surfaces paint premultiplied vello output, so request the matching alpha mode or the
+        // transparent gutter becomes a black box.
         surface.config.alpha_mode = vello::wgpu::CompositeAlphaMode::PreMultiplied;
     }
     let device_handle = render_cx
         .devices
         .get(surface.dev_id)
         .ok_or_else(|| "render device index out of range".to_string())?;
-    // Flipping to the sRGB suffix here would panic on mismatch with the
-    // format `create_surface` already chose. `configure` returns no
-    // `Result`, so guard it like the worker's reconfigures do
-    // (`render_thread::configure_surface_checked`) — an already-lost
-    // surface would otherwise hit wgpu's panicking default handler.
+    // The sRGB suffix would panic on a mismatch with the format `create_surface` chose, and
+    // `configure` returns no `Result`: guard it like the worker's reconfigures do, or an
+    // already-lost surface hits wgpu's panicking default handler.
     tilo_startup_metrics::mark("window-surface-validation-scope-start");
     let configure_scope = device_handle
         .device
@@ -1006,10 +975,8 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
     Ok(plan.finish(device_handle, renderer))
 }
 
-/// What building vello's renderer for a device takes, decided on the thread
-/// that owns the device's handle; [`Self::build`], the compile, needs only
-/// the device itself, so it can run on another thread
-/// (`startup::renderer_beside_surface`).
+/// What building vello's renderer for a device takes, decided on the thread that owns the device
+/// handle; [`Self::build`] needs only the device, so it can run on another thread.
 pub(super) struct NativeRendererPlan {
     options: RendererOptions,
     deferral: vello::PipelineDeferral,
@@ -1019,11 +986,9 @@ pub(super) struct NativeRendererPlan {
 
 impl NativeRendererPlan {
     pub(super) fn for_device(device_handle: &crate::gpu::DeviceHandle) -> Self {
-        // Vello's default heuristic uses every available core minus two. On a
-        // 16-thread laptop that means fourteen simultaneous Vulkan pipeline
-        // compilations for each freshly opened app, competing with the compositor
-        // and making the whole desktop appear frozen. Two workers keep startup
-        // parallel without turning one window into a system-wide CPU burst.
+        // Vello's default uses every core minus two: on a 16-thread laptop fourteen pipeline
+        // compilations per opened app starve the compositor. Two workers keep startup parallel
+        // without a system-wide CPU burst.
         let shader_threads = std::env::var("TILO_VELLO_INIT_THREADS")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
@@ -1032,10 +997,9 @@ impl NativeRendererPlan {
         tilo_startup_metrics::mark("window-vello-init-start");
         // This app's own pipelines from its last launch, else the session's.
         let pipelines = crate::pipeline_cache::AppPipelineCache::open(device_handle);
-        // The first frame waits for this. Build only what it dispatches; the
-        // render worker starts the rest once that frame is presented. On a
-        // software adapter the worker rasterizes frames on the CPU and vello draws
-        // only backdrop blurs, so none of its pipelines are on the way there.
+        // The first frame waits for this: build only what it dispatches and let the render worker
+        // start the rest after that frame is presented. Nothing is on that path for a software
+        // adapter, which rasterizes on the CPU and draws only backdrop blurs.
         let software = crate::gpu::rasterizes_on_cpu(&device_handle.adapter.get_info());
         let deferral = if software {
             vello::PipelineDeferral::All
@@ -1043,14 +1007,12 @@ impl NativeRendererPlan {
             vello::PipelineDeferral::Unused
         };
         let options = RendererOptions {
-            // Diagnostic/low-end fallback: CPU coarse stages with the same
-            // GPU fine raster. Kept opt-in until the benchmark proves it is
-            // faster on a device; the default remains the GPU pipeline.
+            // Diagnostic and low-end fallback: CPU coarse stages with the same GPU fine raster;
+            // opt-in until a benchmark proves it faster on a device.
             use_cpu: crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
-            // Every frame below renders with `AaConfig::Area`. Advertising
-            // 8x/16x MSAA as well only compiles and retains shader variants
-            // this framework never selects, increasing startup and GPU
-            // memory pressure on exactly the low-end devices we target.
+            // Every frame renders with `AaConfig::Area`; advertising 8x/16x MSAA only compiles and
+            // retains variants this framework never selects, costing startup and GPU memory on the
+            // devices we target.
             antialiasing_support: vello::AaSupport::area_only(),
             num_init_threads: Some(shader_threads),
             // Pipelines already compiled, so a launch does not compile vello
@@ -1091,14 +1053,9 @@ impl NativeRendererPlan {
         if let Some(pipelines) = self.pipelines {
             pipelines.keep_until_built();
         }
-        // A frame that draws a backdrop blur renders with vello even on a
-        // software adapter. When this app's first frame did last time, build at
-        // once, on the init threads and default-path pipelines first, so that
-        // frame waits on a build well under way instead of compiling each
-        // pipeline it dispatches alone. A first frame the CPU rasterizes waits on
-        // nothing, so its app constructs without LLVM compiling beside it; its
-        // render worker starts the build with the first frame that draws a
-        // backdrop, or after the first present.
+        // An app whose first frame drew a backdrop blur builds at once, default-path pipelines
+        // first, so that frame waits on a build under way. A first frame the CPU rasterizes waits
+        // on nothing and constructs without LLVM compiling beside it.
         if self.software && crate::pipeline_cache::first_frame_backdrop::expected() {
             renderer.start_deferred_pipelines(
                 &device_handle.device,
@@ -1125,9 +1082,8 @@ fn begin_window_render_init(
         .name("floating-render-init".into())
         .spawn(move || {
             let result = create_window_render(&window, transparent, proxy);
-            // The surface may have been permanently closed while a slow GPU
-            // backend was still probing. In that case, stop the newly-created
-            // render worker here so its surface is dropped before `window`.
+            // The surface may have been permanently closed while a slow GPU backend probed: stop
+            // the new render worker here so its surface is dropped before `window`.
             if let Err(mpsc::SendError(result)) = result_tx.send(result)
                 && let Ok(mut render) = result
             {
@@ -1138,10 +1094,9 @@ fn begin_window_render_init(
     Ok(result_rx)
 }
 
-/// A frame goes to the render thread, which presents it while this thread
-/// reads on: tell the compositor the frame is coming, so one that waits for
-/// this window to answer input (an agent's screenshot) waits for the frame
-/// rather than taking the window's quiet event loop for an answer.
+/// The render thread presents while this one reads on, so tell the compositor the frame is coming;
+/// a host waiting on this window (an agent's screenshot) then waits for the frame, not for a quiet
+/// event loop.
 fn announce_frame(window: &Window) {
     window.announce_frame();
 }
@@ -1257,10 +1212,9 @@ impl AppHandler {
             },
         )
     }
-    /// Called before showing the window on Windows, and from the first
-    /// `RedrawRequested` elsewhere so GPU init doesn't starve Wayland's
-    /// initial focus events. `Err` is returned, not panicked, since every step here can
-    /// fail when the compositor exits mid-open.
+    /// Called before showing the window on Windows, and from the first `RedrawRequested` elsewhere
+    /// so GPU init doesn't starve Wayland's initial focus events; every step can fail when the
+    /// compositor exits mid-open, so it returns `Err`.
     fn init_render(&mut self, window: &Arc<Window>) -> Result<(), String> {
         if let Some(retained) = self.suspended_renderer.take()
             && !retained.device_lost()
@@ -1281,11 +1235,9 @@ impl AppHandler {
                 }
             }
         }
-        // On a Wayland display the preparation already made this window's
-        // device, pipelines and surface off the main thread, so the render
-        // worker starts at once and finishes waiting for them itself: the
-        // first frame's sync, layout and draw run here meanwhile instead of
-        // after the wait.
+        // On Wayland the preparation already made this window's device, pipelines and surface off
+        // the main thread, so the worker starts at once and waits itself: this thread syncs, lays
+        // out and draws the first frame meanwhile.
         #[cfg(any(windows, target_os = "linux"))]
         {
             // Drawn by the workspace's render service: the launch prepared its
@@ -1368,13 +1320,10 @@ impl AppHandler {
         Ok(())
     }
 
-    /// Reconcile the root's optional audience projection with a *separate*
-    /// native toplevel. A missing monitor list, a one-output session, or an
-    /// invalid target all leave this `None`; the root's normal fullscreen
-    /// intent then supplies the single-output fallback. The chosen output
-    /// may be the one the presenter window currently shows on: Tilo pairs
-    /// the `.audience` surface and moves the presenter view to the other
-    /// screen.
+    /// Reconcile the root's optional audience projection with a separate native toplevel; a missing
+    /// monitor list, a one-output session or an invalid target leave it `None` and the root's
+    /// fullscreen intent supplies the fallback. The chosen output may be the presenter's, so Tilo
+    /// pairs `.audience` and moves the presenter view to the other screen.
     fn sync_audience_presentation(
         &mut self,
         event_loop: &ActiveEventLoop,
@@ -1464,9 +1413,8 @@ impl AppHandler {
         presenter.request_redraw();
     }
 
-    /// Drop the render worker before the Window Arc, as required by wgpu's
-    /// surface lifetime. This is deliberately idempotent: hotplug, explicit
-    /// stop, and process teardown can race through the same state transition.
+    /// Drop the render worker before the `Window` arc, as wgpu's surface lifetime requires;
+    /// idempotent because hotplug, stop and teardown can race through this transition.
     fn close_audience_presentation(&mut self) {
         let _entry = self.app.enter_wake_scope();
         let Some(mut audience) = self.audience_presentation.take() else {
@@ -1480,9 +1428,8 @@ impl AppHandler {
         self.app.layout.layout_dirty = true;
     }
 
-    /// Paint one audience frame without running a second widget layout or
-    /// synchronising a second document. The root is responsible for a pure
-    /// audience projection of the same model used by the presenter surface.
+    /// Paint one audience frame without a second widget layout or document sync: the root owns a
+    /// pure projection of the same model the presenter draws.
     fn handle_audience_redraw(&mut self) -> bool {
         let _entry = self.app.enter_wake_scope();
         let Some(audience) = self.audience_presentation.as_mut() else {
@@ -1659,10 +1606,9 @@ impl AppHandler {
                 .iter()
                 .any(|surface| surface.lifecycle.focused),
         );
-        // Return keeps the real composer on its exact suspended child until
-        // the input method finishes. The primary redraw has moved the editor's
-        // caret, so update that still-active protocol without waiting for
-        // another keyboard/IME event on the hidden child.
+        // Return keeps the real composer on its suspended child until the input method finishes;
+        // the primary redraw moved the caret, so update that active protocol without waiting for
+        // another event on the hidden child.
         if let Some(id) = self.floating_ime_return_continuation.as_deref()
             // The initial Suspended message precedes primary relayout. Its
             // gate becomes Some only after that returned frame is submitted.
@@ -1697,10 +1643,9 @@ impl AppHandler {
         let next = if continued.is_some() {
             continued
         } else if pending.is_some() {
-            // Present was accepted on the live host connection, but Prepare
-            // has not arrived yet. Keep the real source protocol's existing
-            // caret while the exact retained editor still exports IME intent.
-            // Destination routing starts only after the host authorises it.
+            // Present was accepted but Prepare has not arrived: keep the source protocol's caret
+            // while the retained editor exports IME intent, and route to the destination only after
+            // the host authorises it.
             pending
         } else if self
             .floating_windows
@@ -1745,11 +1690,9 @@ impl AppHandler {
             return;
         }
         if let Some(intent) = next {
-            // Apply purpose before enabling: winit's Wayland backend
-            // commits the enable immediately, so the first activation
-            // must already carry the right content type. Cursor geometry
-            // follows enable because winit intentionally ignores cursor
-            // updates while IME is disabled.
+            // Apply purpose before enabling: winit's Wayland backend commits the enable at once, so
+            // the first activation must already carry the right content type. Cursor geometry
+            // follows, as winit ignores cursor updates while IME is disabled.
             apply_native_ime_content(window, intent);
             window.set_ime_allowed(true);
             window.set_ime_cursor_area(
@@ -2020,21 +1963,13 @@ impl AppHandler {
         changed
     }
 
-    /// A prepared surface that never commits must not strand its app-owned
-    /// content half outside the primary window forever. Keep polling only
-    /// while the first buffer is pending, then ask the shell to close the
-    /// abandoned capability; `Closed` drives the ordinary animated return.
+    /// A prepared surface that never commits must not strand app content half outside the primary
+    /// window: poll only while the first buffer is pending, then close the abandoned capability
+    /// (`Closed` drives the ordinary animated return).
     fn recover_stalled_floating_windows(&mut self) -> bool {
-        // A frozen compositor-side transfer frame keeps the surface visually
-        // continuous while a cold GPU backend prepares. This deadline is now
-        // a genuine failure bound, not a UX timer: ordinary adoption replaces
-        // the proxy on its first committed buffer.
-        // A cold secondary WGPU surface can spend several seconds enumerating
-        // fallbacks on software/headless systems. The compositor's transfer
-        // proxy is already covering every pixel, so returning at four seconds
-        // caused a needless visible snap just before a viable backend could
-        // finish. Ten seconds remains a bounded failure path without turning
-        // ordinary slow device discovery into UX churn.
+        // A frozen transfer frame keeps the surface continuous while a cold backend prepares, and a
+        // cold secondary surface can spend seconds enumerating fallbacks, so this is a failure
+        // bound, not a UX timer.
         const FIRST_BUFFER_DEADLINE: Duration = Duration::from_secs(10);
         let _entry = self.app.enter_wake_scope();
         let stalled = self
@@ -2075,12 +2010,9 @@ impl AppHandler {
                 && presentation.window_rect != surface.desktop_rect
             {
                 if presentation.window_rect.size() != surface.desktop_rect.size() {
-                    // App-owned live activities can change silhouette while
-                    // detached: a call gains participant rows, navigation
-                    // reveals another instruction, or accessibility text
-                    // grows. Resize the real transparent buffer with the
-                    // shared presentation rect so its soft chrome is never
-                    // clipped inside the old native allocation.
+                    // App-owned activities can change silhouette while detached (a call gains
+                    // participant rows, navigation reveals another instruction, accessibility text
+                    // grows), so resize the buffer with the shared presentation rect.
                     resize_native_floating_window(&surface.window, presentation.window_rect);
                 }
                 surface.desktop_rect = presentation.window_rect;
@@ -2166,9 +2098,8 @@ impl AppHandler {
             Err(mpsc::TryRecvError::Disconnected) => return false,
         };
         damage_regions.clear();
-        // Every pooled scene is either newly seeded or reset by the worker
-        // before recycling. Resetting it again here only rewrote all stream
-        // lengths on every frame.
+        // Every pooled scene is seeded or reset by the worker before recycling; resetting it again
+        // here only rewrote all stream lengths every frame.
         let scale = surface.window.scale_factor();
         let extent = render.frame_extent(surface.window.inner_size(), scale);
         let transform = crate::scale::composite_transform(extent.scale)

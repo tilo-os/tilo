@@ -46,16 +46,12 @@ use pill_layout::{chip_rects, fit_pill_widths};
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
 
-/// Strength the insertion mark starts at while it fades in, already at
-/// its final thickness: a line that grows out of nothing reads as a flicker
-/// at the start of a drag, one that fades in reads as the gap opening.
+/// Strength the insertion mark starts at, already at its final thickness: a line growing out of
+/// nothing reads as a flicker, one fading in as the gap opening.
 const DROP_LINE_MIN_ALPHA: f32 = 0.55;
-/// The tab bar's motions, from the standard ones (`motion::ListChange`
-/// and friends): pills change places on the list change's move, arrive and
-/// leave on its fade (opacity and a small rise; no per-pill scale layer), a
-/// pill opens its chips on the disclosure, a held tab springs back as a
-/// let-go surface settles (`motion::Snap`), and the drop line and a lifted
-/// tab answer on the fade.
+/// The bar's motions, from the standard ones: pills change places on the list change's move, arrive
+/// and leave on its fade, a pill opens its chips on the disclosure, a held tab springs back, and
+/// the drop line answers on the fade.
 fn tab_progress(spec: MotionSpec, direction: Direction, elapsed: Duration) -> f64 {
     spec.progress_after(
         direction,
@@ -108,15 +104,13 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
-/// Alias of [`crate::chrome::shell::SelectionTier`] so the tab strip, top bar,
-/// quick settings, workspace disc and strip ribbon all express selection the same
-/// way.
+/// Alias of [`crate::chrome::shell::SelectionTier`], so the tab strip, top bar, quick settings and
+/// strip ribbon express selection the same way.
 pub(crate) type PillAppearance = crate::chrome::shell::SelectionTier;
 
-/// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix
-/// multiply-add with no overflow trap, so it cannot panic regardless of operand
-/// magnitude — centralised here rather than repeating the exemption at every
-/// pill/text transform composed below.
+/// Composes two affine transforms. `Affine`'s `Mul` impl is pure `f64` matrix multiply-add with no
+/// overflow trap, so it cannot panic; centralised here rather than repeating the exemption at every
+/// pill and text transform below.
 #[allow(
     clippy::arithmetic_side_effects,
     reason = "Affine composition is float matrix math and cannot panic"
@@ -125,11 +119,10 @@ fn compose(a: Affine, b: Affine) -> Affine {
     a * b
 }
 
-/// Offsets a rect by a delta. `Rect`'s `Add<Vec2>` impl is pure `f64` component
-/// addition with no overflow trap, so — like [`compose`] — it cannot panic and
-/// the exemption is centralised here instead of at every call site.
-/// One pill's paint state, resolved once per frame by `draw_pill_inner` and
-/// shared by the helpers that paint its body and chips.
+/// Offsets a rect by a delta. `Rect`'s `Add<Vec2>` impl is pure `f64` addition with no overflow
+/// trap, so — like [`compose`] — it cannot panic and the exemption is centralised here. One pill's
+/// paint state, resolved once per frame by `draw_pill_inner` and shared by the helpers that paint
+/// its body and chips.
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each flag is an independent fact about the pill this frame"
@@ -191,9 +184,8 @@ pub(crate) fn pill_appearance(
     )
 }
 
-/// Gated on `look.fill` being opaque so the × never paints without a body under it —
-/// deriving both from the same struct keeps that true by construction. Paint-only:
-/// the hit rect stays live even when this is false, like the search/maximize chips.
+/// Gated on `look.fill` being opaque, so the × never paints without a body under it; paint-only,
+/// since the hit rect stays live.
 pub(crate) fn close_affordance_visible(look: &PillAppearance, is_pinned: bool) -> bool {
     !is_pinned && look.fill.a() > 0
 }
@@ -221,9 +213,8 @@ struct ClosingTab {
     started_at: Instant,
 }
 
-/// Whoever opened a tab on a shared desktop, when it is not this desktop's
-/// person and they may not rearrange it: the tab offers no close, a drag on
-/// it pulls a little and springs back, and hovering it names them.
+/// Whoever opened a tab on a shared desktop, when it is not this desktop's person and they may not
+/// rearrange it: no close, a drag that springs back, and hovering names them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TabHolder {
     pub name: String,
@@ -253,9 +244,8 @@ pub struct TabDescriptor {
     /// The application's own artwork, painted in place of the `app_kind`
     /// glyph — how an app Tilo did not package is recognisable in its tab.
     pub icon: Option<icons::AppImage>,
-    /// The window is waiting for the person: a refusal, a background open, a
-    /// dialog somewhere they are not looking. Painted as one dot at the
-    /// pill's trailing edge and cleared when the tab takes focus.
+    /// The window is waiting for the person: a refusal, a background open, a dialog they are not
+    /// looking at. One dot at the pill's trailing edge, cleared when the tab takes focus.
     pub attention: bool,
 }
 
@@ -277,10 +267,8 @@ enum GroupFocus {
     Unfocused,
 }
 
-/// What a tab's content is doing, marked in the tab's leading slot in place
-/// of its icon: loading, or making sound. A sound mark is a control: a
-/// click on it is reported by [`TabBar::take_mark_click`] (the host mutes
-/// or unmutes).
+/// What a tab's content is doing, marked in place of its icon: loading, or making sound. A sound
+/// mark is a control, and a click is reported by [`TabBar::take_mark_click`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum TabMark {
     /// The content is loading.
@@ -318,17 +306,14 @@ pub struct TabBar {
     group_id_tag: String,
     tabs: Vec<TabDescriptor>,
     active_id: u64,
-    /// Whether this bar belongs to the shell's keyboard-focused window group.
-    /// An active tab exists in every group; only the focused group's active tab
-    /// receives the accent keyline.
+    /// Whether this bar belongs to the shell's keyboard-focused group; only that group's active tab
+    /// carries the accent keyline.
     group_focus: GroupFocus,
-    /// The tab list is one keyboard stop. Arrow/Home/End then select a tab
-    /// inside the list, matching the native tab-list convention without
-    /// flooding ordinary Tab traversal with every individual pill.
+    /// The tab list is one keyboard stop: Arrow/Home/End select a tab inside it, matching the
+    /// native tab-list convention without flooding Tab traversal with every pill.
     keyboard_focus: bool,
-    /// The bar stands on a docked strip of its own (the window group's,
-    /// [`crate::chrome::SelectorRole::Strip`]) rather than on the window
-    /// ground, so its tabs lift off the strip's ground.
+    /// The bar stands on a docked strip of its own rather than on the window ground, so its tabs
+    /// lift off the strip's ground.
     on_strip: bool,
     rect: Rect,
     tab_rects: Vec<Rect>,
@@ -349,23 +334,19 @@ pub struct TabBar {
     /// History door, shown as one more chip in the pill's cluster.
     history: HashMap<u64, HistoryControl>,
     new_tab_rect: Rect,
-    /// Keyed by tab id, alongside the title/size it was measured at, so a rename or
-    /// theme change invalidates rather than reusing a stale advance. Set from `draw`
-    /// (the only pass with a [`TextRenderer`]) and read back by `apply_layout`.
+    /// Keyed by tab id with the title and style it was measured at, so a rename or theme change
+    /// invalidates rather than reusing a stale advance.
     title_advance: HashMap<u64, (String, TextStyle, f64)>,
     /// `draw` measured an advance that differs from the one the last layout
     /// used for some pill, so the next layout must run to settle the row.
     advance_changed: bool,
     /// Aligned 1:1 with `tabs`; `None` for a pinned, icon-only pill.
     visible_titles: Vec<Option<String>>,
-    /// Peer faces each pill shows at its trailing edge, aligned 1:1 with
-    /// `tabs`. Set from `draw` (the only pass with presence) before titles
-    /// are elided, so the title gives way to the faces instead of hiding
-    /// under them.
+    /// Peer faces each pill shows at its trailing edge, aligned with `tabs`; set from `draw` before
+    /// titles are elided, so a title gives way instead of hiding under them.
     pill_faces: Vec<PillFaces>,
     face_metrics: FaceMetrics,
-    /// Width each unpinned tab's full set of faces wants, keyed by tab id.
-    /// Recorded in `draw` (presence is only known there) and added to the
+    /// Width each unpinned tab's faces want, keyed by tab id, recorded in `draw` and added to the
     /// pill's natural width so a short title still has room for its faces.
     face_demand: HashMap<u64, f64>,
     /// `face_demand` changed since the last layout: the pills must resize.
@@ -376,16 +357,14 @@ pub struct TabBar {
     hover_max_idx: Option<usize>,
     hover_search_idx: Option<usize>,
     hover_history_idx: Option<usize>,
-    /// Which pill the pointer has opened. Resting on or heading for a
-    /// control never opens or collapses anything that would move it; resting
-    /// on a pill's body opens it after a short dwell; menu aim keeps it open
-    /// while the pointer travels toward its chips. See `hover_intent`.
+    /// Which pill the pointer has opened: resting on a control opens nothing that would move it,
+    /// resting on a pill's body opens after a dwell, and menu aim keeps it open on the way to its
+    /// chips.
     hover_intent: HoverIntent,
     hover_new_tab: bool,
     press_origin: Option<(usize, Point)>,
-    /// Offset from the pressed pill's top-left to the cursor at press time; the
-    /// ghost paints at `last_cursor - drag_offset` since `DragPayload::Tab` doesn't
-    /// carry this.
+    /// Offset from the pressed pill's top-left to the cursor at press time; the ghost paints at
+    /// `last_cursor - drag_offset`.
     drag_offset: Option<vello::kurbo::Vec2>,
     /// When the press crosses the drag threshold. The parent window uses the
     /// same lift progress for the handle and its attached content preview.
@@ -399,17 +378,15 @@ pub struct TabBar {
     /// A press on a pill's History chip: the tab, and the control it showed.
     pending_history: Option<(u64, HistoryControl)>,
     pub pending_new_tab: Option<()>,
-    /// One-shot selection edge produced by direct user interaction.  The
-    /// retained shell must not infer a click merely because model rebuilding
-    /// changed `active_id` between frames.
+    /// One-shot selection edge produced by direct interaction: the retained shell must not infer a
+    /// click from `active_id` changing between frames.
     pending_activation: Option<u64>,
     /// `(tab_id, release_point)` when a drag is released outside this bar's rect,
     /// for a parent (e.g. `GroupRow`) to resolve the drop target.
     pub pending_detach: Option<(u64, Point)>,
     drop_zone_target: Option<usize>,
-    /// Gap index where the drop-target line paints. Written from own-bar drag
-    /// events and, for cross-group drags, [`Self::set_external_drag_hover`] called
-    /// by `GroupRow` on every sibling bar.
+    /// Gap index where the drop-target line paints, from own-bar drag events and, for cross-group
+    /// drags, from `GroupRow` on every sibling bar.
     hover_drop_idx: Option<usize>,
     hover_drop_animated_at: Option<Instant>,
     /// `tab_rects[i]` keyed by id, snapshotted just before a reorder/insert/remove;
@@ -418,24 +395,17 @@ pub struct TabBar {
     layout_anim_started: Option<Instant>,
     inserted_at: HashMap<u64, Instant>,
     closing_tabs: Vec<ClosingTab>,
-    /// The selection moving from one pill to another (`motion::ListChange`'s fade): the pill it
-    /// left and the one it went to, and since when. A strip whose `active` changes lifts the new
-    /// pill and rests the old over the frames between, rather than switching in one frame. `None`
-    /// at rest, and nothing on a still theme or under reduced motion.
+    /// The selection moving from one pill to another (the list change's fade): the pill left, the
+    /// one gone to, and since when; `None` at rest, on a still theme and under reduced motion.
     selection_move: Option<(u64, u64, Instant)>,
     /// Sidecar rather than a `TabDescriptor` field so pin state never ripples into
     /// every tab constructor.
     pub(crate) pinned_ids: HashSet<u64>,
-    /// Per-tab leading-marker tint, keyed by tab id. Same sidecar reasoning as
-    /// `pinned_ids`. A host that classifies its tabs by something the shell can't
-    /// know — a buffer's language, a chat's account — hands the colour in; the
-    /// widget never picks one itself, so the mark re-tints with the theme like
-    /// everything else in the pill.
+    /// Per-tab leading-marker tint, keyed by tab id: a host that classifies its tabs by something
+    /// the shell cannot know hands the colour in, so the mark re-tints with the theme.
     pub(crate) accent_ids: HashMap<u64, vello::peniko::Color>,
-    /// Tab ids whose content has unsaved changes. A modified tab holds its close
-    /// slot open at rest (see `resting_reveal`) and paints a dot there in place
-    /// of the ×; hovering swaps the × back, so the tab never stops being
-    /// closable. Sidecar for the same reason as the two above.
+    /// Tab ids whose content has unsaved changes: a modified tab holds its close slot open at rest
+    /// and paints a dot there, and hovering swaps the × back in, so it stays closable.
     pub(crate) modified_ids: HashSet<u64>,
     /// Tabs someone else holds ([`TabHolder`]), by id. Sidecar for the same
     /// reason as the three above.
@@ -448,10 +418,8 @@ pub struct TabBar {
     shared: status_chips::SharedChip,
     /// A drag on a held tab, pulling it or springing it back.
     resist: Option<Resist>,
-    /// Whether the hover-reveal maximize chip is offered at all. A host whose
-    /// tabs are windows wants it; a host whose tabs are documents inside one
-    /// window has nothing for it to do, and a chip that appears under the
-    /// pointer and then does nothing is worse than no chip.
+    /// Whether the hover-reveal maximize chip is offered: a host whose tabs are documents inside a
+    /// window has nothing for it to do, and a chip that does nothing is worse than none.
     show_maximize: bool,
     /// Whether tabs close from the strip. A strip of fixed views (a
     /// settings window's sections) has no close control.
@@ -477,10 +445,8 @@ pub struct TabBar {
     mark_rects: Vec<Rect>,
     /// A click on a sound mark, drained by [`TabBar::take_mark_click`].
     pending_mark: Option<(u64, TabMark)>,
-    /// Whether this strip's host shows which window group has keyboard
-    /// input ([`TabBar::set_group_focused`]). Only then does the active tab
-    /// carry the focus keyline; in a strip of documents the active tab is
-    /// the lift alone, like every other selection.
+    /// Whether this strip's host shows which window group has keyboard input, so the active tab
+    /// carries the focus keyline; a strip of documents shows the lift alone.
     shows_group_focus: bool,
     reveal_anim: HashMap<u64, RevealAnim>,
     /// Aligned 1:1 with `tabs`; read by the title zone, chip rects and body wash so
@@ -495,23 +461,19 @@ pub struct TabBar {
     /// A shortcut or action is being laid out: chips and pills take their
     /// new places at once.
     motion_source: crate::tokens::MotionSource,
-    /// `tokens.metrics.min_pointer_target`, cached from `build_layout` for
-    /// the same reason: the pointer target of a maximize/search chip is
-    /// derived from its glyph rect at hit-test time (see
-    /// [`Self::action_hit_rect`]).
+    /// `tokens.metrics.min_pointer_target`, cached from `build_layout`: a chip's target is derived
+    /// from its glyph rect at hit-test time.
     min_pointer_target: f64,
     /// The pointer the bar is used with: a coarse one (a finger) takes a pill
     /// by a taller row's whole height ([`Self::tab_hit_rect`]).
     interaction: crate::interaction::InteractionEnvironment,
     /// Last theme fast-duration, for animation scheduling outside `draw`.
     drag_lift_duration: Duration,
-    /// Window groups paint the lifted handle together with the attached app
-    /// preview in the floating pass, above strip clips. Standalone tab bars
-    /// keep the legacy inline overlay for their own tests/embedders.
+    /// Window groups paint the lifted handle with the app preview in the floating pass, above strip
+    /// clips; standalone bars keep the inline overlay for their own embedders.
     drag_overlay_owned_by_parent: bool,
-    /// The bar is a window's ([`TabBar::set_window_controls`]): the window's
-    /// own controls stand at its trailing end, and a window showing one tab
-    /// shows it as its title rather than as a tab.
+    /// The bar is a window's: the window's controls stand at its trailing end, and a window showing
+    /// one tab shows it as its title rather than as a tab.
     window_controls: bool,
     /// Room after the tabs that the window keeps for its search control
     /// ([`TabBar::set_search_control`]); the tabs then carry no search chip.
@@ -527,17 +489,13 @@ pub struct TabBar {
     history_action: Rect,
     history_action_hover: bool,
     history_action_pressed: bool,
-    /// Each window control's hover tint, by
-    /// [`super::window_controls::WindowControl::index`]: it comes at once
-    /// and fades out over the fast duration
-    /// ([`crate::motion::Feedback`]), so a pointer sweeping across the pill
-    /// never leaves a trail.
+    /// Each window control's hover tint, by control index: it comes at once and fades over the fast
+    /// duration, so a sweeping pointer leaves no trail.
     control_lifts: [crate::motion::Feedback; 3],
     /// The window is maximized: its maximize control shows restore.
     maximized: bool,
-    /// Whether the window showed several tabs at the last layout, and since
-    /// when: the tabs' bodies grow in, or fade back into a plain title, over
-    /// that change.
+    /// Whether the window showed several tabs at the last layout, and since when: the tabs' bodies
+    /// grow in, or fade back into a plain title.
     tabbed: bool,
     tabbed_changed_at: Option<Instant>,
     /// The slots each tab's app declared for the window's bar
@@ -557,9 +515,9 @@ pub struct TabBar {
     pending_rename: Option<(u64, String)>,
 }
 
-/// Geometry shared by the tab handle and the window-content preview attached
-/// to it while the pointer is carrying a tab. Kept independent of paint so a
-/// parent can render the complete lifted object above strip clips.
+/// Geometry shared by the tab handle and the window-content preview attached to it while the
+/// pointer carries a tab, kept independent of paint so a parent can draw the lifted object above
+/// strip clips.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TabDragVisual {
     pub tab_id: u64,
@@ -597,10 +555,9 @@ impl TabBar {
         }
         self.new_tab_rect = shift_rect(self.new_tab_rect, shift);
         self.controls.offset(shift);
-        // The menus' bounds move with the window: a presenter that keeps the
-        // desktop draws a strip moved into its canvas and moves it back after,
-        // and a menu laid out against bounds left behind by the move hangs
-        // away from the control it belongs to.
+        // The menus' bounds move with the window: a presenter that keeps the desktop draws a strip
+        // moved into its canvas, and a menu laid out against the old bounds hangs away from its
+        // control.
         let area = self.toolbar_row.popup_area();
         if area.area() > 0.0 {
             self.toolbar_row.set_popup_area(shift_rect(area, shift));
@@ -730,10 +687,9 @@ impl TabBar {
         }
     }
 
-    /// Make this a window's bar: the window's controls (History,
-    /// maximize/restore, close) stand at its trailing end and act on the
-    /// active tab, and a window of one tab shows that tab as its title. The
-    /// tabs themselves then carry no maximize or History chips.
+    /// Make this a window's bar: the window's controls stand at its trailing end and act on the
+    /// active tab, a window of one tab shows it as its title, and the tabs carry no maximize or
+    /// History chips.
     pub fn set_window_controls(&mut self, on: bool) {
         self.touch();
         self.window_controls = on;
@@ -742,19 +698,15 @@ impl TabBar {
         }
     }
 
-    /// The window carries its own search control after the tabs, `width`
-    /// wide with its gap: the tabs leave it that room and carry no search
-    /// chip of their own. `None` gives the room back.
+    /// The window carries its own search control after the tabs, `width` wide with its gap; the
+    /// tabs leave it that room and carry no chip of their own. `None` gives the room back.
     pub fn set_search_control(&mut self, width: Option<f64>) {
         self.touch();
         self.search_control = width;
     }
 
-    /// Where the window's search control stands when the active tab put
-    /// its slots in the bar: the row the slots stand in, which ends before
-    /// the control's room, and how far left the open search may reach (the
-    /// location's leading edge, so back and forward stay). `None` without
-    /// slots: the control then follows the tabs ([`Self::tabs_end`]).
+    /// Where the window's search control stands when the active tab put its slots in the bar, and
+    /// how far left an open search may reach; `None` without slots: it follows the tabs.
     #[must_use]
     pub fn toolbar_search_slot(&self) -> Option<(Rect, f64)> {
         self.active_slots()?;
@@ -774,9 +726,8 @@ impl TabBar {
         self.ground(theme)
     }
 
-    /// Where the bar's status chips ("Controls your desktop") may start:
-    /// after the pills, the "+" and the window's search control, which
-    /// stands right after them.
+    /// Where the bar's status chips may start: after the pills, the "+" and the window's search
+    /// control.
     pub(super) fn status_chips_start(&self) -> f64 {
         let search = if self.search_control.is_some() {
             super::window_controls::CONTROL_GAP + super::window_controls::CONTROL_PX
@@ -807,9 +758,8 @@ impl TabBar {
         }
     }
 
-    /// How far back over the tabs the window's search, following them, may
-    /// start when a narrow window leaves its query too narrow to type in:
-    /// past the first tab's icon, which keeps naming the window.
+    /// How far back over the tabs the window's search may start when a narrow window leaves its
+    /// query too narrow: past the first tab's icon, which keeps naming the window.
     #[must_use]
     pub fn search_cramped_start(&self) -> f64 {
         let first = self
@@ -988,10 +938,8 @@ impl TabBar {
             || (self.solo() && id == self.active_id && self.active_slots().is_some())
     }
 
-    /// Whether the bar stands two rows tall: the tabs, then the active
-    /// tab's slots. While the window goes back to one tab the second row
-    /// stays until the slots have moved up into the title's row, so the
-    /// window's content is resized once, after the motion.
+    /// Whether the bar stands two rows tall: the tabs, then the active tab's slots. A window going
+    /// back to one tab keeps the row until the slots have moved up, so content is resized once.
     fn two_rows(&self) -> bool {
         self.active_slots().is_some()
             && (self.tabs.len() > 1 || (!self.tabbed && self.tabbed_in_flight()))
@@ -1014,9 +962,8 @@ impl TabBar {
         }
     }
 
-    /// The height of the tabs' row: [`TAB_BAR_HEIGHT`], or a coarse pointer's
-    /// target where that is taller, so a finger takes a pill by the row's
-    /// whole height. The pills keep their height, centred in it.
+    /// The height of the tabs' row: the bar height, or a coarse pointer's target where that is
+    /// taller, so a finger takes a pill by the whole row.
     fn tab_row_height(&self) -> f64 {
         TAB_BAR_HEIGHT.max(f64::from(self.interaction.minimum_target()))
     }
@@ -1037,9 +984,8 @@ impl TabBar {
         )
     }
 
-    /// Where the row's content stops: before the window's History action
-    /// when the window has one, else before the controls' pill, each less
-    /// the gap it keeps from what comes before it.
+    /// Where the row's content stops: before the window's History action when it has one, else
+    /// before the controls' pill, less the gap it keeps.
     fn trailing_limit(&self, row: Rect) -> f64 {
         if self.history_action.area() > 0.0 {
             self.history_action.x0 - super::window_controls::HISTORY_GAP
@@ -1048,10 +994,8 @@ impl TabBar {
         }
     }
 
-    /// Where a pointer takes the pill drawn in `pill`: the pill itself while
-    /// it is as tall as the pointer's target; for a coarse pointer the row's
-    /// whole height and half the gap on either side, grown to the target
-    /// where the pill is narrower than it.
+    /// Where a pointer takes the pill drawn in `pill`: the pill itself while it is as tall as the
+    /// target, else the row's whole height and half the gap either side.
     fn tab_hit_rect(&self, pill: Rect) -> Rect {
         let target = f64::from(self.interaction.minimum_target());
         if pill.area() <= 0.0 || pill.height() >= target {
@@ -1067,10 +1011,8 @@ impl TabBar {
         self.interaction.minimum_target_rect(band)
     }
 
-    /// Where the active tab's slots stand: after the icon in the title's
-    /// row while the window shows one tab, across a row of their own under
-    /// the tabs while it shows several, and between the two as that
-    /// changes, on the same motion as the tabs' bodies.
+    /// Where the active tab's slots stand: after the icon in the title's row for one tab, across a
+    /// row of their own under several, and between the two on the tabs' motion.
     fn toolbar_row_rect(&self) -> Rect {
         let tab_row = self.tab_row();
         if let Some(menu) = self.menu_button_row(tab_row) {
@@ -1139,10 +1081,8 @@ impl TabBar {
         self.touch();
         let active = self.active_id;
         let mut toolbar = self.active_toolbar().cloned();
-        // With nothing open the window is named by its app: slots that name
-        // no location — none, or one whose label is blank, an app with
-        // nothing open to name — show the tab's title in the location's
-        // place. A menu alone leaves the title in its tab.
+        // With nothing open the window is named by its app: slots that name no location show the
+        // tab's title in the location's place.
         if let Some(toolbar) = toolbar.as_mut()
             && !toolbar.menu_only()
             && toolbar
@@ -1165,9 +1105,8 @@ impl TabBar {
         );
     }
 
-    /// How far the tabs' bodies have grown in: `0` while the window shows
-    /// one tab as its title, `1` once it shows several as tabs, and between
-    /// the two on the disclosure motion as it changes.
+    /// How far the tabs' bodies have grown in: `0` while the window shows one tab as its title, `1`
+    /// once it shows several, and between on the disclosure motion.
     fn tabbed_progress(&self) -> f64 {
         if !self.window_controls {
             return 1.0;
@@ -1306,10 +1245,8 @@ impl TabBar {
         }
     }
 
-    /// Whether busy arcs still need frames at `now`: one turns, or the pose
-    /// last drawn is not the one they show now (the frame showing them come
-    /// to rest, or gone, is owed). Only drawn: an arc lays nothing out and
-    /// changes nothing the app publishes.
+    /// Whether busy arcs still need frames at `now`: one turns, or the pose last drawn is not the
+    /// one they show now. Only drawn: an arc lays nothing out.
     fn busy_needs_frame(&self, now: Instant) -> bool {
         self.busy_since.keys().any(|id| self.busy_turns(*id, now))
             || self
@@ -1333,9 +1270,8 @@ impl TabBar {
         self.pending_mark.take()
     }
 
-    /// The host shows which window group has keyboard input: the active tab
-    /// of the focused group carries a keyline in primary ink, and the others
-    /// carry the lift alone.
+    /// The host shows which group has keyboard input: the focused group's active tab carries a
+    /// keyline in primary ink, the others the lift alone.
     pub fn set_group_focused(&mut self, focused: bool) {
         let focus = if focused {
             GroupFocus::Focused
@@ -1388,9 +1324,8 @@ impl TabBar {
         self.hover_intent.force_open(Some(idx));
     }
 
-    /// Pin transient pill geometry at its resting state for deterministic
-    /// integration screenshots. This does not alter production animation;
-    /// it only removes wall-clock sampling from visual regression tests.
+    /// Pin transient pill geometry at its resting state for deterministic screenshots; production
+    /// animation is unchanged.
     #[cfg(any(test, debug_assertions))]
     pub fn force_settled_for_tests(&mut self) {
         self.touch();
@@ -1415,23 +1350,8 @@ impl TabBar {
         self.hover_drop_animated_at = None;
     }
 
-    /// Report whether a retained tab row has reached a static
-    /// resting state. Visual tests use this after one layout pass instead of
-    /// assuming that a fixed sleep covers every nested curve.
-    #[cfg(any(test, debug_assertions))]
-    pub fn is_settled_for_tests(&self) -> bool {
-        !self.needs_animation_frame()
-            && self.hover_idx.is_none()
-            && self.press_origin.is_none()
-            && self.pending_drag.is_none()
-            && self.drop_zone_target.is_none()
-            && self.hover_drop_idx.is_none()
-    }
-
-    /// Paints at an arbitrary rect `r` — the pill's sprung visual rect from `draw`,
-    /// or the cursor-following ghost rect. `self.close_rects` etc. are cached at
-    /// the pill's *target* position, so they're offset by `r - self.tab_rects[i]`
-    /// before painting; hit-testing still consults the unoffset rects.
+    /// Paints at an arbitrary rect (the pill's sprung visual rect, or the cursor-following ghost);
+    /// cached hit rects are offset by `r - tab_rects[i]`, and hit-testing keeps the unoffset ones.
     fn draw_pill_inner(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -1510,10 +1430,9 @@ impl TabBar {
             && self.shows_group_focus
             && self.group_focus == GroupFocus::Focused
         {
-            // A restrained focus keyline separates two different facts that
-            // used to share one treatment: "active tab in this group" and
-            // "group receiving keyboard input".  It sits inside the pill so
-            // it cannot collide with neighbouring groups or drag targets.
+            // A restrained focus keyline separates "active tab in this group" from "group receiving
+            // keyboard input", and sits inside the pill so it cannot collide with a neighbour's
+            // targets.
             let inset = f64::from(theme.tokens.spacing.s2);
             let keyline = RoundedRect::from_rect(
                 Rect::new(
@@ -1524,9 +1443,8 @@ impl TabBar {
                 ),
                 FOCUS_KEYLINE_PX / 2.0,
             );
-            // Primary ink, not your colour: which group has input is state,
-            // and a coloured underline on every focused window made the
-            // accent the loudest thing on the desktop (HIG 9.4).
+            // Primary ink, not the accent: which group has input is state, and a coloured underline
+            // on every focused window made the accent the loudest thing on the desktop.
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 pill_transform,
@@ -1549,10 +1467,9 @@ impl TabBar {
             Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
         }
 
-        // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
-        // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
-        // tints a subtle white. Suppressed on pinned/idle-inactive pills — see
-        // [`close_affordance_visible`].
+        // Chip strength ramps 0→1 as the trailing zone opens, full once it clears the chip;
+        // close-hover tints red, tab-hover a subtle white, both suppressed on pinned and
+        // idle-inactive pills.
         let zone = self
             .reveal_px
             .get(i)
@@ -1574,10 +1491,9 @@ impl TabBar {
         self.draw_pill_body(&mut ctx, &pill);
         self.draw_pill_faces(&mut ctx, presence, &pill);
         if t.attention {
-            // One dot at the trailing edge, in the same badge the rest of the
-            // chrome marks "new" with: a window asked for this person and did
-            // not get their focus. Cleared when it does, and handed back to
-            // the close chip once the pointer is on the pill.
+            // One dot in the same badge the rest of the chrome marks "new" with: a window asked for
+            // this person and did not get their focus. Handed back to the close chip once the
+            // pointer is on the pill.
             let side = f64::from(theme.tokens.spacing.s2);
             let centre = Point::new(r.x1 - side / 2.0, r.center().y);
             let PaintCtx {
@@ -1593,9 +1509,8 @@ impl TabBar {
         self.draw_pill_action_chips(&mut ctx, &pill);
     }
 
-    /// The pill's icon/dot/title content — pinned pills get an app icon or
-    /// accent dot only; unpinned pills add the (elided) title text. Split out
-    /// of `draw_pill_inner` to keep it inside the `too_many_lines` budget.
+    /// The pill's icon, dot and title: pinned pills get an app icon or accent dot only, unpinned
+    /// ones add the elided title. Split out to stay inside the `too_many_lines` budget.
     fn draw_pill_body(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
         let PaintCtx {
             scene,
@@ -1614,10 +1529,9 @@ impl TabBar {
         } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = self.idle_ink(theme);
-        // A window of one tab names the window rather than a tab in a row, so
-        // its title steps back to the dim tier while its window is not the one
-        // in use — as every unfocused window's title does. A tab in a row of
-        // tabs keeps the active tab's ink: the group's focus is the keyline's.
+        // A window of one tab names the window, so its title steps back to the dim tier while its
+        // window is not the one in use; a tab in a row keeps the active ink, since the keyline
+        // carries the group's focus.
         let window_idle = self.solo() && !self.group_focused();
         // The cursor-following copy suppresses hover, but carries the primary
         // label ink so an inactive source stays readable in motion.
@@ -1691,9 +1605,8 @@ impl TabBar {
         scene.pop_layer();
     }
 
-    /// A pinned pill's marker: an app icon if it has one, else its accent dot,
-    /// else nothing (an empty bubble). Split out of `draw_pill_body` to keep
-    /// that method inside the `too_many_lines` budget.
+    /// A pinned pill's marker: an app icon, else its accent dot, else an empty bubble. Split out of
+    /// `draw_pill_body` to stay inside the `too_many_lines` budget.
     fn draw_pill_pinned_marker(
         scene: &mut Scene,
         transform: Affine,
@@ -1722,10 +1635,8 @@ impl TabBar {
         }
     }
 
-    /// An unpinned pill's leading glyph — app icon, else accent dot, else
-    /// nothing — returning the horizontal shift it reserves for the title.
-    /// Split out of `draw_pill_body` to keep that method inside the
-    /// `too_many_lines` budget.
+    /// An unpinned pill's leading glyph, returning the horizontal shift it reserves for the title.
+    /// Split out to stay inside the `too_many_lines` budget.
     fn draw_pill_leading_glyph(
         scene: &mut Scene,
         transform: Affine,
@@ -1734,10 +1645,8 @@ impl TabBar {
         accent: Option<vello::peniko::Color>,
         text_color: vello::peniko::Color,
     ) -> f64 {
-        // The glyph starts on the pill's own text inset (`PILL_PAD_X`), so
-        // its left edge lines up with where a glyph-less title starts, and
-        // the title follows it at `ICON_GAP` — one inset and one gap for
-        // every pill, instead of a glyph tucked 2 px inside the text.
+        // The glyph starts on the pill's own text inset, so its left edge lines up with a
+        // glyph-less title, and the title follows at one gap for every pill.
         let icon_rect = leading_glyph_rect(r);
         if image.is_some_and(|image| icons::draw_app_image(scene, transform, icon_rect, image)) {
             return ICON_W + ICON_GAP;
@@ -1752,10 +1661,9 @@ impl TabBar {
             );
             ICON_W + ICON_GAP
         } else if let Some(dot) = accent {
-            // One slot, two possible occupants: the app glyph, or — for a
-            // host whose tabs are classified by something the shell can't
-            // name — this dot. Same width as the glyph so a leading zone
-            // sized by `leading_zone` always has room for whichever paints.
+            // One slot, two occupants: the app glyph, or the accent dot for a host whose tabs are
+            // classified by something the shell cannot name. Same width, so a sized leading zone
+            // always has room.
             let c = vello::kurbo::Circle::new(icon_rect.center(), ACCENT_DOT_R);
             scene.fill(vello::peniko::Fill::NonZero, transform, dot, None, &c);
             ICON_W + ICON_GAP
@@ -1809,10 +1717,8 @@ impl TabBar {
         scene.pop_layer();
     }
 
-    /// Who a pill's faces show: on the tab in front, everyone in this
-    /// window (any of its tabs), as the window's own faces; on a tab
-    /// behind, the people in that tab, so it shows faces only while
-    /// someone is in it.
+    /// Who a pill's faces show: on the tab in front, everyone in the window; on a tab behind, the
+    /// people in that tab, so it shows faces only while someone is in it.
     fn pill_people(&self, tab: u64, presence: &PresenceCtx) -> Vec<crate::permissions::UserId> {
         if tab != self.active_id() {
             return presence.peers_on(&tab_presence_key(tab)).to_vec();
@@ -1828,10 +1734,8 @@ impl TabBar {
         people
     }
 
-    /// How many peer faces pill `i` has room for: up to [`PILL_MAX_FACES`]
-    /// plus a "+N" disc, fewer when the title would drop under
-    /// its full width or [`MIN_TITLE_PX`], none on a pinned pill or one too narrow for even a
-    /// single face. The mist then says someone is there.
+    /// How many faces pill `i` has room for: up to the cap plus a "+N" disc, fewer when the title
+    /// would drop under its full width or its minimum, none on a pinned or narrow pill.
     fn fit_pill_faces(&self, i: usize, presence: &PresenceCtx) -> PillFaces {
         let (Some(tab), Some(&r)) = (self.tabs.get(i), self.tab_rects.get(i)) else {
             return PillFaces::default();
@@ -1871,10 +1775,8 @@ impl TabBar {
         }
     }
 
-    /// Small faces of the peers on this tab, at the trailing end of the
-    /// title zone (never under the close chip): initials in each person's
-    /// presence colour, agents in the agent identity mark so software never
-    /// reads as a person, ringed so overlapping faces stay separate.
+    /// Small faces of the peers on this tab at the trailing end of the title zone: initials in each
+    /// person's presence colour, agents in the agent mark, ringed so overlaps stay separate.
     fn draw_pill_faces(
         &self,
         ctx: &mut PaintCtx<'_>,
@@ -2004,9 +1906,8 @@ impl TabBar {
         let close_hover =
             !suppress_hover && Some(i) == self.hover_close_idx && self.pointer_settled();
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
-            // Unsaved changes, pointer elsewhere: the slot reads as a dot
-            // rather than an ×. Hovering swaps it back (below), so the tab
-            // stays closable and the two meanings never share a frame.
+            // Unsaved changes with the pointer elsewhere: the slot reads as a dot rather than an ×;
+            // hovering swaps it back, so the two meanings never share a frame.
             let dot = vello::kurbo::Circle::new(close_r.center(), MODIFIED_DOT_R);
             let color = if is_active { text_primary } else { text_dim };
             scene.fill(
@@ -2059,9 +1960,8 @@ impl TabBar {
         );
     }
 
-    /// Maximize/search chips, painted exactly when `apply_layout` found room,
-    /// so they slide out of the pill's right edge as it opens. Split out of
-    /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
+    /// Maximize and search chips, painted exactly when `apply_layout` found room, so they slide out
+    /// of the pill's right edge as it opens. Split out to stay inside the `too_many_lines` budget.
     fn draw_pill_action_chips(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
         let PaintCtx {
             scene,
@@ -2090,9 +1990,8 @@ impl TabBar {
             let max_r = shift_rect(max_rect_target, offset);
             let max_hover = Some(i) == self.hover_max_idx && self.pointer_settled();
             if max_hover {
-                // The same round the close chip gets, centred on the glyph,
-                // rather than a capsule the height of the hit rect: three
-                // chips on one pill wear one shape.
+                // The same round the close chip gets, centred on the glyph rather than a capsule
+                // the height of the hit rect: three chips on one pill wear one shape.
                 let ring = chip_hover_ring(max_r);
                 let chip = RoundedRect::from_rect(ring, ring.height() / 2.0);
                 scene.fill(
@@ -2190,9 +2089,9 @@ impl TabBar {
     ) {
         let r = c.pill_rect;
         let radius = f64::from(theme.tokens.radii.control);
-        // Hovered tier, not inactive: active-id already shifted at close-start, and
-        // an inactive pill is fully transparent, which would leave the title and ×
-        // floating on the bar for the fade.
+        // Hovered tier, not inactive: active-id already shifted at close-start, and an inactive
+        // pill is fully transparent, which would leave the title and × floating on the bar for the
+        // fade.
         crate::chrome::paint_selector(
             scene,
             transform,
@@ -2258,9 +2157,8 @@ impl TabBar {
         Some(Rect::new(x0, y0, x0 + w, y0 + h))
     }
 
-    /// The complete visual description of the tab currently being carried.
-    /// The lift uses the theme's fast motion token; reduced motion snaps to the
-    /// tucked end state while preserving the spatial cue.
+    /// The complete visual description of the tab being carried; reduced motion snaps to the tucked
+    /// end state while keeping the spatial cue.
     pub(crate) fn drag_visual(&self, theme: &Theme) -> Option<TabDragVisual> {
         let tab_id = match &self.pending_drag {
             Some(DragPayload::Tab { tab, .. }) => *tab,
@@ -2352,9 +2250,9 @@ impl TabBar {
             return Reveal::None;
         }
         if t.id == self.active_id || self.modified_ids.contains(&t.id) {
-            // A modified tab has something to say at rest — the unsaved-changes
-            // dot — and it lives in the close slot, so it holds that slot open
-            // even when the tab is neither active nor hovered.
+            // A modified tab has something to say at rest, the unsaved-changes dot, and it lives in
+            // the close slot, so that slot stays open even when the tab is neither active nor
+            // hovered.
             Reveal::Close
         } else {
             Reveal::None
@@ -2371,18 +2269,15 @@ impl TabBar {
             return Reveal::None;
         }
         let pressed = self.press_origin.is_some_and(|(j, _)| j == i);
-        // The pointer opens a pill by resting on its body (never its ×, never
-        // on its way to a control) for a short dwell from when it entered, so
-        // sweeping across the row moves nothing; an open pill stays open while
-        // the pointer heads for its chips, even across a neighbour or the gap.
-        // A press and keyboard focus are explicit and open at once.
+        // The pointer opens a pill by resting on its body (never its ×, never on the way to a
+        // control) for a dwell, so sweeping moves nothing; an open pill stays open on the way to
+        // its chips, and a press or keyboard focus opens at once.
         if Some(i) == self.hover_intent.open()
             || pressed
             || self.keyboard_focus && t.id == self.active_id
         {
-            // With the maximize chip withheld there is nothing above `Close` to
-            // open into, and reserving `Full`'s width for a chip that will
-            // never be placed would just push the title around for nothing.
+            // With the maximize chip withheld there is nothing above `Close` to open into, and
+            // reserving its width would push the title around for nothing.
             if self.show_maximize {
                 Reveal::Full
             } else {
@@ -2407,11 +2302,8 @@ impl TabBar {
         a.from + (a.to - a.from) * t
     }
 
-    /// Where pill `i`'s chips sit once it has finished opening: the menu-aim
-    /// target. Taken at the settled width rather than the current one, so a
-    /// pointer that outruns the opening pill is still heading for them, and
-    /// over the bar's full height, so a path that grazes the strip of bar
-    /// above or below the pill on its way is still heading for them too.
+    /// Where pill `i`'s chips sit once it has opened: the aim target at the settled width, over the
+    /// bar's full height, so a pointer that outruns the opening pill is still heading for them.
     fn aim_target(&self, i: usize) -> Option<Rect> {
         let r = self.tab_rects.get(i).copied().filter(|r| r.area() > 0.0)?;
         let id = self.tabs.get(i)?.id;
@@ -2447,9 +2339,8 @@ impl TabBar {
         })
     }
 
-    /// Every control clickable right now, as its pointer target: each
-    /// painted ×'s full 32 px target (a press there closes the tab, so the ×
-    /// must not move away from it), each revealed chip, and "new tab".
+    /// Every control clickable now, as its pointer target: each painted ×'s full target (a press
+    /// there closes, so it must not move away), each revealed chip, and "new tab".
     fn clickable_controls(&self) -> Vec<Rect> {
         let pills = (0..self.tabs.len()).flat_map(|i| {
             let close = self
@@ -2469,10 +2360,8 @@ impl TabBar {
             .collect()
     }
 
-    /// 0 at [`Reveal::None`], 1 at [`Reveal::Full`]. The body wash rides this so the
-    /// fill fades out over the same frames the chips slide back under the pill's
-    /// right edge, instead of vanishing on the first un-hovered frame and leaving
-    /// them painting on nothing.
+    /// 0 at no reveal, 1 at full: the body wash rides this, so the fill fades over the same frames
+    /// the chips slide back instead of vanishing on the first un-hovered frame.
     fn reveal_fade(&self, idx: usize) -> f64 {
         let Some(t) = self.tabs.get(idx) else {
             return 0.0;
@@ -2529,10 +2418,8 @@ impl TabBar {
         from
     }
 
-    /// Test/shot clock control for the hover dwell: settle the pointer intent
-    /// as if the dwell had run out since the pointer entered the pill it
-    /// rests on. Production input still arms the dwell exclusively through
-    /// `on_cursor_moved`. Returns whether a pill is open by pointer now.
+    /// Test and shot control for the hover dwell: settle the pointer intent as if the dwell had run
+    /// out. Production arms the dwell only through `on_cursor_moved`.
     #[cfg(any(test, debug_assertions))]
     pub fn elapse_hover_dwell(&mut self) -> bool {
         self.touch();
@@ -2550,25 +2437,6 @@ impl TabBar {
     /// passing over them: a control's hover wash shows only then.
     fn pointer_settled(&self) -> bool {
         self.hover_intent.settled(crate::time::now())
-    }
-
-    /// Hold every in-flight reveal curve `at` milliseconds along it. The curve runs
-    /// on wall time and an offscreen frame costs more wall time than the whole
-    /// curve lasts, so a capture that only steps frames would see just the
-    /// endpoints — same escape as `GroupRow::hold_shift_at`. Returns whether any
-    /// curve was running to sample.
-    pub fn hold_reveal_at(&mut self, at: Duration) -> bool {
-        self.touch();
-        let mut any = false;
-        let now = crate::time::now();
-        for anim in self.reveal_anim.values_mut() {
-            if (anim.from - anim.to).abs() <= f64::EPSILON {
-                continue;
-            }
-            anim.started = now.checked_sub(at).unwrap_or(now);
-            any = true;
-        }
-        any
     }
 
     fn reveal_in_flight(&self) -> bool {
@@ -2598,10 +2466,9 @@ impl TabBar {
         };
         match self.title_advance.get(&t.id) {
             Some((title, _, w)) if title == &t.title => *w,
-            // A retitled tab keeps the width it was drawn at until `draw`
-            // measures the new title. Guessing from the character count
-            // first made the pill jump wide, then narrow, on every title
-            // change a client makes (a terminal's running status, say).
+            // A retitled tab keeps the width it was drawn at until `draw` measures the new title:
+            // guessing from the character count made the pill jump wide then narrow on every title
+            // change.
             Some((_, _, w)) => *w,
             None => {
                 // Title lengths never approach `u32::MAX` chars, so this is
@@ -2737,9 +2604,8 @@ impl TabBar {
         self.touch();
         if self.tabs.iter().any(|t| t.id == id) {
             if self.active_id != id {
-                // The selection moves from the pill it was on (`selection_move`): drawn over the
-                // frames between, or at once on a still theme or under reduced motion (decided
-                // where it draws, when the theme is known).
+                // The selection moves from the pill it was on: drawn over the frames between, or at
+                // once on a still theme or under reduced motion.
                 let from = self.selection_from();
                 self.selection_move = Some((from, id, crate::time::now()));
             }
@@ -2787,9 +2653,8 @@ impl TabBar {
         self.pending_activation.take()
     }
 
-    /// Move the selected tab within a focused tab list. The list itself is one
-    /// Tab-stop; once it has focus, the standard tab-list keys choose among
-    /// its pills. Returns `true` only for a key this widget consumed.
+    /// Move the selected tab within a focused tab list, which is one Tab stop; the standard
+    /// tab-list keys then choose among its pills. Returns whether it consumed the key.
     fn handle_keyboard_navigation(&mut self, key: &Key) -> bool {
         self.touch();
         if !self.keyboard_focus || self.tabs.is_empty() {
@@ -2840,10 +2705,8 @@ impl TabBar {
     pub fn is_held(&self, id: u64) -> bool {
         self.held_ids.contains_key(&id)
     }
-    /// Name whoever holds the tab under the pointer, in their colour, beside
-    /// it in the tab strip: on someone else's window that is the whole
-    /// explanation of why it offers no close and will not move. Within
-    /// `viewport`, the strip's band, so it never covers the window's content.
+    /// Name whoever holds the tab under the pointer, in their colour, beside it: on someone else's
+    /// window that explains why it offers no close and will not move. Within the strip's band.
     pub(crate) fn draw_holder_chip(
         &self,
         scene: &mut Scene,
@@ -2932,9 +2795,8 @@ impl TabBar {
             _ => false,
         }
     }
-    /// Tint `id`'s leading marker. A tab with no `app_kind` paints a filled dot
-    /// in the leading slot; one with both tints its app glyph instead. Pass a
-    /// colour read off the `Theme` — see `Self::accent_ids`.
+    /// Tint `id`'s leading marker: a tab with no `app_kind` paints a filled dot, one with both
+    /// tints its app glyph. Pass a colour read off the `Theme`.
     pub fn set_accent(&mut self, id: u64, color: vello::peniko::Color) {
         self.touch();
         self.accent_ids.insert(id, color);
@@ -2988,10 +2850,8 @@ impl TabBar {
         Some(idx)
     }
 
-    /// Active-id shifts to the neighbour immediately so the user never sees a
-    /// "ghost active" frame during the fade. Idempotent on a tab already in
-    /// `closing_tabs` — restarting the curve would pop the pill back to full
-    /// opacity, worse than letting it finish.
+    /// Active-id shifts to the neighbour at once, so no "ghost active" frame shows during the fade;
+    /// idempotent on a tab already closing, since restarting the curve would pop it back to full.
     pub fn start_closing(&mut self, id: u64) -> bool {
         self.touch();
         let Some((idx, desc)) = self
@@ -3006,9 +2866,8 @@ impl TabBar {
         if self.closing_tabs.iter().any(|c| c.desc.id == id) {
             return false;
         }
-        // Snapshot before the remove shifts `tab_rects`, so the fade renders in
-        // place. Falls back to `Rect::ZERO` if the bar hasn't laid out yet (e.g. a
-        // synthetic test setup) — nothing visible paints there anyway.
+        // Snapshot before the remove shifts `tab_rects`, so the fade renders in place; `Rect::ZERO`
+        // before the first layout, which nothing paints anyway.
         let pill_rect = self.tab_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         let close_rect = self.close_rects.get(idx).copied().unwrap_or(Rect::ZERO);
         self.pending_close = Some(id);
@@ -3060,9 +2919,8 @@ impl TabBar {
         self.touch();
         let before = self.closing_tabs.len();
         self.closing_tabs.retain(|c| c.desc.id != id);
-        // The pill itself left at `start_closing`; its sidecar state only
-        // needs to go once nothing is still painting it, so a recycled id
-        // doesn't inherit a dead tab's tint or unsaved-changes dot.
+        // The pill left at `start_closing`; its sidecar state goes once nothing paints it, so a
+        // recycled id does not inherit a dead tab's tint or dot.
         self.accent_ids.remove(&id);
         self.modified_ids.remove(&id);
         self.closing_tabs.len() != before
@@ -3072,12 +2930,9 @@ impl TabBar {
         !self.closing_tabs.is_empty()
     }
 
-    /// True if `id` is mid close-fade — already gone from the live tab list
-    /// but still rendering its the close fade (`close_fade`) animation. A caller that
-    /// reconciles pills against its own model checks this before
-    /// re-inserting a still-open item, so cancelling a close (e.g. answering
-    /// "no" to a discard-unsaved-changes prompt) doesn't pop a duplicate
-    /// pill mid-fade.
+    /// True if `id` is mid close-fade: gone from the live list but still rendering. Callers
+    /// reconciling against their own model check it before re-inserting a still-open item, so
+    /// cancelling a close does not pop a duplicate pill.
     pub fn is_closing(&self, id: u64) -> bool {
         self.closing_tabs.iter().any(|c| c.desc.id == id)
     }
@@ -3098,10 +2953,8 @@ impl TabBar {
             .find(|c| c.desc.id == id)
             .map(|c| c.started_at)
     }
-    /// Released inside this bar → `pending_reorder` to the gap the drop indicator
-    /// is pointing at ([`Self::drop_index_for`], same index `hover_drop_idx` uses).
-    /// Released outside this bar's rect → `pending_detach`; the parent `GroupRow`
-    /// resolves the target bar by hit-testing sibling `bar_rect()`s.
+    /// Released inside this bar → `pending_reorder` to the gap the indicator points at; outside its
+    /// rect → `pending_detach`, which the parent `GroupRow` resolves by hit-testing sibling bars.
     fn finish_drag_release(&mut self, handled: &mut bool) {
         self.touch();
         if self.toolbar_row.release(self.last_cursor) {
@@ -3147,9 +3000,8 @@ impl TabBar {
         if self.pending_drag.is_some() {
             if let Some((from, _)) = self.press_origin {
                 if self.rect.contains(self.last_cursor) {
-                    // Removing the dragged pill shifts every later slot down by
-                    // one, so an insertion point past its own position maps to
-                    // `ins - 1`.
+                    // Removing the dragged pill shifts every later slot down one, so an insertion
+                    // point past its own position maps to `ins - 1`.
                     let ins = self.drop_index_for(self.last_cursor);
                     let to = if ins > from {
                         ins.saturating_sub(1)
@@ -3198,9 +3050,8 @@ impl TabBar {
         true
     }
 
-    /// Whether the window can be carried by its bar from anywhere that is
-    /// not a control (it stands on a canvas): its title and location carry
-    /// it, and a click on them still does what it does.
+    /// Whether the window can be carried by its bar from anywhere that is not a control (it stands
+    /// on a canvas): its title and location carry it, and a click still does what it does.
     pub fn set_carriable(&mut self, carriable: bool) {
         if self.carriable == carriable {
             return;
@@ -3210,9 +3061,8 @@ impl TabBar {
         self.toolbar_row.set_carriable(carriable);
     }
 
-    /// Whether `p` is on one of the bar's controls: the window's own, the
-    /// toolbar's (not its location), a tab's close or action chip, the
-    /// new-tab button, the desktop chip.
+    /// Whether `p` is on one of the bar's controls: the window's own, the toolbar's (not its
+    /// location), a tab's close or action chip, the new-tab button, the desktop chip.
     pub fn control_hit(&self, p: Point) -> bool {
         if self.controls.hit(p).is_some()
             || (self.active_toolbar().is_some() && self.toolbar_row.control_hit(p))
@@ -3225,9 +3075,8 @@ impl TabBar {
         (0..self.tabs.len()).any(|i| self.close_hit_rect(i).is_some_and(|r| r.contains(p)))
     }
 
-    /// The press under way became a carry of the whole window: whatever it
-    /// was going to do on the bar (lift a tab, act on the location) it no
-    /// longer does.
+    /// The press under way became a carry of the whole window: whatever it was going to do on the
+    /// bar it no longer does.
     pub fn cancel_press_for_carry(&mut self) {
         self.touch();
         self.press_origin = None;
@@ -3274,12 +3123,9 @@ impl TabBar {
             .filter(|rect| rect.area() > 0.0)
     }
 
-    /// The tab a middle press closes: the one under the pointer, unless it is
-    /// pinned or holds work of its own — a pinned tab is kept where it is, and
-    /// someone else's work is not this person's to end.
-    ///
-    /// A window's only tab closes too: it is drawn as its icon alone when the
-    /// app puts its slots in the title's row, and the press means the window.
+    /// The tab a middle press closes: the one under the pointer, unless it is pinned or holds
+    /// someone else's work, where a pinned tab stays and another person's work is not this person's
+    /// to end. A window's only tab closes the window.
     fn tab_under_middle_press(&self) -> Option<u64> {
         if !self.closable {
             return None;
@@ -3295,10 +3141,8 @@ impl TabBar {
         })
     }
 
-    /// The pointer target for a close glyph. During a live layout this is the
-    /// 32px target at the pill's trailing edge; the visual glyph itself stays
-    /// compact. The fallback keeps focused geometry tests that seed only the
-    /// visual rects representative of the pre-layout state.
+    /// The pointer target for a close glyph: the full target during a live layout while the glyph
+    /// stays compact, with a fallback for focused geometry tests that seed only visual rects.
     fn close_hit_rect(&self, index: usize) -> Option<Rect> {
         self.close_hit_rects
             .get(index)
@@ -3316,11 +3160,8 @@ impl TabBar {
         self.pending_context_menu.take()
     }
 
-    /// The tab a right-click (or a long press, which arrives as one) at
-    /// `p` opens the window menu for: the pill under it, or anywhere else
-    /// in the bar's row (the title, the empty middle, the window's
-    /// controls) the active tab, since the menu is the window's. The active
-    /// tab's own slots (a location field, app actions) keep their own
+    /// The tab a right-click (or long press) at `p` opens the window menu for: the pill under it,
+    /// else the active tab, since the menu is the window's; the active tab's own slots keep their
     /// gestures.
     fn context_menu_target(&self, p: Point) -> Option<(u64, Point)> {
         if let Some(idx) = self
@@ -3419,9 +3260,8 @@ impl TabBar {
     pub fn tab_rects(&self) -> &[Rect] {
         &self.tab_rects
     }
-    /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)` so
-    /// integration tests in other crates (which link the release-shaped lib) can
-    /// resolve the chip from live geometry, matching `WindowGroup::bar_for_tests`.
+    /// Gated `cfg(any(test, debug_assertions))` rather than `cfg(test)`, so integration tests in
+    /// other crates can resolve the chip from live geometry.
     #[cfg(any(test, debug_assertions))]
     pub fn max_rects(&self) -> &[Rect] {
         &self.max_rects
@@ -3437,14 +3277,9 @@ impl TabBar {
         &self.history_rects
     }
 
-    /// The pointer target of a maximize/search chip: at least the theme's
-    /// minimum pointer target on a side (HIG §9.6: 32 px), centred on the
-    /// chip's glyph rect, and never outside the bar. The painted chip stays
-    /// `ACTION_W` wide and the pill widths the layout pins do not move, so
-    /// neighbouring targets inside one pill overlap; a hover or press in an
-    /// overlap resolves by priority — close, then maximize, then search —
-    /// which keeps the close target its full 32 px. `Rect::ZERO` for a
-    /// chip the reveal has not placed.
+    /// A chip's pointer target: at least the theme's minimum on a side, centred on the glyph, never
+    /// outside the bar. The painted chip keeps its width, so neighbouring targets overlap, resolved
+    /// close, then maximize, then search.
     pub fn action_hit_rect(&self, chip: Rect) -> Rect {
         if chip.area() <= 0.0 {
             return Rect::ZERO;
@@ -3458,12 +3293,8 @@ impl TabBar {
         }
     }
 
-    /// The action chip of any pill under `p`, as `(tab index, chip)`. A
-    /// painted glyph wins outright — the maximize and search glyphs never
-    /// overlap, so a press on what the eye sees goes where the eye expects
-    /// — and only a point in neither glyph falls to the enlarged targets,
-    /// by priority: maximize, then search. Points inside a close target are
-    /// the close chip's and are resolved before this is consulted.
+    /// The action chip of any pill under `p`: a painted glyph wins outright, since the two never
+    /// overlap, and only a point in neither falls to the enlarged targets, maximize before search.
     fn action_chip_at(&self, p: Point) -> Option<(usize, ActionChip)> {
         let glyph = (0..self.tabs.len()).find_map(|i| {
             let max = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
@@ -3531,10 +3362,8 @@ impl TabBar {
         self.hover_drop_idx
     }
 
-    /// Called by `GroupRow::handle_event` for every sibling bar while a child
-    /// group's tab drag is in flight. No-op while this bar has its own
-    /// `pending_drag` in flight — the own-bar `CursorMoved` branch already drives
-    /// `hover_drop_idx`, and the parent's fan-out shouldn't fight with it.
+    /// Called for every sibling bar while another group's tab drag is in flight; a no-op while this
+    /// bar has its own drag, whose moves already drive the hover.
     pub fn set_external_drag_hover(&mut self, cursor: Option<Point>) {
         self.touch();
         if self.pending_drag.is_some() {
@@ -3560,10 +3389,8 @@ impl TabBar {
         self.on_strip = on_strip;
     }
 
-    /// The span the pills are laid out across: the whole bar, or on a
-    /// docked strip the strip less the inset its pills keep from its ends,
-    /// the same inset they keep from its top and bottom, so the strip's
-    /// capsule is concentric with the tabs in it.
+    /// The span the pills are laid out across: the bar, or on a docked strip the strip less the
+    /// inset its pills keep from its ends, so the strip's capsule is concentric with them.
     fn pill_row(&self) -> Rect {
         let tab_row = self.tab_row();
         let row = if self.on_strip && tab_row.width() > 2.0 * TAB_PILL_INSET_Y {
@@ -3582,10 +3409,8 @@ impl TabBar {
         Rect::new(x0, row.y0, x1, row.y1)
     }
 
-    /// The ink of an idle tab's title and glyphs: the dim tier, unless the
-    /// bar stands on a frosted strip, whose ground is the desktop behind it
-    /// under the tint. There it is the ink that holds on the tint over black
-    /// and over white alike, so a bright wallpaper never washes it out.
+    /// The ink of an idle tab's title and glyphs: the dim tier, or on a frosted strip the ink that
+    /// holds over black and over white alike, so a bright wallpaper never washes it out.
     fn idle_ink(&self, theme: &Theme) -> vello::peniko::Color {
         let colors = &theme.tokens.colors;
         if !(self.on_strip && crate::chrome::selector_finish(theme).translucent()) {
@@ -3613,10 +3438,9 @@ impl TabBar {
         }
     }
 
-    /// The single place active/hover/pressed are read into an appearance, so
-    /// `draw_pill_inner` and every other reader can't drift apart. Pressed tracks
-    /// the press-source pill across the whole press → (optional drag) → release
-    /// lifecycle, so press-scale composes with source-dim during a drag.
+    /// The one place active, hover and pressed are read into an appearance, so no reader can drift.
+    /// Pressed tracks the press-source pill across press, drag and release, so press-scale composes
+    /// with source-dim.
     fn pill_look(&self, idx: usize, theme: &Theme, suppress_hover: bool) -> PillAppearance {
         let is_active = self.tabs.get(idx).is_some_and(|t| t.id == self.active_id);
         let is_hover = !suppress_hover && Some(idx) == self.hover_idx;
@@ -3632,10 +3456,8 @@ impl TabBar {
         let ground = self.ground(theme);
         let mut look =
             pill_appearance(theme, ground, is_active || is_carried, is_hover, is_pressed);
-        // The selection moving between pills (`selection_move`): the new pill's selector fades
-        // in while the old one's fades out, both on the list change's fade. A still theme and
-        // reduced motion read as done at once (the progress is `1.0` there), so the selection
-        // lands on the pill the person chose on the frame it happens.
+        // The selection moving between pills: the new selector fades in while the old fades out,
+        // and a still theme or reduced motion reads as done at once.
         if self.selection_move.is_some() {
             let now = crate::motion::frame_now();
             let progress = self.selection_progress(now, theme.motion());
@@ -3662,9 +3484,8 @@ impl TabBar {
                 }
             }
         }
-        // Inactive body rides the reveal curve instead of switching on/off with
-        // the pointer, fading (fill + edge together, so the hairline can't flicker
-        // off a frame late) over the same frames its chips slide back in.
+        // Inactive body rides the reveal curve rather than switching with the pointer, fading fill
+        // and edge together so the hairline cannot flicker a frame late.
         if !is_active && !is_pressed && !is_carried {
             let fade = if suppress_hover {
                 0.0
@@ -3742,9 +3563,8 @@ impl TabBar {
         })
     }
 
-    /// The unsaved-changes dot's colour, mirroring the exact condition
-    /// `draw_pill_inner` paints it under — `None` whenever the × would show
-    /// instead (not modified, or the pointer is on the pill or its close chip).
+    /// The unsaved-changes dot's colour, under the exact condition `draw_pill_inner` paints it:
+    /// `None` whenever the × would show instead.
     #[cfg(test)]
     pub(crate) fn modified_marker_color_for_tests(
         &self,

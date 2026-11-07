@@ -127,13 +127,8 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
     })
 }
 
-/// Whether the invitation `invite_id` was redeemed in the workspace whose
-/// admitted document `doc` is. An invitation is redeemed once.
-#[must_use]
-pub fn invitation_redeemed(doc: &AutoCommit, invite_id: &[u8; 32]) -> bool {
-    invitation_receipts(doc).is_ok_and(|receipts| receipts.contains_key(&hex::encode(invite_id)))
-}
-
+/// The redemption receipts `doc` records, by invite id: every receipt it has
+/// seen under one invitation, as the ledger holds them.
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
@@ -166,6 +161,32 @@ pub(crate) fn invitation_receipts(
     }
     Ok(receipts)
 }
+
+/// Whether every redemption `before` records is still in `after`, byte for
+/// byte, under the invitation it redeemed.
+///
+/// An invitation admits one person: whoever redeems it writes its receipt, and
+/// that receipt is the workspace's record from then on. A batch may redeem an
+/// invitation the workspace holds no redemption of, and nothing else.
+///
+/// A ledger this build cannot read is not evidence of either: it keeps nothing.
+pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+    let Some(before) = before else {
+        return true;
+    };
+    let (Ok(before), Ok(after)) = (invitation_receipts(before), invitation_receipts(after)) else {
+        return false;
+    };
+    // An invitation the workspace redeemed keeps exactly its receipts; one it
+    // never redeemed may be redeemed now.
+    before.iter().all(|(invite, held)| {
+        after.get(invite).is_some_and(|written| {
+            held.iter().all(|value| written.contains(value))
+                && written.iter().all(|value| held.contains(value))
+        })
+    })
+}
+
 /// Every bot of the workspace `doc` governs, by name: each installed bot that
 /// was not withdrawn, and each request of a member that no installed bot
 /// answers yet. A requested bot the host installed is one bot, marked as
@@ -257,6 +278,16 @@ pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<Aut
     candidate.reset_diff_cursor();
     if storage.is_empty() {
         return Ok(candidate);
+    }
+    // A change under a writer's sequence the document already holds is another
+    // branch of that writer, which Automerge reads as one of the two. A record's
+    // body reads the one that reached it first; governance is decided as a
+    // whole, so a batch carrying one is refused instead.
+    if let Some(fork) = tilo_automerge::keeping::fork(&candidate, &storage) {
+        return Err(format!(
+            "duplicate seq {} of writer {}: the workspace holds another change under it",
+            fork.seq, fork.actor
+        ));
     }
     tilo_automerge_isolate::apply(
         &mut candidate,

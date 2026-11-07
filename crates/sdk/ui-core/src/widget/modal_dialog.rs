@@ -1,20 +1,17 @@
 //! The one modal: a sheet over a scrim that covers the whole window.
 //!
-//! [`ModalDialog`] is the retained widget: a title, any content widget, and
-//! up to three footer actions. It is always presented in the window's top
-//! layer ([`Widget::draw_overlay`]), after the app and the window's own
-//! chrome (the History bar, sidebars), so its scrim covers all of them
-//! wherever in the tree the dialog is mounted. Escape or a click on the scrim
-//! dismisses; Enter fires the default action unless the content consumes it.
-//! The default is the primary action, except in a destructive confirmation,
-//! where it is the safe answer (Cancel), as on macOS.
-//! Content taller than the window allows scrolls inside the body.
+//! [`ModalDialog`] is the retained widget: a title, any content widget, and up to
+//! three footer actions, always presented in the window's top layer
+//! ([`Widget::draw_overlay`]) after the app and the window's chrome, so its scrim
+//! covers all of them. Escape or a click on the scrim dismisses; Enter fires the
+//! default action unless the content consumes it (the primary action, except in a
+//! destructive confirmation, which takes the safe answer, as on macOS). Content
+//! taller than the window scrolls inside the body.
 //!
-//! A painted host that asks a question without a retained tree uses
-//! [`ModalSheet`]: it paints the sheet, keeps its layout for hit-testing and
-//! turns input into a [`SheetResponse`]. Hosts that need only the chrome
-//! (the identity ceremonies, shell sheets) use [`layout`],
-//! [`paint_backdrop`] and [`paint_actions`]:
+//! A painted host that asks a question without a retained tree uses [`ModalSheet`],
+//! which paints the sheet, keeps its layout for hit-testing and turns input into a
+//! [`SheetResponse`]. Hosts that need only the chrome (the identity ceremonies, shell
+//! sheets) use [`layout`], [`paint_backdrop`] and [`paint_actions`]:
 //!
 //! ```ignore
 //! let layout = modal_dialog::layout(window, &spec, text_renderer, theme);
@@ -23,14 +20,10 @@
 //! modal_dialog::paint_actions(scene, transform, text_renderer, theme, &layout, &spec);
 //! ```
 //!
-//! On a roomy viewport the sheet is a floating Panel ([`super::floating_surface`]):
-//! panel radius, the blurred material, one soft shadow. On a compact viewport
-//! it is an opaque full-window page with no floating edge. A floating sheet
-//! follows its content height;
-//! its title is a `Title`; its actions are Regular buttons anchored to the
-//! footer in the platform's order. Dismissal ([`ModalDialog::on_dismiss`])
-//! is the dialog's close control, published as a view action so agents and
-//! scripts close the dialog as a person does.
+//! On a roomy viewport the sheet is a floating Panel ([`super::floating_surface`]);
+//! on a compact one an opaque full-window page. Dismissal ([`ModalDialog::on_dismiss`])
+//! is the dialog's close control, published as a view action so agents and scripts
+//! close the dialog as a person does.
 
 use crate::widget::{AppModel, ModelPath};
 #[cfg(test)]
@@ -77,9 +70,8 @@ pub enum ModalEmphasis {
     /// A primary action that destroys something. Enter never fires it: in
     /// a sheet with a way out, Enter is that way out (Cancel).
     Danger,
-    /// A third answer that is neither the default nor the way out ("Don't
-    /// save"). It stands apart from the other two at the footer's leading
-    /// edge where the platform puts the primary action last.
+    /// A third answer that is neither the default nor the way out ("Don't save"), standing at the
+    /// footer's leading edge; Enter never fires it.
     Alternate,
     /// An [`Self::Alternate`] answer that discards something: danger ink on
     /// a neutral control, never filled, never what Enter fires.
@@ -321,9 +313,8 @@ pub struct ModalLayout {
     /// The sheet stands beside a control ([`ModalSpec::anchor`]): the
     /// window behind it is not dimmed.
     pub anchored: bool,
-    /// The sheet rises from a compact window's foot, as tall as what it
-    /// holds ([`rise_from_foot`]): a [`super::BottomSheet`] over the dimmed
-    /// page rather than a page of its own.
+    /// The sheet rises from a compact window's foot, as tall as what it holds ([`rise_from_foot`]):
+    /// a [`super::BottomSheet`] over the dimmed page.
     pub foot: bool,
 }
 
@@ -374,9 +365,8 @@ impl ModalLayout {
     }
 }
 
-/// Ink that is legible on the sheet, as `(primary, dim)`: the theme's own
-/// when it clears AA against the panel ground, else the contrast-guaranteed
-/// on-content ramp.
+/// Ink legible on the sheet, as `(primary, dim)`: the theme's own when it clears AA against the
+/// panel ground, else the contrast-guaranteed on-content ramp.
 pub fn ink(theme: &Theme) -> (Color, Color) {
     let ground = crate::chrome::panel_ground(theme);
     if crate::a11y::contrast_ratio(theme.text_primary, ground) >= MODAL_MIN_INK_CONTRAST {
@@ -392,18 +382,14 @@ fn pad(theme: &Theme) -> f64 {
     f64::from(theme.tokens.spacing.s6)
 }
 
-/// A small viewport presents a modal as a page instead of a floating card.
-/// The sheet-width role grows with the theme's UI and text scale; checking
-/// both axes also keeps phone landscape and short viewports usable.
+/// A small viewport presents a modal as a page instead of a floating card, so phone landscape and
+/// short viewports stay usable.
 pub fn uses_full_window(window: Rect, theme: &Theme) -> bool {
     window.width().min(window.height()) < f64::from(theme.tokens.metrics.panel_width_sheet)
 }
 
-/// Width of the sheet for `max_width` (design pixels) inside `window`,
-/// knowable before any body row is measured. Widths grow with the text
-/// scale, because what fills a sheet is text. A floating sheet keeps the
-/// content gutter clear of every window edge; a compact page fills the window
-/// and keeps that gutter inside its body.
+/// Width of the sheet for `max_width` (design pixels) inside `window`, knowable before any body row
+/// is measured: widths grow with the text scale, since what fills a sheet is text.
 pub fn card_width(window: Rect, max_width: f64, theme: &Theme) -> f64 {
     if uses_full_window(window, theme) {
         return window.width().max(0.0);
@@ -473,9 +459,8 @@ pub fn paint_backdrop(
     paint_sheet(scene, transform, text_renderer, theme, layout, spec);
 }
 
-/// Paint the scrim behind a floating sheet drawn in `drawn_card`: the
-/// sheet's rect where it is drawn this frame, which differs from
-/// `layout.card` while it arrives or leaves. A full-window page has none.
+/// Paint the scrim behind a floating sheet drawn in `drawn_card`, which differs from `layout.card`
+/// while it arrives or leaves; a full-window page has none.
 pub fn paint_scrim(
     scene: &mut Scene,
     transform: Affine,
@@ -621,11 +606,10 @@ pub enum SheetResponse {
     Dismiss,
 }
 
-/// The immediate-mode sheet for a painted host that keeps its own state (a
-/// question with three answers, a confirmation over a canvas): it lays the
-/// sheet out, paints it with hover, press and keyboard focus on its
-/// actions, keeps the layout of its last paint for hit-testing, and turns
-/// input into a [`SheetResponse`]. The host paints only its body.
+/// The immediate-mode sheet for a painted host that keeps its own state (a question
+/// with three answers, a confirmation over a canvas): it lays the sheet out, paints it
+/// with hover, press and keyboard focus on its actions, keeps that layout for
+/// hit-testing and turns input into a [`SheetResponse`]; the host paints only its body.
 ///
 /// ```ignore
 /// // draw_overlay:
@@ -654,9 +638,8 @@ pub struct ModalSheet {
     enabled: Vec<bool>,
     /// Action indices in the order they stand, leading to trailing.
     visual: Vec<usize>,
-    /// Its arrival (`motion::Appear`, from the sheet's centre): the first
-    /// paint after [`Self::new`] or [`Self::reset`] starts it. It leaves when
-    /// its host stops painting it, at once.
+    /// Its arrival (`motion::Appear`, from the sheet's centre), started by the first paint after
+    /// [`Self::new`] or [`Self::reset`].
     appear: crate::motion::Appearing,
 }
 
@@ -735,9 +718,8 @@ impl ModalSheet {
         );
     }
 
-    /// Paint the sheet for `spec` over `window`, calling `body` to draw the
-    /// host's content inside the body rect (`spec.body_height` tall). The
-    /// actions show this sheet's hover, press and focus.
+    /// Paint the sheet for `spec` over `window`, calling `body` to draw the host's content inside
+    /// the body rect (`spec.body_height` tall).
     pub fn paint(
         &mut self,
         scene: &mut Scene,
@@ -920,9 +902,8 @@ impl ModalSheet {
     }
 }
 
-/// One footer action of a [`ModalDialog`]. The dialog runs it from its own
-/// events, and the action's focus node runs it when it is operated through
-/// the accessibility tree, so both hold the callback.
+/// One footer action of a [`ModalDialog`]: the dialog runs it from its own events, the action's
+/// focus node when operated through the accessibility tree.
 pub struct DialogAction {
     pub label: String,
     on_click: Rc<RefCell<dyn FnMut()>>,
@@ -1015,9 +996,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     window: Rect,
     /// `window` came from the host's top layer rather than the layout node.
     presented: bool,
-    /// The layout node of the window the dialog stands in, when a host
-    /// shares one tree among several windows ([`within_window`]); `None`
-    /// when the root of the tree is the window.
+    /// The layout node of the window the dialog stands in, when a host shares one tree among
+    /// several windows ([`within_window`]).
     window_node: Option<NodeId>,
     layout: Option<ModalLayout>,
     laid_out_for: Option<LayoutKey>,
@@ -1047,10 +1027,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     header_detached: Option<floating_surface::DetachedContent>,
     /// The content's measured size.
     content_size: (f64, f64),
-    /// The body width the hosted content was last laid out in: a draw
-    /// finding the body wider or narrower asks for a new layout pass. Not
-    /// the content's own width, which a fixed-size body keeps whatever the
-    /// body's width is.
+    /// The body width the hosted content was last laid out in: a draw finding the body wider or
+    /// narrower asks for a new layout pass.
     content_laid_out_in: f64,
     /// Where the content's top-left was last placed.
     content_origin: Point,
@@ -1068,9 +1046,8 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// The theme from the latest layout build, for the content layout
     /// `apply_layout` runs without one.
     layout_theme: Theme,
-    /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
-    /// Kept as a handle so a host that rebuilds this dialog's tree can hand
-    /// every rebuild the same one ([`Self::appearing`]).
+    /// Its arriving and leaving (`motion::Appear`), kept as a handle so every rebuild of the host's
+    /// tree is handed the same one ([`Self::appearing`]).
     appear: crate::motion::Appearance,
     /// The control the sheet asks about: it stands beside it, the window
     /// undimmed ([`Self::set_anchor`]).
@@ -1133,9 +1110,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         }
     }
 
-    /// Stand beside the control at `anchor` as a popover, the window
-    /// undimmed, rather than over the window's centre; `None` centres it.
-    /// A compact window shows it as a page (or from the foot) whatever.
+    /// Stand beside the control at `anchor` as a popover, the window undimmed, rather than over the
+    /// window's centre; `None` centres it.
     pub fn set_anchor(&mut self, anchor: Option<Rect>) {
         if self.anchor != anchor {
             self.anchor = anchor;
@@ -1143,9 +1119,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         }
     }
 
-    /// On a compact window, rise from the window's foot as a
-    /// [`super::BottomSheet`] as tall as what the sheet holds, over the dimmed
-    /// page, when that fits; else stay the whole page.
+    /// On a compact window, rise from its foot as a [`super::BottomSheet`] when that fits; else
+    /// stay the whole page.
     #[must_use]
     pub fn with_foot_sheet(mut self) -> Self {
         let mut sheet = super::BottomSheet::new();
@@ -1169,9 +1144,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         }
     }
 
-    /// A strip of the sheet's own below the title: it stays where it is
-    /// while the body scrolls under it, so the tabs, the search field or
-    /// the path a person is deep in stays in view.
+    /// A strip of the sheet's own below the title, staying put while the body scrolls under it, so
+    /// the tabs or the path a person is deep in stay in view.
     #[must_use]
     pub fn with_header(mut self, header: impl Widget + 'static) -> Self {
         self.set_header(Some(Box::new(header)));
@@ -1227,30 +1201,25 @@ impl<C: Widget + 'static> ModalDialog<C> {
     #[must_use]
     pub fn open(mut self, open: bool) -> Self {
         self.set_open(open);
-        // Built open: shown at rest from its first paint, so a host that
-        // rebuilds its tree never replays the entrance. A dialog drawing on
-        // its host's appearance has no entrance to replay either — that
-        // handle carries how far it has come across rebuilds — so it
-        // arrives.
+        // Built open: shown at rest from its first paint, so a host that rebuilds its tree never
+        // replays the entrance.
         if self.appear.is_owned() {
             self.appear.snap(open);
         }
         self
     }
 
-    /// Draw this dialog on `appearance`, which the host keeps across the
-    /// rebuilds of the tree it stands in: built open, the dialog arrives
-    /// once, and a dialog its host closes leaves until it is gone. What a
-    /// shell whose surface is a modal sheet hands its dialog.
+    /// Draw this dialog on `appearance`, which the host keeps across rebuilds: built open it
+    /// arrives once, and a dialog its host closes leaves until it is gone.
     #[must_use]
     pub fn appearing(mut self, appearance: crate::motion::Appearance) -> Self {
         self.appear = appearance;
         self
     }
 
-    /// Show or hide after construction; also toggles whether the dialog
-    /// [traps focus](Widget::traps_focus). Opening scrolls the body back
-    /// to its top and lets the host focus the first control in it.
+    /// Show or hide after construction, which also toggles whether the dialog [traps
+    /// focus](Widget::traps_focus); opening scrolls the body to its top and lets the host focus its
+    /// first control.
     pub fn set_open(&mut self, open: bool) {
         if !open {
             self.shut(crate::motion::input_source());
@@ -1303,10 +1272,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.as_dyn_mut().footer_changed();
     }
 
-    /// A third answer for a three-way question: Save / Don't save / Cancel
-    /// is `primary_action("Save", ..)`, `tertiary_action("Don't save", ..)`
-    /// and `secondary_action("Cancel", ..)`. It stands apart from the other
-    /// two, and Enter never fires it.
+    /// A third answer for a three-way question (Save / Don't save / Cancel), standing apart from
+    /// the other two; Enter never fires it.
     #[must_use]
     pub fn tertiary_action(
         mut self,
@@ -1331,10 +1298,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self
     }
 
-    /// The primary action deletes, revokes or discards: it is a destructive
-    /// button. As on macOS, Enter is then the safe answer (the secondary
-    /// action, Cancel) and the sheet opens with the keyboard on it; the
-    /// destructive action takes a click, or Tab and Space.
+    /// The primary action deletes, revokes or discards: as on macOS, Enter is then the safe answer
+    /// (Cancel) and the sheet opens with the keyboard there.
     #[must_use]
     pub fn with_destructive(mut self, on: bool) -> Self {
         self.set_destructive(on);
@@ -1346,9 +1311,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.destructive = on;
     }
 
-    /// Whether the primary action can be taken. A disabled primary action
-    /// is painted dimmed, is announced as disabled, leaves the focus order,
-    /// and Enter does not fire it.
+    /// Whether the primary action can be taken: dimmed, announced as disabled and out of the focus
+    /// order when not, and Enter does not fire it.
     pub fn set_primary_enabled(&mut self, enabled: bool) {
         self.primary_enabled = enabled;
     }
@@ -1372,12 +1336,9 @@ impl<C: Widget + 'static> ModalDialog<C> {
         });
     }
 
-    /// Enable the primary action only while `gate` holds, read every time
-    /// the sheet is painted, announced or fired: a confirmation that waits
-    /// for a typed phrase, a form that waits for a valid value. The gate gets
-    /// the content, and may as well read the state the content's fields
-    /// write elsewhere (an app's shared core it captures), so a form whose
-    /// values live outside its widgets is gated the same way.
+    /// Enable the primary action only while `gate` holds, read every time the sheet is painted,
+    /// announced or fired: a confirmation waiting for a typed phrase, a form waiting for a valid
+    /// value.
     #[must_use]
     pub fn primary_enabled_if(mut self, gate: impl Fn(&C) -> bool + 'static) -> Self {
         self.primary_gate = Some(Box::new(move |content: &dyn Widget| {
@@ -1429,10 +1390,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
         self.as_dyn().primary_enabled_now()
     }
 
-    /// This dialog with its content's type erased: the one type its
-    /// behaviour is compiled for, so an app that builds a dialog links that
-    /// code from the shared runtime instead of compiling it again for its
-    /// content type.
+    /// This dialog with its content's type erased: the one type its behaviour is compiled for, so
+    /// an app links that code from the shared runtime instead of compiling it again.
     fn as_dyn(&self) -> &ModalDialog<dyn Widget> {
         self
     }
@@ -1443,9 +1402,8 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + ?Sized> ModalDialog<C> {
-    /// Close it as its own way out does — no action runs — `source` asking,
-    /// so it leaves the screen rather than staying drawn and taking no
-    /// input. `true` when it was open.
+    /// Close it as its own way out does, no action running, so it leaves the screen rather than
+    /// staying drawn and taking no input; `true` when it was open.
     fn shut(&mut self, source: crate::tokens::MotionSource) -> bool {
         if !self.up() {
             return false;
@@ -1455,17 +1413,14 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         true
     }
 
-    /// Whether it is up: where its appearance is going, which for a dialog
-    /// drawing on its host's appearance is the host's own answer, however
-    /// long ago the tree holding it was built.
+    /// Whether it is up: where its appearance is going, which for a dialog on its host's appearance
+    /// is the host's own answer.
     fn up(&self) -> bool {
         self.appear.is_open()
     }
 
-    /// Measure and place the content again: call after changing the
-    /// content in a way that changes its size without changing its
-    /// structure. A structure change the content reports
-    /// ([`Widget::take_structure_dirty`]) does this by itself.
+    /// Measure and place the content again: call after a change that alters its size without
+    /// changing its structure.
     pub fn invalidate_layout(&mut self) {
         self.laid_out_for = None;
         self.stale = true;
@@ -1504,9 +1459,7 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         self.up()
     }
 
-    /// Whether anything of it is drawn now: open, arriving, or closed and
-    /// still leaving. A host that stops holding a closed dialog drops it
-    /// once this is false.
+    /// Whether anything of it is drawn now: open, arriving, or closed and still leaving.
     #[must_use]
     pub fn is_drawn(&self) -> bool {
         self.appear.is_drawn()
@@ -1609,12 +1562,9 @@ impl ModalDialog<dyn Widget> {
         (actions, slots)
     }
 
-    /// The footer's slots in the order Tab visits them: the order they
-    /// stand, leading to trailing, except that the alternate answer ("Don't
-    /// save") comes last, and a destructive confirmation starts on Cancel
-    /// wherever the platform stands it. A dialog with nothing to type in
-    /// opens with focus on its first footer action, and that is never the
-    /// answer that destroys or discards anything.
+    /// The footer's slots in Tab order: as they stand, except that the alternate answer comes last
+    /// and a destructive confirmation starts on Cancel, never on the answer that destroys
+    /// something.
     fn slots_in_focus_order(&self) -> Vec<Slot> {
         let has = |slot: Slot| match slot {
             Slot::Primary => self.primary_action.is_some(),
@@ -1700,9 +1650,8 @@ impl ModalDialog<dyn Widget> {
         Point::new(body.x0, body.y0 - self.scroll)
     }
 
-    /// After the content is placed at the top of an overflowing body, end
-    /// the body on the last row that shows whole, so the sheet never cuts
-    /// a row through the middle.
+    /// After the content is placed at the top of an overflowing body, end it on the last whole row,
+    /// so the sheet never cuts a row through the middle.
     fn trim_to_content_boundary(&mut self) {
         let Some(layout) = self.layout.as_mut() else {
             return;
@@ -1724,9 +1673,8 @@ impl ModalDialog<dyn Widget> {
         }
     }
 
-    /// Lay the content out in its own tree (a painted host that keeps the
-    /// dialog outside its tree): measure it at the body width, size the
-    /// sheet to it, and place it in the body.
+    /// Lay the content out in its own tree (a painted host keeping the dialog outside its tree):
+    /// measure it at the body width, size the sheet to it, place it in the body.
     fn relayout_detached(&mut self, theme: &Theme, text_renderer: &mut TextRenderer) {
         if self.window.width() <= 0.0 || self.window.height() <= 0.0 {
             return;
@@ -1832,9 +1780,8 @@ impl ModalDialog<dyn Widget> {
         self.header_origin = target;
     }
 
-    /// Forward `event` to the content. Returns whether the content consumed
-    /// it. A hosted dialog's content is addressed by its node in the host's
-    /// tree, so a focus request lands on the host's node for the field.
+    /// Forward `event` to the content, returning whether it consumed it; a hosted dialog's content
+    /// is addressed by its node in the host's tree.
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
@@ -2204,17 +2151,12 @@ impl Widget for ModalDialog<dyn Widget> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        // The sheet arrives and leaves (`motion::Appear`); a leaving sheet is
-        // drawn until it has gone but takes no input. Where it stands is the
-        // appearance's to say — an owner closes it, and for a sheet whose
-        // app its host rebuilds, the host's own presentation.
+        // The sheet arrives and leaves (`motion::Appear`); a leaving sheet is drawn until it is
+        // gone but takes no input.
         if !self.appear.is_drawn() {
             return;
         }
-        // Each change starts on the motion the person allows, which only the
-        // theme says: a dialog its own tree keeps reads it from every frame
-        // it draws, and a sheet its host closes asks for the same. The state
-        // is the appearance's; this says how the next change moves.
+        // Each change starts on the motion the person allows, which only the theme says.
         self.appear.follow(self.up(), theme.motion());
         // The host pushes the window as the presence viewport for its
         // top-layer pass: the scrim covers all of it.
@@ -2266,9 +2208,8 @@ impl Widget for ModalDialog<dyn Widget> {
             .platform_conventions(self.platform)
             .closable(layout.close.is_some())
             .close_hovered(close_hovered);
-        // A floating sheet scales about its centre; a full-window page only
-        // fades (it comes from nowhere in particular). The scrim fades with
-        // it, cut out where the sheet is drawn.
+        // A floating sheet scales about its centre; a full-window page only fades, and the scrim
+        // fades with it, cut out where the sheet is drawn.
         let mut pose = self.appear.pose(layout.card, layout.card.center());
         // A sheet from the foot stands on the window's edge: it fades, as a
         // page does, rather than growing from its centre.
@@ -2389,11 +2330,9 @@ impl Widget for ModalDialog<dyn Widget> {
                     // Focus on a footer action: Enter and Space take it.
                     self.activate(slot);
                 } else {
-                    // A control that reads the key itself keeps it (a
-                    // multiline field, an open list). Space then operates
-                    // the focused control (a switch, a check box); Enter
-                    // operates only a focused button, and is otherwise the
-                    // sheet's default answer, as Return is on macOS.
+                    // A control that reads the key itself keeps it (a multiline field, an open
+                    // list); Space then operates the focused control, and Enter the focused button
+                    // or else the sheet's default answer.
                     let enter = *key == NamedKey::Enter;
                     let content_handled = self.forward_to_header(event, ctx)
                         || self.forward_to_content(event, ctx)
@@ -2436,9 +2375,8 @@ impl Widget for ModalDialog<dyn Widget> {
                 button: MouseButton::Left,
                 ..
             } => {
-                // An overlay the content opened claims the press before the
-                // sheet does: a pick in a dropdown's list that hangs below
-                // the sheet, or the press that closes it.
+                // An overlay the content opened claims the press before the sheet does: a pick in a
+                // dropdown's list, or the press that closes it.
                 if self.content_overlay_open() && self.forward_to_content(event, ctx) {
                     *ctx.handled = true;
                     return;
@@ -2490,9 +2428,8 @@ impl Widget for ModalDialog<dyn Widget> {
         self.up().then(|| self.dialog_rect())
     }
 
-    /// The shell took the sheet this dialog stands in down: close it as its
-    /// own way out does (no answer runs), so it leaves the screen rather than
-    /// staying drawn and taking no input.
+    /// The shell took the sheet down: close it as its own way out does (no answer runs), so it
+    /// leaves the screen.
     fn dismiss_presented_modal(&mut self) -> bool {
         // The shell took the surface down; no shortcut of the app's asked.
         self.shut(crate::tokens::MotionSource::Pointer)
@@ -2897,14 +2834,9 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
-/// Place a window's content (`place` runs its `apply_layout`) knowing which
-/// window it is: the layout node and on-screen rect of the window.
-///
-/// A host that lays several windows out in one tree (the desktop's strip of
-/// app tiles) calls this around each window's content, so a dialog of that
-/// app centres on, and measures its sheet against, its own window rather
-/// than the root of the shared tree (the whole screen). A standalone app
-/// needs nothing: the root of its tree is its window.
+/// Place a window's content (`place` runs its `apply_layout`) knowing which window it is: a host
+/// laying several windows out in one tree (the desktop's strip) calls this so a dialog centres on
+/// its own window rather than the shared tree's root.
 pub fn within_window<R>(window: NodeId, rect: Rect, place: impl FnOnce() -> R) -> R {
     /// Restores the outer window, also when a contained app's layout
     /// panics and the host recovers.
@@ -2923,10 +2855,8 @@ fn current_window() -> Option<(NodeId, Rect)> {
     LAYOUT_WINDOW.with(std::cell::Cell::get)
 }
 
-/// The current size of `window`, a node the dialog at `node` stands under,
-/// at the origin; `None` when the tree was rebuilt and `window` is no longer
-/// an ancestor of `node`. Only the size is read: it is what the sheet is
-/// measured against.
+/// The current size of `window`, at the origin; `None` when the tree was rebuilt and `window` is no
+/// longer an ancestor of `node`.
 fn window_node_rect(taffy: &TaffyTree<()>, node: NodeId, window: NodeId) -> Option<Rect> {
     let mut at = node;
     while at != window {
@@ -2951,9 +2881,8 @@ fn tree_window(taffy: &TaffyTree<()>, node: NodeId) -> Option<Rect> {
     (window.width() > 0.0 && window.height() > 0.0).then_some(window)
 }
 
-/// Offer the focused control under `widget` the activation the window gives a
-/// focused control on Space, or on Enter (`buttons_only`) only when it is a
-/// button. Returns whether it took it.
+/// Offer the focused control under `widget` the activation the window gives on Space, or on Enter
+/// (`buttons_only`) only when it is a button; whether it took it.
 fn activate_focused(
     widget: &mut dyn Widget,
     state: &mut crate::widget::Edits<'_>,

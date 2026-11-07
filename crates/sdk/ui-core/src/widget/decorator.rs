@@ -1,17 +1,11 @@
 //! Extending a widget without re-implementing it: the [`Decorator`] trait.
 //!
-//! A widget that adds one behaviour to another — a diagnostic probe, an
-//! app root that indexes its content for search, a surface host that
-//! refreshes what it presents — should cost the hook it adds, not a hundred
-//! lines of forwarding that silently go stale whenever [`Widget`] grows.
-//!
-//! Implement [`Decorator`] instead of [`Widget`]: name the wrapped widget,
-//! give the two accessors, and override only what changes. Every [`Widget`]
-//! method has a default here that forwards to the inner widget, and a
-//! blanket impl makes every decorator a [`Widget`], so it can be boxed as an
-//! [`Element`](super::Element), take part in any traversal, and implement
-//! further traits that require [`Widget`] (such as
-//! [`AppWidget`](super::AppWidget)).
+//! A widget that adds one behaviour to another (a diagnostic probe, an app root that indexes
+//! its content for search) should cost the hook it adds, not a hundred lines of forwarding
+//! that go stale whenever [`Widget`] grows. Implement [`Decorator`] instead: name the wrapped
+//! widget, give the two accessors, override only what changes, and a blanket impl makes it a
+//! [`Widget`] that can be boxed as an [`Element`](super::Element) or implement further traits
+//! requiring [`Widget`].
 //!
 //! ```ignore
 //! struct Probe { content: Column }
@@ -29,46 +23,25 @@
 //!
 //! # A decorator is its inner widget plus overrides
 //!
-//! Nothing is forwarded "partly": [`children`](Widget::children) forwards
-//! too, so a host traversal meets the decorator in the inner widget's place
-//! and visits every node exactly once. The only methods that describe the
-//! decorator rather than the inner widget are the identity ones:
-//! `concrete_type_name` names the decorator's type and
-//! [`as_any`](Widget::as_any) and [`as_any_mut`](Widget::as_any_mut)
-//! downcast to the decorator itself unless overridden.
-//!
-//! A boxed [`Element`](super::Element) is wrapped with `type Inner = dyn
-//! Widget;` and accessors returning `&(dyn Widget + 'static)`.
+//! Nothing is forwarded "partly": [`children`](Widget::children) forwards too, so a host
+//! traversal meets the decorator in the inner widget's place and visits every node once. Only
+//! the identity methods describe the decorator itself (`concrete_type_name`,
+//! [`as_any`](Widget::as_any), [`as_any_mut`](Widget::as_any_mut)). A boxed
+//! [`Element`](super::Element) is wrapped with `type Inner = dyn Widget;`.
 //!
 //! Four consequences are worth knowing:
 //!
-//! * **An override replaces the inner widget's answer.** Because the inner
-//!   widget is not visited separately, a decorator that adds to a
-//!   collecting hook (`resources`, `search_providers`,
-//!   `take_control_invocation`) includes the inner widget's answer:
-//!   `let mut all = mine; all.extend(self.inner().resources(doc)); all`.
-//! * **Override the host's entry point.** Some [`Widget`] defaults are
-//!   derived from another method (`tooltip_target_at` calls `tooltip`,
-//!   `collect_damage` calls `needs_redraw`). Here each forwards to the inner
-//!   widget's own method, so an override of the derived-from method alone is
-//!   not what the host calls: override the entry point the host uses.
-//!   Painting and input each have a single entry point,
-//!   [`draw`](Widget::draw) and [`handle_event`](Widget::handle_event).
-//! * **The decorator stands in for its inner widget's layout node.** The
-//!   inner widget registers itself in the node map during `build_layout`;
-//!   the decorator then takes that entry, so a host that reaches a widget
-//!   through the map (an accessibility action, focused input, a cursor
-//!   shape, a tooltip, undo status) meets the decorator in the inner
-//!   widget's place, and everything it does not override still reaches the
-//!   inner widget. A node the inner widget handed to a widget of its own (a
-//!   field it lays out as itself) stays that widget's. A decorator that
-//!   builds a node of its own around the inner one registers itself for it
-//!   with [`register_node`].
-//! * **Method calls.** A decorator is both a [`Decorator`] and, through the
-//!   blanket impl, a [`Widget`]. With both traits imported, `self.get_rect()`
-//!   is ambiguous, so implement the trait by path (`impl
-//!   ui::widget::Decorator for ..`) rather than importing it; the prelude
-//!   deliberately does not export it.
+//! * **An override replaces the inner widget's answer**, so one that adds to a collecting hook
+//!   (`resources`, `search_providers`, `take_control_invocation`) includes the inner answer.
+//! * **Override the host's entry point**: [`draw`](Widget::draw) and
+//!   [`handle_event`](Widget::handle_event) are what the host calls, not the methods they
+//!   derive from (`tooltip_target_at`, `collect_damage`).
+//! * **The decorator stands in for its inner widget's layout node**, so a host reaching a
+//!   widget through the node map meets the decorator, and a node the inner widget handed to a
+//!   widget of its own stays that widget's. A decorator that builds its own node around the
+//!   inner one registers itself with [`register_node`].
+//! * **Method calls** are ambiguous with both traits imported, so implement by path (`impl
+//!   ui::widget::Decorator for ..`); the prelude deliberately does not export it.
 
 use std::collections::HashMap;
 

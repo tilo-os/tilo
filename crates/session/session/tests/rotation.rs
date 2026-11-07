@@ -15,22 +15,12 @@
 
 mod common;
 
-use std::io::Write as _;
-use std::os::fd::AsFd as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use common::window::{Client, Seen, window_of};
 use tilo_compositor::{Compositor, OutputConfig};
 use tilo_session::{Accelerometer, Options, Session};
-use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_registry, wl_registry::WlRegistry, wl_shm,
-    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
-};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
-    xdg_wm_base::XdgWmBase,
-};
 
 /// The built-in panel's size, as the connector reports it.
 const WIDTH: i32 = 800;
@@ -41,125 +31,6 @@ const TURNED: (i32, i32, i32, i32) = (0, 0, HEIGHT, WIDTH);
 /// The rectangle it shows upright.
 const UPRIGHT: (i32, i32, i32, i32) = (0, 0, WIDTH, HEIGHT);
 
-/// What the compositor paints every window of the test client with, in
-/// `ARGB8888` bytes.
-const WINDOW_BYTES: [u8; 4] = [200, 40, 40, 255];
-
-/// What one toplevel was told.
-#[derive(Default)]
-struct Toplevel {
-    configured: bool,
-    size: Option<(i32, i32)>,
-}
-
-#[derive(Default)]
-struct Seen {
-    compositor: Option<WlCompositor>,
-    shm: Option<WlShm>,
-    wm_base: Option<XdgWmBase>,
-    toplevels: Vec<Toplevel>,
-}
-
-/// One client with toplevels of a solid colour.
-struct TestClient {
-    connection: Connection,
-    queue: EventQueue<Seen>,
-    seen: Seen,
-    windows: Vec<(WlSurface, XdgToplevel)>,
-}
-
-impl TestClient {
-    fn connect(compositor: &mut Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
-        let connection = Connection::from_socket(socket).expect("connection");
-        let queue = connection.new_event_queue();
-        connection.display().get_registry(&queue.handle(), ());
-        Self {
-            connection,
-            queue,
-            seen: Seen::default(),
-            windows: Vec::new(),
-        }
-    }
-
-    /// Send what is queued, read what arrived, without blocking.
-    fn exchange(&mut self) {
-        self.connection.flush().expect("flush");
-        if let Some(guard) = self.connection.prepare_read() {
-            // Nothing to read is fine: WouldBlock.
-            let _ = guard.read();
-        }
-        self.queue
-            .dispatch_pending(&mut self.seen)
-            .expect("dispatch");
-        self.connection.flush().expect("flush");
-    }
-
-    /// Open toplevel number `self.windows.len()` of `app_id`, committed once.
-    /// Returns its index.
-    fn open(&mut self, app_id: &str) -> usize {
-        let index = self.windows.len();
-        let qh = self.queue.handle();
-        let surface = self
-            .seen
-            .compositor
-            .as_ref()
-            .expect("wl_compositor")
-            .create_surface(&qh, ());
-        let xdg = self
-            .seen
-            .wm_base
-            .as_ref()
-            .expect("xdg_wm_base")
-            .get_xdg_surface(&surface, &qh, index);
-        let toplevel = xdg.get_toplevel(&qh, index);
-        toplevel.set_app_id(app_id.into());
-        surface.commit();
-        self.seen.toplevels.push(Toplevel::default());
-        self.windows.push((surface, toplevel));
-        index
-    }
-
-    /// Attach a buffer of one colour to toplevel `index` and commit it.
-    fn show(&self, index: usize, width: i32, height: i32) {
-        let qh = self.queue.handle();
-        let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
-        let fd = rustix::fs::memfd_create("tilo-rotation-test", rustix::fs::MemfdFlags::CLOEXEC)
-            .unwrap();
-        let mut file = std::fs::File::from(fd);
-        file.write_all(&WINDOW_BYTES.repeat(len / 4)).unwrap();
-        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
-            file.as_fd(),
-            stride * height,
-            &qh,
-            (),
-        );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
-        let surface = &self.windows[index].0;
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width, height);
-        surface.commit();
-        pool.destroy();
-    }
-}
-
-/// Let the session and `client` talk until `done` holds.
-#[track_caller]
-fn pump(
-    session: &mut Session,
-    client: &mut TestClient,
-    mut done: impl FnMut(&mut Session, &TestClient) -> bool,
-) {
-    common::wait_for(session, "what the test asked of the session", |session| {
-        client.exchange();
-        let answer = done(session, client);
-        client.exchange();
-        answer.then_some(())
-    });
-}
-
 /// Let the session run until `done` holds. The accelerometer is read a few
 /// times a second and its orientation is debounced over consecutive
 /// readings, so a turn a person makes takes a moment of real time: the loop
@@ -168,15 +39,15 @@ fn pump(
 #[track_caller]
 fn until(
     session: &mut Session,
-    client: &mut TestClient,
-    mut done: impl FnMut(&mut Session, &TestClient) -> bool,
+    client: &mut Client,
+    mut done: impl FnMut(&mut Session, &Seen) -> bool,
 ) {
     let deadline = tilo_test_env::hang_deadline();
     while Instant::now() < deadline {
         client.exchange();
         session.step(Duration::from_millis(20)).expect("step");
         client.exchange();
-        if done(session, client) {
+        if done(session, &client.seen) {
             return;
         }
     }
@@ -234,31 +105,18 @@ fn settings() {
     ))));
 }
 
-fn client(session: &mut Session) -> TestClient {
-    let mut client = TestClient::connect(session.compositor());
-    pump(session, &mut client, |_, client| {
-        client.seen.wm_base.is_some() && client.seen.shm.is_some()
+fn client(session: &mut Session) -> Client {
+    let mut client = Client::connect(session.compositor());
+    client.pump(session, |_, seen| {
+        seen.wm_base.is_some() && seen.shm.is_some()
     });
     client
 }
 
 /// Open a toplevel of `app_id` at the size it was configured to, and wait
 /// until it is mapped.
-fn map(session: &mut Session, client: &mut TestClient, app_id: &str) -> usize {
-    let index = client.open(app_id);
-    pump(session, client, |_, client| {
-        client.seen.toplevels[index].configured
-    });
-    let (width, height) = client.seen.toplevels[index]
-        .size
-        .filter(|(width, height)| *width > 0 && *height > 0)
-        .unwrap_or((200, 150));
-    client.show(index, width, height);
-    let app = app_id.to_owned();
-    pump(session, client, |session, _| {
-        window(session.compositor(), &app).is_some()
-    });
-    index
+fn map(session: &mut Session, client: &mut Client, app_id: &str) -> usize {
+    client.map_plain(session, app_id, (200, 150))
 }
 
 /// Draw toplevel `index` at every size the session hands it, until the window
@@ -270,7 +128,7 @@ fn map(session: &mut Session, client: &mut TestClient, app_id: &str) -> usize {
 #[track_caller]
 fn fill(
     session: &mut Session,
-    client: &mut TestClient,
+    client: &mut Client,
     index: usize,
     app: &str,
     want: (i32, i32, i32),
@@ -287,10 +145,11 @@ fn fill(
         if let Some((width, height)) = size
             && drawn != size
         {
-            client.show(index, width, height);
+            client.show(index, width, height, common::window::WINDOW_BYTES);
             drawn = size;
         }
-        if let Some((x, y, width, height)) = window(session.compositor(), app).map(|(_, rect)| rect)
+        if let Some((x, y, width, height)) =
+            window_of(session.compositor(), app).map(|(_, rect)| rect)
             && (x, width, y + height) == want
         {
             return;
@@ -301,11 +160,7 @@ fn fill(
 
 /// The window of `app` and its rectangle `(x, y, w, h)`.
 fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
-    compositor
-        .windows()
-        .into_iter()
-        .find(|(info, _)| info.app_id.as_deref() == Some(app))
-        .map(|(info, rect)| (info.id, rect))
+    window_of(compositor, app)
 }
 
 /// Where the window of `app` reaches to: its left and top edges, its width
@@ -337,7 +192,7 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
     assert_eq!(panel(&mut session), UPRIGHT, "the panel starts upright");
 
     let editor = map(&mut session, &mut client, "org.example.Editor");
-    client.windows[editor].1.set_maximized();
+    client.toplevel(editor).set_maximized();
     fill(
         &mut session,
         &mut client,
@@ -388,86 +243,3 @@ fn the_lock_turns_the_outputs_and_the_desk_follows() {
         "and the desk keeps its windows on the screen the person reads"
     );
 }
-
-impl Dispatch<WlRegistry, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        registry: &WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
-                "wl_compositor" => {
-                    seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgWmBase, ()> for Seen {
-    fn event(
-        _: &mut Self,
-        base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<XdgSurface, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        surface: &XdgSurface,
-        event: xdg_surface::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            if let Some(toplevel) = seen.toplevels.get_mut(*index) {
-                toplevel.configured = true;
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgToplevel, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &XdgToplevel,
-        event: xdg_toplevel::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event
-            && let Some(toplevel) = seen.toplevels.get_mut(*index)
-        {
-            toplevel.size = Some((width, height));
-        }
-    }
-}
-
-delegate_noop!(Seen: ignore WlCompositor);
-delegate_noop!(Seen: ignore WlShm);
-delegate_noop!(Seen: ignore WlShmPool);
-delegate_noop!(Seen: ignore WlBuffer);
-delegate_noop!(Seen: ignore WlSurface);

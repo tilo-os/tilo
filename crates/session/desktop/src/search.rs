@@ -10,17 +10,12 @@
 //! copying are listed in full for an empty query and for their exact
 //! address, but a search only offers them once it names their verb, so Enter
 //! on a window's name never closes it.
-use std::fmt::Write as _;
-
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, Workspace,
     WorkspaceSlot,
 };
 
 use crate::i18n::{t, t_args};
-
-/// The provider id window rows are addressed under.
-pub const WINDOWS_PROVIDER_ID: &str = "desktop-windows";
 
 /// What a window row names.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -92,11 +87,6 @@ pub struct WindowRow {
     /// subtitle.
     pub hint: Option<String>,
     pub action: WindowAction,
-}
-
-/// The provider's name in the desktop's language.
-pub fn windows_provider_name() -> String {
-    t("search-provider-desktop-windows")
 }
 
 /// The tile whose face a window row wears — the same artwork the tab
@@ -209,36 +199,6 @@ fn app_id(tile: &TileContent) -> Option<&str> {
         | TileContent::HostedWindow { app_id, .. } => Some(app_id),
         TileContent::AppPlaceholder { .. } | TileContent::Stub { .. } => None,
     }
-}
-
-/// The app a window row's tab belongs to, as an app id: what the window
-/// announces, or for a built-in the package it is (`so.tilo.file-explorer`).
-/// Search shows one row per app, so it needs to know which app row a window
-/// row is the same thing as.
-pub fn window_row_app_id(tree: &DesktopTree, id: &str) -> Option<String> {
-    match window_row_tile(tree, id)? {
-        TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-            Some(kind.app_id())
-        }
-        tile => app_id(tile).map(str::to_owned),
-    }
-}
-
-/// Every app with a window open anywhere on the desktop, by app id: what
-/// each window announces, or for a built-in the package it is.
-pub fn open_app_ids(tree: &DesktopTree) -> std::collections::BTreeSet<String> {
-    tree.workspaces
-        .iter()
-        .flat_map(|workspace| workspace.strips.iter())
-        .flat_map(|strip| strip.window_groups.iter())
-        .flat_map(|group| group.tabs.iter())
-        .filter_map(|tab| match &tab.tile {
-            TileContent::AppPlaceholder { kind, .. } | TileContent::Stub { kind, .. } => {
-                Some(kind.app_id())
-            }
-            tile => app_id(tile).map(str::to_owned),
-        })
-        .collect()
 }
 
 /// The readable end of an app id — `so.tilo.file-explorer` answers to
@@ -670,30 +630,4 @@ pub fn window_rows_with_sharing(
         }
     }
     rows
-}
-
-/// Changes exactly when the set of window rows can change: the active
-/// workspace, its groups and tabs, which tab is focused, and every
-/// workspace a tab can move to.
-pub fn window_rows_revision(tree: &DesktopTree) -> String {
-    let Some(workspace) = tree.active_workspace() else {
-        return "desktop-windows:empty".into();
-    };
-    let mut revision = format!("desktop-windows:{}", workspace.slot.raw());
-    if let Some(tab) = focused_tab(tree, workspace) {
-        let _ = write!(revision, ":f{tab}");
-    }
-    for other in &tree.workspaces {
-        let _ = write!(revision, ":w{}:{}", other.slot.raw(), other.name);
-    }
-    for strip in &workspace.strips {
-        let _ = write!(revision, ":s{}:{}", strip.id.raw(), strip.name);
-        for group in &strip.window_groups {
-            let _ = write!(revision, ":g{}", group.id);
-            for tab in &group.tabs {
-                let _ = write!(revision, ":t{}:{}", tab.id, tab.title);
-            }
-        }
-    }
-    revision
 }

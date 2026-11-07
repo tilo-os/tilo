@@ -490,9 +490,6 @@ enum Command {
         /// Seed the workspace from this directory's current contents.
         #[arg(short, long)]
         seed: Option<PathBuf>,
-        /// Serve the document control socket here.
-        #[arg(long)]
-        control_sock: Option<PathBuf>,
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
@@ -515,9 +512,6 @@ enum Command {
         /// Persistent content cache directory (the iroh-blobs store root).
         #[arg(short, long)]
         cache_dir: Option<PathBuf>,
-        /// Serve the document control socket here.
-        #[arg(long)]
-        control_sock: Option<PathBuf>,
         /// Serve typed hydration accounting and safe eviction here.
         #[arg(long)]
         storage_sock: Option<PathBuf>,
@@ -743,7 +737,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             cache_dir,
             seed,
-            control_sock,
             storage_sock,
             blob_sock,
             acl,
@@ -760,7 +753,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 mount_point,
                 cache_dir,
                 seed,
-                control_sock,
                 storage_sock,
                 blob_sock,
                 acl,
@@ -772,7 +764,6 @@ async fn run_command(cli: Cli) -> Result<()> {
             mount_point,
             ticket,
             cache_dir,
-            control_sock,
             storage_sock,
             blob_sock,
             acl,
@@ -782,7 +773,6 @@ async fn run_command(cli: Cli) -> Result<()> {
                 mount_point,
                 ticket,
                 cache_dir,
-                control_sock,
                 storage_sock,
                 blob_sock,
                 acl,
@@ -1255,31 +1245,6 @@ fn bind_private_socket(path: &Path) -> std::io::Result<tokio::net::UnixListener>
     let listener = tilo_files::native::private::bind_socket(path)?;
     listener.set_nonblocking(true)?;
     tokio::net::UnixListener::from_std(listener)
-}
-
-/// Bind and serve the document control socket (best-effort), using the same ACL/identity as the mount.
-fn spawn_control(
-    sock: &Path,
-    namespace: Arc<Mutex<Namespace>>,
-    sync: Arc<SyncHandle>,
-    enforcement: fs::control::Enforcement,
-) -> tokio::task::JoinHandle<()> {
-    // The socket can read and edit every document — restrict to the owner.
-    match bind_private_socket(sock) {
-        Ok(listener) => {
-            println!("Document control socket at {}", sock.display());
-            tokio::spawn(fs::control::serve(
-                listener,
-                namespace,
-                Some(sync),
-                enforcement,
-            ))
-        }
-        Err(e) => {
-            eprintln!("could not bind control socket {}: {e}", sock.display());
-            tokio::spawn(async {})
-        }
-    }
 }
 
 fn spawn_share_control(
@@ -1836,7 +1801,6 @@ async fn serve(
     mount_point: PathBuf,
     cache_dir: Option<PathBuf>,
     seed: Option<PathBuf>,
-    control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
@@ -2369,8 +2333,6 @@ async fn serve(
         .as_ref()
         .and_then(|_| share_socket.clone())
         .map(ServedSocket);
-    let _control = control_sock
-        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     let mount_outcome = run_mount(
         MountConfig {
@@ -2453,7 +2415,6 @@ async fn mount(
     mount_point: PathBuf,
     ticket: String,
     cache_dir: Option<PathBuf>,
-    control_sock: Option<PathBuf>,
     storage_sock: Option<PathBuf>,
     blob_sock: Option<PathBuf>,
     acl_args: AclArgs,
@@ -2621,8 +2582,6 @@ async fn mount(
         })
         .transpose()?;
 
-    let _control = control_sock
-        .map(|s| spawn_control(&s, namespace.clone(), workspace.sync.clone(), acl.clone()));
     let persist = np.clone().map(|p| spawn_persist(namespace.clone(), p));
     run_mount(
         MountConfig {

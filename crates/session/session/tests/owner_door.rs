@@ -57,15 +57,6 @@ const DEV_ONLY: [&str; 17] = [
     "unlock",
 ];
 
-/// A directory only this user reaches, for the sockets.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the session in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the session's directory is this user's");
-    root
-}
-
 /// Run frames until `done` holds; `false` when it never did.
 fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) -> bool {
     common::reached(session, |session| done(session))
@@ -173,7 +164,7 @@ fn session(root: &Path) -> Session {
 #[test]
 fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
+    let root = common::private_home();
     let owner = root.path().join("admin-control.sock");
     let dev = root.path().join("test-control.sock");
     let mut session = session(root.path());
@@ -280,7 +271,7 @@ fn the_owner_door_serves_the_action_model_and_the_state_it_shows() {
 fn a_locked_session_invokes_nothing_through_the_owner_door() {
     let _settled = ui::motion::testing::settled();
     let _lock = lock_environment();
-    let root = private_home();
+    let root = common::private_home();
     let owner = root.path().join("admin-control.sock");
     let dev = root.path().join("test-control.sock");
     let mut session = session(root.path());
@@ -409,7 +400,7 @@ fn unlock_through_the_development_socket(
 #[test]
 fn the_door_runs_an_advertised_desktop_shortcut() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
+    let root = common::private_home();
     let owner = root.path().join("admin-control.sock");
     let mut session = session(root.path());
     session.compositor().unlock().expect("the screen unlocks");

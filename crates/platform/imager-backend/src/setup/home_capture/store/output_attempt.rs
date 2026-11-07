@@ -533,43 +533,6 @@ impl Store {
         &self,
         attempt: &str,
         output: &File,
-        expected: &crate::setup::portable_home_media::Expectation,
-        exit: &launcher::owned_service::QuiescentExit,
-        key: &launcher::owned_service::ServiceLeaseKey,
-        work: &Path,
-    ) -> io::Result<()> {
-        let pair = OriginalOutputExpectations {
-            home: expected,
-            applications: None,
-            reserve_bytes: expected.sealed_bytes,
-        };
-        self.checkpoint_original_output_exported(attempt, output, &pair, exit, key, work)
-    }
-    pub(in crate::setup::home_capture) fn mark_original_output_exported_paired(
-        &self,
-        attempt: &str,
-        output: &File,
-        expected: &OriginalOutputExpectations<'_>,
-        exit: &launcher::owned_service::QuiescentExit,
-        key: &launcher::owned_service::ServiceLeaseKey,
-        work: &Path,
-    ) -> io::Result<()> {
-        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
-            return self.mark_original_output_exported(
-                attempt,
-                output,
-                expected.home,
-                exit,
-                key,
-                work,
-            );
-        }
-        self.checkpoint_original_output_exported(attempt, output, expected, exit, key, work)
-    }
-    fn checkpoint_original_output_exported(
-        &self,
-        attempt: &str,
-        output: &File,
         expected: &OriginalOutputExpectations<'_>,
         exit: &launcher::owned_service::QuiescentExit,
         key: &launcher::owned_service::ServiceLeaseKey,
@@ -602,30 +565,6 @@ impl Store {
         &self,
         attempt: &str,
         output: &File,
-        expected: &crate::setup::portable_home_media::Expectation,
-    ) -> io::Result<()> {
-        let pair = OriginalOutputExpectations {
-            home: expected,
-            applications: None,
-            reserve_bytes: expected.sealed_bytes,
-        };
-        self.checkpoint_original_output_verifying(attempt, output, &pair)
-    }
-    pub(in crate::setup::home_capture) fn mark_original_output_verifying_paired(
-        &self,
-        attempt: &str,
-        output: &File,
-        expected: &OriginalOutputExpectations<'_>,
-    ) -> io::Result<()> {
-        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
-            return self.mark_original_output_verifying(attempt, output, expected.home);
-        }
-        self.checkpoint_original_output_verifying(attempt, output, expected)
-    }
-    fn checkpoint_original_output_verifying(
-        &self,
-        attempt: &str,
-        output: &File,
         expected: &OriginalOutputExpectations<'_>,
     ) -> io::Result<()> {
         let mut record = load(self)?.ok_or_else(|| failure("Original output attempt missing"))?;
@@ -639,43 +578,6 @@ impl Store {
         save(self, &record, PublishMode::Replace)
     }
     pub(in crate::setup::home_capture) fn mark_original_output_verified(
-        &self,
-        attempt: &str,
-        output: &File,
-        expected: &crate::setup::portable_home_media::Expectation,
-        exit: &launcher::owned_service::QuiescentExit,
-        key: &launcher::owned_service::ServiceLeaseKey,
-        work: &Path,
-    ) -> io::Result<()> {
-        let pair = OriginalOutputExpectations {
-            home: expected,
-            applications: None,
-            reserve_bytes: expected.sealed_bytes,
-        };
-        self.checkpoint_original_output_verified(attempt, output, &pair, exit, key, work)
-    }
-    pub(in crate::setup::home_capture) fn mark_original_output_verified_paired(
-        &self,
-        attempt: &str,
-        output: &File,
-        expected: &OriginalOutputExpectations<'_>,
-        exit: &launcher::owned_service::QuiescentExit,
-        key: &launcher::owned_service::ServiceLeaseKey,
-        work: &Path,
-    ) -> io::Result<()> {
-        if expected.applications.is_none() && expected.reserve_bytes == expected.home.sealed_bytes {
-            return self.mark_original_output_verified(
-                attempt,
-                output,
-                expected.home,
-                exit,
-                key,
-                work,
-            );
-        }
-        self.checkpoint_original_output_verified(attempt, output, expected, exit, key, work)
-    }
-    fn checkpoint_original_output_verified(
         &self,
         attempt: &str,
         output: &File,

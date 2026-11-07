@@ -999,9 +999,11 @@ impl Widget for ColorPicker {
     crate::described!();
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.dirty = true;
+        // A sync is a read of what the document holds, not a paint: only the
+        // pull landing a colour this picker was not already showing is one.
         if let Some(binding) = &mut self.local_state
             && let crate::widget::binding::Pulled::Value(color) = binding.pull(state, root)
+            && self.color != color
         {
             self.color = color;
             self.sync_input();

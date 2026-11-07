@@ -108,14 +108,17 @@ fn load(bytes: &[u8]) -> Result<AutoCommit, RemoteApplyError> {
     AutoCommit::load(bytes).map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 
-/// Apply an incremental stream to `doc`, whole or not at all. Automerge's
-/// incremental loader takes a valid prefix of a stream that stops parsing,
-/// so every chunk is parsed first; the parsed changes are then applied, and
-/// the ones that need history `doc` lacks wait for it, as every delta's may.
+/// Apply an incremental stream to `doc`, whole or not at all, keeping the
+/// first change of a writer's sequence
+/// ([`tilo_automerge::keeping`]): a writer that wrote one sequence twice
+/// leaves out the change that came second, and the changes after it are
+/// still applied. Automerge's incremental loader takes a valid prefix of a
+/// stream that stops parsing, so every chunk is parsed first; the parsed
+/// changes are then applied, and the ones that need history `doc` lacks wait
+/// for it, as every delta's may.
 pub(crate) fn load_incremental(doc: &mut AutoCommit, bytes: &[u8]) -> Result<(), RemoteApplyError> {
-    let changes = automerge::Automerge::parse_changes(bytes)
-        .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))?;
-    doc.apply_incoming(changes)
+    tilo_automerge::keeping::apply_bytes(doc, bytes)
+        .map(drop)
         .map_err(|error| RemoteApplyError::InvalidMutation(error.to_string()))
 }
 fn mutation_bytes(mutation: &DocumentMutation) -> usize {
@@ -660,5 +663,79 @@ mod committed_changes_tests {
                 "truncated at {end}: nothing applied"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::load_incremental;
+    use automerge::transaction::Transactable;
+    use automerge::{AutoCommit, ROOT, ReadDoc as _};
+    use tilo_automerge::ApplyIncoming as _;
+
+    /// A record whose writer wrote its second change twice, as two pages that
+    /// continued one record writer do, and another person's change built on
+    /// the one the record keeps.
+    fn forked() -> (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>) {
+        let mut first = AutoCommit::new();
+        first.put(ROOT, "channel", "general").unwrap();
+        first.commit();
+        let actor = first.get_actor().clone();
+        let base = first.get_heads();
+        let base_bytes = first.save_after(&[]);
+        let kept_hash = {
+            let mut kept = first.clone();
+            kept.put(ROOT, "kept", "first").unwrap();
+            kept.commit();
+            kept.save_after(&base)
+        };
+        let mut other = AutoCommit::new();
+        other.set_actor(actor);
+        other.load_incoming(&base_bytes).unwrap();
+        other.put(ROOT, "fork", "second").unwrap();
+        other.commit();
+        let fork = other.save_after(&base);
+        let mut later = first.clone();
+        later.set_actor(automerge::ActorId::from(b"another-writer".as_slice()));
+        later.load_incoming(&kept_hash).unwrap();
+        later.put(ROOT, "message", "hello").unwrap();
+        later.commit();
+        (base_bytes, kept_hash, fork, later.save_after(&base))
+    }
+
+    /// The page merges a record's replication through the same rule as the
+    /// host: the writer's sequence is kept as it reached the record, the other
+    /// change under it is left out, and the changes after it still arrive.
+    #[test]
+    fn a_record_that_wrote_a_sequence_twice_reads_the_change_it_kept_and_the_rest() {
+        let (base, kept, fork, later) = forked();
+        let mut page = AutoCommit::new();
+        load_incremental(&mut page, &base).unwrap();
+        load_incremental(&mut page, &kept).unwrap();
+        let mut fork_then_later = fork.clone();
+        fork_then_later.extend_from_slice(&later);
+        load_incremental(&mut page, &fork_then_later).expect("the record still loads");
+
+        assert!(page.get(ROOT, "kept").unwrap().is_some());
+        assert!(
+            page.get(ROOT, "fork").unwrap().is_none(),
+            "the other change under the sequence is left out"
+        );
+        assert!(
+            page.get(ROOT, "message").unwrap().is_some(),
+            "what another writer built on the kept change arrives"
+        );
+    }
+
+    /// A stream that does not parse is refused, and the page's document is
+    /// unchanged: the record keeps what it holds rather than half a write.
+    #[test]
+    fn a_stream_that_does_not_parse_leaves_the_record_as_it_was() {
+        let (base, _, _, _) = forked();
+        let mut page = AutoCommit::new();
+        load_incremental(&mut page, &base).unwrap();
+        let before = page.get_heads();
+        assert!(load_incremental(&mut page, b"not an automerge change").is_err());
+        assert_eq!(page.get_heads(), before);
     }
 }

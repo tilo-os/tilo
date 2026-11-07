@@ -1,31 +1,16 @@
 //! The shortcuts a person saved, started without anyone invoking them.
-//!
-//! A shortcut is saved in a workspace ([`tilo_automation::Shortcut`]) with
-//! the triggers that start it. This module follows those triggers on the
-//! device and starts a run for each firing through the action broker
-//! ([`tilo_action_broker::collab_broker::AppActionBroker::start_triggered_shortcut_run`]),
-//! which checks again that the shortcut still exists and that its saver may
-//! still run it. A run started here is the same run a person's press or an
-//! agent's invocation starts, with the same checks.
-//!
-//! What it follows, each from where the session already reads it:
-//!
-//! - a record change, from the record documents of this device's workspaces,
-//!   read on a worker that a tree watch wakes ([`records`]);
-//! - the passing of time, a workspace being joined and an application
-//!   starting, from the desk the session shows and the launches it made;
-//! - the focus modes a shortcut can answer, from the person's notification
-//!   policy, which the settings watch keeps current;
-//! - a file changing in a folder a shortcut's capability shares, from the
-//!   same file watch the session's folders use ([`folders`]);
-//! - a keyboard chord, once a press reaches the automation host rather than
-//!   a chord of the desktop's own table ([`Automation::press`]);
-//! - the revoked devices of a workspace a shortcut is saved in, from its
-//!   governance as this device holds it.
-//!
-//! Only shortcuts saved by the person this device acts for in their
-//! workspace are armed ([`triggers::armed`]), so a collaborator's shortcut never fires
-//! on someone else's behalf.
+//! A shortcut is saved in a workspace ([`tilo_automation::Shortcut`]) with the
+//! triggers that start it. This module follows those triggers on the device and
+//! starts a run for each firing through the action broker, which checks again that
+//! the shortcut still exists and that its saver may still run it, so a run started
+//! here is the same run a person's press starts.
+//! Its triggers come from where the session already reads them: a record change
+//! from the record documents of its workspaces, read on a worker a tree watch
+//! wakes; time, a workspace joined and an application started from the desk and the
+//! launches it made; focus modes from the notification policy; a shared folder's
+//! change from the session's file watch; a chord from the automation host; and
+//! revoked devices from the workspace's governance. Only the person this device
+//! acts for has armed shortcuts ([`triggers::armed`]).
 
 pub(crate) mod folders;
 pub(crate) mod records;

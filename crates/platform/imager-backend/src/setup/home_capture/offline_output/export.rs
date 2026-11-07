@@ -110,7 +110,7 @@ impl OfflineOutputTransaction {
                     .lock()
                     .map_err(|_| refused("Original output Store lock failed"))?;
                 let output = self.medium.files()?.output;
-                store.mark_original_output_exported_paired(
+                store.mark_original_output_exported(
                     &self.binding.attempt,
                     &output,
                     &expectations,
@@ -118,7 +118,7 @@ impl OfflineOutputTransaction {
                     &exported.key,
                     exported.working_path()?,
                 )?;
-                store.mark_original_output_verifying_paired(
+                store.mark_original_output_verifying(
                     &self.binding.attempt,
                     &output,
                     &expectations,
@@ -146,7 +146,7 @@ impl OfflineOutputTransaction {
             self.store
                 .lock()
                 .map_err(|_| refused("Original output Store lock failed"))?
-                .mark_original_output_verified_paired(
+                .mark_original_output_verified(
                     &self.binding.attempt,
                     &self.medium.files()?.output,
                     &expectations,

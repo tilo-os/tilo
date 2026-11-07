@@ -1,8 +1,10 @@
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
+use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox};
 use launcher::run::{IdentitySource, RunOptions};
 
 /// A payload root holding `bin/hello`, the in-tree `hello` fixture.
@@ -34,6 +36,65 @@ fn built_once(cell: &'static OnceLock<PathBuf>, name: &str, edition: &str) -> &'
     }
     let _env = tilo_test_env::lock();
     cell.get_or_init(|| build_payload(name, edition))
+}
+
+/// `bwrap`, resolved on `PATH` rather than at a fixed path, since the distro
+/// decides where it lives. A host without it cannot run a Tilo app at all, so
+/// a miss is a broken environment and not a reason to skip a test.
+pub fn bwrap() -> PathBuf {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let missing = format!(
+        "bwrap is not on PATH ({}). It is how a Tilo app runs, so this is a broken environment \
+         rather than a reason to skip the test.",
+        path.to_string_lossy()
+    );
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("bwrap"))
+        .find(|candidate| candidate.is_file())
+        .expect(&missing)
+}
+
+/// A GUI package manifest naming one entrypoint and one network mode. Every
+/// field a launch fixture leaves alone keeps the shipped default — a fixture
+/// pinning its own copy would stop tracking what an installed app gets.
+pub fn manifest(package_id: &str, bin: &str, net: &str) -> ManifestView {
+    ManifestView {
+        package_id: package_id.to_string(),
+        name: None,
+        localized_names: BTreeMap::default(),
+        keywords: Vec::new(),
+        category: None,
+        icon: None,
+        version: "0.0.0".to_string(),
+        kind: "app".to_string(),
+        runtime: None,
+        required_runtimes: Vec::new(),
+        entrypoint: Entrypoint {
+            bin: bin.to_string(),
+            r#type: launcher::manifest::EntrypointType::Gui,
+            gui_bin: None,
+            cli_bin: None,
+            runtime: None,
+            origins: Vec::new(),
+        },
+        sandbox: Sandbox {
+            net: Net {
+                mode: net.to_string(),
+                ..Net::default()
+            },
+            fs: Fs::default(),
+            services: BTreeMap::new(),
+            portals: BTreeMap::new(),
+            ..Sandbox::default()
+        },
+        cli_commands: Vec::new(),
+        opens_ext: Vec::new(),
+        opens_mime: Vec::new(),
+        opens_schemes: Vec::new(),
+        opens_secondary: false,
+        continuity: launcher::manifest::ContinuityContract::default(),
+        capabilities: Vec::new(),
+    }
 }
 
 /// Launch options that touch nothing of the invoking user's: no identity is

@@ -285,78 +285,53 @@ pub trait SettingsSource: Send + Sync {
     }
 }
 
-/// A shared source is the source it shares.
-impl<T: SettingsSource + ?Sized> SettingsSource for Arc<T> {
-    fn load(&self) -> Map<String, Value> {
-        (**self).load()
-    }
+/// A shared source is the source it shares: every method hands its
+/// arguments to `**self` unchanged.
+macro_rules! shared_source {
+    ($(fn $name:ident(&self $(, $arg:ident: $ty:ty)* $(,)?) $(-> $ret:ty)?;)*) => {
+        impl<T: SettingsSource + ?Sized> SettingsSource for Arc<T> {
+            $(
+                fn $name(&self $(, $arg: $ty)*) $(-> $ret)? {
+                    (**self).$name($($arg),*)
+                }
+            )*
+        }
+    };
+}
 
-    fn store(&self) -> Option<&crate::Store> {
-        (**self).store()
-    }
-
-    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()> {
-        (**self).update_section(name, values)
-    }
-
+shared_source! {
+    fn load(&self) -> Map<String, Value>;
+    fn store(&self) -> Option<&crate::Store>;
+    fn update_section(&self, name: &str, values: Map<String, Value>) -> std::io::Result<()>;
     fn update_section_by(
         &self,
         name: &str,
         values: Map<String, Value>,
         origin: &ChangeOrigin,
-    ) -> std::io::Result<()> {
-        (**self).update_section_by(name, values, origin)
-    }
-
+    ) -> std::io::Result<()>;
     fn update_section_with(
         &self,
         name: &str,
         origin: &ChangeOrigin,
         change: &mut SectionChange<'_>,
-    ) -> std::io::Result<()> {
-        (**self).update_section_with(name, origin, change)
-    }
-
-    fn flush_pending(&self) {
-        (**self).flush_pending();
-    }
-
-    fn take_deferred_failures(&self) -> Vec<DeferredFailure> {
-        (**self).take_deferred_failures()
-    }
-
+    ) -> std::io::Result<()>;
+    fn flush_pending(&self);
+    fn take_deferred_failures(&self) -> Vec<DeferredFailure>;
     fn compare_update_section(
         &self,
         name: &str,
         expected: &Map<String, Value>,
         values: Map<String, Value>,
-    ) -> std::io::Result<ConditionalUpdate> {
-        (**self).compare_update_section(name, expected, values)
-    }
-
-    fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate> {
-        (**self).compare_display_update(update)
-    }
-
+    ) -> std::io::Result<ConditionalUpdate>;
+    fn compare_display_update(&self, update: DisplayUpdate) -> std::io::Result<ConditionalUpdate>;
     fn compare_display_transaction(
         &self,
         expected: Option<&Value>,
         transaction: Map<String, Value>,
-    ) -> std::io::Result<()> {
-        (**self).compare_display_transaction(expected, transaction)
-    }
-
-    fn revision(&self) -> u64 {
-        (**self).revision()
-    }
-
-    fn changes(&self) -> &ChangeSignal {
-        (**self).changes()
-    }
-
-    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>> {
-        (**self).dictionary_service()
-    }
+    ) -> std::io::Result<()>;
+    fn revision(&self) -> u64;
+    fn changes(&self) -> &ChangeSignal;
+    fn dictionary_service(&self) -> Option<Arc<crate::personal_dictionary::Service>>;
 }
 
 /// Wakes the readers of a [`SettingsSource`] when its document changes.

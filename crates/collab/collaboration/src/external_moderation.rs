@@ -1,27 +1,17 @@
 //! Bounded action-only moderation requests on acknowledged record channels.
 use super::CollabRequest;
 use crate::invocation_scope::ExternalModerationReply;
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 
+use crate::lane::{Lane, Registration};
+
 type Reply = Result<registry_types::ModerationCase, String>;
-const MAX_ROUTES: usize = 16;
 const MAX_PENDING: usize = 2;
-struct Endpoint(mpsc::Sender<CollabRequest>);
-pub(super) struct Registration {
-    _endpoint: Arc<Endpoint>,
-    worker: tokio::task::JoinHandle<()>,
-}
-impl Drop for Registration {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
-}
-fn registry() -> &'static Mutex<BTreeMap<String, Weak<Endpoint>>> {
-    static REGISTRY: OnceLock<Mutex<BTreeMap<String, Weak<Endpoint>>>> = OnceLock::new();
-    REGISTRY.get_or_init(Mutex::default)
-}
+pub(crate) struct Endpoint(mpsc::Sender<CollabRequest>);
+
+/// The routes this kind of lane serves.
+static LANE: Lane<Endpoint> = Lane::new("external moderation");
 
 pub fn enqueue(
     route: &str,
@@ -41,12 +31,7 @@ pub fn enqueue(
     {
         return Err("external moderation exceeds the protocol bound".into());
     }
-    let endpoint = registry()
-        .lock()
-        .map_err(|_| "external moderation bridge unavailable")?
-        .get(route)
-        .and_then(Weak::upgrade)
-        .ok_or("no acknowledged external moderation route")?;
+    let endpoint = LANE.endpoint(route)?;
     let (reply, receive) = ExternalModerationReply::new();
     endpoint
         .0
@@ -59,29 +44,13 @@ pub fn enqueue(
     Ok(receive)
 }
 
-fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
-    let mut entries = registry()
-        .lock()
-        .map_err(|_| "external moderation bridge unavailable")?;
-    entries.retain(|_, endpoint| endpoint.strong_count() != 0);
-    if route.is_empty()
-        || route.len() > 1024
-        || entries.contains_key(&route)
-        || entries.len() >= MAX_ROUTES
-    {
-        return Err("external moderation route is ambiguous or exceeds admission bounds".into());
-    }
-    entries.insert(route, Arc::downgrade(endpoint));
-    Ok(())
-}
-
 pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,
-) -> Result<Registration, String> {
+) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    admit(route, &endpoint)?;
+    LANE.admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
         while let Some(request) = receive.recv().await {
             if let CollabRequest::ExternalModeration {
@@ -94,10 +63,7 @@ pub(super) fn register(
             }
         }
     });
-    Ok(Registration {
-        _endpoint: endpoint,
-        worker,
-    })
+    Ok(Registration::new(endpoint, worker))
 }
 
 #[allow(
@@ -138,6 +104,6 @@ pub fn admit_for_test(
 ) -> Result<(LaneForTest, mpsc::Receiver<CollabRequest>), String> {
     let (send, receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    admit(route, &endpoint)?;
+    LANE.admit(route, &endpoint)?;
     Ok((LaneForTest(endpoint), receive))
 }

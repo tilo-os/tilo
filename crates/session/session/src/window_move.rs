@@ -1,34 +1,12 @@
 //! Carrying a window the person moves to another workspace.
-//!
-//! A workspace is the sandbox the window's app runs in: the launcher hands the
-//! app that workspace's grants, its services and the authority of the person
-//! there, and the records the app keeps are that workspace's too. None of that
-//! follows a tab into another workspace, so a window never crosses by itself.
-//! What crosses is the tab, and with it the record the window shows: the app is
-//! started again in the workspace the person carried it to, under the
-//! destination's grants, opened on a copy of that record kept in the
-//! destination's profile ([`crate::window_transfer`]), and the record it left
-//! says where it went. The instance left behind is asked to close once the new
-//! window is up, and what it wrote in the meantime is merged in before the move
-//! is done.
-//!
-//! A window whose app shows what its workspace keeps for it — the document
-//! every window of that app there shows — cannot take it along: the app starts
-//! there and opens what the workspace it comes to keeps.
-//!
-//! A move into or out of a workspace other people are in is asked about first:
-//! there the window and the record it takes are theirs to see, and leaving
-//! takes them away from them. Nothing moves until the person answers. Between
-//! their own workspaces there is nobody to ask.
-//!
-//! A move that cannot be made puts the tab back where it was, still showing the
-//! window it had, retires the copy it made where it arrived as one nothing ever
-//! opened, and says why.
-//!
-//! Nothing in a move waits on the disk on the session's own thread: every step
-//! that reads or writes a record runs on a thread of its own, and what it did
-//! is taken up on a later pass.
-
+//! A workspace is the sandbox the window's app runs in: its grants, services,
+//! authority and records. None of that follows a tab, so what crosses is the tab
+//! and, with it, the record the window shows: the app starts again in the
+//! destination under its grants, on a copy of that record kept in the destination's
+//! profile ([`crate::window_transfer`]), and the instance left behind closes once
+//! the new window is up. A move into or out of a workspace other people are in is
+//! asked about first; one that cannot be made puts the tab back where it was and
+//! says why. Nothing in a move touches the disk on the session's own thread.
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -53,51 +31,40 @@ use crate::mount::apps::launch_of;
 use crate::notices::Notice;
 use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
 
-/// The action a move's notice offers: carry the window into the workspace the
-/// person carried it to.
+/// The action a move's notice offers: carry the window into its destination.
 const CARRY: &str = "window-move-carry";
 
 /// The action a move's notice offers: leave the window where it is.
 const STAY: &str = "window-move-stay";
 
-/// How long a window's app may take to make what it shows durable before the
-/// move reads what it last saved.
+/// How long a window's app may take to make what it shows durable before it is read.
 const CHECKPOINT: Duration = Duration::from_secs(3);
 
-/// How long the app started where the person put the tab may take to open a
-/// window there before the move puts the tab back.
+/// How long the app started where the tab went may take to open a window there.
 const OPENING: Duration = Duration::from_secs(30);
 
-/// How long a window's app may take to say its record moved before the move
-/// goes on without it.
+/// How long a window's app may take to say its record moved.
 const RETIRING: Duration = Duration::from_secs(3);
 
-/// How long the app the tab left may take to let go of the record before the
-/// move goes on with what is on the disk.
+/// How long the app the tab left may take to let go of its record.
 const RELEASING: Duration = Duration::from_secs(10);
 
-/// How long the destination's window may take to close so the last changes the
-/// app the tab left wrote can be merged into the record it shows.
+/// How long the destination's window may take to close so its last changes can be merged in.
 const CLOSING: Duration = Duration::from_secs(10);
 
 /// A move the person was asked about, waiting for their answer.
 struct Asked {
-    /// The tab they carried.
     tab: TabId,
     /// The workspace it is in now, where it stays unless they say otherwise.
     from: WorkspaceSlot,
-    /// What that workspace is called, for the notice that answers a move which
-    /// could not be made.
+    /// What the workspace it leaves is called, for the notice that answers a failed move.
     from_name: String,
-    /// The workspace they carried it to.
     to: WorkspaceSlot,
-    /// What that workspace is called on the desk, and its identity: what the
-    /// app is started into, and where the record it shows is kept.
+    /// What the destination is called and its identity: what the app is started into,
+    /// and where the record it shows is kept.
     to_name: String,
     to_id: String,
-    /// The package that runs the window's app.
     app: String,
-    /// What the person calls that app.
     app_name: String,
     /// The window it shows now, which the move leaves behind.
     window: u64,
@@ -105,34 +72,30 @@ struct Asked {
     carries: bool,
 }
 
-/// The record a window shows, on its way to the workspace the person carried
-/// the window to.
+/// The record a window shows, on its way to the workspace the person carried it to.
 struct Travelling {
     /// Its id where the window showed it.
     id: RecordId,
-    /// The profile it is kept in there, and the one it is carried to.
+    /// The profile it is kept in where the window showed it, and the one it is carried to.
     source: Profile,
     destination: Profile,
     /// What it became there, once it arrived.
     arrived: Option<Arrived>,
-    /// The heads its app gave before it stamped the record retired: the record
-    /// as it was up to the stamp, which is what the move brings along.
+    /// The heads its app gave before it stamped the record retired: what the move brings along.
     retired_at: Option<Vec<ChangeHash>>,
 }
 
 /// A move under way.
 struct Crossing {
     tab: TabId,
-    /// The workspace it left, and the one it goes to.
     from: WorkspaceSlot,
     from_name: String,
     from_id: String,
     to_name: String,
     to_id: String,
-    /// The package that runs the window's app, and what the person calls it.
     app: String,
     app_name: String,
-    /// The window the tab showed where it was: the one the move leaves behind.
+    /// The window the tab showed where it was, which the move leaves behind.
     window: u64,
     /// What the window showed there, when it showed a record of its own.
     record: Option<Travelling>,
@@ -147,21 +110,18 @@ enum Phase {
     Importing(Receiver<Result<Arrived, Fault>>),
     /// The tab waits for the window of the app started in the destination.
     Opening { since: Instant, reopening: bool },
-    /// The window's app was asked to stamp its record retired, naming the
-    /// record that arrived.
+    /// The window's app was asked to stamp its record retired, naming the record that arrived.
     Retiring { token: u64, since: Instant },
-    /// The app the tab left is letting go of its record, which is read once it
-    /// has; `poll` is the ask in flight, `None` between asks.
+    /// The app the tab left is letting go of its record.
     Releasing {
-        /// The heads its app gave with the retirement: the record as it was
-        /// before the stamp, which a retired record cannot be read as it
-        /// stands.
+        /// The heads its app gave with the retirement: the record as it was before the
+        /// stamp, which a retired record cannot be read as it stands.
         until: Option<Vec<ChangeHash>>,
         since: Instant,
         poll: Option<Receiver<Result<Option<AutoCommit>, Fault>>>,
     },
-    /// What the app the tab left wrote last is being merged into the record;
-    /// `reopen` is whether the destination's window was closed for it.
+    /// What the app the tab left wrote last is being merged into the record; `reopen`
+    /// is whether the destination's window was closed for it.
     Catching {
         source: AutoCommit,
         answers: Receiver<Result<Merged, Fault>>,
@@ -173,29 +133,23 @@ enum Phase {
     Finished,
 }
 
-/// The windows the person carries between workspaces, and what they answer
-/// before one crosses.
+/// The windows the person carries between workspaces, and what they answer before one crosses.
 pub(crate) struct Moves {
     /// The moves the person was asked about, by the notice that asked.
     asking: RefCell<BTreeMap<u64, Asked>>,
-    /// The moves under way.
     crossing: RefCell<Vec<Crossing>>,
     /// What the person answered, from the desk's own outcome taps.
     answered: Receiver<(u64, String)>,
-    /// The desk's notifications, which the notices are raised through.
     notices: DesktopNotifications,
-    /// What each window's app answered about a handoff step, taken up once a
-    /// pass.
+    /// What each window's app answered about a handoff step, taken up once a pass.
     notes: RefCell<Vec<HandoffNote>>,
-    /// The windows this session runs, which it reaches their apps through.
     continuing: Arc<Continuations>,
-    /// The token the next step is asked under.
     tokens: Cell<u64>,
 }
 
 impl Moves {
-    /// Carries asked about on `notices`, whose answers come back here, and
-    /// whose windows are reached through `continuing`.
+    /// Carries asked about on `notices`, whose answers come back here, and whose
+    /// windows are reached through `continuing`.
     pub(crate) fn new(notices: DesktopNotifications, continuing: Arc<Continuations>) -> Self {
         let (answered, answers) = mpsc::channel();
         notices.on_outcome(move |outcome| {
@@ -218,9 +172,7 @@ impl Moves {
         }
     }
 
-    /// Carry out what the person answered and what they carried since the last
-    /// pass, and take every move in flight a step further. Called once per
-    /// pass.
+    /// Carry out the person's answers and carries, and take every move in flight a step further.
     pub(crate) fn follow(
         &self,
         shared: &Shared,
@@ -232,14 +184,12 @@ impl Moves {
             .extend(self.continuing.take_handoffs());
         for (id, key) in self.answered.try_iter() {
             let Some(asked) = self.asking.borrow_mut().remove(&id) else {
-                // Another notice's answer, or one for a move already carried.
                 continue;
             };
             if key == CARRY {
                 self.carry(shared, handoff, asked);
             }
-            // Any other answer keeps the window where it is, which is where it
-            // never left.
+            // Any other answer keeps the window where it is, which is where it never left.
         }
         for carried in shared.desktop.with_policy(|policy| policy.take_carried()) {
             self.consider(shared, handoff, carried.tab, carried.to);
@@ -248,14 +198,13 @@ impl Moves {
         for one in moving {
             self.step(shared, compositor, handoff, one);
         }
-        // An answer is taken up by the pass that asked for it, and one that
-        // came too late says nothing about a move still under way.
+        // An answer is taken up by the pass that asked for it.
         self.notes.borrow_mut().clear();
     }
 
-    /// The person carried `tab` to the workspace at `to`: the app it shows is
-    /// started again there with the record it shows, and a move that touches
-    /// other people is asked about first.
+    /// The person carried `tab` to the workspace at `to`: the app it shows starts again
+    /// there on the record it shows, and a move that touches other people is asked
+    /// about first.
     fn consider(
         &self,
         shared: &Shared,
@@ -271,16 +220,14 @@ impl Moves {
             })
         });
         let Some((here, there)) = read else {
-            // Nothing of an app shows in the tab any more, or the workspace it
-            // was carried to went: there is no window to carry, and the tab
+            // Nothing of an app shows in the tab any more, or its destination went: the tab
             // goes where the person put it.
             let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
             return;
         };
         let Some(Launch::Package { app, .. }) = launch_of(&here.app) else {
-            // One of this machine's own programs runs with no workspace around
-            // it: no grants, no records, nothing the workspace it shows in
-            // changes. Its tab crosses as any tab does.
+            // One of this machine's own programs runs with no workspace around it, so its tab
+            // crosses as any tab does.
             let _ = shared.desktop.with_policy(|policy| policy.carry(tab, to));
             return;
         };
@@ -303,9 +250,8 @@ impl Moves {
         }
     }
 
-    /// Ask the person what the move means before anything crosses: the window
-    /// and the record it takes are other people's to see, or leaving takes them
-    /// away from it.
+    /// Ask the person what the move means before anything crosses: the window and the
+    /// record it takes are other people's to see, or leaving takes them away.
     fn ask(&self, asked: Asked, here: bool, there: bool) {
         let title = t_args(
             "window-move-ask-title",
@@ -342,9 +288,8 @@ impl Moves {
         self.asking.borrow_mut().insert(id, asked);
     }
 
-    /// Carry the tab to the workspace the person chose, and take the record the
-    /// window shows along: what the window's app made durable is asked for
-    /// first, then read where it is and kept where the tab went.
+    /// Carry the tab to the workspace the person chose, and take the record the window
+    /// shows along.
     fn carry(&self, shared: &Shared, handoff: Option<&SessionFollowDispatcher>, asked: Asked) {
         let Asked {
             tab,
@@ -358,10 +303,8 @@ impl Moves {
             window,
             ..
         } = asked;
-        // The tab takes the first window the app opens in the destination, and
-        // waits there for it.
+        // The tab takes the first window the app opens in the destination, and waits there.
         if !shared.desktop.with_policy(|policy| policy.adopt(&app, tab)) {
-            // The tab went while they were asked.
             return;
         }
         if let Err(error) = shared.desktop.with_policy(|policy| policy.carry(tab, to)) {
@@ -376,7 +319,6 @@ impl Moves {
                 .handle()
                 .read(|tree| workspace_at(tree, from, &shared.person, &shared.earlier))
         }) else {
-            // The workspace it left went while the window was carried.
             Self::put_back(shared, tab, from, &app);
             self.failed(&app_name, &to_name, &from_name);
             return;
@@ -396,15 +338,13 @@ impl Moves {
             phase: Phase::Finished,
         };
         let Some(record) = Self::record(shared, &crossing, &from_id) else {
-            // Nothing of the window's own travels: its app opens what the
-            // workspace it comes to keeps.
+            // Nothing of the window's own travels: its app opens what the destination keeps.
             self.start(shared, crossing, false);
             return;
         };
         let token = self.next_token();
         let asked_for = match handoff {
-            // What the window's app holds in memory is asked to reach the disk
-            // before the move reads it.
+            // What the window's app holds in memory is asked to reach the disk before it is read.
             Some(handoff) => {
                 handoff.request_handoff(
                     &crossing.from_id,
@@ -417,8 +357,7 @@ impl Moves {
                     since: Instant::now(),
                 }
             }
-            // No app of this session can be reached: the move reads what it
-            // last saved.
+            // No app of this session can be reached: the move reads what it last saved.
             None => Phase::Finished,
         };
         crossing.record = Some(record);
@@ -429,16 +368,15 @@ impl Moves {
         }
     }
 
-    /// The record the window at `tab` shows, when it is a record of its own
-    /// that may leave the workspace: one the workspace keeps for the app goes
-    /// with the workspace, not with a window of it.
+    /// The record the window at `tab` shows, when it is a record of its own that may
+    /// leave the workspace: one the workspace keeps for the app goes with the workspace.
     fn travelling(shared: &Shared, tab: TabId) -> Option<RecordId> {
         let (id, _) = shared.notes.window_record(tab)?;
         RecordId::parse(&id).filter(|id| !id.is_package_primary())
     }
 
-    /// [`Self::travelling`], naming the profiles it is kept in: the one where
-    /// the window shows it, and the one of the workspace the tab went to.
+    /// [`Self::travelling`], naming the profiles it is kept in: where the window shows
+    /// it, and the one of the workspace the tab went to.
     fn record(shared: &Shared, crossing: &Crossing, from_id: &str) -> Option<Travelling> {
         let id = Self::travelling(shared, crossing.tab)?;
         let home = launcher::appdir::host_data_home()?;
@@ -451,8 +389,7 @@ impl Moves {
         })
     }
 
-    /// Take one step of one move, and put it back in flight when it waits for
-    /// something.
+    /// Take one step of one move, and put it back in flight when it waits for something.
     fn step(
         &self,
         shared: &Shared,
@@ -486,8 +423,7 @@ impl Moves {
         }
     }
 
-    /// What the window's app made durable, or that it could not: either way what
-    /// is on the disk is what the move reads.
+    /// What the window's app made durable: either way what is on the disk is what is read.
     fn checkpointing(&self, shared: &Shared, crossing: Crossing, token: u64, since: Instant) {
         if self.claim(&crossing, token).is_some() || since.elapsed() >= CHECKPOINT {
             self.import(shared, crossing);
@@ -496,8 +432,7 @@ impl Moves {
         }
     }
 
-    /// What reading the record where it was, and keeping it where the tab went,
-    /// came to.
+    /// What reading the record where it was, and keeping it where the tab went, came to.
     fn importing(
         &self,
         shared: &Shared,
@@ -538,8 +473,7 @@ impl Moves {
             Landed::Waiting => {
                 self.give_up(shared, &crossing, &t("window-move-reason-no-window"));
             }
-            // The tab went while its app started: nothing of the move is left
-            // to keep.
+            // The tab went while its app started: nothing of the move is left to keep.
             Landed::Gone => Self::closed(&crossing),
         }
     }
@@ -574,8 +508,7 @@ impl Moves {
         self.release(shared, compositor, crossing);
     }
 
-    /// Whether the app the tab left let go of its record, and what it wrote
-    /// last: `poll` is the ask in flight, `None` between asks.
+    /// Whether the app the tab left let go of its record, and what it wrote last.
     fn releasing(
         &self,
         shared: &Shared,
@@ -668,14 +601,12 @@ impl Moves {
                 );
             }
             Ok(Ok(Merged::Held)) if reopen => {
-                // The window its app opened again took the record before the
-                // last changes could be written.
+                // The window its app opened again took the record before the last changes could be written.
                 self.give_up(shared, &crossing, &t("window-move-reason-busy"));
             }
             Ok(Ok(Merged::Held)) => {
-                // The window that came holds the record: it closes, the merge is
-                // written where nothing holds it, and the app opens it again on
-                // what arrived.
+                // The window that came holds the record: it closes, the merge is written where
+                // nothing holds it, and the app opens it again on what arrived.
                 self.close(shared, compositor, crossing, source);
             }
             Ok(Ok(Merged::Written(changes))) => {
@@ -727,8 +658,7 @@ impl Moves {
         self.waiting(crossing, Phase::Closing { source, since });
     }
 
-    /// Read the record where the window shows it, and keep it in the workspace
-    /// the tab went to.
+    /// Read the record where the window shows it, and keep it in the workspace the tab went to.
     fn import(&self, shared: &Shared, crossing: Crossing) {
         let Some(record) = crossing.record.as_ref() else {
             self.start(shared, crossing, false);
@@ -749,8 +679,8 @@ impl Moves {
         self.waiting(crossing, Phase::Importing(answers));
     }
 
-    /// Start the window's app in the workspace the person carried the tab to,
-    /// on the record that came along when one did.
+    /// Start the window's app in the workspace the person carried the tab to, on the
+    /// record that came along when one did.
     fn start(&self, shared: &Shared, crossing: Crossing, reopening: bool) {
         let on = crossing
             .record
@@ -787,8 +717,8 @@ impl Moves {
         self.waiting(crossing, Phase::Opening { since, reopening });
     }
 
-    /// The new window is up: the window the tab left is asked to stamp its
-    /// record retired, naming the record that arrived, and then closes.
+    /// The new window is up: the window the tab left is asked to stamp its record
+    /// retired, and then closes.
     fn retire(
         &self,
         shared: &Shared,
@@ -802,8 +732,7 @@ impl Moves {
             .and_then(|record| record.arrived.as_ref())
             .map(|arrived| arrived.target.id.as_str().to_owned())
         else {
-            // Nothing travelled: the window left shows what its workspace keeps
-            // for it, and stays as it is.
+            // Nothing travelled: the window left shows what its workspace keeps for it.
             compositor.close_window(crossing.window);
             Self::done(shared, &crossing);
             return;
@@ -830,8 +759,8 @@ impl Moves {
         self.waiting(crossing, Phase::Retiring { token, since });
     }
 
-    /// The window the tab left is closed: read what its app wrote last, for a
-    /// merge where the destination can take it.
+    /// The window the tab left is closed: read what its app wrote last, for a merge
+    /// where the destination can take it.
     fn release(&self, shared: &Shared, compositor: &mut Compositor, crossing: Crossing) {
         compositor.close_window(crossing.window);
         let until = crossing
@@ -854,8 +783,7 @@ impl Moves {
         }
     }
 
-    /// Ask what the app the tab left holds of its record now, and whether it
-    /// has let go of it.
+    /// Ask what the app the tab left holds of its record now, and whether it let go.
     fn poll_release(
         crossing: &Crossing,
         until: Option<Vec<ChangeHash>>,
@@ -868,8 +796,7 @@ impl Moves {
         })
     }
 
-    /// Merge what the app the tab left wrote last into the record where it
-    /// arrived.
+    /// Merge what the app the tab left wrote last into the record where it arrived.
     fn merge(crossing: &Crossing, source: &AutoCommit) -> Option<Receiver<Result<Merged, Fault>>> {
         let record = crossing.record.as_ref()?;
         let destination = record.destination.clone();
@@ -878,8 +805,8 @@ impl Moves {
         window_transfer::off_loop(move || window_transfer::merge(&destination, &target, &source))
     }
 
-    /// The destination's window holds the record the last changes belong in:
-    /// put a card in its tab, close it, and merge once it has let go.
+    /// The destination's window holds the record the last changes belong in: put a card
+    /// in its tab, close it, and merge once it has let go.
     fn close(
         &self,
         shared: &Shared,
@@ -891,7 +818,6 @@ impl Moves {
         if !shared.desktop.with_policy(|policy| {
             policy.note_in_tab(crossing.tab, &t("window-move-bringing-edits"))
         }) {
-            // The tab went: nothing waits for the window any more.
             Self::closed(&crossing);
             return;
         }
@@ -902,8 +828,7 @@ impl Moves {
         self.waiting(crossing, Phase::Closing { source, since });
     }
 
-    /// The move is done: the record it left says where it went, wherever its
-    /// app did not say so itself.
+    /// The move is done: the record it left says where it went, wherever its app did not.
     fn done(shared: &Shared, crossing: &Crossing) {
         let Some(record) = crossing.record.as_ref() else {
             return;
@@ -929,8 +854,8 @@ impl Moves {
         }
     }
 
-    /// The tab went while its record was on its way: the copy it made where it
-    /// arrived is retired as one nothing opened.
+    /// The tab went while its record was on its way: the copy it made where it arrived
+    /// is retired as one nothing opened.
     fn closed(crossing: &Crossing) {
         let Some(record) = crossing.record.as_ref() else {
             return;
@@ -939,8 +864,8 @@ impl Moves {
             return;
         };
         let destination = record.destination.clone();
-        // The copy is a record of the destination, known there by its own id:
-        // the one it was read from there exists only where the window was.
+        // The copy is a record of the destination with its own id there; the one it was
+        // read from exists only where the window was.
         let copy = Origin::Record(arrived.target.clone());
         if let Err(error) = window_transfer::off_loop_detached(move || {
             if let Err(fault) = window_transfer::retire(&destination, &copy, &Retirement::Abandoned)
@@ -958,9 +883,8 @@ impl Moves {
         }
     }
 
-    /// The move cannot be made: the copy it made where it arrived is retired as
-    /// one nothing opened, the tab goes back where it was, and the person is
-    /// told why.
+    /// The move cannot be made: the copy is retired as one nothing opened, the tab goes
+    /// back where it was, and the person is told why.
     fn give_up(&self, shared: &Shared, crossing: &Crossing, why: &str) {
         Self::closed(crossing);
         Self::put_back(shared, crossing.tab, crossing.from, &crossing.app);
@@ -976,8 +900,7 @@ impl Moves {
         }
     }
 
-    /// Nothing crossed: the tab goes back where it was, still showing the
-    /// window the app has there.
+    /// Nothing crossed: the tab goes back where it was, still showing the window it had.
     fn put_back(shared: &Shared, tab: TabId, from: WorkspaceSlot, app: &str) {
         shared
             .desktop
@@ -1001,8 +924,7 @@ impl Moves {
         Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
     }
 
-    /// Say the record the window shows could not be moved, where it stayed and
-    /// why.
+    /// Say the record the window shows could not be moved, where it stayed and why.
     fn record_failed(&self, app: &str, workspace: &str, source: &str, why: &str) {
         let title = t_args(
             "window-move-record-failed-title",
@@ -1049,7 +971,6 @@ impl Moves {
         Some(notes.remove(at).report)
     }
 
-    /// The token the next step is asked under.
     fn next_token(&self) -> u64 {
         let token = self.tokens.get().wrapping_add(1);
         self.tokens.set(token);
@@ -1058,10 +979,9 @@ impl Moves {
 }
 
 impl crate::Session {
-    /// Carry out what the person answered and what they carried to another
-    /// workspace since the last pass: they are asked first if the move crosses
-    /// to or from other people, then the record it shows goes along, the app
-    /// runs there, and the window it left closes once the app has one there.
+    /// Carry out the person's answers and carries since the last pass: asked first
+    /// where other people are involved, then the record goes along, the app runs there,
+    /// and the window it left closes once the app has one there.
     pub(crate) fn follow_window_moves(&mut self) {
         let handoff = self.action_plane.as_ref().map(crate::plane::Plane::handoff);
         self.shared
@@ -1080,7 +1000,7 @@ enum Landed {
     Gone,
 }
 
-/// The window the tab at `tab` holds, when it holds one.
+/// The window the tab at `tab` holds.
 fn window_of(shared: &Shared, tab: TabId) -> Option<u64> {
     shared.desktop.with_policy(|policy| {
         policy.handle().read(|tree| match tab_tile(tree, tab) {
@@ -1122,13 +1042,13 @@ struct WorkspaceRead {
     slot: WorkspaceSlot,
     id: String,
     name: String,
-    /// Whether anyone besides this person belongs to it: what it holds is
-    /// shared with them whether or not they are here.
+    /// Whether anyone besides this person belongs to it: what it holds is shared with
+    /// them whether or not they are here.
     others: bool,
 }
 
-/// What stands at `tab`: the window filling it, the app that window belongs to,
-/// and the workspace it is in.
+/// What stands at `tab`: the window filling it, the app that window belongs to, and
+/// the workspace it is in.
 struct Standing {
     app: String,
     window: u64,
@@ -1146,8 +1066,8 @@ fn tab_tile(tree: &DesktopTree, tab: TabId) -> Option<&TileContent> {
         .map(|held| &held.tile)
 }
 
-/// The window `tab` shows and the workspace the tab stands in. `None` when the
-/// tab is not on the desk or holds no window of an app this device started.
+/// The window `tab` shows and the workspace the tab stands in; `None` when the tab
+/// is not on the desk or holds no window of an app this device started.
 fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) -> Option<Standing> {
     let TileContent::Foreign { app_id, surface_id } = tab_tile(tree, tab)? else {
         return None;
@@ -1167,7 +1087,6 @@ fn standing(tree: &DesktopTree, tab: TabId, person: &str, earlier: &[String]) ->
     })
 }
 
-/// The workspace at `slot`, as a move reads it.
 fn workspace_at(
     tree: &DesktopTree,
     slot: WorkspaceSlot,
@@ -1180,7 +1099,6 @@ fn workspace_at(
         .map(|workspace| read(workspace, person, earlier))
 }
 
-/// `workspace` as a move reads it.
 fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRead {
     let mine = |id: &str| id == person || earlier.iter().any(|old| old == id);
     WorkspaceRead {

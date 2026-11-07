@@ -202,21 +202,3 @@ fn eligible_checkpoint_prefix_includes_current_and_enforces_frame_and_byte_caps(
         1
     );
 }
-
-#[test]
-fn completed_publication_labels_are_fixed_and_payload_free() {
-    use crate::store::shell_selection::Publication;
-
-    assert_eq!(
-        retention_publication_kind(&Publication::Suppress),
-        "suppress"
-    );
-    assert_eq!(
-        retention_publication_kind(&Publication::Original),
-        "original"
-    );
-    assert_eq!(
-        retention_publication_kind(&Publication::Activate(std::path::PathBuf::from("ignored"))),
-        "activate"
-    );
-}

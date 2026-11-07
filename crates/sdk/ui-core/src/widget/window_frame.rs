@@ -1,28 +1,24 @@
-//! A window standing on a desktop, as a described component: what a shell draws for a place on
-//! a floating desk (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
-//! which is the same thing: a window.
+//! A window standing on a desktop, as a described component: what a shell draws for a place on a
+//! floating desk (`shell.md` §4, `frame_classic`) and for a strip of places (`strips_view`),
+//! which is the same thing.
 //!
 //! Its ground is the window level of the design language ([`SurfaceLevel::Window`]): the app's
-//! content colour, the window edge and the window's soft shadow, at the theme's window radius,
-//! and what it holds is clipped to that shape. The window in front stands higher than the ones
-//! behind it, a floating shadow under its own, as a desktop shows which window has the
-//! keyboard.
+//! content colour, the window edge and its soft shadow at the theme's window radius, with what it
+//! holds clipped to that shape; the window in front stands higher than those behind it, as a
+//! desktop shows which window has the keyboard.
 //!
 //! A window has one bar, never two stacked, and the bar says what state the window is in:
 //!
-//! - it shows several places: the bar is their tabs, and the window's content is the place in
-//!   front of them;
-//! - it shows one place whose own view has a header row: the frame offers its window bar to
-//!   that row ([`WindowHeader::set_window_bar`](crate::widget::WindowHeader)), so the app's
-//!   title and actions and the frame's controls read as one bar;
-//! - it shows one place with no header row of its own (a foreign window in its well), in front:
-//!   the frame's own bar names the place;
-//! - it shows one such place behind: the bar is the window's decorations alone, as a desktop
-//!   draws a window nobody is typing into.
+//! - several places: the bar is their tabs, the window's content the place in front;
+//! - one place whose view has a header row: the frame offers its window bar to that row
+//!   ([`WindowHeader::set_window_bar`](crate::widget::WindowHeader)), so the app's title and
+//!   actions and the frame's controls read as one bar;
+//! - one place with no header row of its own, in front: the frame's own bar names it;
+//! - one such place behind: the bar is the decorations alone, as a desktop draws a window nobody
+//!   is typing into.
 //!
-//! The window's own controls stand in a pill of the floating material at the trailing end of
-//! the bar in every one of those states, so a bar says the same thing about them wherever the
-//! frame puts them, and the app's own slots stay the app's. A view says which window is in
+//! The window's own controls stand in a pill of the floating material at the trailing end of the
+//! bar in every state, and the app's own slots stay the app's. A view says which window is in
 //! front and what its controls are; the theme decides everything the frame is made of.
 
 use taffy::{NodeId, TaffyTree};

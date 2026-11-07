@@ -1,15 +1,15 @@
-//! The store entry points tests outside this crate drive it through: the
-//! shell replay adapter's selection tests (`tilo-relay-shell`) retain, stage,
-//! capture and replay through the production store exactly as the relay's
-//! own owner does. Built only for tests and the `test-support` feature.
+//! The store entry points tests outside this crate drive it through, so they
+//! retain, stage, capture and replay through the production store exactly as
+//! the relay's own owner does. Built only for tests and the `test-support`
+//! feature.
 use super::{
     WorkspaceStore,
     bounded::{Step, WorkLimit},
 };
 use crate::transport::Envelope;
 
-pub use super::replay::{PublicationCursor, ReplayBudget, ReplayId, ReplayLimits, ReplaySnapshot};
-pub use super::retained::{CheckpointStage, RetainBuild};
+pub use super::replay::{ReplayBudget, ReplayId, ReplayLimits, ReplaySnapshot};
+pub use super::retained::RetainBuild;
 pub use crate::persistence::output_budget;
 
 fn finish<T>(mut step: impl FnMut() -> Step<T>) -> T {

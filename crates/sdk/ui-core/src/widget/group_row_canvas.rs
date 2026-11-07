@@ -63,24 +63,6 @@ impl CanvasView {
         self.origin + (p - corner) / self.zoom.max(f64::EPSILON)
     }
 
-    /// Canvas rect `r` on screen.
-    #[must_use]
-    pub fn rect_to_screen(&self, corner: Point, r: Rect) -> Rect {
-        Rect::from_points(
-            self.to_screen(corner, r.origin()),
-            self.to_screen(corner, Point::new(r.x1, r.y1)),
-        )
-    }
-
-    /// Screen rect `r` on the canvas.
-    #[must_use]
-    pub fn rect_to_canvas(&self, corner: Point, r: Rect) -> Rect {
-        Rect::from_points(
-            self.to_canvas(corner, r.origin()),
-            self.to_canvas(corner, Point::new(r.x1, r.y1)),
-        )
-    }
-
     /// The size a window drawn `on_screen` has on the canvas: what its
     /// client is configured to, so zooming scales its pixels rather than
     /// resizing it.

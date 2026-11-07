@@ -209,9 +209,6 @@ impl WorkspaceStore {
     /// What a capture last listed of lineage `name`, while no owner job
     /// changed it since.
     fn known_listing(&self, name: &OsStr) -> Option<(PathBuf, Vec<OsString>)> {
-        if self.shell_binding().is_some() {
-            return None;
-        }
         let known = self
             .listed_lineages()
             .lineages
@@ -224,9 +221,6 @@ impl WorkspaceStore {
 
     /// Remember that lineage `name`'s current `generation` holds `frames`.
     fn learn_listing(&self, name: OsString, generation: PathBuf, frames: Vec<OsString>) {
-        if self.shell_binding().is_some() {
-            return;
-        }
         let mut listed = self.listed_lineages();
         if listed.frames.saturating_add(frames.len()) > MAX_LISTED_FRAMES {
             return;
@@ -443,20 +437,6 @@ pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     if identity { "0" } else { "1" }
 }
 
-/// [`lineage_rank`] of the retained lineage a store-relative source path
-/// lies under; `"1"` for anything else.
-fn source_rank(source: &Path) -> &'static str {
-    let mut parts = source
-        .components()
-        .map(|part| part.as_os_str().to_string_lossy());
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(root), Some(version), Some(lineage)) if root == "retained" && version == "v2" => {
-            lineage_rank(&lineage)
-        }
-        _ => "1",
-    }
-}
-
 fn digest(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
 }
@@ -482,9 +462,6 @@ pub struct ReplayBuild {
     child: Option<Lineage>,
     sorter: Option<Sorter>,
     next_pin: u64,
-    selection: Option<Box<dyn super::shell_selection::ShellSelection>>,
-    selected: Option<File>,
-    shell_selected: bool,
     skip: Option<ResumeSkip>,
     /// Replay every record, on-demand ones and earlier parts of chains
     /// included: a host attached to the workspace keeps all of it.
@@ -782,11 +759,6 @@ impl ReplaySnapshot {
     }
 }
 impl WorkspaceStore {
-    pub(crate) fn replay_capture_has_basis(&self) -> Result<bool, StoreError> {
-        Ok(self.shell_binding().is_none()
-            || retained::current(&self.root.join(super::shell_selection::DIRECTORY))?.is_some())
-    }
-
     /// Begin capturing a replay for `device`.
     ///
     /// # Errors
@@ -859,21 +831,7 @@ impl WorkspaceStore {
         fs::create_dir(root.join("pins"))?;
         fs::create_dir(root.join("index"))?;
         let sorter = Sorter::new(root.join("sort"))?;
-        let selection = if pending_only {
-            None
-        } else {
-            self.shell_selection(root.clone(), None)?
-        };
         Ok(ReplayBuild {
-            selection,
-            selected: if !pending_only && self.shell_binding().is_none() {
-                retained::current(&self.root.join(super::shell_selection::DIRECTORY))?
-                    .map(|p| File::open(p.join("basis.manifest")))
-                    .transpose()?
-            } else {
-                None
-            },
-            shell_selected: !pending_only && self.shell_binding().is_some(),
             root: root.clone(),
             workspace: self.root.clone(),
             device,
@@ -912,32 +870,6 @@ impl WorkspaceStore {
         let limit = limit.checked()?;
         if build.workspace != self.root {
             return Err(invalid("replay store mismatch"));
-        }
-        if let Some(selection) = &mut build.selection {
-            let unresolved = match selection.step(limit)? {
-                Step::More => return Ok(Step::More),
-                Step::Done(super::shell_selection::SelectionOutcome::Published(_)) => false,
-                Step::Done(super::shell_selection::SelectionOutcome::BatchPublished { .. }) => {
-                    return Err(invalid("replay capture returned batch selection"));
-                }
-                Step::Done(
-                    super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
-                ) => true,
-            };
-            let current = retained::current(&self.root.join(super::shell_selection::DIRECTORY))?;
-            if unresolved && current.is_none() {
-                return Err(invalid(
-                    "unresolved shell tail floor or dependencies prevent coherent selection",
-                ));
-            }
-            // Selection validated the immutable CURRENT generation before it
-            // considered newer retained inputs. Those inputs remain untouched;
-            // subscription replay can still use CURRENT plus pending frames.
-            let path = current.ok_or_else(|| invalid("missing selected shell basis"))?;
-            let selected = File::open(path.join("basis.manifest"))?;
-            build.selection = None;
-            build.selected = Some(selected);
-            return Ok(Step::More);
         }
         if build.phase > 4 {
             return Err(invalid("capture already consumed"));
@@ -1003,41 +935,6 @@ impl WorkspaceStore {
                     digest,
                     skip: build.skip.take(),
                 }));
-            }
-            if build.phase == 2 && build.selected.is_some() {
-                if let Some(meta) = read_meta(
-                    build
-                        .selected
-                        .as_mut()
-                        .ok_or_else(|| invalid("missing selected manifest"))?,
-                )? {
-                    let pin = build.next_pin;
-                    increment(&mut build.next_pin)?;
-                    let source = self.root.join(&meta.source);
-                    let target = build.root.join("pins").join(format!("{pin:016x}.frame"));
-                    fs::hard_link(&source, &target)?;
-                    sorter.push(Meta {
-                        key: vec![
-                            source_rank(Path::new(&meta.source)).into(),
-                            "0".into(),
-                            format!("{pin:016x}").into(),
-                        ],
-                        source: meta.source,
-                        pin,
-                        len: fs::metadata(target)?.len(),
-                        pending: false,
-                    })?;
-                    if sorter.spilling() {
-                        return Ok(Step::More);
-                    }
-                } else {
-                    if build.shell_selected {
-                        build.phase = 3;
-                    }
-                    build.outer = None;
-                    build.selected = None;
-                }
-                continue;
             }
             if build.outer.is_none() {
                 let dir = match (build.phase, &build.held) {
@@ -1710,116 +1607,6 @@ impl WorkReclaimer {
 #[cfg(test)]
 #[path = "replay_tests.rs"]
 mod tests;
-
-/// One selected publication frame, sharing the normal process output budget.
-/// The owner holds its ordered completion across this cursor; queued deliveries
-/// own the batch/permit, so subsequent GC cannot invalidate their bytes.
-pub struct PublicationCursor {
-    workspace: PathBuf,
-    input: File,
-    recovery: bool,
-}
-impl PublicationCursor {
-    /// The live publication of the selected `generation`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when its manifest cannot be opened.
-    pub fn open(generation: &Path) -> Result<Self, StoreError> {
-        Self::open_manifest(generation, false)
-    }
-    /// The serialized workspace owner must retain its queue position through
-    /// the cursor's completion; it excludes generation GC while paths are read.
-    /// Delivered batches then own their bytes/permits independently of GC.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when its manifest cannot be opened.
-    pub fn open_recovery(generation: &Path) -> Result<Self, StoreError> {
-        Self::open_manifest(generation, true)
-    }
-    fn open_manifest(generation: &Path, recovery: bool) -> Result<Self, StoreError> {
-        #[cfg(test)]
-        super::test_barrier::check(
-            generation.parent().and_then(Path::parent).unwrap(),
-            "shell-publication-open",
-        )?;
-        Ok(Self {
-            workspace: generation
-                .parent()
-                .and_then(Path::parent)
-                .ok_or_else(|| invalid("invalid publication generation"))?
-                .into(),
-            input: File::open(generation.join(if recovery {
-                "basis.manifest"
-            } else {
-                "live.manifest"
-            }))?,
-            recovery,
-        })
-    }
-    /// The next frame of the publication, within `budget`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when a frame cannot be read or exceeds `budget`.
-    pub fn step(&mut self, budget: &ReplayBudget) -> Result<Step<Option<ReplayBatch>>, StoreError> {
-        let offset = self.input.stream_position()?;
-        #[cfg(test)]
-        if self.recovery && offset > 0 {
-            super::test_barrier::check(&self.workspace, "shell-recovery-read")?;
-        }
-        let Some(meta) = read_meta(&mut self.input)? else {
-            return Ok(Step::Done(None));
-        };
-        if !self.recovery && meta.key.first().is_some_and(|v| v == "extra") {
-            return Ok(Step::More);
-        }
-        // As with replay preparation, inspect one bounded legal frame to measure
-        // both transport encoders. No hydrated output escapes without a permit.
-        let bytes = frame_bytes(&self.workspace.join(meta.source))?
-            .ok_or_else(|| invalid("invalid activation frame"))?;
-        let envelope = transport::decode(frame_payload(&bytes))
-            .map_err(|_| invalid("invalid activation envelope"))?;
-        if self.recovery {
-            let workspace_id = self
-                .workspace
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.parse::<u64>().ok())
-                .ok_or_else(|| invalid("invalid recovery workspace"))?;
-            if !matches!(&envelope, Envelope::Delta { workspace_id: actual, .. } if *actual == workspace_id)
-            {
-                return Err(invalid("recovery frame outside workspace"));
-            }
-        }
-        let v1 = transport::encode(&envelope).map_err(|_| invalid("activation encoding"))?;
-        let mut charge = v1_frame_charge(&envelope, bytes.len(), &v1, v1.capacity())?;
-        drop(v1);
-        let v2 = tilo_delivery_protocol::transport_v2::state_payload(&envelope)
-            .map_err(|_| invalid("activation v2 encoding"))?;
-        charge = charge.max(frame_charge(&envelope, bytes.len(), &v2, v2.capacity())?);
-        drop(v2);
-        let charge = usize::try_from(charge).map_err(|_| invalid("activation charge"))?;
-        let allocation = match budget.acquire(charge) {
-            Ok(p) => p,
-            Err(error) => {
-                self.input.seek(SeekFrom::Start(offset))?;
-                return Err(error);
-            }
-        };
-        let encoded_bytes = bytes.len();
-        drop(bytes);
-        Ok(Step::Done(Some(ReplayBatch {
-            number: 0,
-            frames: VecDeque::from([envelope]),
-            eof: false,
-            encoded_bytes,
-            charged_bytes: charge,
-            _allocation: allocation,
-        })))
-    }
-}
 
 /// Whether the retained lineage `name` (`<author>-<channel>`, both hex) is
 /// an author's other than `governor` on a workspace's layout: the workspace document

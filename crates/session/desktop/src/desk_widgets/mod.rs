@@ -116,9 +116,6 @@ pub const REACH_HOLD: Duration = Duration::from_millis(600);
 // say), arrives unasked slowly and opacity only, and arrives asked for
 // (reaching for it, Super, a tap) quickly.
 
-/// The space kept clear around the text caret by transient readouts.
-pub const CARET_CLEARANCE: f64 = ui::tokens::Spacing::BASE.s6 as f64;
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Form {
     #[default]

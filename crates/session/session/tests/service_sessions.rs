@@ -449,7 +449,7 @@ fn browser_app(
             .expect("the app the session launched joins its workspace's channel");
         let mut replies = Vec::new();
         for command in [
-            Command::List,
+            Command::List {},
             Command::Resolve {
                 id: "selected-slack".into(),
                 setup_binding: "prepared-operation".into(),
@@ -458,7 +458,7 @@ fn browser_app(
                 id: "selected-slack".into(),
                 setup_binding: "prepared-operation".into(),
             },
-            Command::List,
+            Command::List {},
         ] {
             replies.push(
                 handle
@@ -579,12 +579,12 @@ fn the_persons_other_device_reads_and_forgets_the_selection() {
                 .expect("the person's other device joins its workspace's channel");
             let mut replies = Vec::new();
             for command in [
-                Command::List,
+                Command::List {},
                 Command::Forget {
                     id: "selected-slack".into(),
                     setup_binding: "prepared-operation".into(),
                 },
-                Command::List,
+                Command::List {},
             ] {
                 replies.push(
                     handle

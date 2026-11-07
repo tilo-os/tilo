@@ -118,11 +118,6 @@ impl NotificationLog {
         Some(self.active.remove(pos))
     }
 
-    /// Drop every live banner matching `matches` without retiring it.
-    pub fn discard_active_where(&mut self, matches: impl Fn(&Notification) -> bool) {
-        self.active.retain(|n| !matches(n));
-    }
-
     /// Say which live banners the stack has `on_screen` at `now`, and
     /// whether the person `held` them (the pointer on the stack, keyboard
     /// focus in a banner). A banner's time runs only while it is on screen

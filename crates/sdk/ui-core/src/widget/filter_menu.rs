@@ -1,29 +1,25 @@
-//! `FilterMenu` — a compact picker anchored at the caret: a
-//! [`SuggestionList`] of rows narrowed by a query, ranked the way every list
-//! search ranks ([`crate::search::ranked_rows`]). The
-//! [`SlashMenu`](crate::widget::SlashMenu) (block kinds and commands) and
-//! the [`LinkPopover`](crate::widget::LinkPopover) (page links) are this
-//! menu over their own row values.
+//! `FilterMenu` — a compact picker anchored at the caret: a [`SuggestionList`] of rows narrowed by
+//! a query, ranked the way every list search ranks ([`crate::search::ranked_rows`]). The
+//! [`SlashMenu`](crate::widget::SlashMenu) (block kinds and commands) and the
+//! [`LinkPopover`](crate::widget::LinkPopover) (page links) are this menu over their own row
+//! values.
 //!
-//! The query is either the menu's own filter field, painted in the list's
-//! header band, or, for an *inline* menu ([`FilterMenu::set_inline`]), text
-//! the parent keeps in its document after the trigger and hands over with
-//! [`FilterMenu::set_filter`]: what a person types stays where they typed
-//! it, whatever the menu makes of it.
+//! The query is either the menu's own filter field, painted in the list's header band, or, for an
+//! *inline* menu ([`FilterMenu::set_inline`]), text the parent keeps in its document after the
+//! trigger and hands over with [`FilterMenu::set_filter`]: what a person types stays where they
+//! typed it.
 //!
 //! - **Arrow Up / Down** — move the highlighted row, wrapping at either end.
-//! - **Enter / Tab** — commit the highlighted row; its value is queued for
-//!   the parent to drain via [`FilterMenu::take_selection`]. With no row
-//!   left, an inline menu closes and leaves the key to the parent.
-//! - **Escape** — close without committing.
-//! - **Typing** — edits the filter field; an inline menu leaves typing to
+//! - **Enter / Tab** — commit the highlighted row, queued for the parent's
+//!   [`FilterMenu::take_selection`]; with no row left, an inline menu closes and leaves the key to
 //!   the parent.
-//! - **Backspace** on an empty filter field closes the menu and is left to
-//!   the parent, which deletes the trigger text.
+//! - **Escape** — close without committing.
+//! - **Typing** — edits the filter field; an inline menu leaves typing to the parent.
+//! - **Backspace** on an empty filter field closes the menu and is left to the parent, which
+//!   deletes the trigger text.
 //!
-//! The menu has no layout node: the parent calls [`FilterMenu::draw_overlay`]
-//! after its main draw pass so the popover lands on top, the same "draw
-//! last" convention as [`ContextMenu`](crate::widget::context_menu::ContextMenu).
+//! The menu has no layout node: the parent calls [`FilterMenu::draw_overlay`] after its main draw
+//! pass, as with [`ContextMenu`](crate::widget::context_menu::ContextMenu).
 
 use std::collections::HashMap;
 

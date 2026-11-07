@@ -2,6 +2,10 @@ use super::*;
 use crate::history_mode::*;
 use crate::widget::{AppModel, ModelPath};
 use automerge::{ROOT, transaction::Transactable};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 
 #[test]
 fn native_focus_order_enumerates_history_once() {
@@ -21,7 +25,7 @@ fn native_focus_order_enumerates_history_once() {
 #[test]
 fn native_focus_order_walks_history_ownership_once() {
     use crate::history_mode::host::OWNERSHIP_WALKS;
-    let walks = || OWNERSHIP_WALKS.with(std::cell::Cell::get);
+    let walks = || OWNERSHIP_WALKS.with(Cell::get);
     let ids: Vec<String> = (0..2_000).map(|row| format!("row-{row}")).collect();
     let root = ids.iter().fold(crate::widget::Column::new(), |column, id| {
         column.push(Box::new(crate::widget::Button::new(id, "Row")))
@@ -859,7 +863,7 @@ impl RoutedOwners {
         let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-0000-0000-000000000077";
         let records = owners.open(APP, workspace).unwrap();
-        let views = std::rc::Rc::new(
+        let views = Rc::new(
             crate::application_view::InstanceViewStore::new(
                 temp.path().to_path_buf(),
                 "D",
@@ -1268,7 +1272,7 @@ impl RoutedPrimary {
         let mut owners = crate::record::RecordOwners::new(temp.path().to_path_buf());
         let workspace = "00000000-0000-4000-8000-000000000078";
         let records = owners.open("dev.tilo.primary-probe", workspace).unwrap();
-        let views = std::rc::Rc::new(
+        let views = Rc::new(
             crate::application_view::InstanceViewStore::new(
                 temp.path().to_path_buf(),
                 "D",
@@ -3057,28 +3061,28 @@ struct PaletteContinuationState {
     handler_epoch: std::sync::atomic::AtomicU64,
     draft_supported: std::sync::atomic::AtomicBool,
     exact_supported: std::sync::atomic::AtomicBool,
-    starts: std::sync::Mutex<Vec<(String, Vec<u8>)>>,
-    queries: std::sync::Mutex<Vec<String>>,
+    starts: Mutex<Vec<(String, Vec<u8>)>>,
+    queries: Mutex<Vec<String>>,
 }
 
 impl PaletteContinuationState {
-    fn stable() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
+    fn stable() -> Arc<Self> {
+        Arc::new(Self {
             authority: std::sync::atomic::AtomicU8::new(0),
             draft_epoch: std::sync::atomic::AtomicU64::new(1),
             target_epoch: std::sync::atomic::AtomicU64::new(1),
             handler_epoch: std::sync::atomic::AtomicU64::new(1),
             draft_supported: std::sync::atomic::AtomicBool::new(true),
             exact_supported: std::sync::atomic::AtomicBool::new(true),
-            starts: std::sync::Mutex::new(Vec::new()),
-            queries: std::sync::Mutex::new(Vec::new()),
+            starts: Mutex::new(Vec::new()),
+            queries: Mutex::new(Vec::new()),
         })
     }
 }
 
 struct PaletteHistoryOwner {
     text: crate::widget::Text,
-    state: std::sync::Arc<PaletteContinuationState>,
+    state: Arc<PaletteContinuationState>,
 }
 
 impl PaletteHistoryOwner {
@@ -3145,37 +3149,17 @@ impl PaletteHistoryOwner {
         spec.type_mut().contract.confirmation = tilo_actions::ConfirmationPolicy::Phrase {
             phrase: PALETTE_CONFIRMATION.into(),
         };
-        if self
-            .state
-            .authority
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 2
-        {
+        if self.state.authority.load(Ordering::SeqCst) == 2 {
             spec.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                 code: "fixture-unavailable".into(),
                 reason: "Current action unavailable".into(),
             };
         }
-        let draft_epoch = self
-            .state
-            .draft_epoch
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let target_epoch = self
-            .state
-            .target_epoch
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let handler_epoch = self
-            .state
-            .handler_epoch
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let draft_supported = self
-            .state
-            .draft_supported
-            .load(std::sync::atomic::Ordering::SeqCst);
-        let exact_supported = self
-            .state
-            .exact_supported
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let draft_epoch = self.state.draft_epoch.load(Ordering::SeqCst);
+        let target_epoch = self.state.target_epoch.load(Ordering::SeqCst);
+        let handler_epoch = self.state.handler_epoch.load(Ordering::SeqCst);
+        let draft_supported = self.state.draft_supported.load(Ordering::SeqCst);
+        let exact_supported = self.state.exact_supported.load(Ordering::SeqCst);
         let state = self.state.clone();
         spec.with_continuation_identity(move |query| match query {
             tilo_actions::ContinuationQuery::Exact(arguments) if exact_supported => {
@@ -3331,12 +3315,7 @@ impl crate::widget::ResourceOperations for PaletteHistoryOwner {
 
 impl crate::resources::PublishesResources for PaletteHistoryOwner {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
-        if self
-            .state
-            .authority
-            .load(std::sync::atomic::Ordering::SeqCst)
-            == 1
-        {
+        if self.state.authority.load(Ordering::SeqCst) == 1 {
             return vec![];
         }
         vec![
@@ -3348,7 +3327,7 @@ impl crate::resources::PublishesResources for PaletteHistoryOwner {
     }
 }
 
-fn palette_history_app(state: std::sync::Arc<PaletteContinuationState>) -> App {
+fn palette_history_app(state: Arc<PaletteContinuationState>) -> App {
     let mut app = app();
     app.root_widget = Box::new(PaletteHistoryOwner {
         text: crate::widget::Text::new("Palette history owner"),
@@ -3434,9 +3413,7 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
     ] {
         let state = PaletteContinuationState::stable();
         if mutation == "absent" {
-            state
-                .draft_supported
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            state.draft_supported.store(false, Ordering::SeqCst);
         }
         let mut app = palette_history_app(state.clone());
         palette_activate(&mut app, action, partial);
@@ -3448,9 +3425,7 @@ fn managed_palette_draft_identity_preserves_text_and_json_editor_and_refuses_cha
         palette_history_round_trip(&mut app);
         assert_eq!(editor_snapshot(&app), before, "{action}:{mutation}");
         if mutation == "changed" {
-            state
-                .draft_epoch
-                .store(2, std::sync::atomic::Ordering::SeqCst);
+            state.draft_epoch.store(2, Ordering::SeqCst);
         }
         app.actions
             .action_palette
@@ -3527,9 +3502,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
         app.dispatch_a11y_action(named_action_target, &crate::a11y::Action::Activate);
         layout(&mut app);
         if mutation == "target-before-return" {
-            state
-                .target_epoch
-                .store(2, std::sync::atomic::Ordering::SeqCst);
+            state.target_epoch.store(2, Ordering::SeqCst);
         } else {
             app.state
                 .doc
@@ -3547,9 +3520,7 @@ fn managed_palette_exact_text_and_nested_json_recheck_alias_and_handler_around_f
 
         if mutation == "handler-changed-before-going-ahead" {
             assert_eq!(state.starts.lock().unwrap().len(), 0);
-            state
-                .handler_epoch
-                .store(2, std::sync::atomic::Ordering::SeqCst);
+            state.handler_epoch.store(2, Ordering::SeqCst);
         }
         app.actions
             .action_palette
@@ -3576,35 +3547,31 @@ const COMPONENT_CONTROL_ACTION: &str = "run";
 
 #[derive(Clone)]
 struct ComponentControlHandle {
-    identity_supported: std::rc::Rc<std::cell::Cell<bool>>,
-    duplicate_depth: std::rc::Rc<std::cell::Cell<u8>>,
+    identity_supported: Rc<Cell<bool>>,
+    duplicate_depth: Rc<Cell<u8>>,
     binding: crate::bound_dispatch::CallbackBinding,
-    starts: std::rc::Rc<std::cell::Cell<usize>>,
-    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    starts: Rc<Cell<usize>>,
+    payloads: Rc<RefCell<Vec<serde_json::Value>>>,
 }
 
 struct CustodyEnteredOperation {
     receiver: std::sync::mpsc::Receiver<()>,
     active: Option<tilo_actions::InvocationId>,
-    completions: std::rc::Rc<std::cell::Cell<usize>>,
+    completions: Rc<Cell<usize>>,
 }
 
 struct ComponentControlOwner {
     entered: Option<CustodyEnteredOperation>,
     emitter: Option<
-        std::rc::Rc<
-            std::cell::RefCell<
-                crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>,
-            >,
-        >,
+        Rc<RefCell<crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>>>,
     >,
-    identity_supported: std::rc::Rc<std::cell::Cell<bool>>,
-    duplicate_depth: std::rc::Rc<std::cell::Cell<u8>>,
+    identity_supported: Rc<Cell<bool>>,
+    duplicate_depth: Rc<Cell<u8>>,
     id: String,
     operation: String,
     confirmation: tilo_actions::ConfirmationPolicy,
-    starts: std::rc::Rc<std::cell::Cell<usize>>,
-    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    starts: Rc<Cell<usize>>,
+    payloads: Rc<RefCell<Vec<serde_json::Value>>>,
     text: crate::widget::Text,
 }
 
@@ -3698,21 +3665,20 @@ impl ComponentControlOwner {
         Self {
             entered: None,
             emitter: None,
-            identity_supported: std::rc::Rc::new(std::cell::Cell::new(true)),
-            duplicate_depth: std::rc::Rc::new(std::cell::Cell::new(0)),
+            identity_supported: Rc::new(Cell::new(true)),
+            duplicate_depth: Rc::new(Cell::new(0)),
             id: id.into(),
             operation: operation.into(),
             confirmation,
-            starts: std::rc::Rc::default(),
-            payloads: std::rc::Rc::default(),
+            starts: Rc::default(),
+            payloads: Rc::default(),
             text: crate::widget::Text::new(label),
         }
     }
 }
 
-type ControlEmitter = std::rc::Rc<
-    std::cell::RefCell<crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>>,
->;
+type ControlEmitter =
+    Rc<RefCell<crate::widget::ActionEmitter<serde_json::Map<String, serde_json::Value>>>>;
 
 static BRIDGE_HISTORY: HistoryDefinition = HistoryDefinition {
     app_id: crate::application_test_support::APP,
@@ -3767,8 +3733,8 @@ struct BridgeComponent {
     binding: crate::bound_dispatch::CallbackBinding,
     registration: HistoryRegistration,
     emitter: ControlEmitter,
-    starts: std::rc::Rc<std::cell::Cell<usize>>,
-    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    starts: Rc<Cell<usize>>,
+    payloads: Rc<RefCell<Vec<serde_json::Value>>>,
     // Keeps the record and view stores alive for the whole test.
     host: crate::application_test_support::ProbeHost,
 }
@@ -3790,7 +3756,7 @@ fn bridge_component(entered: Option<CustodyEnteredOperation>, in_domain: bool) -
     let binding =
         tilo_actions::ActionBinding::new(&resource, &resource.actions[0], |arguments| arguments)
             .unwrap();
-    let emitter = std::rc::Rc::new(std::cell::RefCell::new(if in_domain {
+    let emitter = Rc::new(RefCell::new(if in_domain {
         crate::widget::ActionEmitter::new_in(
             binding,
             &component
@@ -3974,7 +3940,7 @@ struct ComponentControlSlot {
     live: ComponentControlOwner,
     registry: tilo_actions::ActionRegistry,
     _scope: crate::WakeScope,
-    _registry_owner: std::rc::Rc<()>,
+    _registry_owner: Rc<()>,
 }
 
 impl crate::widget::Widget for ComponentControlSlot {
@@ -4046,7 +4012,7 @@ impl crate::widget::Widget for ComponentControlSlot {
 struct ComponentControlRoot {
     text: crate::widget::Text,
     slots: Vec<ComponentControlSlot>,
-    fail_after_first: std::rc::Rc<std::cell::Cell<bool>>,
+    fail_after_first: Rc<Cell<bool>>,
     _directory: tempfile::TempDir,
     _owners: crate::record::RecordOwners,
 }
@@ -4137,12 +4103,12 @@ fn component_control_root(
 ) -> (
     Box<ComponentControlRoot>,
     Vec<ComponentControlHandle>,
-    std::rc::Rc<std::cell::Cell<bool>>,
+    Rc<Cell<bool>>,
 ) {
     let directory = tempfile::tempdir().unwrap();
     let mut owners = crate::record::RecordOwners::new(directory.path().join("records"));
     let records = owners.open(HISTORY.app_id, "component-controls").unwrap();
-    let failure = std::rc::Rc::new(std::cell::Cell::new(false));
+    let failure = Rc::new(Cell::new(false));
     let mut slots = Vec::new();
     let mut handles = Vec::new();
     for (index, (id, confirmation)) in specs.iter().enumerate() {
@@ -4159,17 +4125,15 @@ fn component_control_root(
             })
             .unwrap();
         let scope = crate::WakeScope::new();
-        let registry_owner = std::rc::Rc::new(());
+        let registry_owner = Rc::new(());
         let binding = crate::bound_dispatch::CallbackBinding {
             lifetime: scope.handle(),
-            closing: std::rc::Rc::new(std::cell::Cell::new(false)),
-            registry_owner: std::rc::Rc::downgrade(&registry_owner),
+            closing: Rc::new(Cell::new(false)),
+            registry_owner: Rc::downgrade(&registry_owner),
             lifetime_id: uuid::Uuid::new_v4(),
             control_domain: crate::control_custody::WeakControlDomain::default(),
-            queued_controls: std::rc::Rc::new(std::cell::RefCell::new(
-                std::collections::VecDeque::new(),
-            )),
-            search_requests: std::rc::Rc::default(),
+            queued_controls: Rc::new(RefCell::new(std::collections::VecDeque::new())),
+            search_requests: Rc::default(),
             instance_id: 930 + index as u64,
             app_id: HISTORY.app_id.into(),
             device_id: "test-device".into(),
@@ -4181,7 +4145,7 @@ fn component_control_root(
                 crate::permissions::PermissionContext::permissive(),
             ),
             author: crate::permissions::UserId("component-control-author".into()),
-            operation_context: std::rc::Rc::default(),
+            operation_context: Rc::default(),
             writes_as_author: false,
         };
         let live = ComponentControlOwner::new(
@@ -4556,9 +4520,7 @@ fn palette_two_round_trips_preserve_original_exact_witness() {
     for changed in ["target", "handler", "unsupported"] {
         let state = PaletteContinuationState::stable();
         if changed == "unsupported" {
-            state
-                .exact_supported
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            state.exact_supported.store(false, Ordering::SeqCst);
         }
         let mut app = palette_history_app(state.clone());
         palette_activate(&mut app, "text", "production");
@@ -4567,15 +4529,9 @@ fn palette_two_round_trips_preserve_original_exact_witness() {
         let original =
             crate::action_palette::observed_history_pending(app.action_palette().unwrap()).unwrap();
         match changed {
-            "target" => state
-                .target_epoch
-                .store(2, std::sync::atomic::Ordering::SeqCst),
-            "handler" => state
-                .handler_epoch
-                .store(2, std::sync::atomic::Ordering::SeqCst),
-            _ => state
-                .exact_supported
-                .store(true, std::sync::atomic::Ordering::SeqCst),
+            "target" => state.target_epoch.store(2, Ordering::SeqCst),
+            "handler" => state.handler_epoch.store(2, Ordering::SeqCst),
+            _ => state.exact_supported.store(true, Ordering::SeqCst),
         }
         palette_history_round_trip(&mut app);
         let retained =
@@ -4643,9 +4599,7 @@ fn palette_missing_or_unavailable_draft_preserves_editor_and_reason() {
             palette_activate(&mut app, action, partial);
             palette_history_round_trip(&mut app);
             let before = editor_snapshot(&app);
-            state
-                .authority
-                .store(authority, std::sync::atomic::Ordering::SeqCst);
+            state.authority.store(authority, Ordering::SeqCst);
             palette_enter(&mut app);
             assert_eq!(editor_snapshot(&app), before, "{action}:{authority}");
             assert_eq!(state.starts.lock().unwrap().len(), 0);
@@ -5150,7 +5104,7 @@ fn managed_constructor_rejects_invalid_owner_before_constructing_inputs() {
         ],
     )
     .unwrap();
-    let called = std::cell::Cell::new(false);
+    let called = Cell::new(false);
     let result = App::from_managed_root_with_constructor(
         State::new(),
         ManagedRoot::new(
@@ -5196,7 +5150,7 @@ fn controlled_managed_constructor_installs_real_history_composition() {
 
 struct CustodyDeniedRoot {
     child: Box<dyn crate::widget::Widget>,
-    denied: std::rc::Rc<std::cell::Cell<bool>>,
+    denied: Rc<Cell<bool>>,
     exit_callback: Option<Box<dyn FnMut()>>,
 }
 
@@ -5286,11 +5240,11 @@ struct DeniedBridge {
     root: Box<CustodyDeniedRoot>,
     registration: HistoryRegistration,
     emitter: ControlEmitter,
-    denied: std::rc::Rc<std::cell::Cell<bool>>,
-    exit_armed: std::rc::Rc<std::cell::Cell<bool>>,
-    exit_calls: std::rc::Rc<std::cell::Cell<usize>>,
-    starts: std::rc::Rc<std::cell::Cell<usize>>,
-    payloads: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    denied: Rc<Cell<bool>>,
+    exit_armed: Rc<Cell<bool>>,
+    exit_calls: Rc<Cell<usize>>,
+    starts: Rc<Cell<usize>>,
+    payloads: Rc<RefCell<Vec<serde_json::Value>>>,
     host: crate::application_test_support::ProbeHost,
 }
 
@@ -5304,9 +5258,9 @@ fn denied_bridge_with_exit_emission() -> DeniedBridge {
         payloads,
         host,
     } = bridge_component(None, true);
-    let denied = std::rc::Rc::new(std::cell::Cell::new(false));
-    let exit_armed = std::rc::Rc::new(std::cell::Cell::new(false));
-    let exit_calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let denied = Rc::new(Cell::new(false));
+    let exit_armed = Rc::new(Cell::new(false));
+    let exit_calls = Rc::new(Cell::new(0));
     let callback = {
         let armed = exit_armed.clone();
         let calls = exit_calls.clone();
@@ -5483,12 +5437,12 @@ struct CustodyControlsRoot {
     draw_callback: Option<Box<dyn FnMut()>>,
     overlay_callback: Option<Box<dyn FnMut()>>,
     mark_drawn_callback: Option<Box<dyn FnMut()>>,
-    unsettled_layout: Option<std::rc::Rc<std::cell::Cell<bool>>>,
-    installed_output: Option<std::rc::Rc<std::cell::RefCell<Option<crate::ControlOutbox>>>>,
-    record: Option<std::rc::Rc<std::cell::RefCell<Option<crate::RecordCheckout>>>>,
+    unsettled_layout: Option<Rc<Cell<bool>>>,
+    installed_output: Option<Rc<RefCell<Option<crate::ControlOutbox>>>>,
+    record: Option<Rc<RefCell<Option<crate::RecordCheckout>>>>,
     child: Box<dyn crate::widget::Widget>,
     resources: Vec<tilo_actions::ResourceSpec>,
-    ledger: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    ledger: Rc<RefCell<Vec<serde_json::Value>>>,
 }
 
 impl crate::widget::Widget for CustodyControlsRoot {
@@ -5694,16 +5648,14 @@ fn custody_matrix_binding<I: serde::Serialize + 'static>(
     .unwrap()
 }
 
-fn custody_matrix_app(
-    kind: &str,
-) -> (App, std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>) {
+fn custody_matrix_app(kind: &str) -> (App, Rc<RefCell<Vec<serde_json::Value>>>) {
     custody_matrix_app_with_confirmation(kind, tilo_actions::ConfirmationPolicy::None)
 }
 
 fn custody_matrix_app_with_confirmation(
     kind: &str,
     confirmation: tilo_actions::ConfirmationPolicy,
-) -> (App, std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>) {
+) -> (App, Rc<RefCell<Vec<serde_json::Value>>>) {
     use crate::widget::toggle_group::Segment;
     use crate::widget::*;
     let mut resource = custody_matrix_spec(kind);
@@ -5714,7 +5666,7 @@ fn custody_matrix_app_with_confirmation(
         })
         .unwrap()
     };
-    let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let ledger = Rc::new(RefCell::new(Vec::new()));
     let control: Box<dyn Widget> = match kind {
         "Button" => Box::new(Button::new("control", "Control").on_action(unit())),
         "Checkbox" => Box::new(
@@ -5941,7 +5893,7 @@ fn control_custody_core_shared_controls_seal_exact_pending_values() {
 #[test]
 fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
     let (complete_tx, complete_rx) = std::sync::mpsc::channel();
-    let completions = std::rc::Rc::new(std::cell::Cell::new(0));
+    let completions = Rc::new(Cell::new(0));
     let BridgeComponent {
         component,
         binding,
@@ -5958,7 +5910,7 @@ fn control_custody_core_first_emission_after_return_keeps_live_semantics() {
         }),
         true,
     );
-    let denied = std::rc::Rc::new(std::cell::Cell::new(false));
+    let denied = Rc::new(Cell::new(false));
     let root = Box::new(CustodyDeniedRoot {
         child: Box::new(
             crate::widget::Column::new()
@@ -6062,7 +6014,7 @@ impl crate::widget::AppWidget for CustodyControlsRoot {
 
 fn custody_owned_button(
     label: &str,
-    ledger: std::rc::Rc<std::cell::RefCell<Vec<serde_json::Value>>>,
+    ledger: Rc<RefCell<Vec<serde_json::Value>>>,
 ) -> CustodyControlsRoot {
     let resource = custody_matrix_spec("Button");
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
@@ -6084,9 +6036,9 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
     let scope = crate::WakeScope::new();
     let _entry = scope.enter();
     let domain = crate::control_custody::ControlDomain::outer();
-    let key = std::rc::Rc::new(std::cell::Cell::new(false));
+    let key = Rc::new(Cell::new(false));
     let projection = key.clone();
-    let retained = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let retained = Rc::new(RefCell::new(None));
     let output = retained.clone();
     let resource = custody_matrix_spec("Button");
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "run").unwrap();
@@ -6107,7 +6059,7 @@ fn control_custody_core_mounted_modelview_hidden_builder_and_fresh_button() {
             Box::new(crate::widget::Button::new("dynamic", "Dynamic").on_action(binding.clone()))
         },
     );
-    let ledger = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let ledger = Rc::new(RefCell::new(Vec::new()));
     let root = CustodyControlsRoot {
         draw_callback: None,
         overlay_callback: None,
@@ -6187,7 +6139,7 @@ fn control_custody_core_unbound_tile_foreign_attachment_preserves_owner() {
         let expected_owner = origin_key(&a.drain_live()[0]);
         let left = a.child();
         let right = a.child();
-        let output = std::rc::Rc::new(std::cell::RefCell::new(None::<crate::ControlOutbox>));
+        let output = Rc::new(RefCell::new(None::<crate::ControlOutbox>));
         let mut live = custody_owned_button("A", Default::default());
         live.installed_output = Some(output.clone());
         let mut tile =

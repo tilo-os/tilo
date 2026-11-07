@@ -754,7 +754,14 @@ impl Checker<'_> {
         }
         if p.name == "show" && name == "of" {
             let v = self.expr(&a.value, None);
-            if !matches!(v.ty, Ty::Record(_) | Ty::Error) {
+            // A union's value draws through the view its own type has: a row view when the
+            // `show` asks for one (`show(x, row: true)`), as a list of a union draws its rows.
+            let drawn = match &v.ty {
+                Ty::Record(_) | Ty::Error => true,
+                Ty::Union(keys) => keys.iter().all(|key| self.env.row_view(key).is_some()),
+                _ => false,
+            };
+            if !drawn {
                 let t = self.show(&v.ty);
                 self.err(
                     "E020",

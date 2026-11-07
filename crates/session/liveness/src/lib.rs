@@ -1,67 +1,14 @@
 //! Whether the compositor's main loop is still turning, answered from outside it.
-//!
-//! A control client talks to the main loop: the listener is accepted and every
-//! request is executed there. When the loop deadlocks, a request is written
-//! into a socket nobody reads and the client learns nothing but a timeout,
-//! which looks like a slow machine, not a hang. This module answers on its own
-//! threads instead, next to the control socket, at `<control socket>.live`
-//! (see [`socket_path`]).
-//!
-//! Requests are one JSON object per line:
-//!
-//! * `{"op":"heartbeat","budget_ms":500}` asks the main loop to acknowledge a
-//!   wake through a calloop ping source, and answers `{"alive":{"ticks":N,
-//!   "latency_ms":F}}` once it does. If it has not within `budget_ms` the
-//!   answer is `{"stalled":{...}}`: the budget, the ticks so far, what the
-//!   main thread did meanwhile, and every thread's state and kernel wait
-//!   channel. When the main thread is blocked it also carries the backtraces,
-//!   which is where a deadlock shows who waits on what; a main thread still
-//!   working is slow, not stuck, and is not interrupted. The same report goes
-//!   to stderr.
-//! * `{"op":"threads"}` answers `{"threads":[...]}` whatever the loop is doing.
-//! * `{"op":"forbid_main_thread_files"}` has the main loop arm the audit of
-//!   every path its thread walks from then on (`main_thread_files`), and
-//!   answers `{"armed":null}` once it has; `{"op":"main_thread_files"}`
-//!   answers `{"main_thread_files":[...]}`, what it walked since.
-//!
-//! A heartbeat costs the loop one wake when somebody asks. Nothing runs, and
-//! the idle loop is not woken, while no client is connected.
-//!
-//! Like the control socket this exists only where the compositor honours its
-//! developer overrides, and is bound only when the control socket is. Every
-//! build, release included, also runs the compositor's watchdog, which needs
-//! no client: it notices a hung loop on its
-//! own, records the same thread dump and ends the process so the session
-//! recovers.
-//!
-//! # Backtraces of other threads
-//!
-//! A thread cannot be unwound from outside. Each one is sent a real-time
-//! signal whose handler records its own return addresses into a slot of its
-//! own (`capture`), allocating nothing and taking no lock; the answering
-//! thread names them from the executable's symbol table (`symtab`), never
-//! the debug information, whose parsing outlasts any wait in a large build.
-//! Every answer is kept, and a thread that did not answer is reported as
-//! such.
-//!
-//! Only a thread blocked inside a system call is interrupted
-//! (`/proc/<tid>/syscall` names one), and not one inside the memory system
-//! calls the allocator and the loader make while they hold their locks: the
-//! unwinder reads the loader's list of objects under the loader's lock, and a
-//! thread stopped holding a lock the rest of the process needs freezes the
-//! desktop being measured. A thread that is running, faulting in a page, or
-//! allocating is reported by its state and wait channel alone, and the
-//! heartbeat does not dump at all while the main thread is still working. A thread that does not answer within
-//! `DUMP_WAIT` is reported as such rather than waited for. A main thread
-//! initially observed running is sampled again within that same deadline:
-//! reporting its later epoll wait without the stack would hide which loop it
-//! entered. Development heartbeat failures also snapshot a fixed-size wake
-//! trace before any capture signal can disturb the sequence being diagnosed.
-
-//!
-//! It is its own crate, below the compositor, so a compositor change does
-//! not rebuild it and its tests run on their own. Linux only: it reads
-//! `/proc` and signals threads.
+//! A control client's requests are executed on the loop, so a deadlocked loop
+//! answers nothing and the client sees only a timeout. This answers on its own
+//! threads instead, at `<control socket>.live`: one JSON object per line, where
+//! `{"op":"heartbeat","budget_ms":500}` asks the loop to acknowledge a wake and
+//! answers `{"alive":{..}}` or, past the budget, `{"stalled":{..}}` with every
+//! thread's state, wait channel and backtraces; `threads` answers whatever the
+//! loop is doing, and the `main_thread_files` ops arm and read the path audit.
+//! It exists only where the compositor honours its developer overrides.
+//! It is its own crate, below the compositor, so a compositor change does not
+//! rebuild it and its tests run on their own. Linux only.
 #![cfg(target_os = "linux")]
 
 use std::collections::HashMap;

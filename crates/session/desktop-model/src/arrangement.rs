@@ -341,12 +341,6 @@ impl Arrangement {
         self.kind == ArrangementKind::Strips && self.places.is_empty() && self.floats.is_empty()
     }
 
-    /// Whether the workspace shows its canvas.
-    #[must_use]
-    pub fn is_canvas(&self) -> bool {
-        self.kind == ArrangementKind::Canvas
-    }
-
     /// Where `group` stands, once placed.
     #[must_use]
     pub fn place_of(&self, group: GroupId) -> Option<CanvasPlace> {

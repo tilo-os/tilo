@@ -18,7 +18,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use super::FrameHarness;
 #[cfg(test)]
 use crate::widget::tabs::TAB_BAR_HEIGHT;
-use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearch, WindowSearchRequest};
+use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
 const TAB: u64 = 1;
@@ -65,9 +65,8 @@ impl FrameHarness {
     #[must_use]
     pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         self.history
-            .as_ref()
-            .filter(|history| history.offers_control())
-            .map(|history| crate::widget::HistoryControl::of(history.is_open()))
+            .as_deref()
+            .and_then(crate::history_mode::host::window_control)
     }
 
     /// Press the window's History control as the bar hands the press over:
@@ -79,11 +78,7 @@ impl FrameHarness {
             .window_history_control()
             .ok_or("History is unavailable")?;
         let history = self.history.as_mut().ok_or("History is unavailable")?;
-        let intent = crate::history_mode::door::history_control_binding(control)
-            .invoke(())
-            .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
-            .map_err(|error| error.to_string())?;
+        crate::history_mode::host::press_window_control(history.as_mut(), control)?;
         self.relayout();
         Ok(())
     }
@@ -265,9 +260,7 @@ impl FrameHarness {
     /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
-        let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
-        crate::window_toolbar::deliver(event);
-        if hands_keyboard {
+        if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
         }
         self.relayout();
@@ -419,7 +412,11 @@ impl FrameHarness {
     /// `width` wide, shows the notice up (none: no notice is up).
     #[must_use]
     pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
-        let bar = self.painted_window_bar(width);
+        Self::shown_notice(&self.painted_window_bar(width))
+    }
+
+    /// How the bar `bar` shows the notice up: none while it shows none.
+    fn shown_notice(bar: &TabBar) -> Option<WindowBarNotice> {
         let bar_height = bar.bar_height();
         let row = bar.toolbar_row();
         let toolbar = row.toolbar()?;
@@ -481,8 +478,7 @@ impl FrameHarness {
     /// When no notice with that button is up, or the press runs nothing.
     pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
         let mut bar = self.painted_window_bar(width);
-        let at = self
-            .window_bar_notice(width)
+        let at = Self::shown_notice(&bar)
             .and_then(|notice| {
                 notice
                     .buttons
@@ -556,7 +552,7 @@ impl FrameHarness {
         let frame_top = self.frame_top();
         let search = &mut self.window_search;
         search.set_app_name(&title);
-        place_search(&bar, search);
+        crate::widget::place_window_search(&bar, search);
         search.set_frame_origin(Point::new(0.0, frame_top));
         let ground = bar.ground_color(&self.theme);
         scene.fill(
@@ -686,29 +682,6 @@ fn lay_out_bar(bar: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
     bar.apply_layout(&taffy, node, Point::ZERO);
 }
 
-/// Place the window's search control as the window group does: ending the
-/// app's slots, else after the tabs.
-fn place_search(bar: &TabBar, search: &mut WindowSearch) {
-    let px = crate::widget::window_controls::CONTROL_PX;
-    let gap = crate::widget::window_controls::CONTROL_GAP;
-    if let Some((row, reach)) = bar.toolbar_search_slot() {
-        let x0 = row.x1 + gap;
-        let y0 = row.center().y - px / 2.0;
-        search.place_trailing(
-            Rect::new(x0, y0, x0 + px, y0 + px),
-            reach.min(x0),
-            row.x0.min(x0),
-        );
-        return;
-    }
-    let row = bar.get_rect();
-    let x0 = bar.tabs_end() + gap;
-    let y0 = row.center().y - px / 2.0;
-    let limit = bar.window_controls().content_limit(row);
-    search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
-    search.set_cramped_start(bar.search_cramped_start());
-}
-
 #[cfg(test)]
 #[path = "window_bar_layout_tests.rs"]
 mod layout_tests;
@@ -716,6 +689,7 @@ mod layout_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::WindowSearch;
 
     #[test]
     fn a_window_bar_capture_hosts_the_apps_slots_above_its_frame() {

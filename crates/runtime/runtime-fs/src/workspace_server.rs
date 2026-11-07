@@ -1,5 +1,6 @@
 //! Serving the workspace filesystem protocol from a host's own workspace,
-//! a client of [`crate::FsClient`] browses, stats and uses explicit file handles.
+//! a client of [`tilo_fs_client::FsClient`] browses, stats and uses explicit
+//! file handles.
 //!
 //! The host supplies a [`WorkspaceBackend`]; its calls may block (reading a
 //! file can hydrate it from a peer), so they run on the host's runtime,
@@ -7,20 +8,21 @@
 //! file capabilities may implement writes. `mkdir` and `remove` remain refused.
 
 use std::{
+    future::Future,
     io,
     path::{Path, PathBuf},
-    rc::Rc,
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
 
-use capnp::capability::Promise;
+use tilo_fs_client::connection::{Capabilities, ServeObject, serve_connected};
+use tilo_fs_client::wire::{FsReply, FsRequest, NativeEntryStatus};
 use tokio::sync::oneshot;
 
-use crate::fs_capnp::{self, file_handle, workspace_fs};
 use crate::{DirEntry, EntryKind, MAX_READ_CHUNK, Metadata, OpenMode};
 
-const MAX_BACKEND_CALLS: usize = 8;
+pub(crate) const MAX_BACKEND_CALLS: usize = 8;
 
 /// An already-admitted live file capability supplied by the authenticated host.
 /// Methods must enforce their own current authority and bounded I/O deadlines.
@@ -143,8 +145,7 @@ pub fn serve_workspace(
                     return;
                 }
             };
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&local_runtime, async move {
+            local_runtime.block_on(async move {
                 let listener = match tokio::net::UnixListener::from_std(listener) {
                     Ok(listener) => listener,
                     Err(error) => {
@@ -166,19 +167,24 @@ pub fn serve_workspace(
 }
 
 /// Exactly one authenticated private connected stream, with no discovery name.
-/// Dropping the owner closes the RPC connection and joins its owned thread.
+/// Dropping the owner closes the connection and joins its owned thread.
 /// Backend calls already running are not forcibly interrupted: providers must
 /// bound their calls and retire their native authority before releasing custody.
 pub struct ConnectedWorkspaceServer {
     stop: Option<oneshot::Sender<()>>,
     thread: Option<std::thread::JoinHandle<io::Result<()>>>,
 }
+
 impl ConnectedWorkspaceServer {
-    /// Wait for the actual RPC connection to finish without requesting stop.
+    /// Wait for the actual connection to finish without requesting stop.
+    /// # Errors
+    /// Returns the connection's own failure, or a panic in its worker.
     pub fn wait(mut self) -> io::Result<()> {
         self.join()
     }
-    /// Request stop and report the actual owned worker departure.
+    /// Ask it to stop and report the actual owned worker departure.
+    /// # Errors
+    /// Returns the connection's own failure, or a panic in its worker.
     pub fn retire(mut self) -> io::Result<()> {
         if let Some(stop) = self.stop.take() {
             let _ = stop.send(());
@@ -200,6 +206,7 @@ impl ConnectedWorkspaceServer {
         })?
     }
 }
+
 impl Drop for ConnectedWorkspaceServer {
     fn drop(&mut self) {
         drop(self.stop.take());
@@ -208,6 +215,7 @@ impl Drop for ConnectedWorkspaceServer {
         }
     }
 }
+
 /// Serve an attested, owned stream through the existing `WorkspaceFs` protocol.
 /// Transport authentication and source authority remain the caller's boundary;
 /// this function opens no socket path and accepts no credential claims.
@@ -243,9 +251,8 @@ pub fn serve_workspace_connected_with_handoffs(
     let thread = std::thread::Builder::new()
         .name("workspace-file-capability".into())
         .spawn(move || {
-            let local = tokio::task::LocalSet::new();
-            local.block_on(&local_runtime, async move {
-                let server = Rc::new(Server {
+            local_runtime.block_on(async move {
+                let server = Arc::new(Server {
                     backend,
                     runtime,
                     calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
@@ -278,14 +285,14 @@ async fn accept(
                 continue;
             }
         };
-        let server = Rc::new(Server {
+        let server = Arc::new(Server {
             backend: Arc::clone(backend),
             runtime: runtime.clone(),
             calls: Arc::new(tokio::sync::Semaphore::new(MAX_BACKEND_CALLS)),
             handoffs: None,
             drain: None,
         });
-        tokio::task::spawn_local(async move {
+        tokio::spawn(async move {
             if let Err(error) = serve_connection(stream, server).await {
                 eprintln!("workspace file connection closed: {error}");
             }
@@ -293,486 +300,403 @@ async fn accept(
     }
 }
 
-#[allow(
-    clippy::future_not_send,
-    reason = "capnp-rpc servers are Rc-based and run on a LocalSet by construction"
-)]
-async fn serve_connection(stream: tokio::net::UnixStream, server: Rc<Server>) -> io::Result<()> {
-    let client: workspace_fs::Client = capnp_rpc::new_client_from_rc(server);
-    runtime_portal::serve_connected_io(stream, client.client)
-        .await
-        .map_err(|error| io::Error::other(error.to_string()))
+async fn serve_connection(stream: tokio::net::UnixStream, server: Arc<Server>) -> io::Result<()> {
+    serve_connected(stream, server).await
 }
 
 #[path = "workspace_server/directory.rs"]
 mod directory;
 
-struct Server {
-    backend: Arc<dyn WorkspaceBackend>,
-    runtime: tokio::runtime::Handle,
-    calls: Arc<tokio::sync::Semaphore>,
-    handoffs: Option<Arc<PendingHandoffRegistry>>,
-    drain: Option<Arc<pending_handoff::CallDrain>>,
+pub(crate) struct Server {
+    pub(crate) backend: Arc<dyn WorkspaceBackend>,
+    pub(crate) runtime: tokio::runtime::Handle,
+    pub(crate) calls: Arc<tokio::sync::Semaphore>,
+    pub(crate) handoffs: Option<Arc<PendingHandoffRegistry>>,
+    pub(crate) drain: Option<Arc<pending_handoff::CallDrain>>,
 }
 
 impl Server {
     // Fail busy without queuing application-owned payload buffers or callbacks.
-    fn admit_call(&self) -> Result<tokio::sync::OwnedSemaphorePermit, capnp::Error> {
+    pub(crate) fn admit_call(&self) -> Result<tokio::sync::OwnedSemaphorePermit, String> {
         Arc::clone(&self.calls)
             .try_acquire_owned()
-            .map_err(|_| capnp::Error::failed("workspace backend busy".into()))
+            .map_err(|_| "workspace backend busy".to_string())
     }
+
     /// Runs one blocking backend call on the host's runtime.
-    async fn call<T: Send + 'static>(
+    async fn blocking<T: Send + 'static>(
         &self,
-        call: impl FnOnce(&dyn WorkspaceBackend) -> Result<T, String> + Send + 'static,
-    ) -> Result<T, capnp::Error> {
-        let backend = Arc::clone(&self.backend);
-        let permit = self.admit_call()?;
+        permit: tokio::sync::OwnedSemaphorePermit,
+        call: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
         self.runtime
             .spawn_blocking(move || {
                 let _permit = permit;
-                call(backend.as_ref())
+                call()
             })
             .await
-            .map_err(|error| capnp::Error::failed(format!("workspace backend failed: {error}")))?
-            .map_err(capnp::Error::failed)
+            .map_err(|error| format!("workspace backend failed: {error}"))?
     }
-    async fn call_file<T: Send + 'static>(
+
+    pub(crate) async fn call<T: Send + 'static>(
+        &self,
+        call: impl FnOnce(&dyn WorkspaceBackend) -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let permit = self.admit_call()?;
+        let backend = Arc::clone(&self.backend);
+        self.blocking(permit, move || call(backend.as_ref())).await
+    }
+
+    pub(crate) async fn call_file<T: Send + 'static>(
         &self,
         file: Arc<dyn WorkspaceFileBackend>,
         call: impl FnOnce(&dyn WorkspaceFileBackend) -> Result<T, String> + Send + 'static,
-    ) -> Result<Option<T>, capnp::Error> {
+    ) -> Result<Option<T>, String> {
         let permit = self.admit_call()?;
         self.call_file_admitted(file, permit, call).await
     }
-    async fn call_file_admitted<T: Send + 'static>(
+
+    pub(crate) async fn call_file_admitted<T: Send + 'static>(
         &self,
         file: Arc<dyn WorkspaceFileBackend>,
         permit: tokio::sync::OwnedSemaphorePermit,
         call: impl FnOnce(&dyn WorkspaceFileBackend) -> Result<T, String> + Send + 'static,
-    ) -> Result<Option<T>, capnp::Error> {
-        self.runtime
-            .spawn_blocking(move || {
-                let _permit = permit;
-                if let Some(scope) = file.live_scope() {
-                    scope?;
-                    let result = call(file.as_ref());
-                    file.live_scope().ok_or("live scope disappeared")??;
-                    Ok(result.ok())
-                } else {
-                    call(file.as_ref()).map(Some)
-                }
-            })
-            .await
-            .map_err(|error| {
-                capnp::Error::failed(format!("workspace file backend failed: {error}"))
-            })?
-            .map_err(capnp::Error::failed)
-    }
-}
-
-fn path_param(value: capnp::Result<capnp::text::Reader<'_>>) -> Result<String, capnp::Error> {
-    value?
-        .to_str()
-        .map(|path| path.trim_matches('/').to_owned())
-        .map_err(|error| capnp::Error::failed(error.to_string()))
-}
-
-fn read_only() -> capnp::Error {
-    capnp::Error::failed("this workspace is served read only".into())
-}
-
-fn write_metadata(mut out: fs_capnp::metadata::Builder<'_>, metadata: &Metadata) {
-    out.set_kind(match metadata.kind {
-        EntryKind::File => fs_capnp::EntryKind::File,
-        EntryKind::Directory => fs_capnp::EntryKind::Directory,
-        EntryKind::Symlink => fs_capnp::EntryKind::Symlink,
-        EntryKind::Other => fs_capnp::EntryKind::Other,
-    });
-    out.set_size(metadata.size);
-    out.set_modified_unix_seconds(metadata.modified_unix_seconds.unwrap_or(0));
-    out.set_needs_hydration(metadata.needs_hydration);
-}
-
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl workspace_fs::Server for Server {
-    fn open(
-        self: Rc<Self>,
-        params: workspace_fs::OpenParams,
-        mut results: workspace_fs::OpenResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let mode = match request.get_mode()? {
-                fs_capnp::OpenMode::Read => OpenMode::Read,
-                fs_capnp::OpenMode::Write => OpenMode::Write,
-                fs_capnp::OpenMode::Append => OpenMode::Append,
-                fs_capnp::OpenMode::ReadWriteExisting => OpenMode::ReadWriteExisting,
-                fs_capnp::OpenMode::WriteExisting => OpenMode::WriteExisting,
-            };
-            let path = path_param(request.get_path())?;
-            let selected = path.clone();
-            let opened = self
-                .call(move |backend| backend.open(&selected, mode))
-                .await?;
-            let source = if let Some(file) = opened {
-                let metadata = self
-                    .call_file(Arc::clone(&file), WorkspaceFileBackend::metadata)
-                    .await?;
-                let metadata = metadata
-                    .ok_or_else(|| capnp::Error::failed("native open metadata refused".into()))?;
-                if metadata.kind != EntryKind::File {
-                    return Err(capnp::Error::failed(format!("{path} is not a file")));
-                }
-                FileSource::Capability(file)
-            } else {
-                if mode != OpenMode::Read {
-                    return Err(read_only());
-                }
-                let checked = path.clone();
-                let metadata = self.call(move |backend| backend.stat(&checked)).await?;
-                if metadata.kind != EntryKind::File {
-                    return Err(capnp::Error::failed(format!("{path} is not a file")));
-                }
-                FileSource::Path(path)
-            };
-            let handle: file_handle::Client = capnp_rpc::new_client(File {
-                server: self,
-                source,
-                mode,
-            });
-            results.get().set_handle(handle);
-            Ok(())
+    ) -> Result<Option<T>, String> {
+        self.blocking(permit, move || {
+            checked(|| file.live_scope(), || call(file.as_ref()))
         })
+        .await
     }
 
-    fn list(
-        self: Rc<Self>,
-        params: workspace_fs::ListParams,
-        mut results: workspace_fs::ListResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let path = path_param(params.get()?.get_path())?;
-            let entries = self.call(move |backend| backend.list(&path)).await?;
-            let count = u32::try_from(entries.len())
-                .map_err(|_| capnp::Error::failed("too many entries".into()))?;
-            let mut out = results.get().init_entries(count);
-            for (index, entry) in (0..count).zip(&entries) {
-                let mut row = out.reborrow().get(index);
-                row.set_name(&entry.name);
-                write_metadata(row.init_metadata(), &entry.metadata);
+    /// Runs a directory backend call with its drain entry and fresh scope
+    /// brackets, so a handoff waits for it and a revocation reads as a refusal.
+    pub(crate) async fn run_directory<T: Send + 'static>(
+        &self,
+        backend: Arc<dyn crate::directory_backend::WorkspaceDirectoryBackend>,
+        call: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<Option<T>, String> {
+        let permit = self.admit_call()?;
+        let drain = match &self.drain {
+            Some(drain) => Some(drain.enter()?),
+            None => None,
+        };
+        self.blocking(permit, move || {
+            let _drain = drain;
+            backend.check()?;
+            let value = call();
+            backend.check()?;
+            Ok(value.ok())
+        })
+        .await
+    }
+
+    /// Runs one directory call behind its drain entry, without scope brackets.
+    pub(crate) async fn run<T: Send + 'static>(
+        &self,
+        call: impl FnOnce() -> Result<T, String> + Send + 'static,
+    ) -> Result<T, String> {
+        let permit = self.admit_call()?;
+        let drain = match &self.drain {
+            Some(drain) => Some(drain.enter()?),
+            None => None,
+        };
+        self.blocking(permit, move || {
+            let _drain = drain;
+            call()
+        })
+        .await
+    }
+}
+
+/// Brackets `call` with the object's own live-scope checks where it has them.
+pub(crate) fn checked<T>(
+    scope: impl Fn() -> Option<Result<(), String>>,
+    call: impl FnOnce() -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    if let Some(live) = scope() {
+        live?;
+        let value = call();
+        scope().ok_or("live scope disappeared")??;
+        Ok(value.ok())
+    } else {
+        call().map(Some)
+    }
+}
+
+fn path_param(path: &str) -> String {
+    path.trim_matches('/').to_owned()
+}
+
+pub(crate) fn ack(ok: bool) -> NativeEntryStatus {
+    if ok {
+        NativeEntryStatus::Ok
+    } else {
+        NativeEntryStatus::Refused
+    }
+}
+
+pub(crate) fn read_only() -> String {
+    "this workspace is served read only".into()
+}
+
+impl ServeObject for Server {
+    fn dispatch(
+        self: Arc<Self>,
+        capabilities: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        let capabilities = capabilities.clone();
+        Box::pin(async move {
+            match request {
+                FsRequest::Open { path, mode } => {
+                    let selected = path_param(&path);
+                    let opened = {
+                        let selected = selected.clone();
+                        self.call(move |backend| backend.open(&selected, mode))
+                            .await?
+                    };
+                    let source = if let Some(file) = opened {
+                        let metadata = self
+                            .call_file(Arc::clone(&file), WorkspaceFileBackend::metadata)
+                            .await?
+                            .ok_or_else(|| "native open metadata refused".to_string())?;
+                        if metadata.kind != EntryKind::File {
+                            return Err(format!("{selected} is not a file"));
+                        }
+                        FileSource::Capability(file)
+                    } else {
+                        if mode != OpenMode::Read {
+                            return Err(read_only());
+                        }
+                        let checked_path = selected.clone();
+                        let metadata = self
+                            .call(move |backend| backend.stat(&checked_path))
+                            .await?;
+                        if metadata.kind != EntryKind::File {
+                            return Err(format!("{selected} is not a file"));
+                        }
+                        FileSource::Path(selected)
+                    };
+                    let handle = capabilities.register(Arc::new(File {
+                        server: Arc::clone(&self),
+                        source,
+                        mode,
+                    }));
+                    Ok(FsReply::Handle(Some(handle)))
+                }
+                FsRequest::List { path } => {
+                    let path = path_param(&path);
+                    let entries = self.call(move |backend| backend.list(&path)).await?;
+                    Ok(FsReply::Entries(Some(entries)))
+                }
+                FsRequest::Stat { path } => {
+                    let path = path_param(&path);
+                    let metadata = self.call(move |backend| backend.stat(&path)).await?;
+                    Ok(FsReply::Metadata(Some(metadata)))
+                }
+                FsRequest::Directory => {
+                    let backend = self
+                        .call(|backend| {
+                            let directory = backend.directory()?;
+                            if let Some(directory) = &directory {
+                                directory.check()?;
+                            }
+                            Ok(directory)
+                        })
+                        .await?
+                        .ok_or_else(read_only)?;
+                    let handle = capabilities.register(Arc::new(directory::Directory {
+                        server: Arc::clone(&self),
+                        backend,
+                    }));
+                    Ok(FsReply::Handle(Some(handle)))
+                }
+                FsRequest::Mkdir { .. } | FsRequest::Remove { .. } => Err(read_only()),
+                _ => Err("unexpected workspace request".into()),
             }
-            Ok(())
         })
-    }
-
-    fn stat(
-        self: Rc<Self>,
-        params: workspace_fs::StatParams,
-        mut results: workspace_fs::StatResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let path = path_param(params.get()?.get_path())?;
-            let metadata = self.call(move |backend| backend.stat(&path)).await?;
-            write_metadata(results.get().init_metadata(), &metadata);
-            Ok(())
-        })
-    }
-
-    fn directory(
-        self: Rc<Self>,
-        _: workspace_fs::DirectoryParams,
-        mut results: workspace_fs::DirectoryResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let backend = self
-                .call(|backend| {
-                    let directory = backend.directory()?;
-                    if let Some(directory) = &directory {
-                        directory.check()?;
-                    }
-                    Ok(directory)
-                })
-                .await?
-                .ok_or_else(read_only)?;
-            results
-                .get()
-                .set_handle(directory::client(Rc::clone(&self), backend));
-            Ok(())
-        })
-    }
-
-    fn mkdir(
-        self: Rc<Self>,
-        _: workspace_fs::MkdirParams,
-        _: workspace_fs::MkdirResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::err(read_only())
-    }
-
-    fn remove(
-        self: Rc<Self>,
-        _: workspace_fs::RemoveParams,
-        _: workspace_fs::RemoveResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::err(read_only())
     }
 }
 
-enum FileSource {
+pub(crate) enum FileSource {
     Path(String),
     Capability(Arc<dyn WorkspaceFileBackend>),
 }
-struct File {
-    server: Rc<Server>,
-    source: FileSource,
-    mode: OpenMode,
+
+pub(crate) struct File {
+    pub(crate) server: Arc<Server>,
+    pub(crate) source: FileSource,
+    pub(crate) mode: OpenMode,
 }
 
 impl File {
-    fn refuse_operation(self: &Rc<Self>) -> Promise<(), capnp::Error> {
-        let this = Rc::clone(self);
-        Promise::from_future(async move {
-            let FileSource::Capability(file) = &this.source else {
-                return Err(read_only());
-            };
-            // Only actual native providers with successful before/after scope checks
-            // can distinguish an unsupported per-file operation from authority loss.
-            this.server
-                .call_file(Arc::clone(file), |_| {
-                    Err::<(), _>("unsupported file operation".into())
-                })
-                .await?;
-            Ok(())
-        })
+    async fn refuse_operation(&self) -> Result<(), String> {
+        let FileSource::Capability(file) = &self.source else {
+            return Err(read_only());
+        };
+        // Only actual native providers with successful before/after scope checks
+        // can distinguish an unsupported per-file operation from authority loss.
+        self.server
+            .call_file(Arc::clone(file), |_| {
+                Err::<(), _>("unsupported file operation".into())
+            })
+            .await?;
+        Ok(())
     }
 }
 
-#[allow(
-    refining_impl_trait,
-    reason = "capnp server methods return the concrete Promise behind the generated impl Future"
-)]
-impl file_handle::Server for File {
-    fn check_scope(
-        self: Rc<Self>,
-        _: file_handle::CheckScopeParams,
-        _: file_handle::CheckScopeResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let FileSource::Capability(file) = &self.source else {
-                return Err(read_only());
-            };
-            let live = self
-                .server
-                .call_file(Arc::clone(file), |file| {
-                    file.live_scope().ok_or("scope check unavailable")?
-                })
-                .await?;
-            live.ok_or_else(|| capnp::Error::failed("live scope unavailable".into()))
-        })
-    }
-    fn read(
-        self: Rc<Self>,
-        params: file_handle::ReadParams,
-        mut results: file_handle::ReadResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let request = params.get()?;
-            let (offset, max_len) = (request.get_offset(), request.get_max_len());
-            if !matches!(self.mode, OpenMode::Read | OpenMode::ReadWriteExisting) {
-                self.refuse_operation().await?;
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            }
-            let limit = max_len.min(MAX_READ_CHUNK);
-            let bytes = match &self.source {
-                FileSource::Path(path) => {
-                    let path = path.clone();
-                    self.server
-                        .call(move |backend| backend.read(&path, offset, limit))
-                        .await
-                        .map(Some)?
-                }
-                FileSource::Capability(file) => {
-                    self.server
-                        .call_file(Arc::clone(file), move |file| file.read(offset, limit))
-                        .await?
-                }
-            };
-            let Some(bytes) = bytes else {
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            };
-            if u32::try_from(bytes.len())
-                .ok()
-                .is_none_or(|length| length > limit)
-            {
-                return Err(capnp::Error::failed(
-                    "file backend exceeded read bound".into(),
-                ));
-            }
-            results.get().set_bytes(&bytes);
-            Ok(())
-        })
-    }
-
-    fn write(
-        self: Rc<Self>,
-        params: file_handle::WriteParams,
-        mut results: file_handle::WriteResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            if !matches!(
-                self.mode,
-                OpenMode::Write | OpenMode::WriteExisting | OpenMode::ReadWriteExisting
-            ) {
-                self.refuse_operation().await?;
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            }
-            let FileSource::Capability(file) = &self.source else {
-                return Err(read_only());
-            };
-            let request = params.get()?;
-            let data = request.get_bytes()?;
-            let length = u32::try_from(data.len())
-                .map_err(|_| capnp::Error::failed("write exceeds byte bound".into()))?;
-            if length > MAX_READ_CHUNK {
-                return Err(capnp::Error::failed("write exceeds byte bound".into()));
-            }
-            // Finite admission precedes allocation: full pipelines receive Busy
-            // immediately rather than retaining another copied payload buffer.
-            let written = {
-                let permit = self.server.admit_call()?;
-                let bytes = data.to_vec();
-                let offset = request.get_offset();
-                self.server
-                    .call_file_admitted(Arc::clone(file), permit, move |file| {
-                        file.write(offset, &bytes)
-                    })
-                    .await?
-            };
-            let Some(written) = written else {
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            };
-            if written > length {
-                return Err(capnp::Error::failed("invalid write receipt".into()));
-            }
-            results.get().set_written(written);
-            Ok(())
-        })
-    }
-
-    fn append(
-        self: Rc<Self>,
-        params: file_handle::AppendParams,
-        mut results: file_handle::AppendResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            if self.mode != OpenMode::Append {
-                self.refuse_operation().await?;
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            }
-            let FileSource::Capability(file) = &self.source else {
-                return Err(read_only());
-            };
-            let request = params.get()?;
-            let data = request.get_bytes()?;
-            let length = u32::try_from(data.len())
-                .map_err(|_| capnp::Error::failed("append exceeds byte bound".into()))?;
-            if length > crate::MAX_WRITE_CHUNK {
-                return Err(capnp::Error::failed("append exceeds byte bound".into()));
-            }
-            let written = {
-                let permit = self.server.admit_call()?;
-                let bytes = data.to_vec();
-                self.server
-                    .call_file_admitted(Arc::clone(file), permit, move |file| file.append(&bytes))
-                    .await?
-            };
-            let Some(written) = written else {
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            };
-            if written > length {
-                return Err(capnp::Error::failed("invalid append count".into()));
-            }
-            results.get().set_written(written);
-            Ok(())
-        })
-    }
-
-    fn flush(
-        self: Rc<Self>,
-        _: file_handle::FlushParams,
-        mut results: file_handle::FlushResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            match &self.source {
-                FileSource::Path(_) => Ok(()),
-                FileSource::Capability(file) => {
-                    if self
+impl ServeObject for File {
+    #[allow(
+        clippy::too_many_lines,
+        clippy::significant_drop_tightening,
+        reason = "one request table per object; the call admission is passed to the call it admits"
+    )]
+    fn dispatch(
+        self: Arc<Self>,
+        _: &Capabilities,
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
+        Box::pin(async move {
+            match request {
+                FsRequest::CheckScope => {
+                    let FileSource::Capability(file) = &self.source else {
+                        return Err(read_only());
+                    };
+                    let live = self
                         .server
-                        .call_file(Arc::clone(file), WorkspaceFileBackend::flush)
-                        .await?
-                        .is_none()
-                    {
-                        results
-                            .get()
-                            .set_status(fs_capnp::NativeEntryStatus::Refused);
+                        .call_file(Arc::clone(file), |file| {
+                            file.live_scope().ok_or("scope check unavailable")?
+                        })
+                        .await?;
+                    live.ok_or_else(|| "live scope unavailable".to_string())?;
+                    Ok(FsReply::Empty)
+                }
+                FsRequest::Read { offset, max_len } => {
+                    if !matches!(self.mode, OpenMode::Read | OpenMode::ReadWriteExisting) {
+                        self.refuse_operation().await?;
+                        return Ok(FsReply::Bytes(None));
                     }
-                    Ok(())
+                    let limit = max_len.min(MAX_READ_CHUNK);
+                    let bytes = match &self.source {
+                        FileSource::Path(path) => {
+                            let path = path.clone();
+                            self.server
+                                .call(move |backend| backend.read(&path, offset, limit))
+                                .await
+                                .map(Some)?
+                        }
+                        FileSource::Capability(file) => {
+                            self.server
+                                .call_file(Arc::clone(file), move |file| file.read(offset, limit))
+                                .await?
+                        }
+                    };
+                    let Some(bytes) = bytes else {
+                        return Ok(FsReply::Bytes(None));
+                    };
+                    if u32::try_from(bytes.len())
+                        .ok()
+                        .is_none_or(|length| length > limit)
+                    {
+                        return Err("file backend exceeded read bound".into());
+                    }
+                    Ok(FsReply::Bytes(Some(bytes)))
                 }
+                FsRequest::Write { offset, bytes } => {
+                    if !matches!(
+                        self.mode,
+                        OpenMode::Write | OpenMode::WriteExisting | OpenMode::ReadWriteExisting
+                    ) {
+                        self.refuse_operation().await?;
+                        return Ok(FsReply::Written(None));
+                    }
+                    let FileSource::Capability(file) = &self.source else {
+                        return Err(read_only());
+                    };
+                    let length = u32::try_from(bytes.len())
+                        .map_err(|_| "write exceeds byte bound".to_string())?;
+                    if length > MAX_READ_CHUNK {
+                        return Err("write exceeds byte bound".into());
+                    }
+                    // Finite admission precedes allocation: full pipelines receive Busy
+                    // immediately rather than retaining another copied payload buffer.
+                    let permit = self.server.admit_call()?;
+                    let written = self
+                        .server
+                        .call_file_admitted(Arc::clone(file), permit, move |file| {
+                            file.write(offset, &bytes)
+                        })
+                        .await?;
+                    let Some(written) = written else {
+                        return Ok(FsReply::Written(None));
+                    };
+                    if written > length {
+                        return Err("invalid write receipt".into());
+                    }
+                    Ok(FsReply::Written(Some(written)))
+                }
+                FsRequest::Append { bytes } => {
+                    if self.mode != OpenMode::Append {
+                        self.refuse_operation().await?;
+                        return Ok(FsReply::Written(None));
+                    }
+                    let FileSource::Capability(file) = &self.source else {
+                        return Err(read_only());
+                    };
+                    let length = u32::try_from(bytes.len())
+                        .map_err(|_| "append exceeds byte bound".to_string())?;
+                    if length > crate::MAX_WRITE_CHUNK {
+                        return Err("append exceeds byte bound".into());
+                    }
+                    let permit = self.server.admit_call()?;
+                    let written = self
+                        .server
+                        .call_file_admitted(Arc::clone(file), permit, move |file| {
+                            file.append(&bytes)
+                        })
+                        .await?;
+                    let Some(written) = written else {
+                        return Ok(FsReply::Written(None));
+                    };
+                    if written > length {
+                        return Err("invalid append count".into());
+                    }
+                    Ok(FsReply::Written(Some(written)))
+                }
+                FsRequest::Flush => match &self.source {
+                    FileSource::Path(_) => Ok(FsReply::Ack(NativeEntryStatus::Ok)),
+                    FileSource::Capability(file) => {
+                        let flushed = self
+                            .server
+                            .call_file(Arc::clone(file), WorkspaceFileBackend::flush)
+                            .await?
+                            .is_some();
+                        Ok(FsReply::Ack(if flushed {
+                            NativeEntryStatus::Ok
+                        } else {
+                            NativeEntryStatus::Refused
+                        }))
+                    }
+                },
+                FsRequest::HandleMetadata => {
+                    let metadata = match &self.source {
+                        FileSource::Path(path) => {
+                            let path = path.clone();
+                            self.server
+                                .call(move |backend| backend.stat(&path))
+                                .await
+                                .map(Some)?
+                        }
+                        FileSource::Capability(file) => {
+                            self.server
+                                .call_file(Arc::clone(file), WorkspaceFileBackend::metadata)
+                                .await?
+                        }
+                    };
+                    Ok(FsReply::Metadata(metadata))
+                }
+                _ => Err("unexpected file request".into()),
             }
-        })
-    }
-
-    fn metadata(
-        self: Rc<Self>,
-        _: file_handle::MetadataParams,
-        mut results: file_handle::MetadataResults,
-    ) -> Promise<(), capnp::Error> {
-        Promise::from_future(async move {
-            let metadata = match &self.source {
-                FileSource::Path(path) => {
-                    let path = path.clone();
-                    self.server
-                        .call(move |backend| backend.stat(&path))
-                        .await
-                        .map(Some)?
-                }
-                FileSource::Capability(file) => {
-                    self.server
-                        .call_file(Arc::clone(file), WorkspaceFileBackend::metadata)
-                        .await?
-                }
-            };
-            let Some(metadata) = metadata else {
-                results
-                    .get()
-                    .set_status(fs_capnp::NativeEntryStatus::Refused);
-                return Ok(());
-            };
-            write_metadata(results.get().init_metadata(), &metadata);
-            Ok(())
         })
     }
 }

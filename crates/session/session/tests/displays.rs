@@ -18,150 +18,23 @@
 
 mod common;
 
-use std::io::Write as _;
-use std::os::fd::AsFd as _;
 use std::time::Duration;
 
+use common::window::{Client, window_of};
 use tilo_actions::ResourceSpec;
 use tilo_compositor::{Compositor, InputEvent, OutputConfig};
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, DISPLAY_KIND, WINDOW_KIND};
 use tilo_desktop_model::WindowWidth;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
-use wayland_client::protocol::{
-    wl_buffer::WlBuffer, wl_compositor::WlCompositor, wl_registry, wl_registry::WlRegistry, wl_shm,
-    wl_shm::WlShm, wl_shm_pool::WlShmPool, wl_surface::WlSurface,
-};
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, delegate_noop};
-use wayland_protocols::xdg::shell::client::{
-    xdg_surface, xdg_surface::XdgSurface, xdg_toplevel, xdg_toplevel::XdgToplevel, xdg_wm_base,
-    xdg_wm_base::XdgWmBase,
-};
+use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
 
 /// The colour the compositor paints the test windows' pixels, read back as
-/// RGBA, and the same colour as the bytes of an `ARGB8888` buffer hold them.
+/// RGBA.
 const WINDOW: [u8; 3] = [40, 40, 200];
-const WINDOW_BYTES: [u8; 4] = [200, 40, 40, 255];
-
-/// What one toplevel was told.
-#[derive(Default)]
-struct Toplevel {
-    configured: bool,
-    size: Option<(i32, i32)>,
-}
-
-#[derive(Default)]
-struct Seen {
-    compositor: Option<WlCompositor>,
-    shm: Option<WlShm>,
-    wm_base: Option<XdgWmBase>,
-    toplevels: Vec<Toplevel>,
-}
-
-/// One client with toplevels of a solid colour, the later ones possibly
-/// dialogs of the earlier.
-struct TestClient {
-    connection: Connection,
-    queue: EventQueue<Seen>,
-    seen: Seen,
-    windows: Vec<(WlSurface, XdgToplevel)>,
-}
-
-impl TestClient {
-    fn connect(compositor: &mut Compositor) -> Self {
-        let socket = compositor.connect_client().expect("client socket");
-        let connection = Connection::from_socket(socket).expect("connection");
-        let queue = connection.new_event_queue();
-        connection.display().get_registry(&queue.handle(), ());
-        Self {
-            connection,
-            queue,
-            seen: Seen::default(),
-            windows: Vec::new(),
-        }
-    }
-
-    /// Send what is queued, read what arrived, without blocking.
-    fn exchange(&mut self) {
-        self.connection.flush().expect("flush");
-        if let Some(guard) = self.connection.prepare_read() {
-            // Nothing to read is fine: WouldBlock.
-            let _ = guard.read();
-        }
-        self.queue
-            .dispatch_pending(&mut self.seen)
-            .expect("dispatch");
-        self.connection.flush().expect("flush");
-    }
-
-    /// Open toplevel number `self.windows.len()` of `app_id`, set up by
-    /// `before` before its first commit. Returns its index.
-    fn open(&mut self, app_id: &str, before: impl FnOnce(&XdgToplevel)) -> usize {
-        let index = self.windows.len();
-        let qh = self.queue.handle();
-        let surface = self
-            .seen
-            .compositor
-            .as_ref()
-            .expect("wl_compositor")
-            .create_surface(&qh, ());
-        let xdg = self
-            .seen
-            .wm_base
-            .as_ref()
-            .expect("xdg_wm_base")
-            .get_xdg_surface(&surface, &qh, index);
-        let toplevel = xdg.get_toplevel(&qh, index);
-        toplevel.set_app_id(app_id.into());
-        before(&toplevel);
-        surface.commit();
-        self.seen.toplevels.push(Toplevel::default());
-        self.windows.push((surface, toplevel));
-        index
-    }
-
-    /// Attach a buffer of one colour to toplevel `index` and commit it.
-    fn show(&self, index: usize, width: i32, height: i32) {
-        let qh = self.queue.handle();
-        let stride = width * 4;
-        let len = usize::try_from(stride * height).unwrap();
-        let fd =
-            rustix::fs::memfd_create("tilo-session-test", rustix::fs::MemfdFlags::CLOEXEC).unwrap();
-        let mut file = std::fs::File::from(fd);
-        file.write_all(&WINDOW_BYTES.repeat(len / 4)).unwrap();
-        let pool = self.seen.shm.as_ref().expect("wl_shm").create_pool(
-            file.as_fd(),
-            stride * height,
-            &qh,
-            (),
-        );
-        let buffer =
-            pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &qh, ());
-        let surface = &self.windows[index].0;
-        surface.attach(Some(&buffer), 0, 0);
-        surface.damage_buffer(0, 0, width, height);
-        surface.commit();
-        pool.destroy();
-    }
-}
-
-/// Let the session and `client` talk until `done` holds.
-#[track_caller]
-fn pump(
-    session: &mut Session,
-    client: &mut TestClient,
-    mut done: impl FnMut(&mut Session, &TestClient) -> bool,
-) {
-    common::wait_for(session, "what the test asked of the session", |session| {
-        client.exchange();
-        let answer = done(session, client);
-        client.exchange();
-        answer.then_some(())
-    });
-}
 
 /// A session on `outputs`, each `WIDTH` x `HEIGHT` at its place.
 fn session(places: &[(i32, i32)]) -> Session {
@@ -190,50 +63,35 @@ fn docked() -> Session {
     session(&[(0, 0), (WIDTH, 0)])
 }
 
-fn client(session: &mut Session) -> TestClient {
-    let mut client = TestClient::connect(session.compositor());
-    pump(session, &mut client, |_, client| {
-        client.seen.wm_base.is_some() && client.seen.shm.is_some()
+/// A window client that heard the session's globals.
+fn client(session: &mut Session) -> Client {
+    let mut client = Client::connect(session.compositor());
+    client.pump(session, |_, seen| {
+        seen.wm_base.is_some() && seen.shm.is_some()
     });
     client
 }
 
-/// Open toplevel of `app_id` (set up by `before`), drawn at the size it
-/// was configured to, else `fallback`, and wait until it is mapped.
+/// Open a window of `app_id` and draw it, set up by `before` before its first
+/// commit.
 fn map(
     session: &mut Session,
-    client: &mut TestClient,
+    client: &mut Client,
     app_id: &str,
     fallback: (i32, i32),
     before: impl FnOnce(&XdgToplevel),
 ) -> usize {
-    let index = client.open(app_id, before);
-    pump(session, client, |_, client| {
-        client.seen.toplevels[index].configured
-    });
-    let (w, h) = client.seen.toplevels[index]
-        .size
-        .filter(|(w, h)| *w > 0 && *h > 0)
-        .unwrap_or(fallback);
-    client.show(index, w, h);
-    let app = app_id.to_owned();
-    pump(session, client, |session, _| {
-        window(session.compositor(), &app).is_some()
-    });
-    index
+    client.map(session, app_id, fallback, before)
 }
 
-fn tab(session: &mut Session, client: &mut TestClient, app_id: &str) -> usize {
+/// Open a window of `app_id` at the size it chose.
+fn tab(session: &mut Session, client: &mut Client, app_id: &str) -> usize {
     map(session, client, app_id, (300, 200), |_| {})
 }
 
 /// The window of `app` and its rectangle `(x, y, w, h)`.
 fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
-    compositor
-        .windows()
-        .into_iter()
-        .find(|(info, _)| info.app_id.as_deref() == Some(app))
-        .map(|(info, rect)| (info.id, rect))
+    window_of(compositor, app)
 }
 
 fn rect(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
@@ -284,7 +142,7 @@ fn desk_name(app: &str) -> String {
 /// Invoke `action` of `resource`, then let the session run a few frames.
 fn invoke(
     session: &mut Session,
-    client: &mut TestClient,
+    client: &mut Client,
     resource: &str,
     action: &str,
     arguments: serde_json::Value,
@@ -301,7 +159,7 @@ fn invoke(
     }
 }
 
-fn focus_display(session: &mut Session, client: &mut TestClient, index: usize) {
+fn focus_display(session: &mut Session, client: &mut Client, index: usize) {
     let display = displays(session)[index].id.clone();
     invoke(
         session,
@@ -381,7 +239,7 @@ fn each_display_keeps_the_strip_it_shows() {
     tab(&mut session, &mut client, "org.example.Left");
     focus_display(&mut session, &mut client, 1);
     tab(&mut session, &mut client, "org.example.Right");
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
 
@@ -404,7 +262,7 @@ fn each_display_keeps_the_strip_it_shows() {
         shown[0].1, shown[1].1,
         "the left display took the new strip and the right kept its own: {shown:?}"
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-1") == 0 && painted(session, "HEADLESS-2") > 0
     });
 
@@ -416,7 +274,7 @@ fn each_display_keeps_the_strip_it_shows() {
         "step-strip",
         serde_json::json!({"steps": -1}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
 
@@ -430,7 +288,7 @@ fn each_display_keeps_the_strip_it_shows() {
         "step-strip",
         serde_json::json!({"steps": 1}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") == 0
     });
 
@@ -442,7 +300,7 @@ fn each_display_keeps_the_strip_it_shows() {
         "step-strip",
         serde_json::json!({"steps": -1}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-1") > 0 && painted(session, "HEADLESS-2") > 0
     });
     assert_eq!(focused(&mut session).as_deref(), Some("org.example.Right"));
@@ -457,7 +315,7 @@ fn a_window_opening_beside_one_display_leaves_the_other_alone() {
     let mut session = docked();
     let mut client = client(&mut session);
     tab(&mut session, &mut client, "org.example.Left");
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         display_of(session, "org.example.Left") == Some(0)
     });
     let alone = rect(&mut session, "org.example.Left");
@@ -469,7 +327,7 @@ fn a_window_opening_beside_one_display_leaves_the_other_alone() {
 
     focus_display(&mut session, &mut client, 1);
     tab(&mut session, &mut client, "org.example.Right");
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         display_of(session, "org.example.Right") == Some(1)
     });
     assert_eq!(
@@ -505,7 +363,7 @@ fn new_windows_open_on_the_display_with_focus() {
 
     focus_display(&mut session, &mut client, 1);
     tab(&mut session, &mut client, "org.example.Right");
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         display_of(session, "org.example.Right") == Some(1)
     });
     assert_eq!(
@@ -537,7 +395,7 @@ fn an_arrangement_action_mirrors_the_other_display() {
         "set-mode",
         serde_json::json!({"mode": "mirror"}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         painted(session, "HEADLESS-2") > 0
     });
     assert_eq!(
@@ -565,7 +423,7 @@ fn focus_follows_the_pointer_onto_the_other_display() {
             y: f64::from(y + h / 2),
         })
         .unwrap();
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         focused(session).as_deref() == Some("org.example.Left")
     });
 
@@ -600,7 +458,7 @@ fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
         "step-focus",
         serde_json::json!({"steps": -1}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         focused(session).as_deref() == Some("org.example.Left")
     });
 
@@ -611,7 +469,7 @@ fn focus_steps_across_displays_and_a_window_moves_to_the_next() {
         "move-to-display",
         serde_json::json!({"steps": 1}),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         display_of(session, "org.example.Left") == Some(1)
     });
     assert_eq!(display_of(&mut session, "org.example.Right"), Some(1));
@@ -638,7 +496,7 @@ fn a_dialog_floats_centred_over_its_parent_without_a_tab() {
     let mut session = docked();
     let mut client = client(&mut session);
     let parent = tab(&mut session, &mut client, "org.example.Editor");
-    let parent_toplevel = client.windows[parent].1.clone();
+    let parent_toplevel = client.toplevel(parent).clone();
     map(
         &mut session,
         &mut client,
@@ -724,7 +582,7 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
     tab(&mut session, &mut client, "org.example.Left");
     focus_display(&mut session, &mut client, 1);
     tab(&mut session, &mut client, "org.example.Right");
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         focused(session).as_deref() == Some("org.example.Right")
     });
 
@@ -747,7 +605,7 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
         u32::try_from(WIDTH).unwrap(),
         u32::try_from(HEIGHT).unwrap(),
     );
-    pump(&mut session, &mut client, |session, _| {
+    client.pump(&mut session, |session, _| {
         let presentation = session.portal().expect("portal sheet").presentation();
         presentation.place().is_some() && presentation.is_open()
     });
@@ -769,86 +627,3 @@ fn a_question_opens_on_the_display_of_the_window_in_focus() {
         "and is up for the person"
     );
 }
-
-impl Dispatch<WlRegistry, ()> for Seen {
-    fn event(
-        seen: &mut Self,
-        registry: &WlRegistry,
-        event: wl_registry::Event,
-        (): &(),
-        _: &Connection,
-        qh: &QueueHandle<Self>,
-    ) {
-        if let wl_registry::Event::Global {
-            name,
-            interface,
-            version,
-        } = event
-        {
-            match interface.as_str() {
-                "wl_compositor" => {
-                    seen.compositor = Some(registry.bind(name, version.min(5), qh, ()));
-                }
-                "wl_shm" => seen.shm = Some(registry.bind(name, 1, qh, ())),
-                "xdg_wm_base" => seen.wm_base = Some(registry.bind(name, 1, qh, ())),
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgWmBase, ()> for Seen {
-    fn event(
-        _: &mut Self,
-        base: &XdgWmBase,
-        event: xdg_wm_base::Event,
-        (): &(),
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_wm_base::Event::Ping { serial } = event {
-            base.pong(serial);
-        }
-    }
-}
-
-impl Dispatch<XdgSurface, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        surface: &XdgSurface,
-        event: xdg_surface::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_surface::Event::Configure { serial } = event {
-            surface.ack_configure(serial);
-            if let Some(toplevel) = seen.toplevels.get_mut(*index) {
-                toplevel.configured = true;
-            }
-        }
-    }
-}
-
-impl Dispatch<XdgToplevel, usize> for Seen {
-    fn event(
-        seen: &mut Self,
-        _: &XdgToplevel,
-        event: xdg_toplevel::Event,
-        index: &usize,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-    ) {
-        if let xdg_toplevel::Event::Configure { width, height, .. } = event
-            && let Some(toplevel) = seen.toplevels.get_mut(*index)
-        {
-            toplevel.size = Some((width, height));
-        }
-    }
-}
-
-delegate_noop!(Seen: ignore WlCompositor);
-delegate_noop!(Seen: ignore WlShm);
-delegate_noop!(Seen: ignore WlShmPool);
-delegate_noop!(Seen: ignore WlBuffer);
-delegate_noop!(Seen: ignore WlSurface);

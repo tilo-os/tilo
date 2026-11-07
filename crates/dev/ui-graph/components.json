@@ -1576,6 +1576,13 @@
     {
       "name": "Docked",
       "doc": "Content that fills its column above a bar that stays at the column's foot: a conversation above its composer. The bar stands in the column's page, a section's gap under the content and the page's gutter at its sides and below.",
+      "props": [
+        {
+          "name": "page_column",
+          "doc": "The bar stands in the page column the content is read at: the readable measure, its left edge and its width, so a reply answers the messages above it in their own column rather than across a wide window.",
+          "type": "bool"
+        }
+      ],
       "slots": [
         {
           "name": "content",
@@ -4008,6 +4015,11 @@
           "name": "secondary",
           "doc": "It stands beside the content it is about, in secondary ink: when a change was made.",
           "type": "bool"
+        },
+        {
+          "name": "past",
+          "doc": "The moment has already happened, as a message received or an entry logged: a moment the reader's clock has not reached yet (the clock of the device that wrote it runs ahead) reads `just now`, never ahead.",
+          "type": "bool"
         }
       ],
       "semantics": {
@@ -5381,6 +5393,11 @@
         {
           "name": "transcript",
           "doc": "A conversation: each row stands in the page column, the list opens at its newest row and follows it.",
+          "type": "bool"
+        },
+        {
+          "name": "page_column",
+          "doc": "Each row stands in the page column, at the readable measure every page sets its blocks on, a section's gap under the row before it. A list read from its first row to its last (a conversation's messages, a document's replies) keeps the measure without following its end as a transcript does.",
           "type": "bool"
         },
         {

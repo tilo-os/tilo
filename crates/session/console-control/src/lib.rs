@@ -1,36 +1,14 @@
 //! The action protocol for console session apps.
-//!
-//! The installer (and the greeter) run under `cage` straight from greetd,
-//! before any Tilo compositor exists, so the compositor's control socket and
-//! its action broker never see them. This crate lets such an app answer the
-//! *same* semantic half of the `tilo-control` wire itself:
-//!
-//! * `actions_enumerate` — the app's published resource tree as inert
-//!   descriptors (address, typed parameters, contract, availability);
-//! * `actions_invoke` — one action by address, through the same resolve /
-//!   availability / confirmation / strict-binding door every other caller
-//!   uses ([`catalog::admit`]);
-//! * `state_dump` — what the app believes is on screen, as JSON.
-//!
-//! `tilo-control --socket <path> actions list` therefore works unchanged
-//! against a console app. Input injection (`click`, `key`, `type`, …) is
-//! deliberately not served: the console surface is semantic only, and a
-//! caller that needs pixels has the hypervisor's own screen and keyboard.
-//!
-//! # Where it listens
-//!
-//! [`server::Endpoint::discover`] names at most two endpoints, both local:
-//!
-//! * a Unix socket in the app user's private runtime directory
-//!   (`$XDG_RUNTIME_DIR/tilo-console/<app>.sock`, directory 0700, socket
-//!   0600) — the local console and assistive tooling running as that user;
-//! * the virtio-serial port [`server::VIRTIO_PORT`], which exists only when a
-//!   hypervisor attached a port with exactly that name. Real hardware has no
-//!   such device, so the channel cannot exist there; in a VM only the host
-//!   user who started QEMU can reach its host end.
-//!
-//! Neither endpoint is a network listener, and neither grants anything the
-//! app's own user could not already do on that machine.
+//! The installer and the greeter run under `cage` straight from greetd, before any
+//! Tilo compositor exists, so this crate lets such an app answer the *same*
+//! semantic half of the `tilo-control` wire itself: `actions_enumerate`,
+//! `actions_invoke` (through the same resolve, availability and strict-binding door
+//! every other caller uses, [`catalog::admit`]) and `state_dump`. Input injection
+//! is deliberately not served: the console surface is semantic only.
+//! [`server::Endpoint::discover`] names at most two local endpoints: a Unix socket
+//! in the app user's private runtime directory, and the virtio-serial port
+//! [`server::VIRTIO_PORT`], which exists only in a VM. Neither is a network
+//! listener, and neither grants anything the app's own user could not already do.
 
 #![cfg_attr(
     test,

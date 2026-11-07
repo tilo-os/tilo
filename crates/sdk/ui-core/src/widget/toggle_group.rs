@@ -1,29 +1,23 @@
-//! `ToggleGroup` — the segmented control. A strip of segments of which one
-//! is chosen (or, before the person has chosen, none). Clicking a segment
-//! chooses it and fires the `on_change` callback with the new index.
+//! `ToggleGroup` — the segmented control: a strip of segments of which one is chosen (or, before
+//! the person has chosen, none). Clicking a segment chooses it and fires `on_change` with the new
+//! index.
 //!
-//! State lives on the widget unless it is bound: [`ToggleGroup::bind_selection`]
-//! keeps a [`crate::LocalState`] and the strip in step both ways, and
-//! `on_change` / `on_action` report the person's choices.
+//! State lives on the widget unless it is bound: [`ToggleGroup::bind_selection`] keeps a
+//! [`crate::LocalState`] and the strip in step both ways, and `on_change` / `on_action` report
+//! the person's choices.
 //!
-//! The chosen segment is a *lift* (HIG §9.3): a thumb one surface step off
-//! the track, set concentrically inside it, with primary ink and no hue.
+//! The chosen segment is a *lift* (HIG §9.3): a thumb one surface step off the track, set
+//! concentrically inside it, with primary ink and no hue.
 //!
-//! [`ToggleGroup::multiple`] is the multi-select form (the weekdays an alarm
-//! repeats on): every segment is its own toggle, each as wide as its label,
-//! wrapping onto further rows when the strip runs out of room.
+//! [`ToggleGroup::multiple`] is the multi-select form (the weekdays an alarm repeats on): every
+//! segment its own toggle, as wide as its label, wrapping onto further rows. Page tabs
+//! ([`SegmentedStyle::Tabs`]) start flush — each tab as wide as its label and padding, the chosen
+//! one a selector lift (`crate::chrome::paint_selector`) like a window's tabs — and a strip longer
+//! than its room scrolls instead of eliding.
 //!
-//! Page tabs ([`SegmentedStyle::Tabs`]) start flush: the first tab sits on
-//! the strip's leading edge, each tab as wide as its label and its padding,
-//! the chosen one a selector lift (`crate::chrome::paint_selector`) like a
-//! window's tabs; a strip longer than its room scrolls sideways instead of
-//! eliding.
-//!
-//! [`ToggleGroup::from_state`] binds the choice to typed view state instead
-//! of a callback. [`ToggleGroup::vertical`] stacks icon segments into a tool
-//! rail: each segment shows its icon, and its label (with the
-//! [`Segment::with_hint`] shortcut) is its tooltip; the label is its
-//! accessible name.
+//! [`ToggleGroup::from_state`] binds the choice to typed view state instead of a callback;
+//! [`ToggleGroup::vertical`] stacks icon segments into a tool rail, each label (with its
+//! [`Segment::with_hint`] shortcut) its tooltip and its accessible name.
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;
 use crate::widget::binding::{BoxedBinding, Pulled};
@@ -1668,13 +1662,7 @@ impl ToggleGroup {
             |acc, seg| acc.union(*seg),
         );
         if face.disabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &outer,
-            );
+            crate::widget::paint_disabled(scene, transform, &outer);
         }
         let hovered = face.hovered.filter(|index| {
             !face.disabled && face.items.get(*index).is_some_and(|item| !item.disabled)

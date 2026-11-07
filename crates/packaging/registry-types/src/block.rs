@@ -274,15 +274,6 @@ pub fn stamp(person: Option<&Path>, device: Option<&Path>) -> u64 {
     hasher.finish()
 }
 
-/// The usual files' [`stamp`].
-#[must_use]
-pub fn current_stamp() -> u64 {
-    stamp(
-        person_list_path().as_deref(),
-        Some(Path::new(DEVICE_POLICY_PATH)),
-    )
-}
-
 /// Block files are a few kilobytes; a larger one is not one.
 const MAX_BLOCK_FILE_BYTES: u64 = 1024 * 1024;
 

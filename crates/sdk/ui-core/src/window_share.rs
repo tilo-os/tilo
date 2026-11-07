@@ -1,36 +1,25 @@
-//! Sharing a window live: one app shows another app's view of a resource,
-//! and the desktop says which windows there are to share.
+//! Sharing a window live: one app shows another app's view of a resource, and the desktop says
+//! which windows there are to share.
 //!
-//! A message that shares a window (Chat's) shows the window's resource as
-//! it is now. It is not a picture of the sharer's screen: every reader's
-//! desktop runs the resource's own app on its own copy of the record, and
-//! draws that app's view, scaled down, where the message asked for it. The
-//! record syncs like any other, so the miniature follows the sharer's work;
-//! what a reader may see of it is what their grants let their copy hold.
+//! A message that shares a window shows the window's resource as it is now — not a picture of
+//! the sharer's screen: every reader's desktop runs the resource's own app on its own copy of
+//! the record and draws that app's view, scaled down, where the message asked for it. The
+//! record syncs like any other, so the miniature follows the sharer's work, and what a reader
+//! sees is what their grants let their copy hold.
 //!
-//! - **Embeds.** An app declares, on the window its host shows it in, where
-//!   it wants which resource drawn ([`declare`], one [`Embed`] each) and
-//!   reads back how each is coming along ([`state`]). The host draws them
-//!   over the app's own content, clipped to [`Embed::clip`], and never
-//!   hands them input: opening the resource is the app's own action. A
-//!   window no host draws embeds for ([`drawn`] is false) shows what it
-//!   draws itself in their place.
-//! - **Windows to share.** The desktop lists the windows its person has
-//!   open on a record ([`publish_windows`]), so a "Share a window" picker
-//!   names real windows ([`windows`]); a window's own menu asks the sharing
-//!   app to share it ([`ask_to_share`], [`take_ask`]).
-//! - **What is shared.** The sharing app says which windows it shares
-//!   ([`publish_shared`]), so the desktop marks them and offers "Stop
-//!   sharing" on them, which reaches the app the same way ([`Ask::Stop`]).
+//! - **Embeds.** An app declares where it wants which resource drawn ([`declare`], one [`Embed`]
+//!   each) and reads back how each is coming along ([`state`]). The host draws them over the
+//!   app's content, clipped to [`Embed::clip`], and never hands them input: opening the resource
+//!   is the app's own action. A window no host draws embeds for ([`drawn`] is false) shows what
+//!   it draws itself in their place.
+//! - **Windows to share.** The desktop lists the windows open on a record ([`publish_windows`]),
+//!   so a picker names real ones ([`windows`]); a window's own menu asks the sharing app to share
+//!   it ([`ask_to_share`], [`take_ask`]).
+//! - **What is shared.** The sharing app says which windows it shares ([`publish_shared`]), so
+//!   the desktop marks them and offers "Stop sharing" on them ([`Ask::Stop`]).
 //!
-//! An app its host runs in the host's own process (every app of the
-//! browser desktop) reaches all of it on the host's thread. An app in a
-//! process of its own makes the same calls: its runner carries them over the
-//! app's shell-ui connection ([`crate::floating_surface`]), the embeds and
-//! what it shares to the shell, the windows, the embeds' states and the
-//! desktop's asks back. Outside a session nothing hosts them: it sees no
-//! windows and draws its own stand-in for each embed.
-//!
+//! An app in a process of its own makes the same calls: its runner carries them over the app's
+//! shell-ui connection ([`crate::floating_surface`]), and outside a session nothing hosts them.
 //! What every desktop does with the windows and the views is one [`host`].
 
 use std::cell::RefCell;

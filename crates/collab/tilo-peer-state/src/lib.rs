@@ -60,7 +60,6 @@ pub mod owner_commit;
 
 pub mod durability;
 
-pub mod caller_authority;
 pub mod document_import;
 pub mod legacy_policy;
 /// A workspace's membership: the signed operations it is made of, and the

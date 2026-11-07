@@ -1,40 +1,14 @@
-//! Every path the compositor's main thread asks the kernel to walk once a test
-//! has said startup is over.
-//!
-//! On a busy machine one path lookup can wait seconds for the disk: the
-//! desktop smoke once found the main loop asleep in `path_openat` for over
-//! half a second under memory pressure, a frozen desktop. So after startup
-//! the main loop opens, stats and lists nothing by path; that work belongs on
-//! a worker, or at startup. A test proves it by arming this audit through the
-//! liveness socket (`{"op":"forbid_main_thread_files"}`), driving the desktop,
-//! and reading what the main thread walked (`{"op":"main_thread_files"}`).
-//!
-//! A test drives it either way: through the liveness socket, or — where the
-//! loop it measures is the test process's own, which a harness without
-//! `libtest` runs — by calling [`arm`] on the main thread and [`report`]
-//! once the scenario is over.
-//!
-//! The audit is a seccomp filter on the main thread alone (no
-//! `SECCOMP_FILTER_FLAG_TSYNC`) whose path system calls are handed, through a
-//! user-notification listener, to a supervisor thread started before the
-//! filter. The supervisor lets every call proceed unchanged
-//! (`SECCOMP_USER_NOTIF_FLAG_CONTINUE`): it only records the main thread's,
-//! with the path and the main thread's backtrace, captured while the call
-//! waits for the verdict. Threads the main thread starts afterwards inherit
-//! the filter; their calls are let through without a record.
-//!
-//! The path is read with `process_vm_readv`, and the backtrace is captured as
-//! the main thread's return addresses alone. Naming them parses the whole
-//! symbol table of the executable, tens of milliseconds in a large debug
-//! build, so it happens when the record is read, on the liveness thread, in
-//! one pass over every captured stack. The supervisor itself walks no path
-//! and never keeps the main thread waiting on the disk, and the call it holds
-//! waits only for the capture: tens of microseconds.
-//!
-//! A store asked to wait for its writer thread on the main loop (a flush:
-//! the loop asleep until an fsync elsewhere finishes) is recorded the same
-//! way, as the system call [`STORAGE_WAIT`] with what it waited for: no path
-//! is walked, but the desktop freezes just as long.
+//! Every path the compositor's main thread asks the kernel to walk once a test has
+//! said startup is over.
+//! On a busy machine one path lookup can wait seconds for the disk, so after
+//! startup the main loop opens, stats and lists nothing by path: that work belongs
+//! on a worker, or at startup. A test proves it by arming this audit through the
+//! liveness socket and reading what the main thread walked, or by calling [`arm`]
+//! and [`report`] where the loop is the test process's own.
+//! The audit is a seccomp filter on the main thread alone whose path system calls
+//! are handed to a supervisor thread that lets every call proceed unchanged and
+//! only records it. A store flush the main loop waits on is recorded the same way
+//! as [`STORAGE_WAIT`]: no path is walked, but the desktop freezes just as long.
 
 use std::sync::OnceLock;
 

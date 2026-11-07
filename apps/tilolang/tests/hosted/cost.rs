@@ -207,14 +207,21 @@ struct Rest {
     rounds: u32,
 }
 
-/// The frame the window runs now: the frame of what the host just did (the patches it published
-/// wake the window and the frame takes them in). A window at rest runs none, and nothing is asked
-/// of it by hand (`Window::frame`), which lays out and draws again work no person's interaction
-/// made. What a frame it runs is asked for by is the host's change, not widget dirtiness, which
-/// leaves default to dirty and keeps until a later frame draws them.
+/// The frame the window runs now: the frame of what the host just did (its patches wake the
+/// window and the frame reads them). A window at rest runs none: asking it by hand
+/// (`Window::frame`) is asking it to lay out and draw again, which is work no person's
+/// interaction made. A frame only the window's own clock asks for is not a step's cost either:
+/// these tests settle motion, and the frames a scroll's glide ran would be as many as the
+/// machine got through. What the window owes nothing for is asserted where the schedule is read
+/// (`a_window_at_rest_asks_its_host_for_no_frame`).
 fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     match &mut session.window {
-        Window::Harness(window) => changed && window.poll_frame().unwrap_or(true),
+        Window::Harness(window) => {
+            if changed {
+                window.relayout();
+            }
+            changed
+        }
         Window::Live(app) => {
             Window::live_frame(app);
             true
@@ -258,8 +265,9 @@ fn at_rest(session: &mut Session) -> Rest {
         if rest.rounds > 400 {
             let window = session.window.harness();
             panic!(
-                "the window rested never: {:?} {:?} {:?}",
+                "the window rested never: {:?} {:?} {:?} {:?}",
                 window.queued_work_sources(),
+                window.redraw_sources(),
                 window.frame_schedule(),
                 window.last_relayout()
             );
@@ -1093,10 +1101,48 @@ fn turns_until_rest(session: &mut Session) -> u32 {
     changed
 }
 
-/// What opening a window did to the workspace: whether it wrote anything, how many times the
-/// store took a chunk of the record against the chunks it holds, and the turns the window took
-/// to come to rest.
-fn opening(n: usize) -> (usize, u64, u32, usize, u64) {
+/// What opening a window did, counted rather than timed: the changes the open wrote into the
+/// workspace's record, the times the store took a chunk of it against the chunks the record
+/// holds, and — taken at the frame that finished the open — the records the instance's
+/// publication visited and the rows the window shows.
+#[derive(Clone, Copy, Debug)]
+struct Opening {
+    /// The changes the open wrote into the workspace's record.
+    written: usize,
+    /// Times the store took a chunk of the record: its first copy of one, or a sync into it.
+    read: u64,
+    /// The chunks the record the window opened holds.
+    chunks: u64,
+    /// The records the instance's publication visited to show the open.
+    published: u64,
+    /// The rows the window shows.
+    rows: usize,
+}
+
+impl Opening {
+    /// The counts, as a line: what a person reading a failure needs to see which of them grew.
+    fn line(self) -> String {
+        let Self {
+            written,
+            read,
+            chunks,
+            published,
+            rows,
+        } = self;
+        format!(
+            "wrote {written} changes, read the record's {chunks} chunks {read} times, published \
+             {published} records, {rows} rows"
+        )
+    }
+}
+
+/// Opening a window of the workspace the record `chunks` holds, and what it did. The open is
+/// finished at a condition of the window's, not after a count of turns: the index the store
+/// builds off the frame is read and taken in, the first frame that shows what the workspace
+/// holds has drawn, and the open set nothing going that is still owed — the window and its
+/// publication at rest, which the frame schedule states. The turns a wait for that build takes
+/// are the machine's, so they say nothing about the workspace.
+fn opening(n: usize) -> Opening {
     let chunks = seeded_tasks(n);
     let held = chunks.numbers().count() as u64;
     // What the workspace holds before the window opens it: opening it must leave the record
@@ -1110,18 +1156,42 @@ fn opening(n: usize) -> (usize, u64, u32, usize, u64) {
         .len();
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::tasks_over_launched(&route, chunks, None);
-    let turns = session.settle();
+    session.wait_index();
+    session.host.turn();
+    session.window.frame();
+    let shown = Opened::of(&mut session);
+    session.settle();
+    let (schedule, queued, redraw) = {
+        let window = session.window.harness();
+        (
+            window.frame_schedule(),
+            window.queued_work_sources(),
+            window.redraw_sources(),
+        )
+    };
+    assert!(
+        !schedule.needs_redraw && !schedule.queued_work && !schedule.needs_animation_frame,
+        "the open comes to rest with the window and its publication: {schedule:?} {queued:?} \
+         {redraw:?}"
+    );
     let written = changes(&session) - seeded;
-    let hosted = session
-        .host
-        .instances()
-        .next()
-        .expect("the window's instance");
-    let host = hosted.instance().host().expect("the instance's store");
-    let stats = host.store().stats();
+    let stats = {
+        let hosted = session
+            .host
+            .instances()
+            .next()
+            .expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.store().stats()
+    };
     let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
-    let rows = session.titles().len();
-    (written, read, turns, rows, held)
+    Opening {
+        written,
+        read,
+        chunks: held,
+        published: shown.published,
+        rows: shown.rows,
+    }
 }
 
 /// The changes the window's record holds: what the window wrote into the workspace.
@@ -1141,39 +1211,47 @@ fn changes(session: &Session) -> usize {
 
 /// Opening a window of a workspace it has used before writes nothing: the root the window
 /// opens is the one the app made when it was first added, and a window that finds it reads it.
-/// Each chunk of the record is taken once, and the window comes to rest in as many turns
-/// whatever the workspace holds: a workspace ten times the size opens in the same turns, the
-/// same writes, and one read of each chunk it holds.
+/// Each chunk of the record is taken once, and what the open does to show the window — the
+/// records its publication visits and the rows it shows — is the same whatever the workspace
+/// holds. The open is counted by that work rather than by the turns it took: a settle waits on
+/// the index the instance builds off its frames, and how many turns such a wait takes is the
+/// machine's.
 #[test]
 fn opening_a_window_writes_nothing() {
     let _motion = ui::motion::testing::settled();
-    let (small_writes, small_reads, small_turns, small_rows, small_chunks) = opening(1_000);
-    let (large_writes, large_reads, large_turns, large_rows, large_chunks) = opening(10_000);
+    let small = opening(1_000);
+    let large = opening(10_000);
     eprintln!(
-        "open: 1000 tasks wrote {small_writes} changes, read the record's {small_chunks} chunks {small_reads} times, {small_turns} turns, {small_rows} rows; \
-         10000: {large_writes} changes, the {large_chunks} chunks {large_reads} times, {large_turns} turns, {large_rows} rows"
+        "open at 1000 tasks: {}; at 10000: {}",
+        small.line(),
+        large.line()
     );
     assert_eq!(
-        small_writes, 0,
+        small.written, 0,
         "opening a workspace it has used writes nothing"
     );
-    assert_eq!(large_writes, 0, "opening a larger workspace writes nothing");
     assert_eq!(
-        (small_reads, large_reads),
-        (small_chunks, large_chunks),
+        large.written, 0,
+        "opening a larger workspace writes nothing"
+    );
+    assert_eq!(
+        (small.read, large.read),
+        (small.chunks, large.chunks),
         "the store takes each chunk of the record once, whatever it holds"
     );
     assert!(
-        large_turns <= 32,
-        "the window comes to rest in a handful of turns: {large_turns}"
-    );
-    assert_eq!(
-        small_turns, large_turns,
-        "the turns do not grow with the workspace"
+        small.rows > 0 && large.rows == small.rows,
+        "the window shows the same rows whatever the workspace holds: {} at 1000 tasks, {} at \
+         10000",
+        small.rows,
+        large.rows
     );
     assert!(
-        small_rows > 0 && large_rows > 0,
-        "the window shows the workspace's rows"
+        large.published <= small.published.saturating_add(2),
+        "the open publishes the records the window shows, not the workspace's: {} records at \
+         10000 tasks, {} at 1000",
+        large.published,
+        small.published
     );
 }
 
@@ -1817,4 +1895,24 @@ fn a_step_lays_out_what_it_changes() {
         );
         session.settle();
     }
+}
+
+/// A window a person has not touched asks for no frame: nothing is queued, nothing animates,
+/// nothing is due, and what the last frame drew is what it shows.
+#[test]
+fn a_window_at_rest_asks_its_host_for_no_frame() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(20);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, chunks, None);
+    session.settle();
+    let window = session.window.harness();
+    let schedule = window.frame_schedule();
+    assert!(
+        !schedule.needs_redraw && !schedule.queued_work && !schedule.needs_animation_frame,
+        "the window at rest asks for none: {schedule:?} {:?} {:?}",
+        window.queued_work_sources(),
+        window.redraw_sources()
+    );
+    assert_eq!(schedule.next_wake_deadline, None);
 }

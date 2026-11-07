@@ -162,12 +162,9 @@ pub(crate) fn semantic_action_bindings_into(
     }
 }
 
-/// How readily `widget` takes the keyboard when its app does without a
-/// control of its own choosing (brought forward on the desktop, or used
-/// from the window's bar): its default keyboard control first (`Some(0)`),
-/// else one that takes typing, a field, an editor or a terminal
-/// (`Some(1)`). Never a button merely for being first (`None`): Enter
-/// would press it.
+/// How readily `widget` takes the keyboard when its app does without a control of its own choosing:
+/// its default keyboard control first (`Some(0)`), else one that takes typing — a field, an editor,
+/// a terminal (`Some(1)`) — never a button merely for being first (`None`): Enter would press it.
 pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
     if widget.is_default_keyboard_focus() {
         return Some(0);
@@ -256,10 +253,9 @@ macro_rules! rect_geometry {
     };
 }
 
-/// Implements the [`Widget`] methods of a composite that is one pressable
-/// target, from its `self.activation`: focusable once bound, a pointer
-/// cursor over the rect at `self.$rect`, and accessibility `Activate`
-/// firing the binding. A focus change sets `self.dirty`, so pair it with
+/// Implements the [`Widget`] methods of a composite that is one pressable target, from its
+/// `self.activation`: focusable once bound, a pointer cursor over `self.$rect`, and accessibility
+/// `Activate` firing the binding. A focus change sets `self.dirty`, so pair it with
 /// [`redraw_flag!`].
 macro_rules! pressable {
     ($($rect:ident).+) => {
@@ -346,11 +342,9 @@ pub fn redraw_or_children(dirty: bool, widget: &dyn Widget) -> bool {
     dirty
 }
 
-/// Route `event` through a container's children, first handler wins. A
-/// child latching a drag gets it exclusively, so the drag survives the
-/// cursor crossing a peer whose handler would otherwise claim it first; a
-/// child holding an open modal owns the input the same way, so nothing
-/// standing behind the sheet takes the press meant for it.
+/// Route `event` through a container's children, first handler wins. A child latching a drag gets
+/// it exclusively, so the drag survives the cursor crossing a peer that would claim it first; a
+/// child holding an open modal owns input the same way.
 pub fn route_to_children(
     children: &mut [Box<dyn Widget>],
     nodes: &[NodeId],
@@ -375,12 +369,10 @@ pub fn route_to_children(
     }
 }
 
-/// Draw `child` unless what it paints misses the viewport. Off-viewport
-/// widgets stay dirty, so they re-emit when scrolled back in.
-///
-/// A widget ends every layer it begins: the render service refuses a scene
-/// that leaves a clip open, and with it the whole frame. Debug builds check
-/// that here, naming the widget, so a test that draws it fails.
+/// Draw `child` unless what it paints misses the viewport. Off-viewport widgets stay dirty, so they
+/// re-emit when scrolled back in. A widget ends every layer it begins: the render service refuses a
+/// scene that leaves a clip open, and with it the whole frame; debug builds check that here, naming
+/// the widget.
 pub fn draw_child(
     child: &mut (impl Widget + ?Sized),
     scene: &mut Scene,
@@ -789,11 +781,10 @@ pub enum StructureChange {
     /// Nothing was inserted or removed.
     #[default]
     None,
-    /// The widgets that reported it mount and unmount children of their own,
-    /// and every widget stays alive: they carry it out in the retained tree,
-    /// in place ([`Widget::remount_children`]), and their own damage this
-    /// frame covers every pixel that changed with it. A host that cannot
-    /// rebuilds its tree, as for [`Self::Described`].
+    /// The widgets that reported it mount and unmount children of their own, and every widget stays
+    /// alive: they carry it out in the retained tree in place ([`Widget::remount_children`]), and
+    /// their own damage covers every pixel that changed. A host that cannot rebuilds its tree, as
+    /// for [`Self::Described`].
     Children,
     /// The host rebuilds its tree, but the frame's damage still describes it:
     /// the widget that reported it replaced only widgets of its own, and its
@@ -836,11 +827,9 @@ impl StructureChange {
     }
 }
 
-/// Optional cross-device continuation capability for an app root.
-///
-/// Continuation is deliberately separate from [`Widget`]: ordinary controls
-/// have no resumable app state, while roots that do can expose this capability
-/// through [`Widget::provide`] without weakening their UI integration.
+/// Optional cross-device continuation capability for an app root, deliberately separate from
+/// [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
+/// [`Widget::provide`] without weakening their UI integration.
 pub trait Continuable {
     /// Return a compact, path-free projection of state that may be resumed on
     /// another device owned by the same person.
@@ -902,11 +891,9 @@ pub trait FloatingSurfaceProvider {
     /// Route native keyboard focus to the exact presentation instance.
     fn on_floating_surface_focus_changed(&mut self, _id: Option<&str>, _focused: bool) {}
 
-    /// Keep the exact secondary presentation's editor logically focused while
-    /// the platform deliberately retains text-input focus on its source.
-    ///
-    /// This is a host-authenticated input route, not a claim made by the app.
-    /// The host clears it when the continuation ends or no longer validates.
+    /// Keep the exact secondary presentation's editor logically focused while the platform
+    /// deliberately retains text-input focus on its source. A host-authenticated input route, not a
+    /// claim by the app; the host clears it when the continuation ends or no longer validates.
     fn on_floating_surface_ime_source_changed(&mut self, _id: Option<&str>) {}
 
     /// Identify the native surface delivering the current input event. The
@@ -967,11 +954,9 @@ pub trait FloatingSurfaceProvider {
     ) {
     }
 
-    /// Paint exactly one app-owned presentation into its native window.
-    ///
-    /// Native secondary windows are independent buffers. Painting the plural
-    /// overlay pass into each one can duplicate sibling surfaces and lets
-    /// content escape the window's own clip.
+    /// Paint exactly one app-owned presentation into its native window. Native secondary windows
+    /// are independent buffers: painting the plural overlay pass into each would duplicate sibling
+    /// surfaces and let content escape the window's own clip.
     fn draw_floating_surface(
         &mut self,
         id: &str,
@@ -1123,10 +1108,7 @@ impl<'a> Edits<'a> {
         }
     }
 
-    /// Apply `action` of the action type `type_id` now, through `host`, under
-    /// `context`.
-    ///
-    /// # Errors
+    /// Apply `action` of the action type `type_id` now, through `host`, under `context`. # Errors
     /// Returns the action's refusal; nothing is written then.
     #[doc(hidden)]
     pub fn apply<A>(
@@ -1254,11 +1236,10 @@ impl EventCtx<'_> {
         self.state.reborrow()
     }
 
-    /// The stylus that made the `CursorMoved` or `MouseInput` being
-    /// handled: its pressure, tilt and whether the eraser end is in use.
-    /// `None` for a mouse, a touch, or any other event. A pen's tip is the
-    /// left button and its barrel buttons the right and middle ones, so a
-    /// widget needs this only for what a mouse cannot say.
+    /// The stylus that made the `CursorMoved` or `MouseInput` being handled: its pressure, tilt and
+    /// whether the eraser end is in use. `None` for a mouse, a touch or any other event; a pen's
+    /// tip is the left button and its barrel buttons the right and middle, so a widget needs this
+    /// only for what a mouse cannot say.
     #[must_use]
     pub fn pen(&self) -> Option<PenSample> {
         crate::pen::current()
@@ -1353,11 +1334,10 @@ pub trait Widget {
         None
     }
 
-    /// Opt in only when this wheel event changes scroll geometry and nothing
-    /// else: no document edit, focus/selection, action availability, resource
-    /// declaration, pending command or work that requires `sync`. The runner
-    /// still lays out, paints and refreshes accessibility geometry. Unknown
-    /// handlers stay on the full synchronization/publication path.
+    /// Opt in only when this wheel event changes scroll geometry and nothing else: no document
+    /// edit, focus or selection, action availability, resource declaration, pending command or work
+    /// that requires `sync`. The runner still lays out, paints and refreshes accessibility
+    /// geometry; unknown handlers stay on the full path.
     fn view_only_scroll(&self, _event: &WindowEvent) -> bool {
         false
     }
@@ -1444,11 +1424,9 @@ pub trait Widget {
     /// Exclusive counterpart to [`Widget::provide`].
     fn provide_mut<'a>(&'a mut self, _request: &mut capability::RequestMut<'a, '_>) {}
 
-    /// Attach native child views through this owner's retained lifecycle topology.
-    ///
-    /// Presentation containers with inactive or hidden live descendants override
-    /// this traversal so lifecycle ownership remains independent of drawing and
-    /// input visibility.
+    /// Attach native child views through this owner's retained lifecycle topology. Presentation
+    /// containers with inactive or hidden live descendants override this traversal so lifecycle
+    /// ownership stays independent of drawing and input visibility.
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
         if let Some(lifecycle) = capability::capability_mut::<dyn NativeViewLifecycle>(self) {
             lifecycle.mount_native_view(host);
@@ -1501,21 +1479,17 @@ pub trait Widget {
         defaults::sync(self.children_mut(), state, path);
     }
 
-    /// Notice, between frames, state that lives outside the document (a
-    /// chrome revision, a momentum scroll still ticking) and report whether
-    /// anything changed. The default updates every child
-    /// [`Widget::children_mut`] returns, without short-circuiting, so a
-    /// container never freezes its descendants at build-time state; a widget
-    /// overrides it to check state of its own and then forward.
+    /// Notice, between frames, state outside the document (a chrome revision, a momentum scroll
+    /// still ticking) and report whether anything changed. The default updates every child
+    /// [`Widget::children_mut`] returns without short-circuiting, so a container never freezes its
+    /// descendants; an override checks state of its own and forwards.
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         defaults::update(self.children_mut(), state, path)
     }
 
-    /// Apply, after the sync pass, what the widget took up there and must
-    /// write: a worker's answer, a chooser's file, an event a child queued.
-    /// Writes go only through typed actions on `edits` (a resource's
-    /// dispatcher); the host syncs again when the document changed. The
-    /// default settles the children [`Widget::children_mut`] returns.
+    /// Apply, after the sync pass, what the widget took up there and must write: a worker's answer,
+    /// a chooser's file, an event a child queued. Writes go only through typed actions on `edits`;
+    /// the host syncs again when the document changed. The default settles the returned children.
     fn settle(&mut self, edits: &mut Edits<'_>, path: &ObjId) {
         defaults::settle(self.children_mut(), edits, path);
     }
@@ -1600,11 +1574,10 @@ pub trait Widget {
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         defaults::for_each_child(self.children(), visitor);
     }
-    /// The children of [`Self::for_each_child`] that may paint inside the
-    /// [`layout_clip`] in effect: what a scroll view's damage and its copy
-    /// plan need to look at. Every child by default; a long column visits
-    /// only those near the clip, so a frame of a scroll costs what is shown,
-    /// not what the column holds.
+    /// The children of [`Self::for_each_child`] that may paint inside the [`layout_clip`] in
+    /// effect: what a scroll view's damage and copy plan need. Every child by default; a long
+    /// column visits only those near the clip, so a frame costs what is shown, not what the column
+    /// holds.
     fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         self.for_each_child(visitor);
     }
@@ -3050,9 +3023,7 @@ pub use layout::{
 mod cached_paint;
 pub use cached_paint::CachedPaint;
 mod button;
-pub use button::{
-    Button, ButtonFace, ButtonInteract, ButtonProps, ButtonRole, face_colors, focus_ring_reach,
-};
+pub use button::{Button, ButtonFace, ButtonProps, ButtonRole, face_colors, focus_ring_reach};
 mod control_size;
 pub use control_size::ControlSize;
 mod bool_control;
@@ -3060,9 +3031,7 @@ pub(crate) use bool_control::BoolAction;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use checkbox::{
-    CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxInteract, CheckboxProps,
-};
+pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxProps};
 mod column;
 pub use column::Column;
 mod composition;
@@ -3090,8 +3059,8 @@ mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
 pub use toggle::{
-    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleInteract, ToggleProps,
-    toggle_accessibility, toggle_face_colors,
+    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleProps, toggle_accessibility,
+    toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;
@@ -3348,11 +3317,12 @@ pub mod table {
 }
 pub use table::Table;
 mod window_group;
+pub(crate) use window_group::place_search as place_window_search;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
-    merged_controls_width, min_group_px, permille_for_px,
+    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, merged_controls_width, min_group_px,
+    permille_for_px,
 };
 pub mod cursor;
 pub mod edge_resize;
@@ -3558,7 +3528,7 @@ pub(crate) mod view_choice;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use activation::NATIVE_INVOKE;
 pub(crate) use activation::take_presses;
-pub use activation::{Interaction, PaintedTargets, paint_focus_ring};
+pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
 pub mod media_card;
 mod media_grid_component;
 pub use media_card::{

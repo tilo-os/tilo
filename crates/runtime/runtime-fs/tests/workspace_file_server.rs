@@ -5,18 +5,12 @@ use runtime_fs::workspace_server::{
     WorkspaceBackend, WorkspaceFileBackend, serve_workspace_connected,
 };
 use runtime_fs::{FsOwner, FsRight, NativeGrantAuthority, OpenMode};
-use std::{
-    os::{fd::IntoRawFd, unix::net::UnixStream},
-    sync::Arc,
-};
+use std::{os::unix::net::UnixStream, sync::Arc};
 
 fn client(stream: UnixStream) -> runtime_fs::FsClient {
-    let transport = runtime_portal::UnixCapnpClient::from_connected_fd(
-        stream.into_raw_fd(),
-        capnp_rpc::rpc_twoparty_capnp::Side::Client,
-    )
-    .unwrap();
-    runtime_fs::FsClient::from_raw(transport.bootstrap())
+    let connection =
+        runtime_fs::connection::Connection::connect("file-server-client", stream).unwrap();
+    runtime_fs::FsClient::from_object(runtime_fs::connection::Object::root(connection))
 }
 #[tokio::test(flavor = "multi_thread")]
 async fn selected_file_private_wire_revokes_existing_handle_and_has_no_sibling_access() {
@@ -425,7 +419,7 @@ async fn actual_selected_private_connection_retire_and_malformed_disconnect_repo
                 if termination == "retire" {
                     server.retire().unwrap();
                 } else {
-                    // A partial Capnp header + EOF is an actual wire failure, not
+                    // A partial frame header + EOF is an actual wire failure, not
                     // an injected worker result or a backend method refusal.
                     if termination == "malformed" {
                         control.write_all(&[255]).unwrap();
@@ -533,51 +527,41 @@ async fn existing_read_write_and_atomic_append_use_live_exact_inode_custody() {
         tokio::runtime::Handle::current(),
     )
     .unwrap();
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let transport = runtime_portal::UnixCapnpClient::from_connected_fd(
-                client_stream.into_raw_fd(),
-                capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            )
-            .unwrap();
-            let raw: runtime_fs::WorkspaceFsClient = transport.bootstrap();
-            let fs = runtime_fs::FsClient::from_raw(raw.clone());
-            let rw = fs.open("file", OpenMode::ReadWriteExisting).await.unwrap();
-            assert_eq!(rw.metadata().await.unwrap().size, bytes.len() as u64);
-            assert_eq!(rw.read_at(0, 8).await.unwrap(), b"Original");
-            assert_eq!(rw.write_at(0, b"edited!!").await.unwrap(), 8);
-            assert!(rw.append(b"bad mode").await.is_err());
-            let append = fs.open("file", OpenMode::Append).await.unwrap();
-            assert!(append.write_at(0, b"bad offset").await.is_err());
-            assert!(append.read_at(0, 8).await.is_err());
-            assert_eq!(append.append(b"tail").await.unwrap(), 4);
-            append.flush().await.unwrap();
-            assert!(
-                append
-                    .append(&vec![0; runtime_fs::MAX_WRITE_CHUNK as usize + 1])
-                    .await
-                    .is_err()
-            );
-            let mut raw_open = raw.open_request();
-            raw_open.get().set_path("file");
-            raw_open.get().set_mode(runtime_fs::raw::OpenMode::Append);
-            let reply = raw_open.send().promise.await.unwrap();
-            let raw_handle = reply.get().unwrap().get_handle().unwrap();
-            let mut oversized = raw_handle.append_request();
+    let connection =
+        runtime_fs::connection::Connection::connect("selected-file-client", client_stream).unwrap();
+    let fs = runtime_fs::FsClient::from_object(runtime_fs::connection::Object::root(connection));
+    {
+        let rw = fs.open("file", OpenMode::ReadWriteExisting).await.unwrap();
+        assert_eq!(rw.metadata().await.unwrap().size, bytes.len() as u64);
+        assert_eq!(rw.read_at(0, 8).await.unwrap(), b"Original");
+        assert_eq!(rw.write_at(0, b"edited!!").await.unwrap(), 8);
+        assert!(rw.append(b"bad mode").await.is_err());
+        let append = fs.open("file", OpenMode::Append).await.unwrap();
+        assert!(append.write_at(0, b"bad offset").await.is_err());
+        assert!(append.read_at(0, 8).await.is_err());
+        assert_eq!(append.append(b"tail").await.unwrap(), 4);
+        append.flush().await.unwrap();
+        assert!(
+            append
+                .append(&vec![0; runtime_fs::MAX_WRITE_CHUNK as usize + 1])
+                .await
+                .is_err()
+        );
+        let oversized = fs.open("file", OpenMode::Append).await.unwrap();
+        assert!(
             oversized
-                .get()
-                .set_bytes(&vec![0; runtime_fs::MAX_WRITE_CHUNK as usize + 1]);
-            assert!(oversized.send().promise.await.is_err());
-            authority.revoke_file(&file).unwrap();
-            assert!(rw.read_at(0, 8).await.is_err());
-            assert!(rw.write_at(0, b"bad").await.is_err());
-            assert!(append.append(b"bad").await.is_err());
-            assert!(append.flush().await.is_err());
-            assert!(append_a.append(b"bad native").is_err());
-            assert!(fs.open("file", OpenMode::ReadWriteExisting).await.is_err());
-            drop(fs);
-        })
-        .await;
+                .append(&vec![0; runtime_fs::MAX_WRITE_CHUNK as usize + 1])
+                .await
+                .is_err()
+        );
+        authority.revoke_file(&file).unwrap();
+        assert!(rw.read_at(0, 8).await.is_err());
+        assert!(rw.write_at(0, b"bad").await.is_err());
+        assert!(append.append(b"bad").await.is_err());
+        assert!(append.flush().await.is_err());
+        assert!(append_a.append(b"bad native").is_err());
+        assert!(fs.open("file", OpenMode::ReadWriteExisting).await.is_err());
+    }
     server.retire().unwrap();
     assert_eq!(std::fs::metadata(&moved).unwrap().ino(), original);
     assert_eq!(std::fs::read(&chosen).unwrap(), b"unrelated replacement");

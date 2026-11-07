@@ -304,6 +304,12 @@ pub fn read_allow(path: &Path) -> Result<BTreeSet<String>, String> {
 /// An app does not compile, or its window refuses what it sends.
 pub fn check(options: &Options) -> Result<Report, String> {
     let started = std::time::Instant::now();
+    // Without the product's catalog this process's text falls back to the host's faces, so
+    // every judgement about how it lays out would be about a typeface the product does not
+    // ship. That is the environment, not the app: refuse rather than report on it.
+    if let Some(problem) = ui::text_render::font_catalog_problem() {
+        return Err(problem);
+    }
     ui::clock::freeze_for_capture();
     tilo_ui_host::i18n::ensure();
     let allow = options

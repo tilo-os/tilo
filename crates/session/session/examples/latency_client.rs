@@ -1,33 +1,15 @@
 //! A minimal client that answers every key press with one commit.
-//!
-//! It is the app side of `scripts/perf/headless_key_latency.py`. Each key types
-//! one cell of a text grid. Its buffers are `wl_shm` (`--buffers shm`, the
-//! default) or LINEAR `XRGB8888` dma-bufs allocated with GBM on the render node
-//! (`--buffers dmabuf`), which the compositor draws from without a CPU copy;
-//! a dma-buf is brought up to date by drawing only the cells it lacks. With
-//! `--damage full` (the default) the commit damages the whole surface, as a
-//! client that redraws its grid would; with `--damage line` it damages only
-//! the text line the cell is on, as a terminal or a text editor reports a
-//! typed character. It draws at once, without waiting for a frame callback,
-//! so the compositor's own scheduling is what the harness measures. With
-//! `--scale N` it draws N buffer pixels per surface pixel
-//! (`wl_surface.set_buffer_scale`), as a client on a 200 % panel does, so its
-//! buffer can match the display pixel for pixel. It prints
-//! `READY <width>x<height>` once its first frame is committed and exits when
-//! the window is closed. It draws one size on every session (`640x480`),
-//! whatever size the session asks it to take, and says so as its largest
-//! size, so the session that answers a key composites the same number of
-//! pixels on each.
-//!
+//! It is the app side of `scripts/perf/headless_key_latency.py`: each key types one
+//! cell of a text grid. Its buffers are `wl_shm` or LINEAR `XRGB8888` dma-bufs
+//! (`--buffers`), which the compositor draws without a CPU copy; `--damage full`
+//! damages the whole surface and `--damage line` only the cell's text line. It
+//! draws at once, without waiting for a frame callback, so the compositor's own
+//! scheduling is what the harness measures, and `--scale N` draws N buffer pixels
+//! per surface pixel.
 //! Two lines per key say how long it took on this client's own clock:
-//! `CLIENT-KEY n=<key> key_to_commit_us=<us> at_us=<us>`, from the key's
-//! dispatch to the commit that answers it, and `CLIENT-FRAME n=<key>
-//! key_to_frame_us=<us> at_us=<us>`, from the dispatch to the frame callback
-//! the compositor sends once that commit is on screen. `at_us` is when the
-//! line's event happened on the client's start, on one timeline for every
-//! key, so a run's frames can be placed on the display's blank grid. It is
-//! the same measurement against any session, because nothing in it depends
-//! on the session's own instrumentation.
+//! `CLIENT-KEY n=<key> key_to_commit_us=<us> at_us=<us>` and `CLIENT-FRAME
+//! n=<key> key_to_frame_us=<us> at_us=<us>`. Nothing in it depends on the
+//! session's instrumentation.
 
 #![allow(
     clippy::unwrap_used,

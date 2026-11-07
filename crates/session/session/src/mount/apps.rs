@@ -1,21 +1,11 @@
-//! Opening an app: the launches the desktop asks for, planned into the
-//! process that starts them and started in the session's own environment.
-//!
-//! The desktop surface knows an app by name — a package id, `host:<desktop
-//! id>`, a window on its way, a record or some content — and opens a tab for
-//! one of its own windows. What it cannot do is start a process: it queues
-//! the launch for the session ([`tilo_app_launch`]), which plans it here
-//! against the workspace in front and the displays this session bound, and
-//! starts it without waiting for it.
-//!
-//! The same entry point serves everything else that asks for an app by name:
-//! a search row, a file or a link the person opens
-//! ([`crate::search::AppActions`]).
-//!
-//! When an app stops without choosing to, the session offers it again in the
-//! place its window had — a notice with Reopen — instead of leaving the
-//! person with nothing.
-
+//! Opening an app: the launches the desktop asks for, planned into the process that
+//! starts them and started in the session's own environment.
+//! The desktop surface knows an app by name and opens a tab for one of its windows,
+//! but cannot start a process: it queues the launch for the session
+//! ([`tilo_app_launch`]), which plans it against the workspace in front and the
+//! displays this session bound, and starts it without waiting. The same entry point
+//! serves a search row, a file or a link the person opens. When an app stops without
+//! choosing to, the session offers it again in the place its window had.
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -41,7 +31,6 @@ use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::agents::Kept;
-use crate::mount::connectors::ConnectorHost;
 use crate::search::AppActions;
 
 /// The agent the person's workspace records name: a participant without a
@@ -258,11 +247,9 @@ impl Apps {
         self.state.borrow_mut().broker = broker;
     }
 
-    /// Hand the app action `target` to the app that publishes it, as the
-    /// person at this seat: the broker starts the app when it is closed,
-    /// waits for it to publish the action and delivers the call, on its own
-    /// runtime. What the app shows for it — the window a `open` reveals —
-    /// arrives the way every app's window does.
+    /// Hand the app action `target` to the app that publishes it, as the person at this
+    /// seat: the broker starts the app when it is closed, waits for it to publish the
+    /// action and delivers the call on its own runtime.
     fn deliver(
         &self,
         target: RemoteActionTarget,
@@ -318,36 +305,6 @@ impl Apps {
         let mut state = self.state.borrow_mut();
         state.me = Rc::downgrade(self);
         state.doors = Some(doors);
-    }
-
-    /// Start the connector `origin` of `app` in `workspace`, as the app's own launch with the
-    /// origin named and no window: the sandbox the app's manifest declares for that origin,
-    /// which a window and the tilolang host its instances run in never have
-    /// (`docs/architecture/apps.md` §1, §8). The connector is left running when every window of
-    /// the app closes, so what the service says meanwhile waits in it.
-    ///
-    /// Every reader of the app's records attaches over a connection of its own, made by
-    /// [`ConnectorHost::connection`], which starts this when none runs.
-    ///
-    /// # Errors
-    /// The app is not installed here, its manifest does not declare the origin, it names no
-    /// tilolang runtime, or the connector's process could not be started.
-    pub fn start_connector(
-        &self,
-        app: &str,
-        origin: &str,
-        workspace: &Workspace,
-        host: &ConnectorHost,
-    ) -> Result<(), DoorError> {
-        let connection = host
-            .connection(app, origin, &workspace.id, &|origin| {
-                self.plan_connector(app, origin, workspace)
-            })
-            .map_err(DoorError::Failed)?;
-        // The connection is the caller's to read: here nothing does, since the reader that
-        // needed it attached through its own call. Dropped, it is the connector's alone.
-        drop(connection);
-        Ok(())
     }
 
     /// The connector of `app` for `origin` in `workspace`, planned as the app's own launch with
@@ -452,11 +409,9 @@ impl Apps {
         self.follow_policy();
     }
 
-    /// Bring what the person's authority in a workspace is published as up to
-    /// the policy the desk holds now: a part someone is given or taken back
-    /// reaches the apps they already run, rather than only their next launch.
-    /// The desk's revision says whether anything may have changed at all, so a
-    /// pass that changed nothing writes nothing.
+    /// Bring what the person's authority in a workspace is published as up to the policy
+    /// the desk holds now, so a part given or taken back reaches the apps they already
+    /// run. The desk's revision says whether anything may have changed.
     fn follow_policy(&self) {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return;
@@ -571,11 +526,9 @@ impl Apps {
         }
     }
 
-    /// What the person asked for in `tab` did not happen, `why` says why, as
-    /// the desk says such things: the tab keeps its place and shows the
-    /// answer, with the button that asks for the app again. A launch no tab
-    /// holds (a service's own) is answered by whoever asked for it, not
-    /// here.
+    /// What the person asked for in `tab` did not happen, `why` says why: the tab keeps
+    /// its place and shows the answer, with the button that asks for the app again. A
+    /// launch no tab holds is answered by whoever asked for it.
     fn could_not_open(&self, tab: Option<u64>, asked: &str, why: &str) {
         use tilo_desktop_surface::i18n::{t, t_args};
         let (Some(tab), Some(desktop)) = (tab, self.desktop.borrow().clone()) else {
@@ -591,9 +544,8 @@ impl Apps {
         desktop.with_widgets(WidgetHost::relayout);
     }
 
-    /// Start `launch` on the workspace in front, which is where what the
-    /// session itself opens belongs.
-    ///
+    /// Start `launch` on the workspace in front, which is where what the session itself
+    /// opens belongs.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn open(&self, launch: &Launch) -> Result<(), DoorError> {
@@ -719,17 +671,11 @@ impl Apps {
         }
     }
 
-    /// What a launch does about the app maybe already showing in
-    /// `workspace`: start it, start it into the tab a saved window of it
-    /// waits in, or raise the window it has or the place one is on its way
-    /// to.
-    ///
-    /// A launch is decided against the tabs the desk has for apps on the
-    /// workspace in front, which is the one it belongs to, less `instance`:
-    /// the tab this launch itself holds, which is its own window's place and
-    /// not another launch of the app. A launch into another workspace starts
-    /// its own process, as it always has: that workspace's windows are not
-    /// showing.
+    /// What a launch does about the app maybe already showing in `workspace`: start it,
+    /// start it into the tab a saved window of it waits in, or raise the window it has or
+    /// the place one is on its way to. A launch is decided against the tabs the desk has
+    /// on the workspace in front, less `instance` — the tab this launch itself holds. A
+    /// launch into another workspace starts its own process.
     fn starting(&self, launch: &Launch, workspace: &Workspace, instance: Option<u64>) -> Beginning {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Beginning::Start { new_window: false };
@@ -861,22 +807,17 @@ impl Apps {
         }
     }
 
-    /// Start `launch` in `workspace`, unless the app already has a window
-    /// there: that one is raised and nothing starts.
-    ///
+    /// Start `launch` in `workspace`, unless the app already has a window there: that
+    /// one is raised and nothing starts.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
         self.start_at(launch, workspace, None).map(|_| ())
     }
 
-    /// Start `launch` as a window of its own, beside the tab its app already
-    /// has: what the app's own ask for another window does. A window the app
-    /// has is never raised instead, since this window is meant to be new.
-    /// `instance` is the tab the window takes, when the session already holds
-    /// one for it: the app is told it, so what it reports of the window is
-    /// about that tab.
-    ///
+    /// Start `launch` as a window of its own, beside the tab its app already has: what
+    /// the app's own ask for another window does. `instance` is the tab the window
+    /// takes, which the app is told.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start_beside(
@@ -999,12 +940,9 @@ impl Apps {
         Some(key.clone())
     }
 
-    /// `workspace` as this launch starts in it: when the launch opens a
-    /// package there, the workspace is asked to make that package an author
-    /// of its own records first, and read again with what it granted, so the
-    /// process starts with the authorship it writes by. A launch into no
-    /// workspace, and one whose app the workspace already makes an author,
-    /// are left as they are.
+    /// `workspace` as this launch starts in it: a launch that opens a package there has
+    /// the workspace make that package an author of its own records first, and is read
+    /// again with what it granted.
     fn authored(&self, launch: &Launch, workspace: &Workspace) -> Workspace {
         let Some(app) = launch.package() else {
             return workspace.clone();
@@ -1143,11 +1081,9 @@ impl Apps {
         }
     }
 
-    /// Start `planned` with the door `door`, which the launch holds until it
-    /// ends, and write it down as a launch of this session before the app can
-    /// reach a service of it. `asked` is what the app was asked as, when a
-    /// window of it is what the launch is: a service asked as nothing has no
-    /// window to offer again.
+    /// Start `planned` with the door `door`, which the launch holds until it ends, and
+    /// write it down as a launch of this session before the app can reach a service of
+    /// it. A service asked as nothing has no window to offer again.
     fn spawn(
         &self,
         planned: &Planned,
@@ -1216,11 +1152,9 @@ fn agent_argv(kept: &Kept, provider: Option<&str>) -> Vec<String> {
     argv
 }
 
-/// The model `kept` plans with, as the agent's `--provider` selection: the
-/// keeper's choice on the record, else this device's Settings for it. A
-/// launched agent cannot read Settings, so without a selection it plans by
-/// keyword only. The selection names a profile and a model; the gateway
-/// holds the endpoint and the credential, and neither is here.
+/// The model `kept` plans with, as the agent's `--provider` selection: the keeper's
+/// choice on the record, else this device's Settings. A launched agent cannot read
+/// Settings, so without a selection it plans by keyword only.
 fn provider_selection(
     config: &agent_provider_config::ProviderConfig,
     kept: &Kept,
@@ -1255,13 +1189,10 @@ fn provider_selection(
 }
 
 impl AppActions for Apps {
-    /// What the apps publish, read from the session's action broker: the one
-    /// host every app publishes on, whatever it is built with. A tilolang app
-    /// publishes through its host and an app on the SDK through its own
-    /// connection, both on the channel they joined the workspace with, and
-    /// the broker keeps the last surface an app published after it closes,
-    /// which is why a closed app's actions are offered too: choosing one
-    /// starts the app and delivers the call there. Read when a search opens.
+    /// What the apps publish, read from the session's action broker: the one host every
+    /// app publishes on, whatever it is built with. The broker keeps the last surface an
+    /// app published after it closes, which is why a closed app's actions are offered
+    /// too: choosing one starts the app and delivers the call there.
     fn published(&self, workspace: &str) -> Vec<PublishedActions> {
         let state = self.state.borrow();
         let Some(broker) = &state.broker else {
@@ -1309,11 +1240,10 @@ impl AppActions for Apps {
         Vec::new()
     }
 
-    /// The workspace's `open` of an app is the app's own action on its own
-    /// resource, which starts it, and is carried out here. Every other
-    /// action an app publishes is the app's to run: it goes to the session's
-    /// broker, which starts the app when it is closed, waits for it to
-    /// publish the action and delivers the call there.
+    /// The workspace's `open` of an app is the app's own action on its own resource, and
+    /// is carried out here. Every other action goes to the session's broker, which starts
+    /// the app when it is closed, waits for it to publish the action and delivers the
+    /// call there.
     fn invoke(
         &self,
         target: RemoteActionTarget,

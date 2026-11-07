@@ -217,13 +217,6 @@ pub(crate) struct ShownSearch {
     pub searching: bool,
 }
 
-/// What a caller of the desktop's published search asked of it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) enum SearchAsk {
-    Query(String),
-    Choose(usize, Option<String>),
-}
-
 const CLOSE_WINDOW: &str = "desktop.close-window";
 const MAXIMIZE_WINDOW: &str = "desktop.maximize-window";
 /// Search command ids and banner action keys of the host's own actions.
@@ -538,14 +531,6 @@ impl DesktopHandle {
         self.shared.borrow().shown_search.searching
     }
 
-    /// Type `query` into the open search, on the next update pass.
-    pub fn set_search_query(&self, query: String) {
-        self.shared
-            .borrow_mut()
-            .search_asks
-            .push(SearchAsk::Query(query));
-    }
-
     /// The field the person types into in the desktop itself, as of the last
     /// update pass: the open search's query field.
     ///
@@ -576,10 +561,7 @@ impl DesktopHandle {
     /// Choose the open search's row `index` ([`Self::search_rows`]), with
     /// `argument` the line its action asks for, on the next update pass.
     pub fn choose_search_row(&self, index: usize, argument: Option<String>) {
-        self.shared
-            .borrow_mut()
-            .search_asks
-            .push(SearchAsk::Choose(index, argument));
+        self.shared.borrow_mut().search_asks.push((index, argument));
     }
 }
 
@@ -1102,18 +1084,13 @@ impl DesktopSurface {
             Some(SearchRequest::Open { scope, query }) => self.open_search(doc, scope, query),
             None => {}
         }
-        let asks = std::mem::take(&mut self.shared.borrow_mut().search_asks);
-        for ask in asks {
+        let choices = std::mem::take(&mut self.shared.borrow_mut().search_asks);
+        for (index, argument) in choices {
             let mut search = self.search.borrow_mut();
             if !search.is_open() {
                 break;
             }
-            match ask {
-                SearchAsk::Query(query) => search.set_query(&query),
-                SearchAsk::Choose(index, argument) => {
-                    search.choose(index, argument);
-                }
-            }
+            search.choose(index, argument);
             drop(search);
             self.structure_dirty = true;
         }

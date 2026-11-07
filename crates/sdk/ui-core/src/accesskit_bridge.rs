@@ -1,20 +1,16 @@
-//! AccessKit bridge: turns the toolkit's per-widget semantic model
-//! ([`crate::a11y::AccessNode`], from
-//! [`Widget::accessibility`]) into an
-//! [`accesskit::TreeUpdate`], published over AT-SPI2.
+//! AccessKit bridge: turns the toolkit's per-widget semantic model ([`crate::a11y::AccessNode`],
+//! from [`Widget::accessibility`]) into an [`accesskit::TreeUpdate`], published over AT-SPI2.
 //!
-//! [`build_tree_update_with_resources`] is a pure function of `(root_widget,
-//! node_map, focused, resources)`: a depth-first walk that emits one node per widget returning
-//! `Some(AccessNode)`, and collapses presentational widgets (`None`) by
-//! reparenting their accessible children onto the nearest ancestor —
-//! mirroring ARIA `role="presentation"`. Being pure and keyed off the same
-//! `node_map` the `App` maintains makes it unit-testable without a live
-//! AT-SPI bus.
+//! [`build_tree_update_with_resources`] is a pure function of `(root_widget, node_map, focused,
+//! resources)`: a depth-first walk emitting one node per widget returning `Some(AccessNode)`, which
+//! collapses presentational widgets (`None`) by reparenting their accessible children onto the
+//! nearest ancestor, mirroring ARIA `role="presentation"`. Being pure and keyed off the `node_map`
+//! the `App` maintains makes it unit-testable without a live AT-SPI bus.
 //!
 //! ## Id spaces
 //!
-//! Five disjoint ranges share the `u64`, so an id says what it addresses
-//! without a lookup and [`resolve_node_id`] can invert it:
+//! Five disjoint ranges share the `u64`, so an id says what it addresses without a lookup and
+//! [`resolve_node_id`] can invert it:
 //!
 //! | space | derivation | range |
 //! |---|---|---|
@@ -24,30 +20,25 @@
 //! | text run | `(1 << 62) \| owner id` | bit 62 |
 //! | synthetic | the owner's id chained with each [`AccessNode::key`] | bit 63 |
 //!
-//! A `taffy::NodeId` indexes a live arena, so it is bounded by the number of
-//! nodes in memory and cannot reach `1 << 48`, let alone the two marker bits;
-//! that is what keeps the widget range clear of the other three.
+//! A `taffy::NodeId` indexes a live arena, so it is bounded by the number of nodes in memory and
+//! cannot reach `1 << 48`, let alone the marker bits: that keeps the widget range clear of the
+//! other three.
 //!
 //! ## Canvas widgets: focus and actions on synthetic nodes
 //!
-//! A widget that paints its own contents — a timeline of clips, a table of
-//! rows — has no child widgets to expose, so it *synthesises* its accessible
-//! structure through [`AccessNode::children`]. Two things make those nodes
-//! first-class rather than merely readable:
+//! A widget that paints its own contents — a timeline of clips, a table of rows — has no child
+//! widgets to expose, so it *synthesises* its accessible structure through [`AccessNode::children`].
+//! Two things make those nodes first-class rather than merely readable:
 //!
 //! * **Focus.** The widget marks one descendant
-//!   [`focused`](crate::a11y::AccessState::focused); while that widget holds
-//!   the keyboard, [`build_tree_update`] aims the tree's `focus` at *that* node
-//!   instead of the widget. This is ARIA's `aria-activedescendant`: the widget
-//!   owns the keyboard, the marked node is where the user is. Keying it off the
-//!   App's real focus is deliberate — an unfocused widget cannot steal the
-//!   reader's cursor by setting a flag.
-//! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to
-//!   `(owning widget, key path)` so an incoming `ActionRequest` reaches the
-//!   clip the user was on, via
-//!   [`Widget::perform_action`].
-//!   Inversion re-walks the live tree rather than caching an index, so a stale
-//!   id from a previous frame resolves to `None` instead of to the wrong clip.
+//!   [`focused`](crate::a11y::AccessState::focused); while that widget holds the keyboard,
+//!   [`build_tree_update`] aims the tree's `focus` at *that* node instead of the widget (ARIA's
+//!   `aria-activedescendant`). It keys off the App's real focus deliberately — an unfocused widget
+//!   cannot steal the reader's cursor by setting a flag.
+//! * **Actions.** [`resolve_node_id`] inverts a synthetic id back to `(owning widget, key path)` so
+//!   an incoming `ActionRequest` reaches the clip the user was on, via [`Widget::perform_action`].
+//!   It re-walks the live tree rather than caching an index, so a stale id from a previous frame
+//!   resolves to `None` instead of to the wrong clip.
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;

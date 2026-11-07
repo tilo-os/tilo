@@ -1,6 +1,5 @@
-//! `ListRow`: one row of a content list (a message, a contact, a request,
-//! a file, a device), as a retained widget and as the [`ListRowFace`]
-//! immediate painter with identical geometry.
+//! `ListRow`: one row of a content list (a message, a contact, a request, a file, a device), as a
+//! retained widget and as the [`ListRowFace`] immediate painter with identical geometry.
 //!
 //! A row has up to four columns, each optional except the title:
 //!
@@ -11,22 +10,18 @@
 //! | facts | what the item is, in the same order on every row: when (a day and the time of day it is due), who (an avatar), how far (a progress count), how important (a mark); right-aligned on one edge | `Caption.numeric()`, `Caption`, icons |
 //! | trailing | one persistent control, a status dot, a check, a disclosure chevron | — |
 //!
-//! Nothing stands inline after the title: a fact reads in the facts column, whose right edge is
-//! the same on every row of a list, so the facts of a list read as one column down its edge.
+//! Nothing stands inline after the title: a fact reads in the facts column, whose right edge is the
+//! same on every row of a list, so the facts of a list read as one column down its edge. What a face
+//! paints lives in `paint` beside this file; the rect of each of its columns in `geometry`.
 //!
-//! What a face paints lives in `paint` beside this file; the rect of each of
-//! its columns in `geometry`.
+//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row height comes from
+//! the measured line boxes of its text, never a constant, so it grows with the text scale. Selection
+//! is the lift (HIG §9.3), and rows sit edge to edge, with no rule between them.
 //!
-//! Hover (or keyboard focus) swaps the facts column for the row's actions. The row
-//! height comes from the measured line boxes of its text, never a constant,
-//! so it grows with the text scale. Selection is the lift (HIG §9.3), and
-//! rows sit edge to edge, with no rule between them.
-//!
-//! **One content edge.** The row's text starts on its column's content
-//! edge; the hover and selection lift bleed [`row_bleed`] past it on both
-//! sides. A face paints into the row's *outer* rect (the content edge grown
-//! by the bleed); a retained row grows its own layout box by the bleed when
-//! it paints, so its title lines up with the section title above it.
+//! **One content edge.** The row's text starts on its column's content edge; the hover and
+//! selection lift bleed [`row_bleed`] past it on both sides. A face paints into the row's *outer*
+//! rect (the content edge grown by the bleed); a retained row grows its own layout box by the bleed
+//! when it paints, so its title lines up with the section title above it.
 //!
 //! [`row_bleed`]: crate::chrome::row_bleed
 
@@ -1673,7 +1668,6 @@ impl ListRow {
     /// Use canonical normalized public identity pixels; no files are opened.
     #[cfg(feature = "local-daemons")]
     #[must_use]
-    #[cfg(feature = "local-daemons")]
     pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
         self.avatar_image(crate::widget::avatar::profile_image(photo))
     }

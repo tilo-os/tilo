@@ -11,7 +11,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
-use crate::input::{ControllerBinding, InputBinding, KeyboardBinding};
+use crate::input::{InputBinding, KeyboardBinding};
 use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
 use crate::paint::PaintCtx;
 use crate::platform::PlatformConventions;
@@ -396,70 +396,6 @@ impl InputHint {
         );
         let second_rect = Rect::new(second_x, origin.y, x, origin.y + token_height(theme));
         [first_rect, second_rect]
-    }
-
-    /// Controller counterpart to [`Self::paint_keyboard_choice_at`]. Shared
-    /// hold buttons such as Guide/Home are shown once before the alternatives.
-    pub fn paint_controller_choice_at(
-        ctx: &mut PaintCtx<'_>,
-        origin: Point,
-        first: &ControllerBinding,
-        second: &ControllerBinding,
-        conventions: LegendConventions,
-    ) -> f64 {
-        if first == second {
-            return Self::paint_at(
-                ctx,
-                origin,
-                &InputBinding::Controller(first.clone()),
-                conventions,
-            );
-        }
-
-        let shared: Vec<_> = first
-            .buttons
-            .iter()
-            .copied()
-            .filter(|button| second.buttons.contains(button))
-            .collect();
-        let first_only: Vec<_> = first
-            .buttons
-            .iter()
-            .copied()
-            .filter(|button| !shared.contains(button))
-            .collect();
-        let second_only: Vec<_> = second
-            .buttons
-            .iter()
-            .copied()
-            .filter(|button| !shared.contains(button))
-            .collect();
-        let mut x = origin.x;
-
-        if !shared.is_empty() {
-            x += Self::paint_at(
-                ctx,
-                Point::new(x, origin.y),
-                &InputBinding::Controller(ControllerBinding::new(shared)),
-                conventions,
-            );
-            x += paint_separator(ctx, Point::new(x + 7.0, origin.y), "+") + 14.0;
-        }
-
-        x += Self::paint_at(
-            ctx,
-            Point::new(x, origin.y),
-            &InputBinding::Controller(ControllerBinding::new(first_only)),
-            conventions,
-        );
-        x += paint_separator(ctx, Point::new(x + 10.0, origin.y), "or") + 20.0;
-        x += Self::paint_at(
-            ctx,
-            Point::new(x, origin.y),
-            &InputBinding::Controller(ControllerBinding::new(second_only)),
-            conventions,
-        );
-        x - origin.x
     }
 }
 

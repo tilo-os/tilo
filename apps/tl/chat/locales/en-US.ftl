@@ -145,6 +145,9 @@ d-comllwls = Edit~present
 
 d-c2x2a6dh = Pin~present
 
+d-dzzuovny = Unread
+    .w-show-all = Show all { $n }
+
 d-5rkfnkg4 = Sidebar
     .w-channels = Channels
     .w-direct-messages = Direct messages
@@ -157,6 +160,12 @@ d-ymtess4x = Channel
 
 d-jbezqvlc = Direct
     .w-send = Send
+
+d-q45utnmh = Channel summary
+
+d-enkldjck = Direct summary
+
+d-oqg63mfd = Category summary
 
 d-enkgjyn7 = Thread
     .w-send = Send

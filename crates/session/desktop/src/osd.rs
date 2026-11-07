@@ -463,7 +463,9 @@ impl Hint {
                     "osd-pause-named"
                 };
                 match &self.name {
-                    Some(name) if !name.is_empty() => t_args(named, &[("song", name.clone().into())]),
+                    Some(name) if !name.is_empty() => {
+                        t_args(named, &[("song", name.clone().into())])
+                    }
                     _ if kind == OsdKind::Play => t("osd-play"),
                     _ => t("osd-pause"),
                 }
@@ -1574,8 +1576,14 @@ mod tests {
         };
         // A pause says what stopped, so the person knows which of the players
         // in the room went quiet; without a song it says what the key does.
-        assert_eq!(named(OsdKind::Play, Some("Glasslight")), "Playing Glasslight");
-        assert_eq!(named(OsdKind::Pause, Some("Glasslight")), "Paused Glasslight");
+        assert_eq!(
+            named(OsdKind::Play, Some("Glasslight")),
+            "Playing Glasslight"
+        );
+        assert_eq!(
+            named(OsdKind::Pause, Some("Glasslight")),
+            "Paused Glasslight"
+        );
         assert_eq!(named(OsdKind::Play, None), "Play");
         assert_eq!(named(OsdKind::Pause, Some("")), "Pause");
     }

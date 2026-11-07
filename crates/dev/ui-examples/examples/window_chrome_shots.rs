@@ -5,11 +5,13 @@
 
 //! Window chrome in dark and light: a modal whose scrim covers the whole
 //! window (the History bar included), an option menu and a content popover,
-//! the status surfaces, and video controls on the floating material.
+//! a stack of notification cards, a sheet up from the foot, the status
+//! surfaces, and video controls on the floating material.
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- window_chrome [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/window_chrome`): `modal-<theme>.png`,
-//!       `popover-<theme>.png`, `status-<theme>.png`, `video-<theme>.png`.
+//!       `popover-<theme>.png`, `app-menu-<theme>.png`, `toast-<theme>.png`,
+//!       `sheet-<theme>.png`, `status-<theme>.png`, `video-<theme>.png`.
 
 use std::path::{Path, PathBuf};
 
@@ -41,6 +43,9 @@ pub fn run(args: &[String]) {
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         modal(&out, name, &theme);
         popover(&out, name, &theme);
+        app_menu(&out, name, &theme);
+        toast(&out, name, &theme);
+        sheet(&out, name, &theme);
         status(&out, name, &theme);
         video(&out, name, &theme);
     }
@@ -113,6 +118,135 @@ fn popover(out: &Path, name: &str, theme: &Theme) {
         theme,
         false,
     );
+}
+
+/// The option menus two apps open from a button: the camera chooser (devices,
+/// the one in use checked) and the calendar's repeat-scope question.
+fn app_menu(out: &Path, name: &str, theme: &Theme) {
+    let mut camera = Popover::new().with_label("Camera").with_items([
+        "Built-in camera",
+        "Logitech BRIO",
+        "Continuity Camera",
+    ]);
+    camera.open_at(Rect::new(24.0, 150.0, 244.0, 182.0), Some(1));
+    let mut repeat = Popover::new()
+        .with_label("Change repeat")
+        .with_items(["Only this event", "All future events"]);
+    repeat.open_at(Rect::new(560.0, 150.0, 700.0, 182.0), Some(1));
+    let root = page().push(Box::new(camera)).push(Box::new(repeat));
+    capture(
+        out,
+        &format!("app-menu-{name}.png"),
+        Box::new(root),
+        theme,
+        false,
+    );
+}
+
+/// A stack of notification cards over the content, as the window's corner
+/// holds them: severity, a person, work in progress and a decision.
+fn toast(out: &Path, name: &str, theme: &Theme) {
+    use tilo_ui::widget::toast::{ToastCard, ToastKind, card_height, paint_card};
+    let (w, h) = (1000_u32, 640_u32);
+    let width = 380.0;
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let cards = [
+        ToastCard::new("Backup finished", ToastKind::Success)
+            .caption("Tilo Files")
+            .time("2 m ago")
+            .body("Quarterly report and 128 other files are on every device.")
+            .closable(true),
+        ToastCard::new("Reindexing the workspace", ToastKind::Info)
+            .caption("Search")
+            .progress(0.42)
+            .action("Pause", false),
+        ToastCard::new("Changes could not be synced", ToastKind::Warning)
+            .time("4 m ago")
+            .body("Tilo will retry when the connection is back.")
+            .closable(true)
+            .close_hovered(true),
+        ToastCard::new("Ana", ToastKind::Info)
+            .person("Ana", "ana@example.org")
+            .caption("Direct message")
+            .body("Can you look at the forecast sheet?")
+            .reply("On it —", true)
+            .closable(true),
+    ];
+    let x1 = f64::from(w) - 24.0;
+    let mut y = 24.0;
+    for card in &cards {
+        let height = card_height(&mut tr, theme, card, width);
+        paint_card(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut tr,
+            theme,
+            Rect::new(x1 - width, y, x1, y + height),
+            card,
+        );
+        y += height + f64::from(theme.tokens.spacing.s2);
+    }
+    let path = out.join(format!("toast-{name}.png"));
+    OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, &path);
+}
+
+/// A sheet up from the foot of a narrow window, resting at half height,
+/// over the content it belongs to.
+fn sheet(out: &Path, name: &str, theme: &Theme) {
+    use tilo_ui::widget::{BottomSheet, SheetDetent, SheetFrame};
+    let (w, h) = (420_u32, 640_u32);
+    let mut tr = TextRenderer::new();
+    let mut scene = Scene::new();
+    let body = theme.text(TextRole::Body);
+    tr.draw_style(
+        &mut scene,
+        "Inbox",
+        theme.tokens.colors.text_primary,
+        Affine::translate((24.0, 40.0)),
+        None,
+        &theme.text(TextRole::LargeTitle),
+    );
+    tr.draw_style(
+        &mut scene,
+        "Ana asked about the forecast sheet.",
+        theme.tokens.colors.text_dim,
+        Affine::translate((24.0, 96.0)),
+        None,
+        &body,
+    );
+    let mut sheet = BottomSheet::new();
+    sheet.snap_to(SheetDetent::Half);
+    let frame = SheetFrame {
+        area: Rect::new(0.0, 120.0, f64::from(w), f64::from(h)),
+        peek: 140.0,
+        grip: f64::from(theme.tokens.metrics.min_pointer_target),
+        least_half: 0.0,
+    };
+    let placed = sheet.place(frame, 1.0, true);
+    let on_sheet = sheet.paint(&mut scene, Affine::IDENTITY, theme);
+    tr.draw_style(
+        &mut scene,
+        "Workspace",
+        on_sheet.tokens.colors.text_primary,
+        Affine::translate((placed.content.x0 + 24.0, placed.content.y0 + 16.0)),
+        None,
+        &on_sheet.text(TextRole::Heading),
+    );
+    let mut y = placed.content.y0 + 60.0;
+    for label in ["Members", "Devices", "Storage"] {
+        tr.draw_style(
+            &mut scene,
+            label,
+            on_sheet.tokens.colors.text_primary,
+            Affine::translate((placed.content.x0 + 24.0, y)),
+            None,
+            &on_sheet.text(TextRole::Body),
+        );
+        y += 44.0;
+    }
+    let path = out.join(format!("sheet-{name}.png"));
+    OffscreenRenderer::new(w, h).render_png(&scene, theme.tokens.colors.surfaces.content, &path);
 }
 
 fn status(out: &Path, name: &str, theme: &Theme) {

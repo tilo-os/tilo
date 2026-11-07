@@ -444,24 +444,6 @@ pub fn decode_command(bytes: &[u8]) -> io::Result<RootCommand> {
     Ok(value)
 }
 /// # Errors
-/// Refuses malformed or oversized claim replies.
-pub fn decode_claim_reply(bytes: &[u8]) -> io::Result<ClaimReply> {
-    let value: ClaimReply = decode(bytes)?;
-    if !value.valid() {
-        return Err(refused());
-    }
-    Ok(value)
-}
-/// # Errors
-/// Refuses malformed or oversized target replies.
-pub fn decode_target_reply(bytes: &[u8]) -> io::Result<TargetReply> {
-    let value: TargetReply = decode(bytes)?;
-    if !value.valid() {
-        return Err(refused());
-    }
-    Ok(value)
-}
-/// # Errors
 /// Refuses malformed or oversized observed launch replies.
 pub fn encode_observed(value: &ObservedOpenReply) -> io::Result<Vec<u8>> {
     if !value.valid() {

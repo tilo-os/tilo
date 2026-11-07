@@ -1,31 +1,20 @@
 //! `ActionPalette` — the one Ctrl+K surface for a `tilo_ui::App`.
 //!
-//! The **resource + action model** ([`tilo_actions`]) is the foundation: the
-//! focused app instance publishes a tree of open [`ResourceSpec`]s, each
-//! exporting [`ActionSpec`](tilo_actions::ActionSpec)s — the operations
-//! Ctrl+K offers. An app can also fold in *searchable content* via
-//! [`SearchProvider`]s (contacts, files, …);
-//! their hits can address an exported resource action and therefore enter the
-//! same broker path; legacy opaque navigation ids remain supported during
-//! migration. Search providers are discovery-only: a provider-returned
-//! resource is never accepted as authority. The host resolves every addressed
-//! resource through the owning widget and permission-filters it before
+//! The **resource + action model** ([`tilo_actions`]) is the foundation: the focused app instance
+//! publishes a tree of open [`ResourceSpec`]s, each exporting the [`ActionSpec`]s Ctrl+K offers. An
+//! app can also fold in searchable content through [`SearchProvider`]s, whose hits can address an
+//! exported resource action; search providers are discovery-only, never authority, and the host
+//! resolves every addressed resource through the owning widget and permission-filters it before
 //! activation.
 //!
-//! One registry, one renderer, one flow: input is the shared
-//! [`SearchField`]; results render through
-//! [`SearchResultsView`], grouped by kind.
-//! An action row resolves to its [`EncodedAction`] and
-//! [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through `tilo_actions` — the same
-//! path a remote peer replays — with a
-//! [`Prompted`](tilo_actions::ActionInput::Prompted) action first collecting
-//! its argument in the field. A canonical search hit resolves to that same
-//! action machinery. Only a legacy content row hands its opaque `action_id`
-//! back to the app to navigate.
-//!
-//! The host ([`crate::app::App`]) drains a completed activation with
-//! [`take_operation`](ActionPalette::take_operation) (actions) and
-//! [`take_navigation`](ActionPalette::take_navigation) (content).
+//! One registry, one renderer, one flow: input is the shared [`SearchField`], results render
+//! through [`SearchResultsView`] grouped by kind, and an action row resolves to its
+//! [`EncodedAction`] and [`dispatch_with_context`](tilo_actions::dispatch_with_context)es through
+//! `tilo_actions` — the path a remote peer replays — collecting a
+//! [`Prompted`](tilo_actions::ActionInput::Prompted) action's argument in the field first. The host
+//! ([`crate::app::App`]) drains a completed activation with
+//! [`take_operation`](ActionPalette::take_operation) and
+//! [`take_navigation`](ActionPalette::take_navigation).
 
 use crate::bound_dispatch::{DeferredIntent, PreparedActionIntent};
 use crate::widget::ModelPath;

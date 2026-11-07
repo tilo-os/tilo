@@ -1,9 +1,6 @@
-//! Single-line (optionally multiline) text input; edits replay through
-//! `AutoCommit::splice_text`.
-//!
-//! Text and caret both centre against the same `line_height = font_size *
-//! 1.25` band (see `text_baseline_centred_with_caret`) so glyphs don't drift
-//! below the caret.
+//! Single-line (optionally multiline) text input; edits replay through `AutoCommit::splice_text`.
+//! Text and caret both centre against the same `line_height = font_size * 1.25` band
+//! (`text_baseline_centred_with_caret`), so glyphs don't drift below the caret.
 
 use crate::time::{Duration, Instant};
 use crate::widget::{AppModel, ModelPath};
@@ -359,12 +356,11 @@ pub struct TextInput {
     ml_caret: Option<(Rect, RoundedRect)>,
     text: String,
     pending_paste: Option<PendingPaste>,
-    /// Caret, selection (always on grapheme boundaries), the IME composition,
-    /// and the optional per-character admission rule for domain-specific
-    /// fields (for example a spreadsheet cell-reference box), which applies to
-    /// keyboard, IME, paste, accessibility, and programmatic insertion alike.
-    /// The composition is shown only in the display layout and never exposed
-    /// through value, clipboard, CRDT, or a11y.
+    /// Caret, selection (always on grapheme boundaries), the IME composition, and the optional
+    /// per-character admission rule for domain-specific fields (a spreadsheet cell-reference box,
+    /// say), which applies to keyboard, IME, paste, accessibility and programmatic insertion alike.
+    /// The composition shows only in the display layout, never through value, clipboard, CRDT or
+    /// a11y.
     core: EditCore,
     /// Closes a burst of typing into one undo entry.
     typing: TypingRun,
@@ -383,6 +379,8 @@ pub struct TextInput {
     drag_anchor_span: (usize, usize),
     /// Session-configured click counting shared by every editable surface.
     drag_select: DragSelect,
+    /// An edit waits for the owner to take it ([`Self::take_dirty`]): the
+    /// notification is not a pending paint, so it never asks for a frame.
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
     /// What this field shows may have moved since the last frame drew it
@@ -401,11 +399,9 @@ pub struct TextInput {
     /// Typed process-local model mirrored in both directions during the
     /// ordinary widget sync/event lifecycle.
     local_state: Option<crate::local_state::LocalBinding<String>>,
-    /// The text or its shaping changed since the last `measure`, by the
-    /// person's edit or a model write, in a way measuring reads (multiline or
-    /// attributed text). Separate from [`Self::dirty`], which says the edit
-    /// is not yet published: an edit the owner publishes later is measured
-    /// once, not on every frame until it is taken.
+    /// The text or its shaping changed since the last `measure`, by an edit or a model write, in a
+    /// way measuring reads (multiline or attributed text). Separate from [`Self::dirty`] (not yet
+    /// published): an edit the owner publishes later is measured once, not every frame until taken.
     layout_dirty: bool,
     /// Optional local-only mirror for secrets and other values that must not
     /// enter an Automerge history. The owner controls its lifetime and can
@@ -426,11 +422,10 @@ pub struct TextInput {
     /// Measurement has no theme and shapes with it, so it builds the very
     /// paragraph painting will use.
     layout_syntax: Option<SyntaxPalette>,
-    /// The multiline paragraph at the other widths one layout pass measures
-    /// (Taffy asks for min- and max-content sizes besides the final width),
-    /// most recently used first. Each width keeps its own wrap, so a pass
-    /// that visits all of them splices an edit into each instead of wrapping
-    /// every paragraph again.
+    /// The multiline paragraph at the other widths one layout pass measures (Taffy asks for min-
+    /// and max-content besides the final width), most recently used first. Each width keeps its own
+    /// wrap, so a pass visiting all splices an edit into each instead of wrapping every paragraph
+    /// again.
     alternate_layouts: Vec<AlternateLayout>,
     /// Complete authored runs supplied by a shared rich-text widget. They
     /// participate in the same shaping as wrapping, carets and hit-testing.
@@ -702,20 +697,17 @@ pub enum AccessoryAction {
     Clear,
     /// Run the callback.
     Run(Box<dyn FnMut()>),
-    /// A toggle that stays pressed (a "clear this for every photo" switch):
-    /// shown whatever the field holds, standing on the selection lift while
-    /// on and announced as a pressed toggle. A press flips it and passes the
-    /// new state; the host keeps it in step with
+    /// A toggle that stays pressed (a "clear this for every photo" switch): shown whatever the
+    /// field holds, standing on the selection lift while on and announced as a pressed toggle. A
+    /// press flips it and passes the new state; the host keeps it in step with
     /// [`TextInput::set_accessory_pressed`].
     Toggle {
         pressed: bool,
         on_toggle: Box<dyn FnMut(bool)>,
     },
-    /// Commit the field, as Enter does in a field that submits: the go
-    /// button of an address or location field. Shown only while the field
-    /// is being edited, and dimmed and inert while it holds nothing to hand
-    /// over; a press fires the field's submit ([`TextInput::take_submit`],
-    /// [`TextInput::on_submit`]).
+    /// Commit the field, as Enter does in a field that submits: the go button of an address or
+    /// location field. Shown only while editing, dimmed and inert while it holds nothing; a press
+    /// fires the field's submit ([`TextInput::take_submit`], [`TextInput::on_submit`]).
     Submit,
 }
 
@@ -802,11 +794,9 @@ impl TextInput {
                 .is_some_and(|action| !action.is_available())
     }
 
-    /// Whether the trailing accessory can be used now. A field that cannot
-    /// be changed cannot be committed either, and a go button with nothing
-    /// typed has nothing to hand over: it stands there dimmed, so where it
-    /// is stays visible, and a press is a press on the field rather than a
-    /// refusal of an empty one.
+    /// Whether the trailing accessory can be used now. A field that cannot be changed cannot be
+    /// committed either, and a go button with nothing typed has nothing to hand over: it stands
+    /// dimmed where it is, and a press on it is a press on the field.
     fn accessory_ready(&self) -> bool {
         if self.effectively_disabled() {
             return false;
@@ -1030,6 +1020,7 @@ impl TextInput {
     /// Replace text read from model state without reporting a user edit.
     fn adopt_model_text(&mut self, text: String) {
         if self.text != text {
+            self.repaint = true;
             self.text = text;
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
@@ -1174,11 +1165,9 @@ impl TextInput {
         self.pending_autocorrection.is_some()
     }
 
-    /// Make the correction the last typed word boundary left pending, while
-    /// the word and the one boundary after it are still as typed and the
-    /// caret right after them. Backspace right after reverts it, as it
-    /// reverts an immediate correction. `false` when there was nothing to
-    /// make.
+    /// Make the correction the last typed word boundary left pending, while the word and the
+    /// boundary after it are still as typed and the caret right after them. Backspace right after
+    /// reverts it, as for an immediate correction. `false` when there was nothing to make.
     pub fn apply_pending_autocorrection(&mut self) -> bool {
         self.repaint = true;
         let Some(pending) = self.pending_autocorrection.take() else {
@@ -1667,11 +1656,9 @@ impl TextInput {
         self
     }
 
-    /// Admit only characters accepted by `filter` on every insertion path.
-    ///
-    /// This is deliberately a character predicate, not a validator for the
-    /// whole value: callers still own domain parsing and error reporting when
-    /// the field is submitted.
+    /// Admit only characters accepted by `filter` on every insertion path. Deliberately a character
+    /// predicate, not a validator for the whole value: callers still own domain parsing and error
+    /// reporting when the field is submitted.
     #[must_use]
     pub fn with_char_filter(mut self, filter: fn(char) -> bool) -> Self {
         self.core.set_filter(Some(filter));
@@ -1729,13 +1716,10 @@ impl TextInput {
         self.core.has_preedit()
     }
 
-    /// Register an app-local callback for committed user edits.
-    ///
-    /// Keyboard input, paste, accessibility edits, and committed IME text
-    /// notify once with the complete new value. IME preedit, cursor movement,
-    /// selection changes, [`Self::set_text`], and CRDT synchronization do not.
-    /// It runs beside a bound action ([`Self::on_action`]), in either order of
-    /// registration.
+    /// Register an app-local callback for committed user edits. Keyboard input, paste,
+    /// accessibility edits and committed IME text notify once with the complete new value; IME
+    /// preedit, cursor and selection changes, [`Self::set_text`] and CRDT synchronization do not.
+    /// It runs beside a bound action ([`Self::on_action`]), in either order.
     #[must_use]
     pub fn on_change(mut self, callback: impl FnMut(&str) + 'static) -> Self {
         self.on_change = Some(Box::new(callback));
@@ -2547,11 +2531,10 @@ impl TextInput {
         }
     }
 
-    /// Every unmasked multiline input—including attributed source code—uses
-    /// the same shaped paragraph for paint, wrapping, carets, selection,
-    /// hit-testing, vertical movement, and IME composition.
-    /// Rebuilds `self.single_layout` (and its signature) if the shaped
-    /// spans, family, size, or available width changed.
+    /// Every unmasked multiline input — attributed source code included — uses the same shaped
+    /// paragraph for paint, wrapping, carets, selection, hit-testing, vertical movement and IME
+    /// composition. Rebuilds `self.single_layout` (and its signature) if the shaped spans, family,
+    /// size or available width changed.
     fn ensure_shaped_layout(
         &mut self,
         tr: &mut TextRenderer,
@@ -2837,11 +2820,10 @@ impl TextInput {
         }
     }
 
-    /// The shaped code paragraph applies `Theme::text_scale` directly because
-    /// it bypasses [`TextRenderer`]. Gutter labels go through `TextRenderer`,
-    /// which applies that scale itself. Convert the paragraph style back to
-    /// its unscaled form so a 200% line number is measured and painted once,
-    /// not twice (which would push two-digit labels beyond the left edge).
+    /// The shaped code paragraph applies `Theme::text_scale` directly because it bypasses
+    /// [`TextRenderer`]; gutter labels go through it, which applies the scale itself. Convert the
+    /// paragraph style back to its unscaled form so a 200% line number is measured and painted
+    /// once, not twice.
     #[cfg(test)]
     fn gutter_number_style(style: &TextStyle, theme: &Theme) -> TextStyle {
         let mut gutter = style.clone();
@@ -2897,12 +2879,9 @@ impl TextInput {
         self.multiline && !self.masked()
     }
 
-    /// Paint the caret the last draw left out ([`Self::suppress_caret_paint`])
-    /// within the field's clip, so a host can keep it in a damage part of
-    /// its own: where the caret is, not the whole field, changes when it
-    /// comes, goes or moves. Returns where it painted; `None` when the last
-    /// draw showed no caret (unfocused, disabled, or not a shaped multiline
-    /// body), the clip hides it, or this already painted it.
+    /// Paint the caret the last draw left out ([`Self::suppress_caret_paint`]) within the field's
+    /// clip, so a host can keep it in a damage part of its own. Returns where it painted; `None`
+    /// when the last draw showed no caret, the clip hides it, or this already painted it.
     pub(crate) fn draw_caret_apart(
         &mut self,
         scene: &mut Scene,
@@ -2948,12 +2927,10 @@ impl TextInput {
         Some(painted)
     }
 
-    /// Every unmasked multiline input—including attributed source code—uses
-    /// the same shaped paragraph for paint, wrapping, carets, selection,
-    /// hit-testing, vertical movement and IME composition.
-    ///
-    /// `visible` is the part of the field the host's viewport shows, in the
-    /// field's coordinates; glyph rows wholly outside it are not encoded.
+    /// Every unmasked multiline input — attributed source code included — uses the same shaped
+    /// paragraph for paint, wrapping, carets, selection, hit-testing, vertical movement and IME
+    /// composition. `visible` is the part of the field the host's viewport shows; glyph rows wholly
+    /// outside it are not encoded.
     fn draw_multiline_shaped(
         &mut self,
         scene: &mut Scene,
@@ -3556,11 +3533,10 @@ impl TextInput {
         self.secret || matches!(self.kind.text_kind(), TextKind::Secret)
     }
 
-    /// What [`Widget::accessibility`] reads of the field besides its text
-    /// and what it was configured with (its id, names, placeholder and bound
-    /// action). An owner that keeps the field's node between frames compares
-    /// this and the text to know a fresh node would equal the one it kept,
-    /// but for the names it gives the node itself.
+    /// What [`Widget::accessibility`] reads of the field besides its text and its configured parts
+    /// (id, names, placeholder, bound action). An owner keeping the field's node between frames
+    /// compares this and the text to know a fresh node would equal it, but for the names it gives
+    /// the node itself.
     pub(crate) fn accessibility_state(&self) -> TextAccessibilityState {
         TextAccessibilityState {
             secret: self.holds_secret(),
@@ -3946,22 +3922,18 @@ impl TextInput {
     /// Route Enter through an exported resource action with the text as its
     /// input; see [`Self::on_submit`].
     #[must_use]
-    /// Enter submits the field's action.
-    ///
-    /// A press whose submission the host has not collected yet is replaced by
-    /// the next: two Enters delivered before the next frame submit once, so a
-    /// repeated or queued press cannot advance a wizard twice.
+    /// Enter submits the field's action. A press whose submission the host has not collected yet is
+    /// replaced by the next: two Enters delivered before the next frame submit once, so a repeated
+    /// press cannot advance a wizard twice.
     pub fn on_submit_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
         self.enter_submits = true;
         self.submit_action = Some(ActionEmitter::new_replace_one(binding));
         self
     }
 
-    /// Run `callback` with the text on a submitting Enter, the field, as
-    /// control `tilo.control:<id>`, publishing the submit as its view action
-    /// `submit`: a person's Enter, a screen reader, a script and an agent
-    /// submit through the same action. Two Enters delivered before the host
-    /// collects one submit once.
+    /// Run `callback` with the text on a submitting Enter, the field as control
+    /// `tilo.control:<id>`, publishing the submit as its view action `submit`: a person's Enter, a
+    /// screen reader, a script and an agent submit through the same action.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -4095,11 +4067,9 @@ impl TextInput {
         self
     }
 
-    /// Underline what `marker` finds wrong in the text, as a misspelling is,
-    /// for entries checked against something other than a dictionary: the
-    /// words of a recovery key. The marker sees the text as it is drawn, so
-    /// the marks never lag an edit; it should leave the word still being
-    /// typed alone.
+    /// Underline what `marker` finds wrong in the text, as a misspelling is, for entries checked
+    /// against something other than a dictionary (the words of a recovery key). The marker sees the
+    /// text as drawn, so marks never lag an edit; it should leave the word still being typed alone.
     #[must_use]
     pub fn with_mistakes(
         mut self,
@@ -4313,13 +4283,8 @@ impl TextInput {
             );
         }
         if !enabled {
-            scene.push_layer(
-                vello::peniko::Fill::NonZero,
-                vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
-                transform,
-                &RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
-            );
+            let bounds = RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item));
+            crate::widget::paint_disabled(scene, transform, &bounds);
         }
         let ink = if on {
             theme.tokens.colors.text_primary
@@ -4692,6 +4657,7 @@ impl TextInput {
         edit.apply(&mut self.text);
         self.goal_x = None;
         self.typing.touch();
+        self.repaint = true;
         self.dirty = true;
         self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         true
@@ -5669,13 +5635,7 @@ fn paint_field_chrome(
     // and disabled never look alike; a "one step darker" fill with the
     // same declared border did, on the dark preset.
     if disabled {
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            crate::widget::DISABLED_ALPHA,
-            transform,
-            shape,
-        );
+        crate::widget::paint_disabled(scene, transform, shape);
     }
     let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates
@@ -5994,8 +5954,12 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
+    /// Read the field's bound state. A sync is a read of what the document
+    /// holds, not a paint: a field lending its document after a frame's draw
+    /// would otherwise ask for a frame forever, and the flags of the pieces
+    /// that do move (a paste landing, a bound value replaced) are theirs to
+    /// raise below.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.repaint = true;
         if self.poll_pending_paste() {
             self.notify_user_change(false);
         }
@@ -6514,6 +6478,7 @@ impl Widget for TextInput {
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
                 if self.completion.hover_at(self.last_mouse_pos) {
+                    self.repaint = true;
                     self.dirty = true;
                 }
             }
@@ -6682,12 +6647,13 @@ impl Widget for TextInput {
     /// Repaints like a leaf when something it shows moved; the show/hide
     /// control's own paint is a child's. Asking unconditionally kept every
     /// window that holds a field painting forever, which is what an idle
-    /// window costs: nothing changed, so nothing is drawn.
+    /// window costs: nothing changed, so nothing is drawn. The pending edit
+    /// notification ([`Self::dirty`]) is left out for the same reason: an
+    /// owner that reads the text when the person submits leaves it standing,
+    /// and a field sitting in a window people are not touching must not keep
+    /// that window drawing.
     fn needs_redraw(&self) -> bool {
-        self.repaint
-            || self.dirty
-            || self.layout_dirty
-            || crate::widget::redraw_or_children(false, self)
+        self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -6935,6 +6901,7 @@ impl Widget for TextInput {
                 let focus = byte_at(*focus);
                 self.core.set_selection(anchor, focus);
                 self.goal_x = None;
+                self.repaint = true;
                 self.dirty = true;
                 true
             }

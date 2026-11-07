@@ -19,6 +19,8 @@
               lives until the app it starts is done"
 )]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -84,16 +86,6 @@ fn probe_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// A directory for the plane's socket that only this user reaches: the broker
-/// refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 /// The session the probe talks to: headless, its plane on `socket`, showing
 /// one window.
 fn session_with(socket: &Path, tree: DesktopTree) -> Session {
@@ -152,7 +144,7 @@ fn holds(session: &Session, tab: u64) -> bool {
 
 #[test]
 fn a_window_the_session_starts_reads_the_menu_and_chooses_a_row() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();

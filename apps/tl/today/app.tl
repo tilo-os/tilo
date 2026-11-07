@@ -27,49 +27,28 @@ action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     n
 }
 
-/// Today's window: a card per app, holding that app's resources as rows that open them: the
-/// open todos, the pinned notes, the chat's channels.
-/// TODO(language): `list` over a collection of a union, a row per channel or category.
+/// Today's window: one card per app, each that app's own place — the tasks its Today place
+/// holds, the notes Pinned holds, the conversations Chat's Unread place finds — named as the app
+/// names it, with its rows and its count, and opening the app for the rest. Today holds no place
+/// of its own: a place is where its app keeps it, so the word and what it finds are the app's.
 view today(t: Today) {
     let todos = todo.tasks
-    let pinned = notes.notebook.notes.filter(.pinned)
-    let talks = chat.conversations.channels
     std.page(t, canvas: true) {
         header: {
             button(morning_cleanup(todos, notes.notebook)) as morning
         }
         grid(min: 22rem) {
-            ui.Card(
-                item: todos,
-                title: meta(todos).title,
-                count: todos.items.count(item -> not item.done),
-            ) {
-                list(todos.items.filter(item -> not item.done)) { item ->
-                    row(item)
-                }
+            std.place(todos, todo.Task.today.label, todos.items.matching(todo.Task.today)) { item ->
+                show(item, row: true)
             }
-            ui.Card(item: notes.notebook, title: meta(notes.notebook).title, count: pinned.len()) {
-                list(pinned) { n ->
-                    row(n)
-                }
+            std.place(
+                notes.notebook,
+                notes.Note.pinned.label,
+                notes.notebook.notes.matching(notes.Note.pinned),
+            ) { n ->
+                show(n, row: true)
             }
-            ui.Card(
-                item: chat.conversations,
-                title: meta(chat.conversations).title,
-                count: talks.len(),
-            ) {
-                stack(gap: .related) {
-                    for x in talks {
-                        match x {
-                            c: chat.Category => text(c.name, role: .caption),
-                            t: chat.TextChannel => button("# {t.name}", on: open(t)),
-                            // A direct conversation is a person, not a room: its place is
-                            // the person's name.
-                            d: chat.Direct => button(d.name, on: open(d)),
-                        }
-                    }
-                }
-            }
+            chat.unread(chat.conversations)
         }
     }
 }

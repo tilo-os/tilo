@@ -1126,30 +1126,31 @@ impl Widget for Panel {
             // next opening to find.
             self.profile.close();
         }
-        // Where everyone else's pointer is now, from the plane: it names the
-        // tabs their tiles hold it over.
-        let over: Vec<(u64, String, f64, f64)> = self.sync.as_ref().map_or_else(Vec::new, |sync| {
-            let Some((workspace_id, tabs)) = self.handle.read(|tree| {
+        // Where everyone else's pointer is now, from the plane, each placed
+        // where the tile of the tab it is over stands on the desk, and what
+        // each tab is called.
+        let mut over: Vec<(u64, String, f64, f64)> = Vec::new();
+        let mut titles: HashMap<u64, String> = HashMap::new();
+        if let Some(sync) = &self.sync
+            && let Some((workspace_id, named)) = self.handle.read(|tree| {
                 let workspace = tree.active_workspace()?;
-                let tabs: Vec<u64> = workspace
+                let named: HashMap<u64, String> = workspace
                     .strips
                     .iter()
                     .flat_map(|strip| &strip.window_groups)
                     .flat_map(|group| &group.tabs)
-                    .map(|tab| tab.id)
+                    .map(|tab| (tab.id, tab.title.clone()))
                     .collect();
-                Some((workspace.id().to_string(), tabs))
-            }) else {
-                return Vec::new();
-            };
-            let mut over = Vec::new();
-            for tab in tabs {
-                for (publisher, x, y) in sync.pointers(&workspace_id, tab) {
-                    over.push((tab, publisher, x, y));
-                }
-            }
-            over
-        });
+                Some((workspace.id().to_string(), named))
+            })
+        {
+            titles = named;
+            over = sync
+                .placed(&workspace_id, &self.handle.shown_tiles())
+                .into_iter()
+                .map(|(publisher, tab, x, y)| (tab, publisher, x, y))
+                .collect();
+        }
         // Who is here is read once, for the rows, the card opened on one of
         // them and their pointers.
         if open || !over.is_empty() {
@@ -1174,7 +1175,7 @@ impl Widget for Panel {
                 here.person_names()
             })
         };
-        let (cursors, places) = peer_cursors(&self.handle, &names, &over);
+        let (cursors, places) = peer_cursors(&names, &over, &titles);
         shown.pointers = places;
         shown.cursors = cursors
             .iter()
@@ -1268,31 +1269,18 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
     Rect::new(right - width, top, right, top)
 }
 
-/// Every other person's pointer over the desk now, in their own colour, at
-/// the place the tile of their tab puts them: `over` names their tab, who
-/// they are and where on that tile they are, and `who` is what everyone
-/// here is called and wears, by the device their presence comes from.
+/// Every other person's pointer over the desk now, in their own colour, where
+/// the plane placed it: `over` names their tab, who they are and where on the
+/// desk they are, and `who` is what everyone here is called and wears, by the
+/// device their presence comes from.
 fn peer_cursors(
-    handle: &DesktopHandle,
     who: &HashMap<String, (String, (u8, u8, u8))>,
     over: &[(u64, String, f64, f64)],
+    titles: &HashMap<u64, String>,
 ) -> (Vec<PeerCursor>, Vec<(String, String)>) {
     if over.is_empty() {
         return (Vec::new(), Vec::new());
     }
-    // A window this device has open but has not laid its content out for
-    // still has its tile where it stands: the pointer over it is drawn there.
-    let laid_out = handle.shown_tiles();
-    let tab_rects: HashMap<u64, Rect> = laid_out.into_iter().collect();
-    let titles: HashMap<u64, String> = handle.read(|tree| {
-        tree.active_workspace()
-            .into_iter()
-            .flat_map(|workspace| &workspace.strips)
-            .flat_map(|strip| &strip.window_groups)
-            .flat_map(|group| &group.tabs)
-            .map(|tab| (tab.id, tab.title.clone()))
-            .collect()
-    });
     let who: HashMap<&str, (&str, Color)> = who
         .iter()
         .map(|(publisher, (label, (r, g, b)))| {
@@ -1312,14 +1300,7 @@ fn peer_cursors(
         if let Some(title) = titles.get(tab) {
             places.push((label.to_owned(), title.clone()));
         }
-        let Some(place) = tab_rects.get(tab) else {
-            continue;
-        };
-        cursors.push(PeerCursor::new(
-            (place.x0 + x, place.y0 + y),
-            label.to_owned(),
-            colour,
-        ));
+        cursors.push(PeerCursor::new((*x, *y), label.to_owned(), colour));
     }
     (cursors, places)
 }

@@ -119,3 +119,25 @@ fn a_record_keeps_the_ids_of_the_collection_root_it_replaces() {
     assert_eq!(field.id, "tmqqtkeb");
     assert_eq!(compiled.meta.roots, ["v7cub7aw"]);
 }
+
+#[test]
+fn a_union_draws_its_rows_by_the_row_view_of_each_item_type() {
+    // One page over channels that say different things: each item is drawn by the row view of
+    // the type it is, so the list's rows all stand as rows.
+    let rows = "row view text_row for TextChannel\nview text_row(c: TextChannel) {\n    row(c.name)\n}\nrow view voice_row for VoiceChannel\nview voice_row(c: VoiceChannel) {\n    row(c.name, secondary: \"voice\")\n}\n";
+    ok(&format!(
+        "{CHANNELS}{rows}view listing(s: Server) {{\n    list(s.channels) {{ c ->\n        show(c, row: true)\n    }}\n}}\nview one(c: Channel) {{\n    show(c, row: true)\n}}"
+    ));
+    // A type of the union without a row view is named, and so is what to declare for it.
+    let only_text =
+        "row view text_row for TextChannel\nview text_row(c: TextChannel) {\n    row(c.name)\n}\n";
+    let got = codes(&format!(
+        "{CHANNELS}{only_text}view listing(s: Server) {{\n    list(s.channels) {{ c ->\n        show(c, row: true)\n    }}\n}}"
+    ));
+    assert!(got.iter().any(|c| c == "E097"), "got {got:?}");
+    // A list of a union writes its rows: a row is the row of the type the item is.
+    expect(
+        "E097",
+        &format!("{CHANNELS}{rows}view listing(s: Server) {{\n    list(s.channels)\n}}"),
+    );
+}

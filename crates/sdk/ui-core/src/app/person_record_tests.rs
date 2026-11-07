@@ -10,6 +10,7 @@ use crate::record::{RecordKind, RecordOwners};
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 const APP: &str = "so.tilo.test-person";
 const ROOT_KEY: [u8; 32] = [42; 32];
@@ -419,7 +420,7 @@ struct Recording {
     joins: Vec<crate::collaboration::RouteSpec>,
 }
 
-struct RecordingTransport(std::sync::Arc<std::sync::Mutex<Recording>>);
+struct RecordingTransport(Arc<Mutex<Recording>>);
 
 impl crate::collaboration::CollabTransport for RecordingTransport {
     fn status(&self) -> crate::collaboration::TransportStatus {
@@ -504,17 +505,14 @@ fn owned_and_read(kind: &str) -> (StoredRecord, StoredRecord) {
 /// A window of `app` holding `record` beside the document it shows, on a
 /// `Recording` transport that stands in for its broker.
 #[cfg(unix)]
-fn recording_window(
-    app: &str,
-    record: &StoredRecord,
-) -> (App, std::sync::Arc<std::sync::Mutex<Recording>>) {
+fn recording_window(app: &str, record: &StoredRecord) -> (App, Arc<Mutex<Recording>>) {
     let primary = crate::collaboration::RouteSpec::record(app, uuid::Uuid::new_v4(), "shown");
-    let recording = std::sync::Arc::new(std::sync::Mutex::new(Recording {
+    let recording = Arc::new(Mutex::new(Recording {
         route: Some(primary.clone()),
         ..Recording::default()
     }));
     let transport: Box<dyn crate::collaboration::CollabTransport> =
-        Box::new(RecordingTransport(std::sync::Arc::clone(&recording)));
+        Box::new(RecordingTransport(Arc::clone(&recording)));
     let mut manager = CollaborationManager::with_transport(transport);
     assert!(manager.send(CollabRequest::Hello {
         app_id: primary.app_id,
