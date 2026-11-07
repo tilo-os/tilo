@@ -18,7 +18,8 @@ type Category {
 }
 
 /// Messages in one stream; any message can start a thread. A post is a change of its channel,
-/// so it is unseen to everyone but its author: the sidebar counts the new ones.
+/// so it is unseen to everyone but its author: Chat's Unread place counts the conversations
+/// holding one.
 type TextChannel {
     name: Text
     topic: Text
@@ -230,21 +231,30 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
 }
 
 /// Chat's Unread place, as another app's page shows it: the conversations with something the
-/// person looking has not read, in the sidebar's order, each drawn by its type's row view. A
-/// message that names them is one of those versions, so a mention counts here as any unread
-/// message does. A category holds no messages of its own, so it never needs anyone and never
-/// stands here.
+/// person looking has not read, in the sidebar's order — the channels outside a category, then
+/// each category's own — each drawn by its type's row view. What a conversation holds unseen is
+/// its messages, the items of its own list, so the place is the ones a transcript would stand
+/// its "New messages" line in (`first_unseen`, as the channel and direct views read it);
+/// `unseen` of the conversation itself is the changes to it, which saying where people talk is
+/// not. A message that names them is one of those messages, so a mention counts here as any
+/// unread message does. A category says nothing itself, so it never stands here; its channels
+/// stand where they are.
 view unread(all: Conversations) {
-    let needing = all.channels.filter(
+    let needing = all.channels.flat_map(
         x -> match x {
-            c: Category => false,
-            ch: TextChannel => not unseen(ch).is_empty(),
-            d: Direct => not unseen(d).is_empty(),
+            c: Category => unread_in(c),
+            ch: TextChannel => if first_unseen(ch) != .none { [ch] } else { [] },
+            d: Direct => if first_unseen(d) != .none { [d] } else { [] },
         },
     )
     std.place(all, "Unread", needing) { x ->
         show(x, row: true)
     }
+}
+
+/// The conversations `c` holds that the person looking has not read.
+fn unread_in(c: Category) -> List<TextChannel | Direct> {
+    c.channels.filter(ch -> first_unseen(ch) != .none)
 }
 
 /// The sidebar: channels outside any category first, then each category with its channels.

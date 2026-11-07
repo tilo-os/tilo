@@ -9,8 +9,9 @@ use crate::ir::{self, Ek, Stmt};
 use crate::types::Ty;
 
 impl Checker<'_> {
-    /// `map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a loop: a
-    /// lambda is only ever a direct argument of these, so there are no closures at run time.
+    /// `map`, `flat_map`, `filter`, `any`, `all`, `find` and `count` with a lambda, inlined as a
+    /// loop: a lambda is only ever a direct argument of these, so there are no closures at run
+    /// time. `flat_map` gives the lists its lambda finds, joined in the order they come.
     pub(in crate::checker) fn higher_order(
         &mut self,
         list: Ex,
@@ -75,13 +76,44 @@ impl Checker<'_> {
                 v,
             )));
             (out, out_ty)
+        } else if m == "flat_map" {
+            // What the lambda gives for each item, joined in the order the items and their own
+            // lists keep: one loop inside the other, pushing what it holds.
+            let v = self.expr(&body, None);
+            let each = match v.ty.clone() {
+                Ty::List(each) => *each,
+                Ty::Error => Ty::Error,
+                other => {
+                    let shown = self.show(&other);
+                    self.err(
+                        "E020",
+                        name.span,
+                        format!("`flat_map`'s lambda gives a list to join, found {shown}: `all.flat_map(c -> c.channels)`"),
+                    );
+                    Ty::Error
+                }
+            };
+            let out_ty = Ty::List(Box::new(each.clone()));
+            let out = self.fresh(out_ty.clone());
+            if !each.is_error() {
+                let mut each_loop = self.new_for(v, &each);
+                let inside = Ex::local(each_loop.item_local, each.clone());
+                each_loop.body.push(Stmt::Eval(Self::push_item(
+                    Ex::local(out, out_ty.clone()),
+                    inside,
+                )));
+                self.emit(Stmt::ForList(Box::new(each_loop)));
+            }
+            (out, out_ty)
         } else {
             self.filter_like(m, &body, &item, elem)
         };
         let mut inner = self.pop_sink();
         // Hoisted `Set` of the accumulator is emitted before the loop by the caller below.
         let init = match m {
-            "map" | "filter" => Some(Ex::host(Imp::ListNew, Vec::new(), result_ty.clone())),
+            "map" | "flat_map" | "filter" => {
+                Some(Ex::host(Imp::ListNew, Vec::new(), result_ty.clone()))
+            }
             "any" => Some(Ex::new(Ek::Bool(false), Ty::Bool)),
             "all" => Some(Ex::new(Ek::Bool(true), Ty::Bool)),
             "count" => Some(Ex::int(0)),
