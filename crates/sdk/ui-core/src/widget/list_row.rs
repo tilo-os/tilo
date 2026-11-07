@@ -1673,7 +1673,6 @@ impl ListRow {
     /// Use canonical normalized public identity pixels; no files are opened.
     #[cfg(feature = "local-daemons")]
     #[must_use]
-    #[cfg(feature = "local-daemons")]
     pub fn with_profile_photo(self, photo: &runtime_identity::ProfilePhoto) -> Self {
         self.avatar_image(crate::widget::avatar::profile_image(photo))
     }

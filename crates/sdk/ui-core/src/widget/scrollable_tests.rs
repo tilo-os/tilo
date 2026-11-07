@@ -1289,7 +1289,9 @@ fn changing_max_height_relayouts_the_retained_scroll_tree() {
     }
 }
 
-fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
+/// `scroll` laid out under a parent that takes its height from what it holds, which is what a
+/// scroll on its own gets when nothing bounds it.
+fn laid_out_under_indefinite_parent(mut scroll: Scrollable) -> Scrollable {
     let theme = Theme::dark();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
@@ -1320,7 +1322,11 @@ fn viewport_height_under_indefinite_parent(mut scroll: Scrollable) -> f64 {
         )
         .unwrap();
     scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
-    scroll.get_rect().height()
+    scroll
+}
+
+fn viewport_height_under_indefinite_parent(scroll: Scrollable) -> f64 {
+    laid_out_under_indefinite_parent(scroll).get_rect().height()
 }
 
 /// Solve `root` the way the host does: measure, adjust, repeat.
@@ -1543,36 +1549,7 @@ fn tall_child() -> Element {
 }
 
 fn can_scroll_under_indefinite_parent(mut scroll: Scrollable) -> (f64, bool) {
-    let theme = Theme::dark();
-    let mut taffy = TaffyTree::<()>::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut tr = TextRenderer::new();
-    let scroll_node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-    let parent = taffy.parent_node(
-        Style {
-            display: taffy::Display::Block,
-            size: Size {
-                width: Dimension::length(400.0),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        },
-        &[scroll_node],
-    );
-    taffy
-        .compute_layout_with_measure(
-            parent,
-            Size::max_content(),
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut tr) }
-                } else {
-                    Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    scroll.apply_layout(&taffy, scroll_node, Point::ZERO);
+    scroll = laid_out_under_indefinite_parent(scroll);
     let vh = scroll.get_rect().height();
     scroll.scroll_by(0.0, 200.0);
     (vh, scroll.offset_y() > 0.0)
