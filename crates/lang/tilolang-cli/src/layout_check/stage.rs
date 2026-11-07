@@ -77,9 +77,14 @@ impl Platform for Packages {
     }
 
     /// The package's words, and the one language its window is laid out in: the person's when
-    /// the package ships it, the package's source language otherwise.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        ui::i18n::speak_window_language(catalogues);
+    /// the package ships it, the package's source language otherwise. A package the window uses
+    /// (another app's view it calls) only rides along in that language.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            ui::i18n::speak_window_language(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
     }
 
     /// A fixed instant, so every run lays out the same dates: the clock the capture pins

@@ -240,10 +240,12 @@ d-i2mhsb3h = Home
 d-6a6pf4ok = Task list
 
 d-7froalwb = Project list
+    .w-new-task-in = New task in { $name }
     .w-no-tasks-yet = No tasks yet
     .w-no-task-selected = No task selected
 
 d-gu3twlv2 = Project board
+    .w-new-task = New task
 
 d-hc5ndp4x = Task card
     .w-remove-from-section = Remove from section
@@ -266,4 +268,5 @@ d-mtmufg3w = Task page
     .w-tomorrow-at-this-time = Tomorrow at this time
     .w-no-reminder = No reminder
     .w-subtasks = Subtasks
+    .w-no-subtasks-yet = No subtasks yet
     .w-add-a-subtask = Add a subtask

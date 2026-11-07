@@ -146,6 +146,7 @@ d-comllwls = Edit~present
 d-c2x2a6dh = Pin~present
 
 d-dzzuovny = Unread
+    .w-unread = Unread
     .w-show-all = Show all { $n }
 
 d-5rkfnkg4 = Sidebar
@@ -156,9 +157,11 @@ d-5rkfnkg4 = Sidebar
     .w-no-channel-open = No channel open
 
 d-ymtess4x = Channel
+    .w-message = Message #{ $name }
     .w-send = Send
 
 d-jbezqvlc = Direct
+    .w-message = Message { $name }
     .w-send = Send
 
 d-q45utnmh = Channel summary
@@ -168,6 +171,7 @@ d-enkldjck = Direct summary
 d-oqg63mfd = Category summary
 
 d-enkgjyn7 = Thread
+    .w-message = Message { $name }
     .w-send = Send
 
 d-rydgecpc = Typing here

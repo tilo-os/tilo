@@ -87,6 +87,8 @@ d-5c22cpkr = Make default~present
 d-tyfdfuwh = Add~present
 
 d-2dc3zfxw = Views list
+    .w-all-views = All views
+    .w-no-views-yet = No views yet
 
 d-unwqgbdt = View row
 

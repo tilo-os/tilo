@@ -130,9 +130,15 @@ impl Platform for InProcess {
     /// The package's words, and the one language its window speaks: the person's when the
     /// package ships it, the package's source language otherwise, so the app's copy, the
     /// chrome's words and the toolkit's dates all read in the same language.
-    fn add_words(&self, catalogues: &[(String, String)]) {
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
         tilo_ui_host::i18n::ensure();
-        ui::i18n::speak_window_language(catalogues);
+        if window {
+            ui::i18n::speak_window_language(catalogues);
+        } else {
+            for (locale, text) in catalogues {
+                ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
+            }
+        }
     }
 
     /// The toolkit's clock, as every time the window shows is: a capture pins it, so a

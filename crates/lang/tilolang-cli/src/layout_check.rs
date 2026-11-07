@@ -174,7 +174,7 @@ impl Finding {
 }
 
 /// What to check and how.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Options {
     /// The app packages.
     pub dirs: Vec<PathBuf>,
@@ -211,7 +211,35 @@ pub struct Options {
     /// keyboard, for its shot and its semantics. They reach the window at the `dump` size,
     /// where a shot shows them; none there, at the first layout.
     pub keys: Vec<String>,
+    /// The language the person the windows are laid out for reads and types in, as a POSIX or
+    /// BCP 47 tag (`en-US`, `de_DE.UTF-8`): what every window's language is chosen against,
+    /// whatever locale the machine runs in. Every window of the run reads in one language
+    /// throughout, its source language where the app ships no catalogue in this one.
+    pub locale: String,
 }
+
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            dirs: Vec::new(),
+            search: Vec::new(),
+            allow: None,
+            dump: None,
+            shots: None,
+            themes: Vec::new(),
+            root: None,
+            states: Vec::new(),
+            presses: Vec::new(),
+            keys: Vec::new(),
+            locale: DEFAULT_LOCALE.to_owned(),
+        }
+    }
+}
+
+/// The language the check lays its windows out for unless `--locale` names another: the source
+/// language of the toolkit and of the apps it ships, so a check says the same thing on every
+/// machine, whatever locale the person running it has set.
+pub const DEFAULT_LOCALE: &str = "en-US";
 
 /// The light and the dark variant of the shipped theme `name`: `default` the stock pair,
 /// another name its preset and that preset's light sibling (`glass`, `glass light`).
@@ -311,6 +339,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         return Err(problem);
     }
     ui::clock::freeze_for_capture();
+    stage_person_locale(&options.locale)?;
     tilo_ui_host::i18n::ensure();
     let allow = options
         .allow
@@ -409,6 +438,44 @@ pub fn check(options: &Options) -> Result<Report, String> {
         layouts: layouts_run,
         elapsed_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     })
+}
+
+/// Stage the person the run lays its windows out for, in place of whatever locale this machine
+/// runs in: every window's language is chosen from theirs, so the same sources lay out in the
+/// same words on every machine ([`Options::locale`]).
+///
+/// # Errors
+/// `locale` names no language.
+fn stage_person_locale(locale: &str) -> Result<(), String> {
+    let language = tilo_process::environment::parse_posix_locale(locale)
+        .ok_or_else(|| format!("--locale {locale}: names no language (write `en-US`)"))?;
+    let mut environment = tilo_process::environment::environment().as_ref().clone();
+    environment.locale = Some(language.to_string());
+    tilo_process::environment::install_environment(environment);
+    Ok(())
+}
+
+/// The words the window showed from a catalogue in a language other than the one it speaks,
+/// since the last frame was read: one problem per message, at the window. A window says
+/// everything in one language (docs/designs/app-language/i18n.md §4), so a word from another
+/// catalogue — a translation of another language, or the source standing in for one the
+/// window's own catalogues lack — is what this holds it to.
+fn mixed_language() -> Vec<audit::Problem> {
+    let language = ui::i18n::I18nManager::window_locale();
+    let found = ui::i18n::I18nManager::foreign_words();
+    ui::i18n::I18nManager::clear_foreign_words();
+    found
+        .into_iter()
+        .map(|(key, locale)| audit::Problem {
+            kind: Kind::MixedLanguage,
+            keys: Vec::new(),
+            widget: "Message".to_owned(),
+            id: Some(key.clone()),
+            detail: format!(
+                "`{key}` reads the {locale} catalogue in a window that speaks {language}"
+            ),
+        })
+        .collect()
 }
 
 /// One app of the check, read once: its metadata and its views' source, which every unit of its
@@ -1331,6 +1398,7 @@ impl AppCheck<'_> {
             viewport,
         ));
         problems.extend(ux::inspect(&inspection.root, viewport, &declared));
+        problems.extend(mixed_language());
         for mut problem in problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.

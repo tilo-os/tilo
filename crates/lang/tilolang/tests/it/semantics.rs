@@ -327,6 +327,22 @@ fn view_state_is_declared_read_bound_and_set() {
     );
 }
 
+/// A template's text parameter is words the view shows, as a component's prop of words is: the
+/// literal a caller gives it is the caller's message, in its catalogue under the view that
+/// writes it, its interpolation an argument (i18n.md §2).
+#[test]
+fn a_templates_text_parameter_carries_its_callers_message() {
+    let c = compile(
+        "type Talk {\n    topic: Text\n}\nroot Talk\ndefault view talk for Talk\nview talk(t: Talk) {\n    state draft: RichText = RichText(\"\")\n    std.composer(draft, \"Say something about {t.topic}\", set(draft, RichText(\"\")))\n}",
+    );
+    crate::common::validate(&c.wasm);
+    let source = tilolang::messages::source_catalogue(&c.meta);
+    assert!(
+        source.contains(".w-say-something-about = Say something about"),
+        "the caller's sentence is its message: {source}"
+    );
+}
+
 // A list's rows are a view of their own (`<view>~row<n>`), and a component called in a row that
 // declares `state` keeps it there: the host binds the state by the id the row's
 // body reads (`<row view id>:<component>.<state>`), so the row's view meta carries it.

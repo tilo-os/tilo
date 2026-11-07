@@ -1,0 +1,50 @@
+# Discussion in German. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
+
+d-kj3aantt = Kommentar
+    .doc = Was jemand zu einer Ressource gesagt hat: zu einer Aufgabe, einer Notiz, einer Mail, einem Tag.
+    .noun = { $count ->
+        [one] Kommentar
+       *[other] Kommentare
+    }
+
+d-5q4mbecw = Text
+
+d-d6k3e7fz = Kommentare
+    .doc = Jeder Kommentar des Arbeitsbereichs, in der Reihenfolge, in der sie gemacht wurden.
+    .noun = { $count ->
+        [one] Kommentar
+       *[other] Kommentare
+    }
+
+d-3g3duquj = Einträge
+
+d-l7s2czjp = Kommentieren
+    .doc = Sagt etwas zu der Ressource, aus der der Kommentar gemacht wird: der Thread unter einer Aufgabe, einer Notiz oder einer Mail sagt es mit `.made_from(r)`, sodass der Kommentar festhält, worum es geht.
+    .did = kommentierte
+
+d-iae4o5k3 = Bearbeiten
+    .doc = Ändert, was ein Kommentar sagt.
+
+d-l3wyj42h = Löschen
+    .doc = Löscht einen Kommentar.
+
+d-vzn4frig = Kommentiert
+
+d-4mzlhyvw = Bearbeitet
+
+d-kflwfuct = Gelöscht
+
+d-upy33rnt = Thread
+    .w-discussion = Diskussion
+    .w-comment-on-this = { $noun } kommentieren
+    .w-send = Senden
+
+d-nsv2jvpu = Geschrieben
+    .w-edited = bearbeitet
+
+d-vp5uwkal = Kürzlich
+    .w-nothing-said-yet = Noch nichts gesagt
+
+d-3666szuv = Kommentarseite
+
+d-jxt3set4 = Bemerkung

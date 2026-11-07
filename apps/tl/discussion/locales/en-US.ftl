@@ -37,12 +37,14 @@ d-kflwfuct = Delete~present
 
 d-upy33rnt = Thread
     .w-discussion = Discussion
+    .w-comment-on-this = Comment on this { $noun }
     .w-send = Send
 
 d-nsv2jvpu = Written
     .w-edited = edited
 
 d-vp5uwkal = Recently
+    .w-nothing-said-yet = Nothing said yet
 
 d-3666szuv = Comment page
 

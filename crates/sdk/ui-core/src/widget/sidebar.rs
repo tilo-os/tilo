@@ -560,14 +560,16 @@ impl SidebarDrawer {
         self.toggle.conventions = conventions;
     }
 
-    /// What the toggle does now, for its name and tooltip.
-    fn toggle_name(&self) -> &'static str {
-        match (self.side, self.is_open()) {
-            (SidebarSide::Left, true) => "Hide sidebar",
-            (SidebarSide::Left, false) => "Show sidebar",
-            (SidebarSide::Right, true) => "Hide inspector",
-            (SidebarSide::Right, false) => "Show inspector",
-        }
+    /// What the toggle does now, for its name and tooltip, in the language the
+    /// window speaks.
+    fn toggle_name(&self) -> String {
+        let key = match (self.side, self.is_open()) {
+            (SidebarSide::Left, true) => "window-toolbar-hide-sidebar",
+            (SidebarSide::Left, false) => "window-toolbar-show-sidebar",
+            (SidebarSide::Right, true) => "window-toolbar-hide-inspector",
+            (SidebarSide::Right, false) => "window-toolbar-show-inspector",
+        };
+        crate::i18n::I18nManager::lookup_plain(key)
     }
 
     /// Route `event` to the drawer's own parts: the toggle (hover, a press
@@ -1079,13 +1081,12 @@ impl SidebarDrawer {
         rect: Rect,
         hovered: bool,
     ) {
-        let (icon, name) = match (self.side, self.is_open()) {
-            (SidebarSide::Left, true) => (crate::icons::Icon::PanelLeft, "Hide sidebar"),
-            (SidebarSide::Left, false) => (crate::icons::Icon::PanelLeft, "Show sidebar"),
-            (SidebarSide::Right, true) => (crate::icons::Icon::PanelRight, "Hide inspector"),
-            (SidebarSide::Right, false) => (crate::icons::Icon::PanelRight, "Show inspector"),
+        let icon = match self.side {
+            SidebarSide::Left => crate::icons::Icon::PanelLeft,
+            SidebarSide::Right => crate::icons::Icon::PanelRight,
         };
-        let face = crate::widget::ButtonFace::icon_only(rect, icon, name).hovered(hovered);
+        let name = self.toggle_name();
+        let face = crate::widget::ButtonFace::icon_only(rect, icon, &name).hovered(hovered);
         crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
     }
 }

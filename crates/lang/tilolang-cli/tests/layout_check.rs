@@ -83,7 +83,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // No window in this fixture floats a popover or a sheet, and none composes a
             // shell whose title the row's actions squeeze.
             | Kind::PastWindow
-            | Kind::TitleClippedWithRoom => "(no view)",
+            | Kind::TitleClippedWithRoom
+            // The fixture's windows ship one language: nothing reads from another catalogue.
+            | Kind::MixedLanguage => "(no view)",
         };
         assert_eq!(
             finding.view,
@@ -111,6 +113,53 @@ fn a_view_whose_body_is_layers_lays_its_children_over_each_other() {
         report.findings.is_empty(),
         "the row over the content is where the view put it:\n{}",
         layout_check::render(&report)
+    );
+}
+
+/// A window reads in one language throughout: a word it shows from a catalogue in another
+/// language — here the app's source standing in for a translation it lacks — is a finding, and
+/// the same window read in the language the person speaks has none. The person's language is
+/// staged whatever locale this machine runs in, so the two runs differ by the person alone.
+#[test]
+fn a_word_a_window_shows_from_another_languages_catalogue_is_a_finding() {
+    let dir = manifest().join("tests/layout_check/languages");
+    let report = |locale: &str| {
+        layout_check::check(&Options {
+            dirs: vec![dir.clone()],
+            locale: locale.to_owned(),
+            ..Options::default()
+        })
+        .expect("the fixture lays out")
+    };
+    let english = report(layout_check::DEFAULT_LOCALE);
+    assert!(
+        english.findings.is_empty(),
+        "every word reads in English:\n{}",
+        layout_check::render(&english)
+    );
+    let german = report("de-DE");
+    let mixed: Vec<&str> = german
+        .findings
+        .iter()
+        .filter(|f| f.kind == Kind::MixedLanguage)
+        .map(|f| f.id.as_str())
+        .collect();
+    assert_eq!(
+        mixed.len(),
+        1,
+        "the one word German lacks:\n{}",
+        layout_check::render(&german)
+    );
+    assert!(
+        mixed[0].contains("w-a-word-only-the-source-language"),
+        "the word the app's German leaves out: {}",
+        mixed[0]
+    );
+    assert_eq!(
+        german.findings.len(),
+        1,
+        "and nothing else:\n{}",
+        layout_check::render(&german)
     );
 }
 

@@ -33,6 +33,7 @@ view inbox(i: Inbox) {
     struct German;
     impl Words for German {
         fn add(&self, _: &[(String, String)]) {}
+        fn add_used(&self, _: &[(String, String)]) {}
         fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
             let arg = |name: &str| {
                 args.iter()

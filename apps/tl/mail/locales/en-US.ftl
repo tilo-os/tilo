@@ -342,7 +342,7 @@ d-n2xgxnbw = Message
     .w-to = to { $to }
     .w-hide-quoted-text = Hide quoted text
     .w-show-quoted-text = Show quoted text
-    .w-attached = Attached
+    .w-attached = Attached: { $attachments }
 
 d-oqpazwvc = Editor
     .w-sending = Sending

@@ -202,8 +202,12 @@ impl Platform for SlotPlatform {
         tilo_ui_host::i18n::word(id, args, id)
     }
 
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        tilo_ui_host::i18n::add_catalogues(catalogues);
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            tilo_ui_host::i18n::add_catalogues(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
     }
 
     fn words_revision(&self) -> u64 {

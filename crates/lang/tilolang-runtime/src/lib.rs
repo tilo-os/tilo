@@ -100,5 +100,5 @@ pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
 pub use view_state::StateKey;
-pub use words::{SourceWords, Words};
+pub use words::{SourceWords, Words, WordsRole};
 pub use written::WrittenViewInfo;
