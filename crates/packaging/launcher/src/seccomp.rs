@@ -11,8 +11,6 @@
 //! it to a temp file, and passes the open fd to `bwrap`'s `--seccomp
 //! <fd>`. [`compile_baseline`] is the default fast path.
 
-use std::path::PathBuf;
-
 #[cfg(target_os = "linux")]
 pub use sandbox_core::seccomp::{
     SeccompError, compile_app_baseline, compile_baseline, compile_clone3_compat, write_baseline_to,
@@ -81,12 +79,12 @@ pub const BUILTIN_JIT_ENTITLED: &[&str] = &["so.tilo.browser"];
 /// "nobody" — which would leave the browser unable to render on any
 /// image that didn't ship the file.
 pub fn entitled_to_dynamic_code(package_id: &str) -> bool {
-    let policy_path = package_store::dev_env::dev_override(JIT_POLICY_PATH_ENV)
-        .map_or_else(|| PathBuf::from(JIT_POLICY_PATH), PathBuf::from);
-    match std::fs::read_to_string(&policy_path) {
-        Ok(list) => crate::hardening::policy_matches(&list, package_id),
-        Err(_) => BUILTIN_JIT_ENTITLED.contains(&package_id),
-    }
+    crate::hardening::entitled(
+        package_id,
+        JIT_POLICY_PATH,
+        JIT_POLICY_PATH_ENV,
+        BUILTIN_JIT_ENTITLED,
+    )
 }
 
 /// Image-owned list of package ids that may build their own nested sandbox
@@ -104,12 +102,12 @@ pub const BUILTIN_WEB_ENGINE_ENTITLED: &[&str] = &["so.tilo.browser"];
 /// Whether the image lets `package_id` create the namespaces of a web
 /// engine's renderer sandbox.
 pub fn entitled_to_nested_sandbox(package_id: &str) -> bool {
-    let policy_path = package_store::dev_env::dev_override(WEB_ENGINE_POLICY_PATH_ENV)
-        .map_or_else(|| PathBuf::from(WEB_ENGINE_POLICY_PATH), PathBuf::from);
-    match std::fs::read_to_string(&policy_path) {
-        Ok(list) => crate::hardening::policy_matches(&list, package_id),
-        Err(_) => BUILTIN_WEB_ENGINE_ENTITLED.contains(&package_id),
-    }
+    crate::hardening::entitled(
+        package_id,
+        WEB_ENGINE_POLICY_PATH,
+        WEB_ENGINE_POLICY_PATH_ENV,
+        BUILTIN_WEB_ENGINE_ENTITLED,
+    )
 }
 
 /// What a manifest asked for, and what it is actually going to get.
