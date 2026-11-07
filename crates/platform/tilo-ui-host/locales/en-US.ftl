@@ -81,6 +81,8 @@ tilolang-done = Done
 tilolang-no-date = No date
 # Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
 tilolang-all-done = All done
+# What one of an app's places says on another app's page when nothing stands in it.
+tilolang-all-caught-up = All caught up
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected

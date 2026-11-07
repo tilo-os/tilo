@@ -371,19 +371,32 @@ view page<R>(
     }
 }
 
-/// One app's collection on another app's page: a card that stands for `of`, names it `title`,
-/// says how many items it lists, and shows the first of them as their own rows (`row`, as the
-/// collection's type draws a row). A card is a summary, so a list longer than the rows it shows
-/// ends with the way into the rest: `Show all`, which opens `of`, as pressing the card does.
-/// The count is the number of items the card lists, so a card never says more than it shows.
-template view summary<R, T>(of: R, title: Text, items: List<T>, row: (T) -> View) {
-    ui.Card(item: of, title: title, count: items.len()) {
-        list(items) { x ->
-            row(x)
-        }
-        if items.len() > preview_rows() {
-            ui.Button("Show all {items.len()}") {
-                on press: open(of)
+/// One of an app's places on another app's page: a card that stands for `of`, names the place
+/// as its app calls it (`name`), says how many items it holds, and shows the first of them as
+/// their own rows (`row`, the type's row view, as everywhere else). The items are the place's,
+/// not a filter rewritten here: an app that declares its place as a filter (`Task.today`) gives
+/// its words and what it holds (`items.matching(Task.today)`), and one whose place no filter
+/// asks, such as the conversations with anything left unread, writes a view of its own over
+/// this. A card is a summary, so a list longer than the rows it shows ends with the way into
+/// the rest: `Show all`, which opens `of`, as pressing the card does. The count is how many the
+/// place holds, so a card never says more than it shows.
+///
+/// A place with nothing in it takes no room on the page: one quiet line says it is caught up,
+/// which is what a morning's page is for. Nothing else of it stands there — no count of none,
+/// no empty list.
+template view place<R, T>(of: R, name: Text, items: List<T>, row: (T) -> View) {
+    let n = items.count()
+    ui.Card(item: of, title: name, count: if n == 0 { .none } else { .some(n) }) {
+        if n == 0 {
+            ui.Text(phrase("tilolang-all-caught-up"), secondary: true)
+        } else {
+            list(items) { x ->
+                row(x)
+            }
+            if n > preview_rows() {
+                ui.Button("Show all {n}") {
+                    on press: open(of)
+                }
             }
         }
         on activate: open(of)

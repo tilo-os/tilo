@@ -1411,13 +1411,71 @@ mod cases {
         }
     }
 
+    /// The number a card's count pill says, when it has one.
+    fn count_of(card: &UiNode) -> Option<i64> {
+        match card.props.get("count") {
+            None | Some(Value::Opt(None)) => None,
+            Some(Value::Opt(Some(held))) => match &**held {
+                Value::Int(n) => Some(*n),
+                other => panic!("a card's count is a number, not {other:?}"),
+            },
+            Some(Value::Int(n)) => Some(*n),
+            other => panic!("a card's count is a number, not {other:?}"),
+        }
+    }
+
+    /// Writes into a conversation of Chat as `who`.
+    fn say(w: &World, apps: &Apps, conv: &ResourceRef, who: &str, text: &str) {
+        use tilolang_runtime::rich::RichValue;
+        let id = apps.channels.action("send");
+        w.rt.invoke_action(
+            &Principal::new(who),
+            (
+                id.as_str(),
+                vec![
+                    res(conv),
+                    Value::Rich(RichValue::from_text(text)),
+                    Value::none(),
+                ],
+            ),
+        )
+        .unwrap();
+    }
+
     #[test]
-    fn the_boards_cards_show_other_packages_resources_as_rows_with_a_count() {
+    fn the_morning_cards_are_each_apps_own_place() {
         let apps = apps();
         let m = morning(&apps);
-        add_todo(&m, &apps, "milk", false);
+        // Tasks' Today place: due today, or hers to do whenever. A task with no date, or one
+        // already done, is Tasks' own business and not hers this morning.
+        m.w.call(
+            &apps.todo,
+            "new_task_today",
+            vec![
+                res(&m.list),
+                Value::none(),
+                Value::text("call the landlord"),
+            ],
+        );
+        m.w.call(
+            &apps.todo,
+            "new_task",
+            vec![
+                res(&m.list),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::none(),
+                Value::some(Value::Principal(me())),
+                Value::text("review the plan"),
+            ],
+        );
+        add_todo(&m, &apps, "sort the paper mail", false);
         add_todo(&m, &apps, "bins", true);
+        let pinned = returned_ref(m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]));
+        m.w.call(&apps.notes, "pin", vec![res(&pinned), Value::Bool(true)]);
         m.w.call(&apps.notes, "new_note", vec![res(&m.notebook)]);
+
         let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
         let tree = view.tree();
         assert_eq!(tree.kind, "ui.NavShell", "{}", dump(tree));
@@ -1440,23 +1498,136 @@ mod cases {
             [&m.list, &m.notebook, &m.chat],
             "a card per resource Today points at"
         );
+        let titles: Vec<String> = cards.iter().map(|c| text_prop(c, "title")).collect();
         assert_eq!(
-            cards[0].props.get("count"),
-            Some(&Value::Int(1)),
-            "the todo card counts the open items: {}",
+            titles,
+            ["Today", "Pinned", "Unread"],
+            "each card names the place as its app does: {}",
             dump(tree)
         );
-        let rows: Vec<&UiNode> = of_kind(cards[0], "ui.ListRow");
-        assert_eq!(rows.len(), 1, "{}", dump(tree));
-        match rows[0].props.get("item") {
-            Some(Value::Ref(r)) => assert_eq!(r.target.doc, m.list.doc, "an item of the list"),
-            other => panic!("a row of the todo card shows an item, not {other:?}"),
-        }
         assert_eq!(
-            cards[1].props.get("count"),
-            Some(&Value::Int(0)),
-            "the notes card counts the pinned notes, none yet"
+            count_of(cards[0]),
+            Some(2),
+            "the todo card counts Tasks' Today place: {}",
+            dump(tree)
         );
+        let rows: Vec<String> = of_kind(cards[0], "ui.ListRow")
+            .iter()
+            .map(|r| text_prop(r, "title"))
+            .collect();
+        assert_eq!(
+            rows,
+            ["call the landlord", "review the plan"],
+            "the rows are Tasks' Today place's: {}",
+            dump(tree)
+        );
+        assert_eq!(
+            count_of(cards[1]),
+            Some(1),
+            "the notes card counts Pinned: {}",
+            dump(tree)
+        );
+        // Nothing in Chat needs her, so its card takes no room: no count, no rows, one quiet
+        // line saying there is nothing to read.
+        assert_eq!(
+            count_of(cards[2]),
+            None,
+            "a place with nothing in it has no count: {}",
+            dump(tree)
+        );
+        assert!(of_kind(cards[2], "ui.ListRow").is_empty(), "{}", dump(tree));
+        let quiet = of_kind(cards[2], "ui.Text");
+        assert_eq!(quiet.len(), 1, "one quiet line: {}", dump(tree));
+        assert_eq!(
+            quiet[0].props.get("secondary"),
+            Some(&Value::Int(1)),
+            "quiet ink, not the page's own words: {}",
+            dump(tree)
+        );
+        let said = text_prop(quiet[0], "value");
+        assert!(
+            said == "All caught up" || said == "tilolang-all-caught-up",
+            "the empty place says it is caught up, not {said:?}"
+        );
+    }
+
+    /// Chat's Unread place on Today's page: the conversations with something the person looking
+    /// has not read, and no others. A category and a channel with nothing new never need her.
+    #[test]
+    fn a_card_finds_the_conversations_with_something_unread() {
+        let apps = apps();
+        let m = morning(&apps);
+        // bo writes in `design`; `general` stays caught up and a category never needs her, so
+        // the card shows the one conversation with something to read.
+        let design = returned_ref(m.w.call(
+            &apps.channels,
+            "new_channel",
+            vec![res(&m.chat), Value::text("design")],
+        ));
+        m.w.call(
+            &apps.channels,
+            "new_channel",
+            vec![res(&m.chat), Value::text("general")],
+        );
+        m.w.call(
+            &apps.channels,
+            "new_category",
+            vec![res(&m.chat), Value::text("Team")],
+        );
+        say(&m.w, &apps, &design, "bo", "the plan is up");
+        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+        let tree = view.tree();
+        let cards = of_kind(tree, "ui.Card");
+        assert_eq!(
+            count_of(cards[2]),
+            Some(1),
+            "the chat card counts the conversations with something to read: {}",
+            dump(tree)
+        );
+        let rows = of_kind(cards[2], "ui.ListRow");
+        assert_eq!(rows.len(), 1, "{}", dump(tree));
+        assert_eq!(
+            text_prop(rows[0], "title"),
+            "design",
+            "the row names the channel once, the icon says it is one: {}",
+            dump(tree)
+        );
+    }
+
+    #[test]
+    fn a_place_longer_than_a_cards_rows_says_how_many_it_holds() {
+        let apps = apps();
+        let m = morning(&apps);
+        for day in ["mon", "tue", "wed", "thu", "fri", "sat", "sun"] {
+            m.w.call(
+                &apps.todo,
+                "new_task_today",
+                vec![res(&m.list), Value::none(), Value::text(day)],
+            );
+        }
+        let view = m.w.view(&apps.today, "today", vec![res(&m.today)]);
+        let tree = view.tree();
+        let cards = of_kind(tree, "ui.Card");
+        assert_eq!(
+            count_of(cards[0]),
+            Some(7),
+            "the card counts the place, not the rows it shows: {}",
+            dump(tree)
+        );
+        assert_eq!(
+            of_kind(cards[0], "ui.ListRow").len(),
+            5,
+            "a card shows a place's first rows: {}",
+            dump(tree)
+        );
+        let show_all: Vec<&UiNode> = of_kind(cards[0], "ui.Button")
+            .into_iter()
+            .filter(|b| {
+                matches!(b.props.get("label"), Some(Value::Text(label)) if label.starts_with("Show all"))
+            })
+            .collect();
+        assert_eq!(show_all.len(), 1, "{}", dump(tree));
+        assert_eq!(text_prop(show_all[0], "label"), "Show all 7");
     }
 
     #[test]
@@ -2254,8 +2425,15 @@ mod cases {
         for tree in [&compact, &wide] {
             let grid = of_kind(tree, "grid")[0];
             assert_eq!(grid.props["min.rem"], Value::Float(22.0));
-            assert_eq!(grid.children.len(), 3, "one card per app");
-            assert!(grid.children.iter().all(|c| c.kind == "ui.Card"));
+            assert_eq!(grid.children.len(), 3, "one card per app: {}", dump(tree));
+            for child in &grid.children {
+                assert_eq!(
+                    of_kind(child, "ui.Card").len(),
+                    1,
+                    "a card per app: {}",
+                    dump(tree)
+                );
+            }
         }
     }
 }

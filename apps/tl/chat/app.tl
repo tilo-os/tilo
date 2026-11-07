@@ -229,18 +229,22 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
     }
 }
 
-/// What another app's page summarizes of this one's place: the conversations the sidebar
-/// holds, in its order, each drawn by its type's row view. A category holding no channel is no
-/// place anyone can go, so it is not one, and an empty group never stands on another app's
-/// page.
-fn conversations_of(all: Conversations) -> List<Category | TextChannel | Direct> {
-    all.channels.filter(
+/// Chat's Unread place, as another app's page shows it: the conversations with something the
+/// person looking has not read, in the sidebar's order, each drawn by its type's row view. A
+/// message that names them is one of those versions, so a mention counts here as any unread
+/// message does. A category holds no messages of its own, so it never needs anyone and never
+/// stands here.
+view unread(all: Conversations) {
+    let needing = all.channels.filter(
         x -> match x {
-            c: Category => not c.channels.is_empty(),
-            ch: TextChannel => true,
-            d: Direct => true,
+            c: Category => false,
+            ch: TextChannel => not unseen(ch).is_empty(),
+            d: Direct => not unseen(d).is_empty(),
         },
     )
+    std.place(all, "Unread", needing) { x ->
+        show(x, row: true)
+    }
 }
 
 /// The sidebar: channels outside any category first, then each category with its channels.
@@ -379,7 +383,7 @@ view direct(d: Direct) {
 
 /// A channel as another app's page summarizes it: its name, and what it is about.
 view channel_summary(c: TextChannel) {
-    row("# {c.name}", secondary: c.topic, icon: .hash)
+    row(c.name, secondary: c.topic, icon: .hash)
 }
 
 /// A direct conversation as another app's page summarizes it: whose it is and the last thing

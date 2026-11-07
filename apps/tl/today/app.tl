@@ -27,31 +27,28 @@ action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     n
 }
 
-/// Today's window: a card per app, holding that app's place as its own rows say it: the open
-/// todos, the pinned notes, the conversations the chat's sidebar holds. Each card says how
-/// many there are and opens the app for the rest.
+/// Today's window: one card per app, each that app's own place — the tasks its Today place
+/// holds, the notes Pinned holds, the conversations Chat's Unread place finds — named as the app
+/// names it, with its rows and its count, and opening the app for the rest. Today holds no place
+/// of its own: a place is where its app keeps it, so the word and what it finds are the app's.
 view today(t: Today) {
     let todos = todo.tasks
-    let pinned = notes.notebook.notes.filter(.pinned)
-    let talks = chat.conversations_of(chat.conversations)
     std.page(t, canvas: true) {
         header: {
             button(morning_cleanup(todos, notes.notebook)) as morning
         }
         grid(min: 22rem) {
-            std.summary(
-                todos,
-                meta(todos).title,
-                todos.items.filter(item -> not item.done),
-            ) { item ->
+            std.place(todos, todo.Task.today.label, todos.items.matching(todo.Task.today)) { item ->
                 show(item, row: true)
             }
-            std.summary(notes.notebook, meta(notes.notebook).title, pinned) { n ->
+            std.place(
+                notes.notebook,
+                notes.Note.pinned.label,
+                notes.notebook.notes.matching(notes.Note.pinned),
+            ) { n ->
                 show(n, row: true)
             }
-            std.summary(chat.conversations, meta(chat.conversations).title, talks) { x ->
-                show(x, row: true)
-            }
+            chat.unread(chat.conversations)
         }
     }
 }

@@ -39,7 +39,6 @@ channel.revised = gl7s6dqs
 channel_message = lqhtidbi
 channel_summary = q45utnmh
 composer = xzmme2mb
-conversations_of = pdilyoyp
 delete = vhmhrq2t
 direct = jbezqvlc
 direct.draft = xwr4s67s
@@ -78,6 +77,7 @@ thread.revised = n2jg4raf
 thread_message = zrqw3oza
 thread_typing_here = dcprca6g
 typing_here = rydgecpc
+unread = dzzuovny
 
 # retired
 Channel = tjrkrokq
@@ -94,6 +94,7 @@ composer#send = nyleywii
 conversation_list = 53psynyy
 conversation_list#new = gmx7t2bb
 conversation_row = y34vbhng
+conversations_of = pdilyoyp
 last_at = nokj55l3
 last_author = occe2mou
 last_said = ktlngtea

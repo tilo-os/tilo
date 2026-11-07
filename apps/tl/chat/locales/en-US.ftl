@@ -145,6 +145,9 @@ d-comllwls = Edit~present
 
 d-c2x2a6dh = Pin~present
 
+d-dzzuovny = Unread
+    .w-show-all = Show all { $n }
+
 d-5rkfnkg4 = Sidebar
     .w-channels = Channels
     .w-direct-messages = Direct messages
