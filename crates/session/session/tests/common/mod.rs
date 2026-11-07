@@ -454,9 +454,11 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
 
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
 /// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
-/// test's program to act as the person, and the framed canvas in front.
+/// test's program to act as the person, and the framed canvas in front. The apps are the ones
+/// installed in this run's app store ([`app_store`]).
 pub fn seeded_session(root: &Path) -> Session {
-    seeded_session_with(root, None)
+    let program = std::env::current_exe().expect("this test's program");
+    seeded_session_at(root, vec![program], None)
 }
 
 /// The app store this test process's tilolang apps are installed in, built the first time it is
@@ -528,22 +530,10 @@ pub fn install_apps_in(store: &Path, scratch: &Path) {
     );
 }
 
-/// [`seeded_session`], with the runs of what the person asks the session's agents played by
-/// `runs` when a test brings them (the agent's side of the run channel); the session keeps its
-/// own otherwise.
-pub fn seeded_session_with(
-    root: &Path,
-    runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
-) -> Session {
-    let program = std::env::current_exe().expect("this test's program");
-    seeded_session_at(root, runs, vec![program], None)
-}
-
-/// [`seeded_session_with`] with `apps` starting them (a stand-in launcher a test brought), and
-/// the programs named as admitted to act as the person ahead of time.
+/// [`seeded_session`] with `apps` starting them (a stand-in launcher a test brought), and the
+/// programs named as admitted to act as the person ahead of time.
 pub fn seeded_session_at(
     root: &Path,
-    runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
     admit_repl: Vec<std::path::PathBuf>,
     apps: Option<Rc<dyn tilo_session::AppActions>>,
 ) -> Session {
@@ -560,7 +550,6 @@ pub fn seeded_session_at(
             agent_door: Some(root.join("agent.sock")),
             admit_repl,
             test_control: Some(root.join("test-control.sock")),
-            agent_runs: runs,
             apps,
             ..Options::default()
         },
