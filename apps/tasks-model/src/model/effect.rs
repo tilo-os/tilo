@@ -1,5 +1,5 @@
 //! What Tasks does with the workspace beyond editing the tracker: opening
-//! an issue or its conversation, showing a place, writing a note.
+//! an issue, showing a place, writing a note.
 //!
 //! The vocabulary travels with the record so a typed reference to one of
 //! these effects names the tracker wherever it is read from. The Tasks app
@@ -36,18 +36,6 @@ pub enum TasksEffect {
         issue: Id,
     },
 
-    /// Open as chat
-    ///
-    /// Show an issue as a conversation with its agent, in a window of its
-    /// own: the thread, the run's steps as they come, what it asks, and a
-    /// field to tell it more.
-    #[effect(view, idempotent, item = issues)]
-    #[effect(icon = "message-circle")]
-    OpenChat {
-        #[param("The issue")]
-        issue: Id,
-    },
-
     /// Write a note
     ///
     /// A note in Notes for the issue, titled after it and linked from it.
@@ -69,12 +57,6 @@ pub enum TasksEffect {
     /// Show a lane per status.
     #[effect(view, idempotent)]
     ShowBoard,
-
-    /// Show the tasks
-    ///
-    /// Show the tasks the tracker holds a run for.
-    #[effect(view, idempotent)]
-    ShowTasks,
 
     /// Show the threads
     ///

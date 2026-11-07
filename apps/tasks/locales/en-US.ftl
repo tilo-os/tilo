@@ -3,7 +3,6 @@ tasks-filters = Filters
 tasks-views = View
 tasks-place-list = Issues
 tasks-place-board = Board
-tasks-place-tasks = Tasks
 tasks-place-thread = Thread
 tasks-location-filtered = { $place }, { $filter }
 
@@ -13,7 +12,6 @@ tasks-filter-mine = Mine
 tasks-filter-todo = Todos
 tasks-filter-unassigned = Nobody's
 tasks-filter-agent = An agent's
-tasks-filter-running = Running tasks
 tasks-new-issue = New issue
 tasks-new-issue-placeholder = What needs doing
 tasks-new-sub-issue-placeholder = A sub-issue of this one
@@ -45,7 +43,6 @@ tasks-issue-description = Description
 tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.
 tasks-sub-issues = Sub-issues
-tasks-about = What this is about
 tasks-links = Links
 
 ## Projects and areas: the resource above the tasks
@@ -81,40 +78,7 @@ tasks-notebook = Notebook
 tasks-fact-goal = Goal: { $goal }
 tasks-fact-priority = Priority { $priority }
 tasks-fact-due = Due { $date }
-tasks-fact-cost = Spent { $spent } of { $budget }
-tasks-list-spend = { $status }, spent { $cost } { $currency }
 
-tasks-run = Agent
-tasks-run-chip = Task: { $state }
-tasks-run-chip-asks = Task waits for your answer: { $state }
-tasks-run-list = Task list
-tasks-run-list-empty-title = No task is running
-tasks-run-list-empty-message = A task you let an agent start shows while it runs, with what it does and what it costs.
-tasks-run-list-device = On { $device }
-tasks-run-list-cost = Cost { $cost }
-tasks-run-list-sub-tasks = { $closed } of { $total } sub-tasks closed
-tasks-run-agent = { $agent }: { $phase }
-tasks-run-spent = Spent { $cost } { $currency }
-tasks-run-spent-nothing = Cost no money
-tasks-run-used = used { $tokens } tokens
-tasks-run-model = on { $model }
-tasks-run-device = on { $device }
-tasks-run-not-started = waits for you to start it
-tasks-run-approved = starting
-tasks-run-accepted = started
-tasks-run-planning = planning
-tasks-run-executing = working
-tasks-run-waiting = waiting for your answer
-tasks-run-paused = paused
-tasks-run-done = done
-tasks-run-failed = could not finish
-tasks-run-stopped = stopped
-tasks-run-asks = The agent asks before it runs { $action }
-tasks-run-answer = Answer
-tasks-run-pause = Pause
-tasks-run-resume = Resume
-tasks-run-stop = Stop
-tasks-run-approve = Start
 
 tasks-thread = Thread
 tasks-thread-last-from = { $speaker } said
@@ -125,7 +89,6 @@ tasks-thread-placeholder = Write a message
 tasks-thread-send = Send
 # The same button while a run of the task reads the thread: the message goes
 # to that run, which takes it in at its next step.
-tasks-thread-send-to-agent = Send to the agent
 tasks-message-to-run = To the agent
 tasks-message-read-by-run = Read by the agent
 tasks-message-from-run = From the agent
@@ -134,14 +97,6 @@ tasks-message-answer = Answered with a view
 tasks-message-step = Ran
 
 ## An issue as a chat with its agent
-tasks-open-chat = Open as chat
-tasks-chat-conversation = Conversation
-tasks-chat-looked-up = Looked up
-tasks-chat-placeholder = Tell the agent
-tasks-chat-asks = { $agent } waits for your answer
-tasks-chat-asks-in = { $action } in { $place }
-tasks-chat-used = Used { $tokens } tokens
-tasks-chat-model = On { $model }
 
 ## History
 
@@ -152,28 +107,9 @@ tasks-place = Moved { $item } on the board
 tasks-comment = Commented on { $item }
 tasks-link = Linked { $label } to { $item }
 tasks-delete = Deleted { $item }
-tasks-approve-run = Started the agent on { $item }
-tasks-stop-run = Stopped the agent on { $item }
-tasks-pause-run = Paused the agent on { $item }
-tasks-resume-run = Let the agent go on with { $item }
-tasks-set-execution-budget = Changed how long the agent may work on { $item }
-tasks-send-message = Sent the agent a message on { $item }
-tasks-tell-agent = Told the agent on { $item }
-tasks-report-run = Reported progress on { $item }
-tasks-record-read = Read { $label } for { $item }
-tasks-incorporate = Read the messages on { $item }
-tasks-ask-confirmation = Asked before an action on { $item }
-tasks-answer-confirmation = Answered the agent on { $item }
-tasks-finish-run = Finished work on { $item }
 tasks-import = Brought over earlier tasks
 tasks-issue-title = Renamed { $item } to { $new }
 tasks-issue-status = Moved { $item } to { $new }
 tasks-issue-labels = Changed the labels of { $item }
 tasks-issue-links = Changed the links of { $item }
-tasks-settle-confirmation = Acted on the answer on { $item }
 tasks-add-label = Labelled { $item } { $label }
-tasks-choose-model = Chose the model for { $item }
-tasks-ask-agent = Asked an agent: { $title }
-tasks-field-model = Model
-tasks-model-own = The agent's own model
-tasks-model-of = { $model } ({ $provider })

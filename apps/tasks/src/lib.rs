@@ -5,15 +5,16 @@
 //! and a thread. The list nests sub-issues under their parent; the board has
 //! a lane per status, and dragging a card is one `place` action; the issue
 //! page edits the description in the shared block editor and holds the
-//! thread. An issue assigned to an agent is that agent's task: its runs are
-//! the issue's actions, approved, steered and answered from the issue page.
+//! thread. An issue assigned to an agent is that agent's: it works on the
+//! issue by the tracker's own actions, from the conversation it was asked in.
 //! An issue's note is written in Notes, through Notes' own action (`note`).
 //!
 //! Storage, sync, history, undo, search and permissions are the framework's.
 //!
 //! The sidebar is the tracker read the way a person works through it: every
-//! issue, the ones assigned to them, the ones nobody has taken, the ones an
-//! agent is working on, one row per label in use, and the projects and areas
+//! issue, the ones assigned to them, the ones waiting to be started, the ones
+//! nobody has taken, the ones an agent has, one row per label in use, and the
+//! projects and areas
 //! the work goes towards. A project's page reads its tasks, the documents
 //! they carry and the people involved in it; those tasks stay in the list and
 //! in their person's own list as they were. The window bar holds
@@ -26,7 +27,6 @@ pub const APP_ID: &str = crate::model::APP_ID;
 pub const APP_TITLE: &str = "Tasks";
 
 mod board;
-mod chat;
 mod filter;
 mod issue;
 mod list;
@@ -34,10 +34,8 @@ pub mod locales;
 mod note;
 mod program_step;
 mod project;
-mod runs;
 #[cfg(feature = "samples")]
 mod sample;
-mod task_chip;
 mod thread;
 mod window_bar;
 
@@ -50,7 +48,6 @@ use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::widget::{NavItem, NavSection};
 
-pub use chat::{SCHEME as CHAT_SCHEME, uri as chat_uri};
 pub use model::Tracker;
 pub use model::{NOTES, TasksEffect};
 use model::{Status, area_resource};
@@ -63,15 +60,13 @@ pub enum Place {
     List,
     /// A lane per status.
     Board,
-    /// The tasks the tracker holds a run for, all of them.
-    Tasks,
     /// The tasks that have said something, as their conversations.
     Thread,
 }
 
 impl Place {
     /// The places the window shows, in the bar's order.
-    pub(crate) const ALL: [Self; 4] = [Self::List, Self::Board, Self::Tasks, Self::Thread];
+    pub(crate) const ALL: [Self; 3] = [Self::List, Self::Board, Self::Thread];
 
     /// The place as the window bar and the bar's view switcher name it.
     pub(crate) fn title(self) -> String {
@@ -79,7 +74,6 @@ impl Place {
             Self::List => tr("tasks-place-list"),
             Self::Board => tr("tasks-place-board"),
             Self::Thread => tr("tasks-place-thread"),
-            Self::Tasks => tr("tasks-place-tasks"),
         }
     }
 }
@@ -97,9 +91,6 @@ pub(crate) struct Nav {
     pub(crate) asking: LocalState<bool>,
     /// The new project's name, while the dialog asks.
     pub(crate) named: LocalState<String>,
-    /// The issue this window shows as a chat: the one its launch named
-    /// ([`chat_uri`]). A chat window shows that conversation alone.
-    pub(crate) chat: LocalState<Option<Id>>,
 }
 
 impl Nav {
@@ -139,16 +130,6 @@ impl ResourceApp for App {
     type Resource = Tracker;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
-    /// A window is launched on nothing, or on the chat of one issue
-    /// ([`chat_uri`]).
-    const ARGUMENTS: usize = 1;
-
-    /// The models the person's agent runs may offer, kept by Settings: their
-    /// chain's next step is asked against them.
-    const PERSON_RECORDS: &'static [ui::framework::PersonKind] =
-        &[ui::framework::PersonKind::shared::<
-            tilo_agent_models::OfferedModels,
-        >()];
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -173,10 +154,6 @@ impl ResourceApp for App {
     }
 
     fn view(cx: &mut ViewCx<Tracker>) -> Element {
-        let launched = cx
-            .launch_arguments()
-            .first()
-            .and_then(|argument| chat::target(argument));
         let (asking, named) = (cx.local(false), cx.local(String::new()));
         let nav = Nav {
             place: cx.local(Place::List),
@@ -185,14 +162,9 @@ impl ResourceApp for App {
             project: cx.local(None),
             asking,
             named,
-            chat: cx.local(launched),
         };
         let addresses = router(cx, &nav);
-        let chat = nav.chat.clone();
-        cx.switch(&chat, move |cx, chat| match chat {
-            Some(issue) => chat::window(cx, issue.clone(), &addresses),
-            None => tracker_window(cx, &nav, &addresses),
-        })
+        tracker_window(cx, &nav, &addresses)
     }
 }
 
@@ -216,7 +188,6 @@ fn tracker_window(cx: &ViewCx<Tracker>, nav: &Nav, addresses: &LocalState<Tracke
                 Place::List => list::view(cx, &nav),
                 Place::Board => board::view(cx, &nav),
                 Place::Thread => thread::view(cx, &nav),
-                Place::Tasks => runs::view(cx, &nav),
             })
         })
     });
@@ -433,29 +404,13 @@ fn router(cx: &ViewCx<Tracker>, nav: &Nav) -> LocalState<Tracker> {
             }
             // The places are the window's views: choosing one shows it, in
             // the bar or from the palette or an agent alike.
-            place @ (TasksEffect::ShowList
-            | TasksEffect::ShowBoard
-            | TasksEffect::ShowTasks
-            | TasksEffect::ShowThread) => {
+            place @ (TasksEffect::ShowList | TasksEffect::ShowBoard | TasksEffect::ShowThread) => {
                 open.place.set(match place {
                     TasksEffect::ShowBoard => Place::Board,
-                    TasksEffect::ShowTasks => Place::Tasks,
                     TasksEffect::ShowThread => Place::Thread,
                     _ => Place::List,
                 });
                 open.open.set(None);
-                Ok(Effected::done())
-            }
-            // A chat is a window of its own: the desktop opens another
-            // window of Tasks beside this one, launched on the issue's chat.
-            // A window that already is that chat shows it.
-            TasksEffect::OpenChat { issue } => {
-                if !cx.live().with(|tracker| tracker.issues.contains(&issue)) {
-                    return Err("There is no such issue".to_owned());
-                }
-                if open.chat.with(|chat| chat.as_ref() != Some(&issue)) {
-                    ui::shell_tabs::open_beside(Some(chat::uri(&issue)), false);
-                }
                 Ok(Effected::done())
             }
             effect @ TasksEffect::WriteNote { .. } => note::handle(effect, cx),
@@ -489,16 +444,9 @@ fn sidebar(cx: &ViewCx<Tracker>, nav: &Nav, tracker: &LocalState<Tracker>) -> El
                         chosen.project.set(Some(area));
                     } else {
                         chosen.project.set(None);
-                        let filter = Filter::of(&key);
-                        // The running tasks are the task list's own, a place
-                        // of their own rather than a narrower list: the row
-                        // that asks for them shows them.
-                        if filter == Some(Filter::Running) {
-                            chosen.place.set(Place::Tasks);
-                        } else if chosen.place.get() == Place::Tasks {
-                            chosen.place.set(Place::List);
-                        }
-                        chosen.filter.set(filter.map(|filter| filter.key()));
+                        chosen
+                            .filter
+                            .set(Filter::of(&key).map(|filter| filter.key()));
                     }
                 }),
         ) as Element
