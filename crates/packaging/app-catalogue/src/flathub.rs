@@ -158,14 +158,6 @@ fn require_enabled_flathub(rows: &str) -> Result<(), InstallRefusal> {
     }
 }
 
-/// The processor whose Flathub builds are looked up beside this machine's:
-/// `x86_64` on every other machine, since hundreds of Flathub apps (Steam,
-/// Spotify, Discord, Zoom) are built for it alone. `None` on `x86_64`.
-#[must_use]
-pub fn other_processor() -> Option<&'static str> {
-    (std::env::consts::ARCH != "x86_64").then_some("x86_64")
-}
-
 /// The `flatpak` arguments that list the device's Flathub apps for `arch`
 /// from the summary Flatpak keeps (no network), as `id<TAB>name` rows. The
 /// hourly `tilo-app-update` run keeps that summary current.
