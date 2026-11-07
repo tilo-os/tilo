@@ -11,8 +11,17 @@
 //!   creation): the first thing put in afterwards goes into the one map there is;
 //! * a record that already holds two reads whole ([`maps`]: a read reads every copy, so the
 //!   things in the copy the record does not keep are never lost), and its next write folds the
-//!   copies into the one it keeps ([`single`]), the same way on every replica, so the record
-//!   holds one map again from that write on.
+//!   copies into the one it keeps ([`single`]), the same way on every replica, so one map holds
+//!   everything again from that write on.
+//!
+//! The levels above the resources are maps of the same kind: the workspace's `tl` map, each
+//! app's map under it, and the workspace record's `$personal` with the maps below it. Two
+//! replicas that each write the first record of an app (or of a workspace) before they meet
+//! make a map of their own, and everything in the map Automerge does not keep would be out of
+//! every read: a person's first task would be gone. The same two things hold for them: a read
+//! reaches through every copy at every step ([`reach`]), and a write makes and folds those maps
+//! ([`single`]), so a record that already holds two reads the union, and its next write
+//! converges on every replica.
 
 use automerge::transaction::Transactable as _;
 use automerge::{ObjId, ObjType, Prop, ReadDoc, ScalarValue, Value as AmValue};
@@ -35,6 +44,23 @@ pub fn maps(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// Every map `path` reaches below `parent`, reading every copy a replica made at each step: the
+/// maps a level holds are each read for the maps of the level below, so a level the document
+/// keeps twice answers with the maps under both, and each level's copies come oldest first,
+/// last the one the document keeps.
+///
+/// This is how a read of the levels above the resources (`tl`, `tl/<app>`, `$personal` and the
+/// maps below) reaches what a replica wrote before it met the others: a record of an app whose
+/// map another replica made is under that map, which [`ReadDoc::get`] does not answer with.
+#[must_use]
+pub fn reach(doc: &Doc, parent: &ObjId, path: &[&str]) -> Vec<ObjId> {
+    let mut at = vec![parent.clone()];
+    for key in path {
+        at = at.iter().flat_map(|held| maps(doc, held, key)).collect();
+    }
+    at
 }
 
 /// The map at `key` of `parent`, made when the record holds none; the copies of it a replica

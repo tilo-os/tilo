@@ -39,15 +39,16 @@ pub(crate) fn map_at(doc: &Doc, obj: &ObjId, key: &str) -> Option<ObjId> {
 }
 
 /// The map of the resource `id` of `app`: under the app's id, or under an id it was published as
-/// before (`previously:`), where its older records stay.
+/// before (`previously:`), where its older records stay. Every copy of the levels above it is
+/// read ([`crate::containers::reach`]): a record made before two replicas met may be in the map
+/// the document does not keep, and it is as much the app's record as any.
 pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
-    let records = map_at(doc, &automerge::ROOT, RECORDS_KEY)?;
-    if let Some(found) = map_at(doc, &records, app).and_then(|held| map_at(doc, &held, id)) {
-        return Some(found);
-    }
-    crate::schema::previously(app)
-        .iter()
-        .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
+    crate::schema::stored_under(app).iter().find_map(|stored| {
+        crate::containers::reach(doc, &automerge::ROOT, &[RECORDS_KEY, stored])
+            .iter()
+            .rev()
+            .find_map(|held| map_at(doc, held, id))
+    })
 }
 
 /// The type stored in `$type` of the map `obj`.
@@ -532,7 +533,9 @@ impl ChangedBuilder {
         let Some(Some(doc)) = keys.get(2).copied() else {
             // `tl` and `tl/<app>`, the maps above the resources: every chunk makes them with
             // its first write. Making one creates no resource and moves none, so nothing read of
-            // any resource changed; removing one takes away every resource it held.
+            // any resource changed; removing one takes away every resource it held, and so does
+            // a write that folds the copies a replica made into the one the document keeps
+            // ([`crate::containers`]), which empties the copies it leaves.
             if !made {
                 self.structure = true;
                 self.layout = true;

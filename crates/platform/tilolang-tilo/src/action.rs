@@ -374,18 +374,6 @@ fn refused(error: &ModelError) -> ActionError {
     ActionError::Refused(error.to_string())
 }
 
-/// The map under `key` of `parent`, made when absent.
-fn ensure_map(
-    doc: &mut Doc,
-    parent: &automerge::ObjId,
-    key: &str,
-) -> Result<automerge::ObjId, ActionError> {
-    if let Some((AmValue::Object(ObjType::Map), id)) = doc.get(parent, key)? {
-        return Ok(id);
-    }
-    Ok(doc.put_object(parent, key, ObjType::Map)?)
-}
-
 impl DynAction {
     /// The schemas of the package version that wrote this action, installed while it applies:
     /// its types resolve by that version. `None` for an action with no module recorded (a
@@ -684,7 +672,9 @@ pub fn apply_edits(
         return Ok(());
     }
     let mut cx = ActionCx::for_write(doc, seed);
-    let records = ensure_map(doc, &ROOT, RECORDS_KEY)?;
+    // The workspace's `tl` map is made by the first write: a replica that made one of its own
+    // before it met the others has its records in that one, which this folds in before writing.
+    let records = crate::containers::single(doc, &ROOT, RECORDS_KEY)?;
     for edit in edits {
         apply_one(doc, &records, app, edit, &mut cx)?;
     }
@@ -693,12 +683,18 @@ pub fn apply_edits(
 
 /// The records map `edit` writes in: where its resource was stored, under the app's id or under
 /// an id the app had before (`previously:`); what is new goes under the app's id.
+///
+/// The app's maps a replica made before it met the others are folded into the ones the document
+/// keeps first ([`crate::containers`]), so the edit writes where every replica reads.
 fn target_map(
     doc: &mut Doc,
     records: &automerge::ObjId,
     app: &str,
     edit: &DynEdit,
 ) -> Result<automerge::ObjId, ActionError> {
+    for key in crate::schema::stored_under(app) {
+        crate::containers::fold(doc, records, &key)?;
+    }
     let held = match edit {
         DynEdit::Create { .. } | DynEdit::RunChunk { .. } | DynEdit::In { .. } => None,
         DynEdit::Chunk { edit, .. } => return target_map(doc, records, app, edit),
@@ -715,16 +711,16 @@ fn target_map(
     };
     match held {
         Some(map) => Ok(map),
-        None => ensure_map(doc, records, app),
+        None => crate::containers::single(doc, records, app),
     }
 }
 
-/// Fold the copies of the maps the record `id` (in the app's records map `app`) keeps beside its
-/// fields into the one it keeps, before anything is written to it: a record made before it made
-/// them with it may hold two of each, one for every replica that wrote first
-/// ([`crate::containers`]).
+/// Fold the copies of the record map `id` (in the app's records map `app`) and of the maps it
+/// keeps beside its fields into the ones it keeps, before anything is written to it: a record
+/// made before it made them with it, or made at once by two replicas that had not met, may hold
+/// two of each ([`crate::containers`]).
 fn fold_containers(doc: &mut Doc, app: &automerge::ObjId, id: &str) -> Result<(), ActionError> {
-    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+    let Some(obj) = crate::containers::fold(doc, app, id)? else {
         return Ok(());
     };
     for key in [ITEMS_KEY, OUTBOX_KEY, MIGRATED_KEY, TRIGGERS_KEY] {
@@ -850,7 +846,7 @@ fn insert_item(
     record: &Json,
     at: &str,
 ) -> Result<(), ActionError> {
-    let obj = ensure_map(doc, app, id)?;
+    let obj = crate::containers::single(doc, app, id)?;
     let items = crate::containers::single(doc, &obj, ITEMS_KEY)?;
     let mut taken = Taken::new();
     let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
@@ -1490,20 +1486,20 @@ fn map_in(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<automerge::Obj
 }
 
 /// The records maps of `app` in `doc` that anything was written to: under its id, then under
-/// each id it was published as before (`previously:`), whose records are its own.
+/// each id it was published as before (`previously:`), whose records are its own, and under
+/// every copy of them a replica made before it met the others ([`crate::containers`]).
 #[must_use]
 pub fn app_records(doc: &Doc, app: &str) -> Vec<automerge::ObjId> {
-    let Some(records) = map_in(doc, &ROOT, RECORDS_KEY) else {
-        return Vec::new();
-    };
     crate::schema::stored_under(app)
         .iter()
-        .filter_map(|key| map_in(doc, &records, key))
+        .flat_map(|key| crate::containers::reach(doc, &ROOT, &[RECORDS_KEY, key]))
         .collect()
 }
 
 /// The records map of `app` (in `records`, the workspace's `tl` map) that holds the resource `id`:
-/// its own, or that of an id it was published as before.
+/// its own, or that of an id it was published as before. Every copy of an app's map is folded
+/// into the one the document keeps before this is asked ([`target_map`]), so the one the
+/// document keeps is the one that holds it.
 fn stored_map(
     doc: &Doc,
     records: &automerge::ObjId,
