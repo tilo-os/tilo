@@ -294,28 +294,16 @@ impl Inner {
 
 impl Inner {
     /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed.
+    /// index they were written over changed. What the record holds is the index's, not derived
+    /// here again ([`Self::settle_versions`]).
     pub(super) fn rebuild_overlay(&mut self) {
-        self.derive_overlay(|_| true);
-    }
-
-    /// Derive what an origin derives anew into an empty overlay, and none of the store's writes
-    /// the record holds: what those who read the mirror saw of the record before its change
-    /// ([`super::sync`]).
-    pub(super) fn rebuild_unsaved_overlay(&mut self) {
-        self.derive_overlay(|write| write.derived);
-    }
-
-    /// Derive the writes of `self.local` `keep` holds anew into an empty overlay, and none the
-    /// record holds: what those wrote is the index's ([`Self::settle_versions`]).
-    pub(super) fn derive_overlay(&mut self, keep: impl Fn(&LocalWrite) -> bool) {
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
             for write in self
                 .local
                 .iter()
-                .filter(|write| keep(write) && !settled.contains(&write.seed))
+                .filter(|write| !settled.contains(&write.seed))
             {
                 let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
                     continue;
@@ -425,7 +413,7 @@ impl Inner {
     /// its resources alone, so a rebuild of the overlay reads no version off the index again for
     /// a change those who read the mirror are told already. A transaction whose every version
     /// `told` holds is the record's, and stays only for the chunk record it goes to
-    /// ([`Self::derive_overlay`]).
+    /// ([`Self::rebuild_overlay`]).
     pub(super) fn settle_versions(&mut self, told: &super::Ends) {
         let mut settled = BTreeSet::new();
         for write in &mut self.local {

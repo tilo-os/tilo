@@ -60,20 +60,17 @@ impl TiloStore {
             .filter(|(_, held)| held.ready())
             .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
             .collect();
+        // What the splices below are measured from is the listing as those who read the mirror
+        // had it before this change: the store's own writes are the mirror's open transaction,
+        // which every read holds, so an item one of them placed was already read at its place
+        // and the change that brings it takes no step for it. A reader that did not read since
+        // is told the collection and reads its items there.
+        let old_overlay = std::mem::take(&mut inner.overlay);
         // The store's own writes leave the mirror: the items they added, removed or moved are
         // moved again below, as the record has them. What an origin derives is never the
         // record's to have, so those writes stay, and are applied again on the record's new
         // copy below.
         let mut items = inner.drop_committed_local(chunk);
-        inner.rollback(chunk);
-        // What the splices below are measured from is the record as those who read the mirror
-        // saw it before this change: the writes of this store's are not the record's until it
-        // takes them, whatever chunk they were written into, and the change told here is what
-        // brings them. An item a write placed is a joined one for whoever reads, not one already
-        // at its place, so the one the change names has its step.
-        inner.reapply_derived(chunk);
-        inner.rebuild_unsaved_overlay();
-        let old_overlay = std::mem::take(&mut inner.overlay);
         inner.rollback(chunk);
         let (changed, ends, placed) = inner.apply_new_changes(chunk, doc, &before);
         inner.chunks.set_seen(chunk, heads);
