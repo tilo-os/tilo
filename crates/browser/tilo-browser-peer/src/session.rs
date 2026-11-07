@@ -265,7 +265,9 @@ impl RouteStatus {
     /// The documents this route holds, undecided, whatever they wait for.
     #[must_use]
     pub fn waiting(&self) -> usize {
-        self.awaiting_keys + self.awaiting_surface + self.awaiting_governance
+        self.awaiting_keys
+            .saturating_add(self.awaiting_surface)
+            .saturating_add(self.awaiting_governance)
     }
 }
 
@@ -1287,6 +1289,21 @@ impl HeldFrame {
     /// Whether this frame waits for an app surface an arrival can supply.
     fn waits_for_surface(&self) -> bool {
         matches!(self.reason, HoldReason::Surface(_))
+    }
+}
+
+/// Why `envelope`, a write this page cannot decide yet, waits: for the app
+/// version it was written with, a change naming a surface the page holds not
+/// (it asks the workspace for it), or for its workspace's governance.
+fn hold_reason(route: &DocumentRoute, envelope: &collab_types::SignedOp) -> HoldReason {
+    let surface = (envelope.kind == collab_types::OpKind::Change)
+        .then_some(envelope.surface)
+        .flatten();
+    match surface {
+        Some(surface) if !crate::surfaces::holds(&route.app_id, &surface) => {
+            HoldReason::Surface(surface)
+        }
+        _ => HoldReason::Governance,
     }
 }
 
@@ -2881,9 +2898,9 @@ impl Task {
                         // yet. A record whose every write is held would
                         // otherwise never ask for the keys the writes wait on.
                         self.open_channel(&route);
-                        let reason = self.hold_reason(&route, envelope);
+                        let reason = hold_reason(&route, envelope);
                         self.hold_document(
-                            route,
+                            &route,
                             OpKey::of(envelope),
                             body,
                             author,
@@ -2899,41 +2916,17 @@ impl Task {
                     }
                 }
                 self.open_channel(&route);
-                let waits = match &envelope.encryption {
-                    Some(metadata) => self
-                        .ciphers
-                        .get(&route)
-                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
-                        .then_some(HoldReason::Keys),
-                    None => match self
-                        .channels
-                        .admission(
-                            &route,
-                            (
-                                self.governance_known(&route),
-                                self.ciphers.contains_key(&route),
-                            ),
-                            retained,
-                            None,
-                        )
-                        .admits_cleartext()
-                    {
-                        Some(true) => None,
-                        Some(false) => {
-                            let error = "cleartext on a channel that requires it sealed";
-                            self.refused = (self.refused.0.saturating_add(1), error.to_owned());
-                            self.emit(&PeerEvent::DocumentRejected(error.to_owned()));
-                            return;
-                        }
-                        None => Some(HoldReason::Governance),
-                    },
-                };
-                if let Some(reason) = waits {
-                    let key = OpKey::of(envelope);
-                    self.hold_document(route, key, body, author, retained, reason);
-                    return;
+                match self.verdict(&route, envelope, retained) {
+                    Ok(None) => self.open_document(&body, author),
+                    Ok(Some(reason)) => {
+                        let key = OpKey::of(envelope);
+                        self.hold_document(&route, key, body, author, retained, reason);
+                    }
+                    Err(error) => {
+                        self.refused = (self.refused.0.saturating_add(1), error.to_owned());
+                        self.emit(&PeerEvent::DocumentRejected(error.to_owned()));
+                    }
                 }
-                self.open_document(&body, author);
             }
             _ => {}
         }
@@ -2957,23 +2950,36 @@ impl Task {
         }
     }
 
-    /// Why `envelope`, a write this page cannot decide yet, waits: for the app
-    /// version it was written with, a change naming a surface the page holds
-    /// not (it asks the workspace for it), or for its workspace's governance.
-    fn hold_reason(
-        &mut self,
+    /// What the write `envelope` waits for once its route's keys and the
+    /// channel's governance admit it: `None` when it opens now, or the error
+    /// for cleartext on a channel that requires it sealed.
+    fn verdict(
+        &self,
         route: &DocumentRoute,
         envelope: &collab_types::SignedOp,
-    ) -> HoldReason {
-        let surface = (envelope.kind == collab_types::OpKind::Change)
-            .then_some(envelope.surface)
-            .flatten();
-        match surface {
-            Some(surface) if !crate::surfaces::holds(&route.app_id, &surface) => {
-                HoldReason::Surface(surface)
-            }
-            _ => HoldReason::Governance,
-        }
+        retained: bool,
+    ) -> Result<Option<HoldReason>, &'static str> {
+        let Some(metadata) = &envelope.encryption else {
+            let admission = self.channels.admission(
+                route,
+                (
+                    self.governance_known(route),
+                    self.ciphers.contains_key(route),
+                ),
+                retained,
+                None,
+            );
+            return match admission.admits_cleartext() {
+                Some(true) => Ok(None),
+                Some(false) => Err("cleartext on a channel that requires it sealed"),
+                None => Ok(Some(HoldReason::Governance)),
+            };
+        };
+        Ok(self
+            .ciphers
+            .get(route)
+            .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
+            .then_some(HoldReason::Keys))
     }
 
     /// Take every document held for `route` and decide it again: what still
@@ -3103,7 +3109,7 @@ impl Task {
     /// the app surface it was written with, or its workspace's governance.
     fn hold_document(
         &mut self,
-        route: DocumentRoute,
+        route: &DocumentRoute,
         key: OpKey,
         body: Vec<u8>,
         author: [u8; 32],
@@ -3123,7 +3129,7 @@ impl Task {
                 reason,
             },
         );
-        self.recount(&route);
+        self.recount(route);
     }
 
     /// Ask the host to replay the records whose full holds let documents

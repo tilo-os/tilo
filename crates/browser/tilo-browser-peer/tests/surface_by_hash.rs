@@ -1,8 +1,8 @@
-//! A page that holds a change written by an app version it does not run asks
-//! its workspace for that version's surface by hash, on the same content plane
-//! it asks for a picture with, keeps it, and decides what waited for it. The
-//! hold names the surface as the reason it waits, so a reader is told what a
-//! record wants instead of being told it wants its keys.
+//! A page that holds a record's history written by an app version it does not
+//! run asks its workspace for that version's surface by hash, on the same
+//! content plane it asks for a picture with, keeps it, and decides what waited
+//! for it. The hold names the surface as the reason it waits, so a reader is
+//! told what a record wants instead of being told it wants its keys.
 
 #![allow(
     clippy::unwrap_used,
@@ -101,6 +101,19 @@ fn vault() -> VaultKey {
     VaultKey::new([7; 32])
 }
 
+/// The notes record's changes `events` opened, in the order they arrived.
+fn pages(events: Vec<PeerEvent>) -> Vec<DocumentMutation> {
+    events
+        .into_iter()
+        .filter_map(|event| match event {
+            PeerEvent::Document(document) if document.route.app_id == "so.tilo.notes" => {
+                document.mutation()
+            }
+            _ => None,
+        })
+        .collect()
+}
+
 /// Whether the page says it holds something for the note, and why.
 fn held(peer: &PeerHandle) -> Option<String> {
     let note = support::route();
@@ -113,7 +126,7 @@ fn held(peer: &PeerHandle) -> Option<String> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_page_fetches_the_surface_a_held_change_was_written_with_and_decides_it() {
+async fn a_page_fetches_the_surface_the_history_it_holds_was_written_with_and_decides_it() {
     // The page runs no app of its own: every change it receives names a
     // surface it must fetch, the one this test's host keeps.
     tilo_peer_state::decide_with_surfaces(tilo_browser_peer::surfaces::surfaces(), |_| None);
@@ -141,7 +154,7 @@ async fn a_page_fetches_the_surface_a_held_change_was_written_with_and_decides_i
         .serve_content(keeps.clone());
 
     // The laptop creates the workspace's key scope, announces itself and
-    // writes the record's only write, sealed and naming the other version's
+    // writes the record's history, sealed and naming the other version's
     // surface.
     let note = route();
     let scope = collab_types::workspace_scope(WORKSPACE);
@@ -175,48 +188,54 @@ async fn a_page_fetches_the_surface_a_held_change_was_written_with_and_decides_i
             },
         );
     }
-    // The change names a field edit of the notes app, as one its executor
-    // makes, so the op carries the claim the receiver decides against the
-    // app's surface.
+    // The record's history: three page edits, each naming a field of the
+    // notes app as its executor does, so every op carries the claim the
+    // receiver decides against the app's surface, and each sealed with the
+    // record's content key.
     let mut document = automerge::AutoCommit::new();
-    document.put(automerge::ROOT, "pages", "a page").unwrap();
-    collab_types::CommitNamed::commit_edit(&mut document, "notes.notebook", "pages");
-    let mutation = DocumentMutation::Incremental(document.save());
-    let claims = collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
-    let frame = mutation.encode().unwrap();
-    let expected = || DocumentMutation::decode(&frame).unwrap();
-    let (metadata, sealed) = laptop_peer
-        .content_keys()
-        .unwrap()
-        .for_unit(channel)
-        .seal_content(artifact, ContentRetention::Delta, &frame)
-        .unwrap();
-    let mut op = SignedOp::new_unsigned_with_encryption(
-        sealed,
-        artifact,
-        Ed25519PublicKey::from_bytes(laptop_device),
-        document_attestation_id(&note.app_id, &note.cluster_id, &note.record),
-        OpKind::Change,
-        SystemTime::now(),
-        1,
-        metadata,
-    )
-    .with_claims(claims)
-    .with_surface(Some(*blake3::hash(&surface).as_bytes()));
-    collab_types::sign_op(&mut op, &laptop.key).unwrap();
-    publish(
-        &session,
-        &NeighbourMsg::AppDocument {
-            peer: neighbour_wire::peer_handle(&laptop_device),
-            app_id: note.app_id.clone(),
-            cluster_id: note.cluster_id.clone(),
-            record_id: note.record.clone(),
-            envelope: Box::new(op),
-        },
-    );
+    let mut written = Vec::new();
+    for page_number in 1..=3 {
+        document
+            .put(automerge::ROOT, "pages", format!("page {page_number}"))
+            .unwrap();
+        collab_types::CommitNamed::commit_edit(&mut document, "notes.notebook", "pages");
+        let mutation = DocumentMutation::Incremental(document.save_incremental());
+        let claims = collab_types::mutation_claims(&mutation, collab_types::record_unit).unwrap();
+        let frame = mutation.encode().unwrap();
+        let (metadata, sealed) = laptop_peer
+            .content_keys()
+            .unwrap()
+            .for_unit(channel)
+            .seal_content(artifact, ContentRetention::Delta, &frame)
+            .unwrap();
+        let mut op = SignedOp::new_unsigned_with_encryption(
+            sealed,
+            artifact,
+            Ed25519PublicKey::from_bytes(laptop_device),
+            document_attestation_id(&note.app_id, &note.cluster_id, &note.record),
+            OpKind::Change,
+            SystemTime::now(),
+            page_number,
+            metadata,
+        )
+        .with_claims(claims)
+        .with_surface(Some(*blake3::hash(&surface).as_bytes()));
+        collab_types::sign_op(&mut op, &laptop.key).unwrap();
+        written.push(DocumentMutation::decode(&frame).unwrap());
+        publish(
+            &session,
+            &NeighbourMsg::AppDocument {
+                peer: neighbour_wire::peer_handle(&laptop_device),
+                app_id: note.app_id.clone(),
+                cluster_id: note.cluster_id.clone(),
+                record_id: note.record.clone(),
+                envelope: Box::new(op),
+            },
+        );
+    }
 
     // The page joins: it asks for the note's channel though it holds the
-    // note's only write, undecided, and the laptop admits it.
+    // note's first write, undecided, and the laptop admits it.
     let page = start_peer(
         Host::Https(host.https()),
         browser.cert.clone(),
@@ -281,43 +300,30 @@ async fn a_page_fetches_the_surface_a_held_change_was_written_with_and_decides_i
             status.awaiting_governance,
         )
     });
-    let opened = page.drain().into_iter().any(|event| {
-        matches!(
-            event,
-            PeerEvent::Document(document)
-                if document.mutation() == Some(expected())
-        )
-    });
+    let opened = pages(page.drain());
 
     assert_eq!(
         waiting,
-        Some((0, 1, 0)),
-        "the write waits for its app surface alone"
+        Some((0, 3, 0)),
+        "every write waits for its app surface alone"
     );
     assert!(
-        !opened,
-        "the write is not opened before its surface arrives"
+        opened.is_empty(),
+        "nothing of the record is opened before its surface arrives"
     );
 
     // The page asked its workspace for that surface. The host answers, and
     // what the page waited for is decided: it is the bytes hashed to the
     // address asked for that decide it, which the page keeps by that hash.
     keeps.answer();
-    wait_for("the write decided once its surface arrived", || {
-        let events = page.drain();
-        async move {
-            events
-                .into_iter()
-                .any(|event| {
-                    matches!(
-                        event,
-                        PeerEvent::Document(document)
-                            if document.mutation() == Some(expected())
-                    )
-                })
-                .then_some(())
-        }
-    })
+    wait_for(
+        "the record's history decided once its surface arrived",
+        || {
+            let opened = pages(page.drain());
+            let written = written.clone();
+            async move { (opened == written).then_some(()) }
+        },
+    )
     .await;
     wait_for("the route holding nothing", || {
         let waiting = page

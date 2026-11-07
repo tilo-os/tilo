@@ -109,19 +109,16 @@ fn request(hash: &str) -> Option<Vec<u8>> {
     runtime.spawn(async move {
         let result = blobs.fetch_all(&[tilo_app_package::BlobHash(blob)]).await;
         let mut known = surfaces.bytes.lock_recover();
-        match result.ok().and_then(|mut all| all.pop()) {
-            Some(bytes) => {
-                known.insert(hash, Some(bytes.to_vec()));
-                drop(known);
-                surfaces.fetched.notify_all();
-                arrived();
-            }
+        if let Some(bytes) = result.ok().and_then(|mut all| all.pop()) {
+            known.insert(hash, Some(bytes.to_vec()));
+            drop(known);
+            surfaces.fetched.notify_all();
+            arrived();
+        } else {
             // Asked again by the next op or member that names it.
-            None => {
-                known.remove(&hash);
-                drop(known);
-                surfaces.fetched.notify_all();
-            }
+            known.remove(&hash);
+            drop(known);
+            surfaces.fetched.notify_all();
         }
     });
     None
