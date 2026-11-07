@@ -1005,8 +1005,15 @@ impl Session {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 })?;
-                let agent = agents.keep_one(&workspace, &policy, &person)?;
-                let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
+                let Some(agent) = agents.keep_one(&workspace, &policy, &person) else {
+                    tracing::warn!(%workspace, "the ask found no agent to keep");
+                    return None;
+                };
+                let Some(channel) = conversations.ask(&person, &workspace, &policy, &agent, text)
+                else {
+                    tracing::warn!(%workspace, %agent, "the ask made no conversation");
+                    return None;
+                };
                 // A channel the ask just made is a resource the arrangement may
                 // place the moment it is asked to: search has not read Chat's
                 // record yet, so the place's app and default view are put where
