@@ -134,6 +134,12 @@ const snapshot = async tab => {
 const dump = async (tab, name) => {
   const shown = await snapshot(tab);
   shown.membership = JSON.parse(await membership(tab));
+  // Whether the desk is still stepping, or only what it last drew: a page that
+  // stops stepping answers nothing, whatever it shows.
+  const frames = () => tab.evaluate('globalThis.tiloMount?.state()?.frames ?? null').catch(() => null);
+  const before = await frames();
+  await sleep(1500);
+  shown.stepping = {before, after: await frames()};
   shown.text = await tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').slice(0, 4000)`);
   writeFileSync(`${out}/${name}.json`, JSON.stringify({...shown, log: tab.log}, null, 2));
   const shot = await tab.screenshot();
@@ -215,12 +221,15 @@ const search = async (tab, command, query, row) => {
     await click(tab, 640, 700);
     await key(tab, 'k', command);
   }
-  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 60_000);
+  // A desk presenting a megapixel through software draws a few frames a
+  // second: waits here are counted in frames, so they are sized for a page
+  // that is slow rather than quiet.
+  await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 120_000);
   await type(tab, query);
   const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
   let last = null;
   let chosen = null;
-  const deadline = Date.now() + 60_000;
+  const deadline = Date.now() + 120_000;
   for (;;) {
     const rows = await paletteRows(tab);
     if (first(rows) === row && last && JSON.stringify(rows) === JSON.stringify(last)) {
@@ -234,7 +243,7 @@ const search = async (tab, command, query, row) => {
       failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(rows)}`);
     }
   }
-  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 120_000);
+  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
   return chosen;
 };
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
@@ -415,6 +424,10 @@ const browser = await launch({args: [
   '--autoplay-policy=no-user-gesture-required',
   // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
   '--disable-dev-shm-usage',
+  // Each page keeps stepping while the other one has the browser's attention:
+  // a desk a browser slowed down to save power answers the next key late.
+  '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
+  '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
 try {
@@ -790,7 +803,7 @@ try {
   for (const application of applications) {
     await search(a.tab, a.command, application.label.toLowerCase(), application.label);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
-      `the window of ${application.label}`, 120_000);
+      `the window of ${application.label}`, 180_000);
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
