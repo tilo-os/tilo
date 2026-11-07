@@ -21281,7 +21281,6 @@ dependencies = [
  "desktop-policy",
  "durable-store",
  "ed25519-dalek 3.0.0",
- "emoji",
  "futures-util",
  "gbm",
  "getrandom 0.4.3",

@@ -1085,25 +1085,6 @@ launchpad-subtitle = Wähle, wie du anfängst. Alle in diesem Arbeitsbereich seh
 launchpad-subtitle-private = Wähle, wie du anfängst. Nur du siehst, was du hier machst, bis du jemanden einlädst.
 launchpad-subtitle-public = Wähle, wie du anfängst. Dieser Arbeitsbereich ist öffentlich: Alle, die beitreten, sehen, was du hier machst.
 
-# The emoji picker (Super+. by default)
-emoji-picker-title = Emoji
-emoji-picker-search = Emoji suchen
-emoji-picker-groups = Emoji-Kategorien
-emoji-picker-recent = Zuletzt verwendet
-emoji-picker-results = Passende Emoji
-emoji-picker-no-results = Keine Emoji gefunden
-emoji-picker-tones = Hauttöne
-emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippe, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem du geschrieben hast, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
-
-# Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
-emoji-picker-toned = { $name }, { $tone }
-emoji-picker-tone-light = heller Hautton
-emoji-picker-tone-medium-light = mittelheller Hautton
-emoji-picker-tone-medium = mittlerer Hautton
-emoji-picker-tone-medium-dark = mitteldunkler Hautton
-emoji-picker-tone-dark = dunkler Hautton
-
 # Der Fensterwechsler (Alt+Tab).
 window-switcher-title = Fenster wechseln
 window-switcher-description = Fenster in diesem Arbeitsbereich, zuletzt verwendete zuerst. Halte Alt gedrückt und drücke Tab oder die Pfeiltasten zum Bewegen, lass Alt los zum Wechseln oder drücke Escape, um zu bleiben.
@@ -1240,8 +1221,6 @@ activity-morning-command-refused = Anfrage abgelehnt
 activity-morning-recorded = { $source } · letzte aufgezeichnete Arbeitsbereichsaktivität: { $time }
 
 activity-morning-next = Nächste ausgewählte Quelle
-
-emoji-picker-hint-tone = Hautton wählen
 
 workspace-settings-hint-close = Schließen
 workspace-settings-hint-save = Speichern

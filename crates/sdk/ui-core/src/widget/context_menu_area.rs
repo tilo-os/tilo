@@ -894,7 +894,7 @@ impl super::Decorator for ContextMenuArea {
         if let Some((anchor, pick)) = self.picker_wanted.take() {
             let mut picker = super::EmojiPicker::framed();
             let viewport = self.viewport.unwrap_or_else(|| self.content.get_rect());
-            picker.open_at(anchor, viewport, theme);
+            picker.open_at(Some(anchor), viewport, theme);
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {

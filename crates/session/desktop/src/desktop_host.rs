@@ -47,7 +47,7 @@ use crate::about::{TiloMenu, TiloMenuAction};
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::desk_verbs::{self, OpenSearch, chrome_resource, desk_resource, launchpad_resource};
 use crate::display_identify::DisplayIdentify;
-use crate::emoji_picker::{EmojiLink, EmojiPicker};
+use crate::emoji::EmojiLink;
 use crate::fullscreen_hint::FullscreenHint;
 use crate::launchpad::{CollaborationLaunchpad, LaunchpadAction};
 use crate::overlays::{Overlays, Slot};
@@ -625,14 +625,14 @@ pub struct DesktopChrome {
     /// Where the person is in the workspace (the strip ribbon grown into
     /// the strip switcher, and the window rail).
     navigator: StripNavigator,
-    /// The emoji picker: Super+. opens its card at the caret of the field the
-    /// person types into, and every pick is written into that field by the
-    /// host.
-    emoji: EmojiPicker,
-    /// Where the picker's next opening goes, and what came of the last pick.
+    /// The emoji card: Super+. opens it at the caret of the field the person
+    /// types into, and every pick is written into that field by the host.
+    emoji: ui::widget::EmojiPicker,
+    /// Where the card's next opening goes, and what the person picked.
     emoji_link: EmojiLink,
-    /// The display the open card stands on.
-    emoji_viewport: Rect,
+    /// The theme the chrome last drew in: what a card opened between two
+    /// frames is sized and placed by.
+    theme: ui::Theme,
     /// Where the navigator's ribbon and rail stand and what they report.
     navigator_frame: StripFrame,
     /// What the navigator last read: the navigation and who-is-here
@@ -774,9 +774,9 @@ impl DesktopChrome {
             tilo_menu,
             workspace_menu: WorkspaceMenu::new(),
             navigator: StripNavigator::default(),
-            emoji: EmojiPicker::new(),
+            emoji: ui::widget::EmojiPicker::sheet(),
             emoji_link: EmojiLink::default(),
-            emoji_viewport: Rect::ZERO,
+            theme: ui::Theme::dark(),
             navigator_frame: StripFrame::empty(Rect::ZERO),
             navigator_seen: None,
             overview_revision: 0,
@@ -831,17 +831,17 @@ impl DesktopChrome {
         self.publish_overlays();
     }
 
-    /// Keep the emoji picker's openings, picks and recents through `link`: the
-    /// host says where the focused field's caret is, writes each pick into
-    /// that field and keeps the recents where the link's store does.
+    /// Keep the emoji card's openings and picks through `link`: the session
+    /// says where the focused field's caret is and writes each pick into that
+    /// field.
     pub fn set_emoji(&mut self, link: EmojiLink) {
         self.emoji_link = link;
     }
 
-    /// The emoji picker, as the host sees it: open or not, the card's place,
-    /// and what the person picked.
+    /// The emoji card, as the host sees it: open or not, where it stands and
+    /// what the person picked.
     #[must_use]
-    pub const fn emoji(&self) -> &EmojiPicker {
+    pub const fn emoji(&self) -> &ui::widget::EmojiPicker {
         &self.emoji
     }
 
@@ -1009,15 +1009,11 @@ impl DesktopChrome {
     /// field.
     pub fn open_emoji(&mut self) {
         let place = self.emoji_link.place().unwrap_or_default();
-        self.emoji_viewport = place
+        let viewport = place
             .viewport
             .or_else(|| self.working_display())
             .unwrap_or(self.rect);
-        self.emoji.open_at(
-            self.emoji_viewport,
-            place.caret,
-            &ui::i18n::I18nManager::current_locale(),
-        );
+        self.emoji.open_at(place.caret, viewport, &self.theme);
         self.publish_overlays();
     }
 
@@ -1106,8 +1102,10 @@ impl DesktopChrome {
     /// Hand the host the emoji the person picked since the card last ran, for
     /// it to write into the field they were typing into.
     fn note_emoji_picks(&mut self) {
-        for text in self.emoji.take_commits() {
-            self.emoji_link.note_picked(text);
+        for happened in self.emoji.take_events() {
+            if let ui::widget::PickerEvent::Picked(text) = happened {
+                self.emoji_link.note_picked(text);
+            }
         }
     }
 
@@ -2070,7 +2068,6 @@ impl DesktopChrome {
         // carries it.
         !self.intents.borrow().is_empty()
             || (self.emoji.needs_redraw() || self.emoji.needs_animation_frame())
-            || self.emoji_link.has_delivered()
             || self.navigator.needs_animation_frame(ui::time::now())
             || self.fullscreen_hint.needs_redraw(ui::time::now())
             || self.identify.needs_redraw(ui::time::now())
@@ -2542,16 +2539,6 @@ impl Widget for DesktopChrome {
         for bar in &mut self.compact {
             changed |= bar.update(state, path);
         }
-        // The host says where the recents are kept, and what of the person's
-        // picks reached a field: a secret field's emoji is never remembered.
-        if let Some(store) = self.emoji_link.take_store() {
-            self.emoji.attach_store(store);
-            changed = true;
-        }
-        for (text, sensitive) in self.emoji_link.take_delivered() {
-            self.emoji.note_delivered(&text, sensitive);
-            changed = true;
-        }
         changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
         changed |= self.switcher.needs_redraw();
@@ -2656,6 +2643,8 @@ impl Widget for DesktopChrome {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A card opened between two frames is sized and placed in this one.
+        self.theme = theme.clone();
         self.navigator.draw(
             &self.navigator_frame,
             scene,
@@ -2676,8 +2665,7 @@ impl Widget for DesktopChrome {
         // works with until it closes.
         if self.emoji.is_open() {
             self.emoji.advance_scroll();
-            self.emoji
-                .draw(scene, transform, text, theme, presence, self.emoji_viewport);
+            ui::Widget::draw(&mut self.emoji, scene, transform, text, theme, presence);
             self.emoji.mark_drawn();
         }
         // Above everything: the window that filled the display hides the
@@ -2747,13 +2735,7 @@ impl Widget for DesktopChrome {
             if own {
                 self.close_emoji();
             } else {
-                self.emoji.handle_event(
-                    event,
-                    ctx.scale_factor,
-                    ctx.modifiers.state(),
-                    self.cursor,
-                    ui::time::now(),
-                );
+                self.emoji.handle_event(event, ctx);
             }
             self.note_emoji_picks();
             *ctx.handled = true;
