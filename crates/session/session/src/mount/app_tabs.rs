@@ -340,6 +340,7 @@ impl AppTabs {
         self.deliver_sends(shared);
         self.deliver_searches(shared);
         self.deliver_send_from(shared, desktop, compositor);
+        self.deliver_report_problem(shared, desktop, compositor);
         // Where each app's own card stands this pass: the floating layer's
         // place, which the desk lays the app's window out by.
         self.follow_cards(desktop, compositor);
@@ -354,6 +355,7 @@ impl AppTabs {
     fn deliver_sends(&mut self, shared: &crate::Shared) {
         for sent in std::mem::take(&mut self.sent) {
             let delivered = shared.send_to(
+                &sent.app,
                 &sent.workspace,
                 &sent.to,
                 &sent.attached,
@@ -399,12 +401,45 @@ impl AppTabs {
         let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
             tell(
                 &link.writer,
-                &FloatingSurfaceHostMessage::ShareSelection,
+                &FloatingSurfaceHostMessage::ShareSelection { to: Vec::new() },
                 &link.app,
             )
         });
         if !asked {
             tracing::debug!("no window in front opens a box: the send key opens Chat");
+            shared.launchpad(LaunchpadAction::Chat);
+        }
+    }
+
+    /// Ask the window in front to open its box to the one place this computer
+    /// sends reports, as the shell's "report a problem" does: the person
+    /// writes what went wrong over the window it is about, and what it picked
+    /// goes with it (the box's box names the destination, so nothing but the
+    /// words is left to fill in). A window that cannot take a box leaves the
+    /// report to Chat, where the reports are read.
+    fn deliver_report_problem(
+        &self,
+        shared: &crate::Shared,
+        desktop: &DesktopHost,
+        compositor: &Compositor,
+    ) {
+        if !shared.take_report_from() {
+            return;
+        }
+        let Some(to) = shared.feedback_recipient() else {
+            return;
+        };
+        let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::ShareSelection {
+                    to: vec![to.clone()],
+                },
+                &link.app,
+            )
+        });
+        if !asked {
+            tracing::debug!("no window in front opens a box: the report opens Chat");
             shared.launchpad(LaunchpadAction::Chat);
         }
     }

@@ -352,8 +352,9 @@ fn the_session_answers_every_shortcut_of_its_side() {
                 | ShortcutAction::DictationToggle
                 | ShortcutAction::DictationFinish
                 | ShortcutAction::DictationCancel
-                // The browser desktop reports a problem to its host; this
-                // session carries no feedback transport yet.
+                // A report goes to the one place this computer is told,
+                // and this run is told nowhere (`session/send_key.rs` asks
+                // the window in front where it is).
                 | ShortcutAction::ReportProblem
         ) {
             continue;

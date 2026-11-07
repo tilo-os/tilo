@@ -18,7 +18,7 @@ fn box_beside(menu: Rect, viewport: Rect) -> SendToBox {
         SharedSelection::of_text("Invoice from Ada")
             .at(tilo_actions::SelectionPlace::item("row-3")),
     ));
-    send_to.open(None);
+    send_to.open(None, &[]);
     send_to.place(menu, Some(viewport));
     send_to
 }
@@ -382,4 +382,52 @@ fn a_subject_alone_is_something_to_send() {
     );
     send_to.send();
     assert!(crate::shared_selection::take_send_to().is_empty());
+}
+
+/// A box the session opened to the one place a report goes: its chip stands
+/// there on its own, nobody is searched for, the chip is not taken off, and
+/// what the person writes goes to it — attached to what the window picked.
+#[test]
+fn a_box_opened_to_a_destination_keeps_it_and_searches_for_nobody() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let _ = crate::shared_selection::take_send_to();
+    let _ = crate::shared_selection::take_recipient_searches();
+    crate::shared_selection::set_send_host_available(true);
+    let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+    let mut send_to = SendToBox::new();
+    send_to.set_viewport(Some(viewport));
+    send_to.set_about(Some(SharedSelection::of_text("Invoice from Ada")));
+    send_to.open(None, std::slice::from_ref(&destination));
+    send_to.place(Rect::new(40.0, 120.0, 212.0, 320.0), Some(viewport));
+
+    assert!(send_to.addressed());
+    assert_eq!(send_to.recipients(), std::slice::from_ref(&destination));
+    assert_eq!(
+        send_to.focus(),
+        SendToFocus::Message,
+        "the words are all that is left to write"
+    );
+    assert!(
+        crate::shared_selection::take_recipient_searches().is_empty(),
+        "a box that knows where it sends asks the search nothing"
+    );
+    assert!(send_to.perform_semantic_action(
+        "send-to:recipients",
+        &crate::a11y::Action::SetValue("ada".to_owned())
+    ));
+    assert!(
+        crate::shared_selection::take_recipient_searches().is_empty(),
+        "and finds nobody when something is typed there"
+    );
+    send_to.focus_first();
+    assert_eq!(send_to.focus(), SendToFocus::Message, "still the message");
+
+    type_text(&mut send_to, "The invoice button does nothing");
+    send_to.send();
+    let requests = crate::shared_selection::take_send_to();
+    assert_eq!(requests.len(), 1, "one request, one report");
+    assert_eq!(requests[0].to, [destination], "to the one place it goes");
+    assert_eq!(requests[0].text, "The invoice button does nothing");
+    assert_eq!(requests[0].about.len(), 1, "with what the window picked");
+    assert!(send_to.take_sent());
 }

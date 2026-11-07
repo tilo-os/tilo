@@ -871,7 +871,7 @@ impl super::Decorator for ContextMenuArea {
         }
         // A box the window or the shell asked for with no menu around it:
         // it stands where its anchor does, until it sends.
-        if let Some((about, bounds, draft)) = crate::shared_selection::take_open_send_box()
+        if let Some(box_) = crate::shared_selection::take_open_send_box()
             && !self.menu.is_open()
         {
             if self.viewport.is_none() {
@@ -879,7 +879,7 @@ impl super::Decorator for ContextMenuArea {
             }
             self.menu.set_viewport(self.viewport);
             self.menu
-                .open_send_to_alone(about, bounds, draft.as_deref());
+                .open_send_to_alone(box_.about, box_.bounds, box_.draft.as_deref(), &box_.to);
         }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);

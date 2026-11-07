@@ -76,8 +76,12 @@ pub struct SendToBox {
     about: Option<SharedSelection>,
     /// The subjects, chips in the order they show.
     subjects: Vec<SharedSelection>,
-    /// Whom it goes to: the agent being made by default.
+    /// Whom it goes to: the agent being made by default, or, when the session
+    /// opened the box to a fixed destination, that alone.
     to: Vec<Recipient>,
+    /// Whether the session named whom it goes to: the box then searches for
+    /// nobody and its chips stay, so a report cannot be addressed elsewhere.
+    addressed: bool,
     /// What is typed into the recipient field, and the search it asked for.
     search: String,
     search_selection: Selection,
@@ -125,6 +129,7 @@ impl SendToBox {
             about: None,
             subjects: Vec::new(),
             to: vec![Recipient::new_agent(crate::i18n!("send-to-new-agent"))],
+            addressed: false,
             search: String::new(),
             search_selection: Selection::default(),
             search_composition: QueryComposition::default(),
@@ -191,6 +196,13 @@ impl SendToBox {
         &self.to
     }
 
+    /// Whether the session named whom it goes to, so nobody is searched for
+    /// and the chips stay.
+    #[must_use]
+    pub fn addressed(&self) -> bool {
+        self.addressed
+    }
+
     /// What the message says.
     #[must_use]
     pub fn text(&self) -> &str {
@@ -227,8 +239,10 @@ impl SendToBox {
     }
 
     /// Show the box about what the menu acts on, with `draft` in its message
-    /// field (a sentence typed into the menu that no row answered).
-    pub fn open(&mut self, draft: Option<&str>) {
+    /// field (a sentence typed into the menu that no row answered), and to
+    /// `to` when the session names whom it goes to — the one place a report
+    /// goes — else to the agent a message makes, which the person may change.
+    pub fn open(&mut self, draft: Option<&str>, to: &[Recipient]) {
         self.open = true;
         crate::shared_selection::set_box_open(true);
         self.focused = true;
@@ -238,22 +252,30 @@ impl SendToBox {
         if let Some(about) = self.about.clone() {
             self.subjects.push(about);
         }
-        if self.to.is_empty() {
+        self.to.clear();
+        self.addressed = !to.is_empty();
+        if self.addressed {
+            self.to.extend_from_slice(to);
+        } else {
             self.to
                 .push(Recipient::new_agent(crate::i18n!("send-to-new-agent")));
         }
         self.search.clear();
+        self.search_selection = Selection::default();
         self.rows.clear();
         self.hovered = None;
         self.answered = false;
         self.ask_search();
+        self.focus = if draft.is_some() || self.addressed {
+            SendToFocus::Message
+        } else {
+            SendToFocus::Recipients
+        };
         if let Some(text) = draft {
             text.clone_into(&mut self.text);
             self.text_selection = Selection::collapsed(self.text.len());
-            self.focus = SendToFocus::Message;
         } else {
             self.text.clear();
-            self.focus = SendToFocus::Recipients;
         }
     }
 
@@ -459,9 +481,10 @@ impl SendToBox {
             .to
             .iter()
             .map(|recipient| {
-                !(recipient.kind == RecipientKind::NewAgent
-                    && recipient.name
-                        == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
+                !(self.addressed
+                    || recipient.kind == RecipientKind::NewAgent
+                        && recipient.name
+                            == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
             })
             .collect();
         let asks: Vec<f64> = self
@@ -470,7 +493,13 @@ impl SendToBox {
             .zip(&removable)
             .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
             .collect();
-        let search_room = (row * 5.0).min(room * 0.4);
+        // A box opened to whom it sends to has no field to search in: its
+        // chips take the line.
+        let search_room = if self.addressed {
+            0.0
+        } else {
+            (row * 5.0).min(room * 0.4)
+        };
         let (chips, x) = self.lay_chips(&asks, y, (room - search_room).max(0.0));
         let removes: Vec<Option<Rect>> = chips
             .iter()
@@ -480,12 +509,16 @@ impl SendToBox {
             })
             .collect();
         let start = (x + gap).max(rect.x0 + pad);
-        let search = Rect::new(
-            start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
-            y,
-            rect.x1 - pad,
-            y + row,
-        );
+        let search = if self.addressed {
+            Rect::new(start, y, start, y + row)
+        } else {
+            Rect::new(
+                start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
+                y,
+                rect.x1 - pad,
+                y + row,
+            )
+        };
         y += row + if self.rows.is_empty() { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
@@ -533,7 +566,8 @@ impl SendToBox {
         self.rows.clear();
         self.hovered = None;
         self.dirty = true;
-        if self.search.trim().is_empty() {
+        // A box opened to the one place it sends to has nobody to look for.
+        if self.addressed || self.search.trim().is_empty() {
             self.layout = self.build_layout();
             return;
         }
@@ -599,7 +633,9 @@ impl SendToBox {
                         return true;
                     }
                     Key::Named(NamedKey::Backspace)
-                        if self.focus == SendToFocus::Recipients && self.search.is_empty() =>
+                        if self.focus == SendToFocus::Recipients
+                            && self.search.is_empty()
+                            && !self.addressed =>
                     {
                         if self.to.len() > 1 {
                             self.to.pop();
@@ -673,7 +709,11 @@ impl SendToBox {
         if let Some(index) = self.layout.chips.iter().position(|chip| chip.contains(at)) {
             // The × takes a chip off; a recipient the person picked goes on a
             // press anywhere on it, and the agent a message makes stays until
-            // it is taken off by its own ×.
+            // it is taken off by its own ×. A box the session addressed keeps
+            // the one place it sends to.
+            if self.addressed {
+                return true;
+            }
             let remove = self
                 .layout
                 .removes
@@ -745,7 +785,11 @@ impl SendToBox {
     pub fn focus_first(&mut self) {
         if self.open {
             self.focused = true;
-            self.focus = SendToFocus::Recipients;
+            self.focus = if self.addressed {
+                SendToFocus::Message
+            } else {
+                SendToFocus::Recipients
+            };
             self.changed();
         }
     }
@@ -1035,30 +1079,33 @@ impl SendToBox {
                 );
             }
         }
-        // The search field: what is typed, or what typing searches.
+        // The search field: what is typed, or what typing searches. A box
+        // opened to the one place it sends to has none.
         let placeholder = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
-        scene.fill(
-            vello::peniko::Fill::NonZero,
-            transform,
-            tokens.colors.surfaces.raised,
-            None,
-            &RoundedRect::from_rect(
+        if !self.addressed {
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                tokens.colors.surfaces.raised,
+                None,
+                &RoundedRect::from_rect(
+                    self.layout.search,
+                    radius.min(self.layout.search.height() / 2.0),
+                ),
+            );
+            self.search_composition.draw(
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.search,
+                    selection: &self.search_selection,
+                    placeholder: &placeholder,
+                    show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
+                },
                 self.layout.search,
-                radius.min(self.layout.search.height() / 2.0),
-            ),
-        );
-        self.search_composition.draw(
-            &mut PaintCtx::new(scene, transform, text_renderer, theme),
-            QueryView {
-                text: &self.search,
-                selection: &self.search_selection,
-                placeholder: &placeholder,
-                show_caret: self.open && self.focused && self.focus == SendToFocus::Recipients,
-            },
-            self.layout.search,
-            &style,
-            QueryInk::of(&tokens.colors),
-        );
+                &style,
+                QueryInk::of(&tokens.colors),
+            );
+        }
 
         // What the search found, the row the keyboard is on armed.
         for (index, row) in self.layout.rows.iter().enumerate() {

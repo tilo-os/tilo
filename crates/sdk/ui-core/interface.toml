@@ -5,7 +5,7 @@
 # App ↔ shell: what an app and the session shell say on the shell-ui
 # connection the launcher hands the app.
 name = "shell-ui"
-version = 24
+version = 25
 version_const = "crates/sdk/ui-core/src/floating_surface.rs:FLOATING_SURFACE_PROTOCOL_VERSION"
 encoding = "json"
 served_to_apps = true
@@ -332,7 +332,8 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "FloatingSurfaceHostMessage::recipients" = "struct"
 "FloatingSurfaceHostMessage::recipients.request" = "u64"
 "FloatingSurfaceHostMessage::recipients.rows" = "Vec<Recipient>"
-"FloatingSurfaceHostMessage::share_selection" = "unit"
+"FloatingSurfaceHostMessage::share_selection" = "struct"
+"FloatingSurfaceHostMessage::share_selection.to" = "Vec<Recipient> optional"
 "FloatingSurfaceHostMessage::suspended" = "struct"
 "FloatingSurfaceHostMessage::suspended.id" = "String"
 "FloatingSurfaceHostMessage::toolbar_event" = "struct"
@@ -526,6 +527,7 @@ Finish = "tokens::Finish: an object of `painter` (a painter set's name, text) an
 "RecipientKind" = "enum external"
 "RecipientKind::agent" = "unit"
 "RecipientKind::conversation" = "unit"
+"RecipientKind::feedback" = "unit"
 "RecipientKind::new-agent" = "unit"
 "RecipientKind::person" = "unit"
 "ResourceAt" = "struct"

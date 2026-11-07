@@ -21446,6 +21446,7 @@ dependencies = [
  "tilo-documents",
  "tilo-durable-writer",
  "tilo-endpoint-reachability",
+ "tilo-feedback",
  "tilo-files",
  "tilo-frame-metrics",
  "tilo-fs-client",
