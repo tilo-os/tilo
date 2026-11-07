@@ -500,16 +500,6 @@ fn only_the_keeper_counts_what_an_agent_spends() {
 }
 
 #[test]
-fn an_amount_reads_as_a_person_says_it() {
-    assert_eq!(super::money(0), "$0");
-    assert_eq!(super::money(4_999), "$0", "less than a cent is not a cent");
-    assert_eq!(super::money(420_000), "$0.42");
-    assert_eq!(super::money(5_000_000), "$5");
-    assert_eq!(super::money(1_500_000), "$1.50");
-    assert_eq!(super::money(super::MAX_SPEND_LIMIT_MICROS), "$10,000");
-}
-
-#[test]
 fn a_record_of_before_limits_reads_without_one() {
     let old = serde_json::json!({
         "agents": [{

@@ -338,6 +338,20 @@ fn counts_group_digits_by_language_until_a_number_style_is_chosen() {
 }
 
 #[test]
+fn money_reads_whole_amounts_without_cents() {
+    speak("en-US");
+    assert_eq!(H24.money(0), "$0");
+    assert_eq!(H24.money(4_999), "$0", "less than a cent reads as none");
+    assert_eq!(H24.money(420_000), "$0.42");
+    assert_eq!(H24.money(1_500_000), "$1.50");
+    assert_eq!(H24.money(5_000_000), "$5");
+    assert_eq!(H24.money(1_250_000_000), "$1,250");
+    speak("de-DE");
+    assert_eq!(H24.money(420_000), "$0,42");
+    assert_eq!(H24.money(1_250_000_000), "$1.250");
+}
+
+#[test]
 fn relative_times_bucket_at_their_boundaries() {
     speak("en-US");
     for (secs, want) in [
