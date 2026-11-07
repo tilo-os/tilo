@@ -535,10 +535,6 @@ pub struct FrameHarness {
     /// a rebuild could replace it: what tells a rebuilt part that the answer
     /// the person was on still stands in the new tree.
     focus_name: Option<String>,
-    /// Whether this layout's keyboard came from a control answering by name
-    /// alone, not from one reporting itself focused. The frame's own snapshot
-    /// of where the keyboard was outranks a name, and takes its state along.
-    focus_by_name: bool,
     focus_trap_active: bool,
     active_input_instance: Option<crate::application::InstanceId>,
     // An activation is complete only when its current focus and encoded frame
@@ -1648,7 +1644,6 @@ impl FrameHarness {
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_name: None,
-            focus_by_name: false,
             focus_trap_active: false,
             active_input_instance: None,
             pending_app_activation: None,
@@ -3968,18 +3963,15 @@ impl FrameHarness {
             // holds the answer the keyboard was on when the control itself
             // survives: it answers to the same name, alone in the new tree,
             // and the keyboard goes back to it rather than to nothing.
-            // A composition the owner service replaced is a new act of the
-            // app, not a part rebuilt in place: nothing goes back to what the
-            // old tree held.
-            let named = (found.is_none() && stats.rebuilt && !self.owner_service_layout_retired)
+            let named = (found.is_none() && stats.rebuilt)
                 .then(|| self.answering_alone())
                 .flatten();
             drop(admission);
             self.focused = found;
-            self.focus_by_name = false;
             if let Some(node) = named {
-                self.set_focused(Some(node));
-                self.focus_by_name = true;
+                self.root.focus_requested(Some(node), &self.taffy);
+                let _ = self.mutate_node(node, |widget| widget.set_focus(true));
+                self.focused = Some(node);
             }
         }
 
@@ -4835,7 +4827,6 @@ impl FrameHarness {
     /// the outgoing/incoming widgets exactly as
     /// [`crate::app::App::set_focused_node`] does.
     fn set_focused(&mut self, node: Option<NodeId>) {
-        self.focus_by_name = false;
         if self.focused != node {
             self.remember_app_focus();
         }
@@ -6638,14 +6629,11 @@ impl FrameHarness {
         let _unreadmitting = Unreadmitting;
         READMITTING.set(true);
         self.relayout();
-        if let Some(focus) = focus
-            && (self.focused.is_none() || self.focus_by_name)
+        if self.focused.is_none()
+            && let Some(focus) = focus
         {
             // A surviving live focus outranks a captured identity: generic
-            // control names may be shared by unrelated retained controls. A
-            // name-only answer does not: the snapshot says where the keyboard
-            // was and what the control held, and restores both.
-            self.focus_by_name = false;
+            // control names may be shared by unrelated retained controls.
             // SAFETY: the relayout admitted this fresh, exclusively owned tree.
             self.focused =
                 unsafe { focus.restore(&self.node_map, &self.bindings, None) }.or(self.focused);
