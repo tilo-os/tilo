@@ -50,17 +50,6 @@ pub fn resource_obj(doc: &Doc, app: &str, id: &str) -> Option<ObjId> {
         .find_map(|old| map_at(doc, &map_at(doc, &records, old)?, id))
 }
 
-/// Whether the record holds more than one map of the items of `doc` of `app`: two replicas made
-/// one before they met, and the items of the map the record does not keep are not in it.
-fn items_made_twice(record: &Doc, app: &str, doc: &str) -> bool {
-    let Some(root) = resource_obj(record, app, doc) else {
-        return false;
-    };
-    record
-        .get_all(&root, ITEMS_KEY)
-        .is_ok_and(|held| held.len() > 1)
-}
-
 /// The type stored in `$type` of the map `obj`.
 pub fn type_at(doc: &Doc, obj: &ObjId) -> Option<TypeId> {
     match doc.get(obj, TYPE_KEY) {
@@ -184,20 +173,23 @@ pub fn collection_holds(doc: &Doc, root: &ObjId, field: &FieldSchema) -> bool {
     if map_at(doc, root, &field.id).is_some_and(|coll| doc.length(&coll) > 0) {
         return true;
     }
-    let Some(items) = map_at(doc, root, tilolang_runtime::place::ITEMS_KEY) else {
-        return false;
-    };
-    doc.keys(&items).any(|id| {
-        let Some(obj) = map_at(doc, &items, &id) else {
-            return false;
-        };
-        tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| match held.placement {
-            tilolang_runtime::place::Placement::At { place, .. } => {
-                place.parent.is_none() && place.field.as_str() == field.id
-            }
-            tilolang_runtime::place::Placement::Removed => false,
+    crate::containers::maps(doc, root, tilolang_runtime::place::ITEMS_KEY)
+        .iter()
+        .any(|items| {
+            doc.keys(items).any(|id| {
+                let Some(obj) = map_at(doc, items, &id) else {
+                    return false;
+                };
+                tilolang_runtime::place::held_at(doc, &obj).is_some_and(|held| {
+                    match held.placement {
+                        tilolang_runtime::place::Placement::At { place, .. } => {
+                            place.parent.is_none() && place.field.as_str() == field.id
+                        }
+                        tilolang_runtime::place::Placement::Removed => false,
+                    }
+                })
+            })
         })
-    })
 }
 
 /// The value of `field` from what its key holds (`None` when nothing): [`read_field`] once
@@ -590,11 +582,8 @@ impl ChangedBuilder {
     ) {
         let Some(Some(item)) = below.first().copied() else {
             // The map the record's items sit in, made with the first of them and removed with
-            // the last: the items it gains or loses are named by their own writes. One a
-            // replica made as well — two copies of the map, of which the record keeps one —
-            // takes the items of the copy it replaces with it, and no write of theirs is here
-            // to name them: the record is derived whole.
-            if !made || items_made_twice(record, app, doc) {
+            // the last: the items it gains or loses are named by their own writes.
+            if !made {
                 self.whole(doc);
             }
             return;
@@ -611,8 +600,13 @@ impl ChangedBuilder {
             Some(Some(key)) if key.starts_with('$') => {}
             Some(_) => {
                 let schema = resource_obj(record, app, doc)
-                    .and_then(|root| map_at(record, &root, ITEMS_KEY))
-                    .and_then(|items| map_at(record, &items, item))
+                    .map(|root| crate::containers::maps(record, &root, ITEMS_KEY))
+                    .and_then(|items| {
+                        items
+                            .iter()
+                            .rev()
+                            .find_map(|items| map_at(record, items, item))
+                    })
                     .and_then(|obj| type_at(record, &obj))
                     .and_then(|ty| lookup(&ty));
                 match schema {

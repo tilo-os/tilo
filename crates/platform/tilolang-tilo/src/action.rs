@@ -719,6 +719,20 @@ fn target_map(
     }
 }
 
+/// Fold the copies of the maps the record `id` (in the app's records map `app`) keeps beside its
+/// fields into the one it keeps, before anything is written to it: a record made before it made
+/// them with it may hold two of each, one for every replica that wrote first
+/// ([`crate::containers`]).
+fn fold_containers(doc: &mut Doc, app: &automerge::ObjId, id: &str) -> Result<(), ActionError> {
+    let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
+        return Ok(());
+    };
+    for key in [ITEMS_KEY, OUTBOX_KEY, MIGRATED_KEY, TRIGGERS_KEY] {
+        crate::containers::fold(doc, &obj, key)?;
+    }
+    Ok(())
+}
+
 fn apply_one(
     doc: &mut Doc,
     records: &automerge::ObjId,
@@ -744,6 +758,7 @@ fn apply_one(
         return crate::chunk::run(doc, holder, field, *chunk, last, *len);
     }
     let app = target_map(doc, records, app, edit)?;
+    fold_containers(doc, &app, edit.resource())?;
     match edit {
         DynEdit::Create { id, record } => {
             let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
@@ -802,7 +817,7 @@ fn apply_one(
             let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
                 return Err(ActionError::Refused(format!("there is no resource `{id}`")));
             };
-            let outbox = ensure_map(doc, &obj, OUTBOX_KEY)?;
+            let outbox = crate::containers::single(doc, &obj, OUTBOX_KEY)?;
             // The same entry queued again is the same entry: it keeps what became of it.
             if doc.get(&outbox, entry.as_str())?.is_none() {
                 let held = doc.put_object(&outbox, entry.as_str(), ObjType::Map)?;
@@ -836,7 +851,7 @@ fn insert_item(
     at: &str,
 ) -> Result<(), ActionError> {
     let obj = ensure_map(doc, app, id)?;
-    let items = ensure_map(doc, &obj, ITEMS_KEY)?;
+    let items = crate::containers::single(doc, &obj, ITEMS_KEY)?;
     let mut taken = Taken::new();
     let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
     let record = take_items(record, Some(item), &mut taken);
@@ -845,7 +860,7 @@ fn insert_item(
         .map_err(|error| refused(&error))?;
     let held = flat_item(doc, &obj, item)?;
     doc.put(&held, AT_KEY, at)?;
-    store_taken(doc, &obj, taken)
+    store_taken(doc, &items, taken)
 }
 
 /// Take the item `item` out of the resource `id`, with everything it holds: the other chunk of
@@ -856,15 +871,16 @@ fn remove_item(
     id: &str,
     item: &str,
 ) -> Result<(), ActionError> {
-    let items = doc
+    let Some(obj) = doc
         .get(app, id)?
         .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj))
-        .and_then(|obj| doc.get(&obj, ITEMS_KEY).ok().flatten())
-        .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj));
-    if let Some(items) = items
-        && doc.get(&items, item)?.is_some()
-    {
-        doc.delete(&items, item)?;
+    else {
+        return Ok(());
+    };
+    for items in crate::containers::maps(doc, &obj, ITEMS_KEY) {
+        if doc.get(&items, item)?.is_some() {
+            doc.delete(&items, item)?;
+        }
     }
     Ok(())
 }
@@ -887,7 +903,7 @@ fn mark_migrated(
             "the migration `{migration}` already ran on `{id}`"
         )));
     }
-    let done = ensure_map(doc, &obj, MIGRATED_KEY)?;
+    let done = crate::containers::single(doc, &obj, MIGRATED_KEY)?;
     doc.put(&done, migration, true)?;
     Ok(())
 }
@@ -895,8 +911,9 @@ fn mark_migrated(
 /// Whether the migration `migration` (its action id) ran on the resource at the map `obj`.
 #[must_use]
 pub fn migrated(doc: &Doc, obj: &automerge::ObjId, migration: &str) -> bool {
-    map_in(doc, obj, MIGRATED_KEY)
-        .is_some_and(|done| doc.get(&done, migration).ok().flatten().is_some())
+    crate::containers::maps(doc, obj, MIGRATED_KEY)
+        .iter()
+        .any(|done| doc.get(done, migration).ok().flatten().is_some())
 }
 
 /// Record for the resource `id`, in the same change as what the trigger did, what the trigger
@@ -918,7 +935,7 @@ fn mark_trigger(
             "the trigger `{key}` already ran as `{value}` on `{id}`"
         )));
     }
-    let done = ensure_map(doc, &obj, TRIGGERS_KEY)?;
+    let done = crate::containers::single(doc, &obj, TRIGGERS_KEY)?;
     doc.put(&done, key, value)?;
     Ok(())
 }
@@ -926,14 +943,18 @@ fn mark_trigger(
 /// What the trigger `key` last did for the resource at the map `obj`, as it recorded it.
 #[must_use]
 pub fn triggered(doc: &Doc, obj: &automerge::ObjId, key: &str) -> Option<String> {
-    let done = map_in(doc, obj, TRIGGERS_KEY)?;
-    match doc.get(&done, key).ok().flatten() {
-        Some((AmValue::Scalar(scalar), _)) => match scalar.as_ref() {
-            automerge::ScalarValue::Str(text) => Some(text.to_string()),
+    // The copy the record keeps answers first, then those it replaced: what the trigger last
+    // did is in one of them, wherever the replicas that ran it were.
+    crate::containers::maps(doc, obj, TRIGGERS_KEY)
+        .iter()
+        .rev()
+        .find_map(|done| match doc.get(done, key).ok().flatten() {
+            Some((AmValue::Scalar(scalar), _)) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(text) => Some(text.to_string()),
+                _ => None,
+            },
             _ => None,
-        },
-        _ => None,
-    }
+        })
 }
 
 /// The items of each collection of a record being stored, in order, by the item holding the
@@ -973,6 +994,10 @@ pub fn keys_in_order(count: usize) -> Vec<String> {
 
 /// Store `record` as the resource `id` of the app map `app`, every item of its collections (and
 /// of theirs) stored by its id beside it and placed where it is ([`crate::items`]).
+///
+/// The record is made with the maps it keeps its items and its outside effects in
+/// ([`crate::containers`]): a record made on two replicas at once, or one whose first item two
+/// replicas add before they meet, holds one map of them, not one each.
 fn store_flat(
     doc: &mut Doc,
     app: &automerge::ObjId,
@@ -984,29 +1009,29 @@ fn store_flat(
     record
         .store(doc, Slot::Key(app, id))
         .map_err(|error| refused(&error))?;
-    if taken.is_empty() {
-        return Ok(());
-    }
     let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
         return Err(ActionError::Refused(format!("there is no resource `{id}`")));
     };
-    store_taken(doc, &obj, taken)
+    let items = crate::containers::single(doc, &obj, ITEMS_KEY)?;
+    crate::containers::single(doc, &obj, OUTBOX_KEY)?;
+    store_taken(doc, &items, taken)
 }
 
-/// Store the items `taken` of the record map `obj` by their ids, each placed in order in the
-/// collection it was taken from.
-fn store_taken(doc: &mut Doc, obj: &automerge::ObjId, taken: Taken) -> Result<(), ActionError> {
+/// Store the items `taken` of a record by their ids, each placed in order in the collection it
+/// was taken from, in the record's map of its items `items`.
+fn store_taken(doc: &mut Doc, items: &automerge::ObjId, taken: Taken) -> Result<(), ActionError> {
     if taken.is_empty() {
         return Ok(());
     }
-    let items = ensure_map(doc, obj, ITEMS_KEY)?;
     for ((parent, field), placed) in taken {
         let keys = keys_in_order(placed.len());
         for ((item, value), key) in placed.into_iter().zip(keys) {
             value
-                .store(doc, Slot::Key(&items, &item))
+                .store(doc, Slot::Key(items, &item))
                 .map_err(|error| refused(&error))?;
-            let held = flat_item(doc, obj, &item)?;
+            let Some((AmValue::Object(ObjType::Map), held)) = doc.get(items, item.as_str())? else {
+                return Err(ActionError::Refused(format!("there is no item `{item}`")));
+            };
             let at = Placement::At {
                 place: tilolang_runtime::place::Place {
                     parent: parent.clone(),
@@ -1027,12 +1052,14 @@ fn flat_item(
     record: &automerge::ObjId,
     item: &str,
 ) -> Result<automerge::ObjId, ActionError> {
-    if let Some((AmValue::Object(ObjType::Map), items)) = doc.get(record, ITEMS_KEY)?
-        && let Some((AmValue::Object(ObjType::Map), held)) = doc.get(&items, item)?
-    {
-        return Ok(held);
-    }
-    Err(ActionError::Refused(format!("there is no item `{item}`")))
+    crate::containers::maps(doc, record, ITEMS_KEY)
+        .iter()
+        .rev()
+        .find_map(|items| match doc.get(items, item) {
+            Ok(Some((AmValue::Object(ObjType::Map), held))) => Some(Ok(held)),
+            _ => None,
+        })
+        .unwrap_or_else(|| Err(ActionError::Refused(format!("there is no item `{item}`"))))
 }
 
 /// The map of an item of a record written before items were flat, nested at `nesting` below
@@ -1186,13 +1213,13 @@ fn outbox_entry(
     let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(app, id)? else {
         return Ok(None);
     };
-    let Some((AmValue::Object(ObjType::Map), outbox)) = doc.get(&obj, OUTBOX_KEY)? else {
-        return Ok(None);
-    };
-    Ok(match doc.get(&outbox, entry)? {
-        Some((AmValue::Object(ObjType::Map), held)) => Some(held),
-        _ => None,
-    })
+    Ok(crate::containers::maps(doc, &obj, OUTBOX_KEY)
+        .iter()
+        .rev()
+        .find_map(|outbox| match doc.get(outbox, entry) {
+            Ok(Some((AmValue::Object(ObjType::Map), held))) => Some(held),
+            _ => None,
+        }))
 }
 
 /// The outside effects queued on the resource `id` of `app`, oldest key first.
@@ -1210,23 +1237,28 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
     let Some(obj) = crate::reads::resource_obj(doc, app, id) else {
         return Vec::new();
     };
-    let Ok(Some((AmValue::Object(ObjType::Map), outbox))) = doc.get(&obj, OUTBOX_KEY) else {
-        return Vec::new();
-    };
-    let mut keys: Vec<String> = doc.keys(&outbox).collect();
-    keys.sort();
-    keys.into_iter()
-        .filter_map(|entry| {
-            let Ok(Some((AmValue::Object(ObjType::Map), held))) = doc.get(&outbox, entry.as_str())
-            else {
+    // Every copy of the map the record keeps its outbox in, oldest first: an entry queued
+    // before two replicas met sits in the copy the record does not keep.
+    let mut queued: BTreeMap<String, automerge::ObjId> = BTreeMap::new();
+    for outbox in crate::containers::maps(doc, &obj, OUTBOX_KEY) {
+        for entry in doc.keys(&outbox) {
+            if let Ok(Some((AmValue::Object(ObjType::Map), held))) =
+                doc.get(&outbox, entry.as_str())
+            {
+                queued.insert(entry, held);
+            } else {
                 tracing::warn!(
                     app,
                     id,
                     entry,
                     "an outbox entry is not a map: it is not read"
                 );
-                return None;
-            };
+            }
+        }
+    }
+    queued
+        .into_iter()
+        .map(|(entry, held)| {
             let read = || -> Result<(String, Json, String), String> {
                 let capability = text(&held, "capability").ok_or("it names no capability")?;
                 let payload = text(&held, "payload").ok_or("it holds no payload")?;
@@ -1271,7 +1303,7 @@ pub fn outbox_entries(doc: &Doc, app: &str, id: &str) -> Vec<StoredEntry> {
                 }
                 Err(_) => {}
             }
-            Some(stored)
+            stored
         })
         .collect()
 }
@@ -1509,6 +1541,7 @@ pub fn resource_ids(doc: &Doc, app: &str) -> Vec<String> {
 #[cfg(test)]
 mod outbox_tests {
     use super::*;
+    use tilo_automerge::ApplyIncoming as _;
 
     /// A record of `app` holding the resource `id` with an outbox of `entries` (key, payload).
     fn holding(app: &str, id: &str, entries: &[(&str, &str)]) -> Doc {
@@ -1529,6 +1562,71 @@ mod outbox_tests {
             doc.put(&entry, "owner", "device").expect("owner");
         }
         doc
+    }
+
+    /// How many outboxes the resource `id` of `app` queues its entries in hold entries: one once
+    /// the record has folded the copies a replica made into the one it keeps.
+    fn outboxes(doc: &Doc, app: &str, id: &str) -> usize {
+        let obj = crate::reads::resource_obj(doc, app, id).expect("the resource");
+        crate::containers::maps(doc, &obj, OUTBOX_KEY)
+            .iter()
+            .filter(|outbox| doc.keys(outbox).next().is_some())
+            .count()
+    }
+
+    fn push(entry: &str) -> DynEdit {
+        DynEdit::OutboxPush {
+            id: "r".to_owned(),
+            entry: entry.to_owned(),
+            capability: "smtp.send".to_owned(),
+            payload: serde_json::json!(["to@example.com"]),
+            owner: "device".to_owned(),
+            held_until: None,
+        }
+    }
+
+    /// A record of `app` holding the resource `id` with no outbox: what an earlier version of the
+    /// platform left, and what two replicas that queued the first effect on it each made one for.
+    #[test]
+    fn an_outbox_each_replica_queued_before_they_met_is_one_outbox_after_a_write() {
+        let mut ada = holding("app", "r", &[]);
+        let obj = crate::reads::resource_obj(&ada, "app", "r").expect("the resource");
+        {
+            use automerge::ReadDoc as _;
+            use automerge::transaction::Transactable as _;
+            assert!(ada.get(&obj, OUTBOX_KEY).expect("outbox").is_some());
+            ada.delete(&obj, OUTBOX_KEY).expect("no outbox");
+        }
+        ada.commit();
+        let mut grace = ada.fork();
+        apply_edits(&mut ada, "app", &[push("1")], b"ada").expect("ada queues");
+        ada.commit();
+        apply_edits(&mut grace, "app", &[push("2")], b"grace").expect("grace queues");
+        grace.commit();
+        ada.merge_incoming(&mut grace)
+            .expect("ada takes grace's entries");
+        assert_eq!(outboxes(&ada, "app", "r"), 2, "each replica made an outbox");
+        let queued: Vec<String> = outbox_entries(&ada, "app", "r")
+            .into_iter()
+            .map(|entry| entry.entry)
+            .collect();
+        assert_eq!(queued, ["1", "2"], "both queued entries read");
+
+        // The next write folds the two into the one the record keeps, and nothing queued is lost.
+        apply_edits(&mut ada, "app", &[push("3")], b"ada").expect("ada queues again");
+        ada.commit();
+        assert_eq!(outboxes(&ada, "app", "r"), 1, "one outbox after the write");
+        grace
+            .merge_incoming(&mut ada)
+            .expect("grace takes ada's entries");
+        for (name, doc) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(outboxes(doc, "app", "r"), 1, "{name}: one outbox");
+            let queued: Vec<String> = outbox_entries(doc, "app", "r")
+                .into_iter()
+                .map(|entry| entry.entry)
+                .collect();
+            assert_eq!(queued, ["1", "2", "3"], "{name}: every queued entry");
+        }
     }
 
     #[test]

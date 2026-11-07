@@ -353,12 +353,10 @@ impl Action for Keep {
 /// what those records carry, so they stay.
 const SPLIT: [&str; 2] = ["window", "lens"];
 
-/// The map under `key` of `parent`, made when absent.
+/// The map under `key` of `parent`, made when absent; the copies of it a replica made before it
+/// met the others are folded into the one the record keeps ([`crate::containers`]).
 fn ensure_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
-    if let Some((automerge::Value::Object(ObjType::Map), id)) = doc.get(parent, key)? {
-        return Ok(id);
-    }
-    Ok(doc.put_object(parent, key, ObjType::Map)?)
+    crate::containers::single(doc, parent, key)
 }
 
 /// The map under `key` of `parent`, when it is there.

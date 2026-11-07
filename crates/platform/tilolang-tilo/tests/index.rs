@@ -209,32 +209,140 @@ fn workspace() -> (Replica, String, String) {
     (ada, root.doc, lock)
 }
 
-/// Each replica adds the list's first item before the two meet: the record keeps one of the maps
-/// the items sit in, and the items of the other go with it. The index kept change by change holds
-/// the item the record holds, and no row for the one it does not.
+/// What a person sees of the list: the rows of its `items`, and the items the record holds.
+fn listed(replica: &Replica, root: &str) -> Vec<String> {
+    let meta = &replica.host.packages()[0].meta;
+    let list = ResourceRef::root(root, type_id(meta, "TodoList"));
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: field_id(meta, "TodoList", "items"),
+        kind: tilolang_runtime::meta::FieldKind::Collection,
+    };
+    tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+        .unwrap()
+        .ids()
+}
+
+/// The maps the record `root` of `replica` keeps its items in.
+fn item_maps(replica: &Replica, root: &str) -> Vec<automerge::ObjId> {
+    let held = tilolang_tilo::reads::resource_obj(&replica.doc, APP, root).unwrap();
+    tilolang_tilo::containers::maps(&replica.doc, &held, tilolang_runtime::place::ITEMS_KEY)
+}
+
+/// How many maps the record `root` of `replica` keeps items in: one once the record has folded
+/// the copies a replica made into the one it keeps.
+fn maps_holding_items(replica: &Replica, root: &str) -> usize {
+    use automerge::ReadDoc as _;
+    item_maps(replica, root)
+        .iter()
+        .filter(|items| replica.doc.keys(items).next().is_some())
+        .count()
+}
+
+/// Each replica adds the list's first item before the two meet: the record is made with the map
+/// its items go in, so both items go into it and both are the list's.
 #[test]
-fn an_index_keeps_no_item_of_an_item_map_the_record_does_not() {
+fn an_item_each_replica_added_before_they_met_is_the_lists_on_both() {
     let (mut ada, root, lock) = workspace();
     let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+    assert_eq!(
+        item_maps(&ada, &root).len(),
+        1,
+        "the record is made with the map its items go in"
+    );
     let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
     ada.apply(&ada_first);
     let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
     grace.apply(&grace_first);
     ada.sync_with(&mut grace);
     for (name, replica) in [("ada", &ada), ("grace", &grace)] {
-        assert_eq!(kept(replica), anew(replica, &lock), "{name}");
-        // What a person sees: the rows of the list are the items the record holds.
-        let items = items(replica, &root);
-        let meta = &replica.host.packages()[0].meta;
-        let list = ResourceRef::root(&root, type_id(meta, "TodoList"));
-        let spec = tilolang_runtime::store::FieldSpec {
-            id: field_id(meta, "TodoList", "items"),
-            kind: tilolang_runtime::meta::FieldKind::Collection,
+        assert_eq!(
+            items(replica, &root).len(),
+            2,
+            "{name}: both items are the list's"
+        );
+        assert_eq!(
+            maps_holding_items(replica, &root),
+            1,
+            "{name}: one map of items"
+        );
+        assert_eq!(listed(replica, &root), items(replica, &root), "{name}");
+        assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
+    }
+}
+
+/// A record written before the platform made its map of items with it, two replicas that each
+/// added an item to it before they met, and a write on either side: both items read on both, and
+/// the record folds the two maps into one, wherever the write was made.
+#[test]
+fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
+    for write_by in ["ada", "grace"] {
+        let (mut ada, root, lock) = workspace();
+        // The record as an earlier version of the platform left it: no map of items at all.
+        let held = tilolang_tilo::reads::resource_obj(&ada.doc, APP, &root).unwrap();
+        let items_key = tilolang_runtime::place::ITEMS_KEY;
+        {
+            use automerge::ReadDoc as _;
+            use automerge::transaction::Transactable as _;
+            assert!(ada.doc.get(&held, items_key).unwrap().is_some());
+            ada.doc.delete(&held, items_key).unwrap();
+            ada.doc.commit();
+        }
+        let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+        let ada_first = plan(&ada, "add", json!({ "text": "ada's" }), &root);
+        ada.apply(&ada_first);
+        let grace_first = plan(&grace, "add", json!({ "text": "grace's" }), &root);
+        grace.apply(&grace_first);
+        ada.sync_with(&mut grace);
+        assert_eq!(
+            maps_holding_items(&ada, &root),
+            2,
+            "{write_by}: each replica made a map of items"
+        );
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                items(replica, &root).len(),
+                2,
+                "{write_by}: {name} reads both maps' items"
+            );
+            assert_eq!(
+                listed(replica, &root),
+                items(replica, &root),
+                "{write_by}: {name}: the rows are the items"
+            );
+        }
+
+        // A write on one side folds the two maps into the one the record keeps, and both items
+        // stay the list's on both.
+        let writer = if write_by == "ada" {
+            &mut ada
+        } else {
+            &mut grace
         };
-        let listed = tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
-            .unwrap()
-            .ids();
-        assert_eq!(listed, items, "{name}: the rows are the record's items");
+        let second = plan(writer, "add", json!({ "text": "later" }), &root);
+        writer.apply(&second);
+        ada.sync_with(&mut grace);
+        for (name, replica) in [("ada", &ada), ("grace", &grace)] {
+            assert_eq!(
+                maps_holding_items(replica, &root),
+                1,
+                "{write_by}: {name}: the record keeps one map of items"
+            );
+            assert_eq!(
+                items(replica, &root).len(),
+                3,
+                "{write_by}: {name}: every item is the list's"
+            );
+            assert_eq!(
+                listed(replica, &root),
+                items(replica, &root),
+                "{write_by}: {name}"
+            );
+            assert_eq!(
+                kept(replica),
+                anew(replica, &lock),
+                "{write_by}: {name}: the index"
+            );
+        }
     }
 }
 
