@@ -68,7 +68,14 @@ impl Core {
         let viewer = self.looking().ok();
         let resolved = resolve(&query, declared, &pkg.meta.enums, &clock, viewer.as_deref())?;
         // A view that asked by the time (`is:today`, `received:-7d`) runs again when what it
-        // read of it moves on, and only then.
+        // read of it moves on, and only then: at the value the store keeps that lies closest
+        // after now, or at the person's next midnight for the day.
+        let next = self
+            .store
+            .borrow()
+            .next_clock_change(&ty, &resolved.clock)
+            .map_err(|e| e.to_string())?;
+        clock.instants(next);
         self.note_time(clock.changes_at());
         // A query that asks nothing: the items as they are.
         if resolved.pred == tilolang::pred::Pred::Const(true) && resolved.order.is_none() {

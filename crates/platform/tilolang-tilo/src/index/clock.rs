@@ -19,7 +19,8 @@ use super::columns;
 use super::derive::{Columns, field_value, item_path, placed_in};
 use super::{Clock, Index, IndexError, META_CLOCK, Snapshot, TYPE, Writer};
 use crate::schema::{ColumnSchema, TypeSchema, lookup};
-use tilolang::pred::{Operand, Pred};
+use tilolang::pred::Pred;
+use tilolang_runtime::query::{ClockField, NextChange};
 
 impl Index {
     /// The instant the columns of `ty` that read the clock were written at, and the zone they
@@ -85,6 +86,61 @@ impl Index {
         self.rewrite(schema, clock, &paths)
     }
 
+    /// When what the filters of `ty` hold of next changes as the clock runs: the value of one of
+    /// `fields` (each field the query compared with the clock, [`ClockField`]) that lies closest
+    /// after it, so the view that asked wakes when that item comes to count, and not before.
+    /// Answering `Unknown` when the index cannot place the field leaves the clock's grain to
+    /// wake the view instead, and `Never` when it keeps no later value at all.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn next_change(
+        self: &Arc<Self>,
+        ty: &str,
+        fields: &[ClockField],
+        clock: Clock,
+    ) -> Result<NextChange, IndexError> {
+        let Some(schema) = lookup(ty) else {
+            return Ok(NextChange::Unknown);
+        };
+        let snapshot = self.snapshot()?;
+        let mut looked = false;
+        let mut next: Option<i64> = None;
+        for (field, _, offset) in fields.iter().filter(|(_, day, _)| !day) {
+            // The value the filter compares is the field's, and the clock is ahead of now by
+            // the offset: the items holding a value after it are the ones that come next.
+            let Some(spec) = schema.column(field) else {
+                continue;
+            };
+            let Some(after) = columns::clock_value(
+                spec.kind,
+                clock.now.saturating_add(*offset),
+                false,
+                clock.zone,
+            ) else {
+                continue;
+            };
+            looked = true;
+            for (list, _) in snapshot.lists_from(columns::SCOPE)? {
+                if !of_column(&list, &spec.name) {
+                    continue;
+                }
+                let Some(at) = first_after(&snapshot, &list, &after)? else {
+                    continue;
+                };
+                // A value `v` the clock passes at `now + offset` changes what the filter holds
+                // of its item at `v - offset`: when the offseted clock reaches it. The clock is
+                // read to the minute, so that is the minute boundary it reaches it on.
+                let at = minute(at.saturating_sub(*offset));
+                next = Some(next.map_or(at, |seen| seen.min(at)));
+            }
+        }
+        if !looked {
+            return Ok(NextChange::Unknown);
+        }
+        Ok(next.map_or(NextChange::Never, NextChange::At))
+    }
+
     /// Write the columns of the filters of `schema` that read the clock for `paths`, and record
     /// the instant as the one they are at.
     fn rewrite(
@@ -142,6 +198,31 @@ fn crossed(
         }
     }
     Ok(out)
+}
+
+/// The instant `at` where the clock reads it: a reading is whole minutes, so the first minute
+/// at or after it.
+fn minute(at: i64) -> i64 {
+    at.saturating_sub(at.rem_euclid(60))
+        .saturating_add(if at.rem_euclid(60) == 0 { 0 } else { 60 })
+}
+
+/// The value of the first entry of the column `list` that comes after the value `after`, as the
+/// instant it names: the next moment the clock passing it changes what the column reads.
+fn first_after(
+    snapshot: &Arc<Snapshot>,
+    list: &str,
+    after: &str,
+) -> Result<Option<i64>, IndexError> {
+    let pages = snapshot.pages(list)?;
+    let start = pages.rank(&columns::past_value(after), "").0;
+    let Some((key, _)) = pages.entry(start) else {
+        return Ok(None);
+    };
+    let value = key
+        .split_once(columns::SEP)
+        .map_or(key.as_str(), |(v, _)| v);
+    Ok(tilolang::calendar::instant(value))
 }
 
 /// Every item of `schema` holding the column `field`, wherever it is in the workspace: what a
@@ -236,31 +317,10 @@ fn reads_clock(column: &ColumnSchema) -> bool {
 /// The fields a filter reads the clock against, and whether it reads the day (`today`) or the
 /// instant (`now`): the values that turning it over changes its answer for.
 fn clock_fields(column: &ColumnSchema) -> Vec<(&str, bool)> {
-    let mut out = Vec::new();
-    if let Some(pred) = &column.pred {
-        reads_of(pred, &mut out);
-    }
-    out
-}
-
-fn reads_of<'p>(pred: &'p Pred<String>, out: &mut Vec<(&'p str, bool)>) {
-    match pred {
-        Pred::Not(inner) => reads_of(inner, out),
-        Pred::And(parts) | Pred::Or(parts) => {
-            for part in parts {
-                reads_of(part, out);
-            }
-        }
-        Pred::Cmp(_, a, b) => {
-            // Either side of the comparison may be the field: a filter may ask `f <= now` or
-            // `now <= f`, and both are written again for the same values.
-            let (side, day) = match (a, b) {
-                (Operand::Field(f), Operand::Clock { day, .. })
-                | (Operand::Clock { day, .. }, Operand::Field(f)) => (f.as_str(), *day),
-                _ => return,
-            };
-            out.push((side, day));
-        }
-        _ => {}
-    }
+    column
+        .pred
+        .iter()
+        .flat_map(Pred::clock_fields)
+        .map(|(field, day, _)| (field.as_str(), day))
+        .collect()
 }

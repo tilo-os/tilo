@@ -6,8 +6,10 @@
 
 use std::rc::Rc;
 
-use super::TiloStore;
+use super::{TiloStore, backend};
 use tilolang_runtime::ids::TypeId;
+use tilolang_runtime::query::{ClockField, NextChange};
+use tilolang_runtime::store::StoreError;
 
 /// How the host names the time and the person's zone: what a column reading the clock is written
 /// at, read at the moment the index is asked ([`crate::index::clock`]).
@@ -51,6 +53,34 @@ impl TiloStore {
     /// reads.
     pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
         self.mutate().clock.zone = Rc::new(zone);
+    }
+
+    /// The instant the items of `ty` next come to hold of, or stop holding of, a filter that
+    /// reads the clock (`fields` naming the fields it compares it with): the value the index
+    /// keeps that comes closest after it, so the view that asked wakes there rather than at
+    /// every minute. A package whose index is still being built cannot say
+    /// ([`NextChange::Unknown`]).
+    pub(super) fn next_change(
+        &self,
+        ty: &TypeId,
+        fields: &[ClockField],
+    ) -> Result<NextChange, StoreError> {
+        let Some(schema) = crate::schema::lookup(ty) else {
+            return Ok(NextChange::Unknown);
+        };
+        let clock = self.clock();
+        match self
+            .held()
+            .apps
+            .get(&schema.app)
+            .filter(|held| held.ready())
+        {
+            Some(held) => held
+                .index
+                .next_change(&schema.id, fields, clock)
+                .map_err(backend),
+            None => Ok(NextChange::Unknown),
+        }
     }
 
     /// Write again what the clock changed in the index of `ty`'s package: the filters that read

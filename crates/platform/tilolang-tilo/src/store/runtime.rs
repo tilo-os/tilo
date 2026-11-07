@@ -442,6 +442,16 @@ impl Store for TiloStore {
             .listed_in(at, &field.id, Some((item, pred)), order)
     }
 
+    /// When the items the query compared with the clock next change what they answer: the value
+    /// closest after it, which the view wakes at ([`crate::index::clock`]).
+    fn next_clock_change(
+        &self,
+        ty: &TypeId,
+        fields: &[tilolang_runtime::query::ClockField],
+    ) -> Result<tilolang_runtime::query::NextChange, StoreError> {
+        self.next_change(ty, fields)
+    }
+
     fn select(
         &self,
         ty: &TypeId,
