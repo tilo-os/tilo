@@ -167,15 +167,19 @@ fn value_into_runtime(value: ViewValue) -> Value {
 /// What a view's event does, as the runtime's.
 fn effect_to_runtime(effect: &Effect) -> Option<RustEvent> {
     Some(match effect {
-        Effect::Action { action } => RustEvent::Invoke {
+        Effect::Action { action, args } => RustEvent::Invoke {
             resource: String::new(),
             action: action.clone(),
-            args: Vec::new(),
+            args: args.iter().map(arg_into_runtime).collect(),
         },
-        Effect::On { target, action } => RustEvent::Invoke {
+        Effect::On {
+            target,
+            action,
+            args,
+        } => RustEvent::Invoke {
             resource: target.id.clone(),
             action: action.clone(),
-            args: Vec::new(),
+            args: args.iter().map(arg_into_runtime).collect(),
         },
         Effect::Open { target, view } => RustEvent::Open {
             target: target.id.clone(),
@@ -186,4 +190,13 @@ fn effect_to_runtime(effect: &Effect) -> Option<RustEvent> {
         Effect::State { name } => RustEvent::State { name: name.clone() },
         Effect::None => return None,
     })
+}
+
+/// One argument of a view's action: the value it read, or [`Value::Event`] for what the
+/// control's event carries at the press, which the runtime fills where it fires.
+fn arg_into_runtime(arg: &tilo_view::cx::Arg) -> Value {
+    match arg {
+        tilo_view::cx::Arg::Value(value) => value_into_runtime(value.clone()),
+        tilo_view::cx::Arg::Event => Value::Event,
+    }
 }

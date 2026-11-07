@@ -38,11 +38,11 @@ dev-session = []
 # desktop through. A production image never builds it (tools/policy/
 # check_dev_overrides_contract.py).
 dev-overrides = []
-# Publishes a Rust app's (Tube's) resources and views in a development session, so a shell
-# draws them live: the sample catalogue's channels and videos, and the views a `#[view]`
-# declares, never the live worker. A shot of a Rust app's view on the canvas builds with it
-# (dist/dev/shell-run.sh --dev-rust-views); a production image never does.
-dev-rust-views = ["dep:tube"]
+# Publishes a Rust app's (Tube's, Chat's) resources and views in a development session, so a
+# shell draws them live: Tube's sample catalogue and Chat's demo conversation, with the views a
+# `#[view]` declares, never the live worker. A shot of a Rust app's view on the canvas builds
+# with it (dist/dev/shell-run.sh --dev-rust-views); a production image never does.
+dev-rust-views = ["dep:tube", "chat/samples"]
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # A Rust app's views and resources, published in a development session only

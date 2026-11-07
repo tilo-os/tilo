@@ -51,6 +51,12 @@ emoji = { path = "../../crates/text/emoji" }
 tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 tilo-emoji-engine = { path = "../../crates/runtime/engines/emoji", optional = true }
+# A channel's page as a described-components view, drawn by the shell like any app's
+# (one-app-model.md §2).
+tilo-view = { path = "../../crates/platform/tilo-view" }
+tilo-view-macros = { path = "../../crates/sdk/view-macros" }
+# A message's moment in the form a component's `time` prop takes it (RFC 3339).
+chrono.workspace = true
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
 # are exported as `ChatAction`s (see `src/actions.rs`) dispatched through the

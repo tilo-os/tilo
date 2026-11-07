@@ -2170,6 +2170,7 @@ version = "0.1.0"
 dependencies = [
  "agent-provider-config",
  "chat",
+ "chrono",
  "durable-store",
  "emoji",
  "fnv",
@@ -2198,6 +2199,8 @@ dependencies = [
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",
+ "tilo-view",
+ "tilo-view-macros",
  "tilo-winit",
  "tokio",
  "uuid",

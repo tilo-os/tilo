@@ -94,6 +94,7 @@ mod shared_resources;
 mod sidebar;
 mod timeline;
 pub mod transcript;
+pub mod views;
 mod window_bar;
 
 pub use app::{ChatApp, ChatWindow};
