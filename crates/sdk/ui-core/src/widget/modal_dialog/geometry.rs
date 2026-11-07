@@ -110,43 +110,44 @@ pub fn layout(
     } else {
         Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
     };
-    // The sheet's edges on whole pixels: half a pixel of centring blurs its border and the
-    // actions under it across two.
-    let card = Rect::new(
-        card.x0.round(),
-        card.y0.round(),
-        card.x1.round(),
-        card.y1.round(),
-    );
+    // The sheet's edges on the display's pixels: half a pixel of centring blurs its border and
+    // the actions under it across two.
+    let card = floating_surface::on_device_pixels(card);
     let title_top = card.y0 + pad;
 
     let close = spec.closable.then(|| {
         let x1 = card.x1 - pad + close_overhang;
         let mid = title_top + row_h / 2.0;
-        Rect::new(
+        floating_surface::on_device_pixels(Rect::new(
             x1 - close_side,
             mid - close_side / 2.0,
             x1,
             mid + close_side / 2.0,
-        )
+        ))
     });
-    let title = Rect::new(
+    let title = floating_surface::on_device_pixels(Rect::new(
         card.x0 + pad + icon_lead,
         title_top,
         card.x0 + pad + icon_lead + title_w,
         title_top + title_h,
-    );
+    ));
 
     let body_top = title.y1 + title_gap;
-    let header = (header_h > 0.0)
-        .then(|| Rect::new(card.x0 + pad, body_top, card.x1 - pad, body_top + header_h));
+    let header = (header_h > 0.0).then(|| {
+        floating_surface::on_device_pixels(Rect::new(
+            card.x0 + pad,
+            body_top,
+            card.x1 - pad,
+            body_top + header_h,
+        ))
+    });
     let body_top = header.map_or(body_top, |header| header.y1 + header_gap);
-    let body = Rect::new(
+    let body = floating_surface::on_device_pixels(Rect::new(
         card.x0 + pad,
         body_top,
         card.x1 - pad,
         (card.y1 - pad - footer_h).max(body_top),
-    );
+    ));
 
     let actions = place_actions(spec, card, &footer, theme);
     let destructive = spec
@@ -176,6 +177,21 @@ pub fn layout(
         dismiss_on_scrim: spec.dismiss_on_scrim,
         anchored: anchor.is_some(),
         foot: false,
+    }
+}
+
+/// Put every box of `layout` on the display's pixels once its placement is settled: a sheet
+/// raised from the foot or shortened by what its body scrolls keeps its edges where pixels are.
+pub(super) fn onto_device_pixels(layout: &mut super::ModalLayout) {
+    layout.card = floating_surface::on_device_pixels(layout.card);
+    layout.title = floating_surface::on_device_pixels(layout.title);
+    layout.close = layout.close.map(floating_surface::on_device_pixels);
+    layout.header = layout.header.map(floating_surface::on_device_pixels);
+    layout.body = floating_surface::on_device_pixels(layout.body);
+    for action in &mut layout.actions {
+        if action.area() > 0.0 {
+            *action = floating_surface::on_device_pixels(*action);
+        }
     }
 }
 
@@ -301,10 +317,9 @@ fn place_actions(
         }
         return actions;
     }
-    // A label measured to a fraction of a pixel leaves its action's edges between pixels.
     let mut bx = card.x1 - pad;
     for &index in trailing.iter().rev() {
-        let bw = footer.widths[index].round();
+        let bw = footer.widths[index];
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(bx - bw, by, bx, by + button_h);
         }
@@ -312,11 +327,16 @@ fn place_actions(
     }
     let mut lx = card.x0 + pad;
     for &index in &leading {
-        let bw = footer.widths[index].round();
+        let bw = footer.widths[index];
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(lx, by, lx + bw, by + button_h);
         }
         lx += bw + gap;
+    }
+    for action in &mut actions {
+        if action.area() > 0.0 {
+            *action = floating_surface::on_device_pixels(*action);
+        }
     }
     actions
 }

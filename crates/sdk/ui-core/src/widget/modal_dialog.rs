@@ -1616,6 +1616,7 @@ impl ModalDialog<dyn Widget> {
         if layout.body_overflows && self.trim > 0.0 {
             shorten(&mut layout, self.trim);
         }
+        onto_device_pixels(&mut layout);
         let max_scroll = (self.content_size.1 - layout.body.height()).max(0.0);
         self.scroll = self.scroll.clamp(0.0, max_scroll);
         self.slots = slots;
@@ -2912,6 +2913,7 @@ mod footer_key;
 mod geometry;
 use body::{shorten, whole_row_top};
 use footer_key::FooterKey;
+use geometry::onto_device_pixels;
 pub use geometry::{layout, rise_from_foot};
 
 #[cfg(test)]
