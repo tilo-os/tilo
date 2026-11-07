@@ -546,13 +546,16 @@ mod tests {
 
         with_monotonic_time(at(700), || panel.follow(false, true, place));
         assert!(look(&panel, 700).0, "it leaves rather than vanishing");
-        let leaving = look(&panel, 770).1.expect("its leave is drawn");
+        // Its leave is a spring settling within `fast`: most of the way out
+        // inside the first tenth of a second, so it is read where it is part
+        // way rather than near the end of that.
+        let leaving = look(&panel, 740).1.expect("its leave is drawn");
         assert!(
             leaving.opacity > 0.05 && leaving.opacity < 0.95 && leaving.scale < 1.0,
             "partway back into its corner: {leaving:?}"
         );
         assert!(
-            asks(&panel, 770),
+            asks(&panel, 740),
             "a leaving panel asks for the pass that moves it"
         );
         assert!(!look(&panel, 900).0, "and then it has gone");
