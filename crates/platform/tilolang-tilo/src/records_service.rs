@@ -525,6 +525,24 @@ impl RecordService {
         self.told();
     }
 
+    /// Mark seen the notices the person dismissed on this device since the last look: their
+    /// notification closed because they dismissed it ([`crate::notices::Closed::Dismissed`]),
+    /// not because it ran out or because another device of theirs saw it.
+    fn dismissed(&mut self) {
+        let Some(tell) = &self.tell else {
+            return;
+        };
+        let ids: Vec<String> = tell
+            .closed()
+            .into_iter()
+            .filter(|(_, reason)| *reason == crate::notices::Closed::Dismissed)
+            .filter_map(|(tag, _)| self.notices.shown_as(&tag).map(str::to_owned))
+            .collect();
+        for id in ids {
+            self.notice_seen(&id);
+        }
+    }
+
     /// Show the notices this device's person has not seen, and take back the ones they have
     /// seen since the last look, here or on another device of theirs.
     fn told(&mut self) {
@@ -611,6 +629,8 @@ impl Service for RecordService {
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
+        // What the person dismissed here is their answer to a notice, as their change.
+        self.dismissed();
         // What the workspace holds for this device's person, as the record reached it since the
         // last look.
         self.told();

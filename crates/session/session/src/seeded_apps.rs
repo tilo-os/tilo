@@ -9,6 +9,7 @@
 //! This is a demo, chosen on the command line: a person's session starts its apps empty.
 
 use tilolang_tilo::host::Host;
+use tilolang_tilo::notices::{Closed, NOTICE_TAGS};
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 use tilolang_tilo::tilolang::{IdsLock, PackageSource, compile_package_source};
@@ -127,11 +128,33 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
         commit(&host, &mut record, person)?;
     }
     let mut service = RecordService::new(record, host, person);
+    let dismissed = Dismissed::default();
+    listen_for_dismissals(&dismissed);
     service.set_tell(SessionNotices {
         notifier: ui::notify::system(Some("so.tilo.session")),
+        dismissed,
     });
     tilo_service::Service::settle(&mut service);
     Ok(service)
+}
+
+/// What this session's notification service told of the notices it closed: the tags, with why,
+/// until the app service takes them in.
+type Dismissed = std::sync::Arc<std::sync::Mutex<Vec<(String, Closed)>>>;
+
+/// Take in why the notifications under a notice's tags closed, for the app service to read.
+fn listen_for_dismissals(dismissed: &Dismissed) {
+    let sink = std::sync::Arc::clone(dismissed);
+    ui::notify::set_close_handler(NOTICE_TAGS, move |tag, reason| {
+        let reason = match reason {
+            ui::notify::CloseReason::Expired => Closed::Expired,
+            ui::notify::CloseReason::Dismissed => Closed::Dismissed,
+            ui::notify::CloseReason::Closed => Closed::Withdrawn,
+        };
+        if let Ok(mut dismissed) = sink.lock() {
+            dismissed.push((tag.to_owned(), reason));
+        }
+    });
 }
 
 /// Where a seeded app's notice reaches with no window of it open: the person's notifications,
@@ -140,6 +163,8 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
 /// device reach it; the ones of anyone else are theirs to show.
 struct SessionNotices {
     notifier: std::sync::Arc<dyn ui::notify::Notifier>,
+    /// The closures the service has not taken in yet ([`Dismissed`]).
+    dismissed: Dismissed,
 }
 
 impl tilolang_tilo::notices::Tell for SessionNotices {
@@ -164,6 +189,13 @@ impl tilolang_tilo::notices::Tell for SessionNotices {
         if let Err(error) = self.notifier.withdraw(tag) {
             tracing::warn!(%error, "a notice was not taken back");
         }
+    }
+
+    fn closed(&self) -> Vec<(String, Closed)> {
+        self.dismissed
+            .lock()
+            .map(|mut closed| std::mem::take(&mut *closed))
+            .unwrap_or_default()
     }
 }
 

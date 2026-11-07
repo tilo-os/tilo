@@ -27,12 +27,32 @@ use crate::host::Host;
 /// control's edit of a field is.
 pub const SEEN_ACTION: &str = crate::action::EDIT_FLAG_ACTION;
 
+/// What a notice's notification tag starts with, so the device showing them knows which closings
+/// are theirs ([`Tell::closed`]).
+pub const NOTICE_TAGS: &str = "notice:";
+
 /// Where a device's notices reach: the person's notifications.
 pub trait Tell {
     /// Show `notice`, unless it is showing already.
     fn show(&self, notice: &Notice);
     /// Take the notification `tag` back: what it told is seen or gone.
     fn withdraw(&self, tag: &str);
+    /// The notifications this device's platform closed since the last ask, each with why
+    /// ([`Closed`]): what the person did with a notice there, as the platform told it.
+    fn closed(&self) -> Vec<(String, Closed)> {
+        Vec::new()
+    }
+}
+
+/// Why a device's platform closed the notification showing a notice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Closed {
+    /// It ran out of time.
+    Expired,
+    /// The person dismissed it.
+    Dismissed,
+    /// This device took it back: the notice is seen or gone.
+    Withdrawn,
 }
 
 /// A notice to show, and where choosing it lands.
@@ -159,6 +179,16 @@ impl Notices {
             .see(id, &self.person)
             .map_err(|error| error.to_string())
     }
+
+    /// The notice this device is showing as the notification `tag`: the id the record keeps it
+    /// under.
+    #[must_use]
+    pub fn shown_as(&self, tag: &str) -> Option<&str> {
+        self.showing
+            .iter()
+            .find(|(_, shown)| shown.as_str() == tag)
+            .map(|(id, _)| id.as_str())
+    }
 }
 
 /// What one step told.
@@ -193,7 +223,7 @@ impl Held {
             .and_then(|package| crate::own_record(&package.meta, person))
             .unwrap_or_default();
         Some(Notice {
-            tag: format!("notice:{}/{person}", self.id),
+            tag: format!("{NOTICE_TAGS}{}/{person}", self.id),
             title: self.title.clone(),
             body: self.body.clone(),
             opens: Opens {

@@ -7,7 +7,7 @@ use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
 use tilolang_runtime::Meta;
 use tilolang_tilo::host::Host;
-use tilolang_tilo::notices::{Notice, Tell};
+use tilolang_tilo::notices::{Closed, Notice, Tell};
 use tilolang_tilo::records_service::RecordService;
 
 use crate::fixtures::Replica;
@@ -46,11 +46,20 @@ view note(n: Note) {
     "",
 );
 
-/// What one device showed and took back, as the notifications service would.
+/// What one device showed and took back, and what its platform said of the notifications it
+/// closed, as the notifications service would.
 #[derive(Clone, Default)]
 struct Recorder {
     shown: std::rc::Rc<std::cell::RefCell<Vec<Notice>>>,
     withdrawn: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+    closures: std::rc::Rc<std::cell::RefCell<Vec<(String, Closed)>>>,
+}
+
+impl Recorder {
+    /// The platform closed the notification `tag` for `reason`.
+    fn close(&self, tag: &str, reason: Closed) {
+        self.closures.borrow_mut().push((tag.to_owned(), reason));
+    }
 }
 
 impl Tell for Recorder {
@@ -60,6 +69,10 @@ impl Tell for Recorder {
 
     fn withdraw(&self, tag: &str) {
         self.withdrawn.borrow_mut().push(tag.to_owned());
+    }
+
+    fn closed(&self) -> Vec<(String, Closed)> {
+        std::mem::take(&mut *self.closures.borrow_mut())
     }
 }
 
@@ -252,6 +265,61 @@ fn dismissing_a_notice_on_one_device_clears_it_on_the_others() {
         phone_notices.withdrawn.borrow().clone(),
         vec![shown[0].tag.clone()],
         "taken back"
+    );
+    assert_eq!(
+        phone_notices.shown.borrow().len(),
+        1,
+        "shown once, then cleared"
+    );
+}
+
+#[test]
+fn dismissing_the_banner_marks_the_notice_seen_and_letting_it_go_does_not() {
+    let (mut ada, _, meta, clock) = ada_workspace();
+    let call = task(&mut ada, &meta, "Call the landlord");
+    let before = record_of(&ada);
+    let (mut laptop, laptop_notices) = service("bo", "bo", &before);
+    let (mut phone, phone_notices) = service("bo", "bo", &before);
+    laptop.poll();
+    phone.poll();
+    remind(&mut ada, &meta, &call, &clock);
+    laptop.take_in(&mut record_of(&ada)).unwrap();
+    phone.take_in(&mut record_of(&ada)).unwrap();
+    let shown = laptop_notices.shown.borrow().clone();
+    assert_eq!(shown.len(), 1);
+    assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
+
+    // The banner runs out on its own: the person did not answer it, so the notice is still
+    // theirs to see, and their phone keeps showing it.
+    laptop_notices.close(&shown[0].tag, Closed::Expired);
+    laptop.poll();
+    phone.take_in(&mut record_of(&laptop)).unwrap();
+    assert!(
+        phone_notices.withdrawn.borrow().is_empty(),
+        "an expiry answers nothing: {:#?}",
+        phone_notices.withdrawn.borrow()
+    );
+
+    // Nor does this device taking the banner back, as it does for a notice another of their
+    // devices has seen.
+    laptop_notices.close(&shown[0].tag, Closed::Withdrawn);
+    laptop.poll();
+    phone.take_in(&mut record_of(&laptop)).unwrap();
+    assert!(
+        phone_notices.withdrawn.borrow().is_empty(),
+        "taking one back answers nothing: {:#?}",
+        phone_notices.withdrawn.borrow()
+    );
+
+    // Bo dismisses the banner themselves: the notice is seen, as their own change, and their
+    // phone takes it back.
+    laptop_notices.close(&shown[0].tag, Closed::Dismissed);
+    laptop.poll();
+    phone.take_in(&mut record_of(&laptop)).unwrap();
+    assert_eq!(
+        phone_notices.withdrawn.borrow().clone(),
+        vec![shown[0].tag.clone()],
+        "a dismissal is the person's answer"
     );
     assert_eq!(
         phone_notices.shown.borrow().len(),

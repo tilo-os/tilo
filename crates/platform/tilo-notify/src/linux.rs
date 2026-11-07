@@ -8,9 +8,13 @@
 //!
 //! A notification with an activation URI carries a default action (the
 //! portal's `default-action`, the freedesktop `default` action), and each
-//! button an action of its own (`tilo-button-<n>`); the first such
-//! notification starts listeners for both services' `ActionInvoked` signals
-//! on the same connection, which hand the URI to the app while it runs.
+//! button an action of its own (`tilo-button-<n>`); the first notification
+//! starts listeners for both services' `ActionInvoked` signals on the same
+//! connection, which hand the URI to the app while it runs.
+//!
+//! The freedesktop service also says why a notification it closed went away
+//! (`NotificationClosed`), which [`crate::set_close_handler`] hands the app;
+//! the portal's interface has no such signal, and reports none.
 
 use std::collections::HashMap;
 use std::sync::mpsc;
@@ -171,8 +175,41 @@ fn activations_of(n: &Notification) -> Activations {
         .collect()
 }
 
-/// Listen for both services' `ActionInvoked` on `connection`, once.
-fn listen_for_clicks(connection: &Connection) {
+/// The tag the freedesktop service shows as notification `id`, forgotten with
+/// its actions: the notification is gone now, and showing the tag again is a
+/// new notification.
+fn take_shown(id: u32) -> Option<String> {
+    let tag = ids()
+        .lock()
+        .ok()?
+        .iter()
+        .find(|(_, shown)| **shown == id)
+        .map(|(tag, _)| tag.clone())?;
+    if let Ok(mut ids) = ids().lock() {
+        ids.remove(&tag);
+    }
+    if let Ok(mut known) = activation_ids().lock() {
+        known.remove(&id);
+    }
+    Some(tag)
+}
+
+/// The freedesktop service closed notification `id` for `code`: hand the tag
+/// it showed under, and the reason the specification names, to the app.
+fn freedesktop_closed(id: u32, code: u32) {
+    let Some(tag) = take_shown(id) else {
+        return;
+    };
+    let Some(reason) = crate::CloseReason::from_code(code) else {
+        tracing::debug!(%code, %tag, "a notification closed for an unknown reason");
+        return;
+    };
+    crate::closed(&tag, reason);
+}
+
+/// Listen for both services' `ActionInvoked`, and the freedesktop service's
+/// `NotificationClosed`, on `connection`, once.
+fn listen_for_reports(connection: &Connection) {
     static LISTENING: std::sync::Once = std::sync::Once::new();
     LISTENING.call_once(|| {
         let portal = connection.clone();
@@ -228,8 +265,28 @@ fn listen_for_clicks(connection: &Connection) {
                 }
             })
         });
+        // A service without the close signal (an older one) leaves its iterator empty; the
+        // report simply never comes.
+        let closing = connection.clone();
+        let spawned = spawned.and_then(|_| {
+            tilo_rt::spawn_thread("tilo-notify-closes", move || {
+                let (dest, path, iface) = FREEDESKTOP;
+                let Ok(proxy) = zbus::blocking::Proxy::new(&closing, dest, path, iface) else {
+                    return;
+                };
+                let Ok(signals) = proxy.receive_signal("NotificationClosed") else {
+                    return;
+                };
+                for signal in signals {
+                    let Ok((id, code)) = signal.body().deserialize::<(u32, u32)>() else {
+                        continue;
+                    };
+                    freedesktop_closed(id, code);
+                }
+            })
+        });
         if let Err(error) = spawned {
-            tracing::debug!(%error, "cannot listen for notification clicks");
+            tracing::debug!(%error, "cannot listen for what became of notifications");
         }
     });
 }
@@ -568,9 +625,9 @@ impl Notifier for SessionNotifier {
         let notification = notification.clone();
         let app = self.app_id.clone();
         on_bus(move |connection| {
-            if notification.activation.is_some() || !notification.buttons.is_empty() {
-                listen_for_clicks(connection);
-            }
+            // Every notification may be closed by the person or the service, with or without
+            // actions of its own.
+            listen_for_reports(connection);
             either(
                 connection,
                 |c| portal_add(c, &notification),
@@ -632,6 +689,7 @@ pub(crate) fn publish_priority_contacts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn a_quiet_notification_asks_both_services_for_no_sound() {
@@ -646,6 +704,97 @@ mod tests {
         assert_eq!(
             freedesktop_hints(&quiet).get("suppress-sound"),
             Some(&Value::Bool(true))
+        );
+    }
+
+    /// Record what `crate::closed` reports for `tag`.
+    fn closings(tag: &str) -> Arc<Mutex<Vec<(String, crate::CloseReason)>>> {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&seen);
+        crate::set_close_handler(tag, move |tag, reason| {
+            sink.lock().unwrap().push((tag.to_owned(), reason));
+        });
+        seen
+    }
+
+    #[test]
+    fn what_the_service_closed_is_reported_under_its_tag_and_reason() {
+        let seen = closings("closing-test:");
+        let id = 41_001;
+        if let Ok(mut ids) = ids().lock() {
+            ids.insert("closing-test:expired".to_owned(), id);
+        }
+        if let Ok(mut known) = activation_ids().lock() {
+            known.insert(
+                id,
+                vec![(DEFAULT_ACTION.to_owned(), "tilo-test:open".into())],
+            );
+        }
+        freedesktop_closed(id, 1);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(
+                "closing-test:expired".to_owned(),
+                crate::CloseReason::Expired
+            )],
+            "an expiry says so"
+        );
+        // Its id and actions are gone with it: the service cannot name it again.
+        assert!(
+            !ids().lock().unwrap().contains_key("closing-test:expired"),
+            "the tag is forgotten"
+        );
+        assert!(
+            !activation_ids().lock().unwrap().contains_key(&id),
+            "its actions are forgotten"
+        );
+        freedesktop_closed(id, 1);
+        assert_eq!(seen.lock().unwrap().len(), 1, "reported once");
+    }
+
+    #[test]
+    fn a_dismissal_and_an_apps_own_close_are_told_apart() {
+        let seen = closings("dismissed-test:");
+        for (id, tag, code, reason) in [
+            (
+                41_011,
+                "dismissed-test:person",
+                2,
+                crate::CloseReason::Dismissed,
+            ),
+            (41_012, "dismissed-test:app", 3, crate::CloseReason::Closed),
+        ] {
+            if let Ok(mut ids) = ids().lock() {
+                ids.insert(tag.to_owned(), id);
+            }
+            freedesktop_closed(id, code);
+            assert_eq!(
+                seen.lock().unwrap().pop(),
+                Some((tag.to_owned(), reason)),
+                "code {code} under {tag}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_close_for_a_notification_shown_elsewhere_or_a_reason_the_spec_leaves_open_says_nothing() {
+        let seen = closings("unknown-test:");
+        // A tag no handler names: another app of this process showed it.
+        if let Ok(mut ids) = ids().lock() {
+            ids.insert("elsewhere-test:1".to_owned(), 41_021);
+        }
+        freedesktop_closed(41_021, 2);
+        // An id this process never showed.
+        freedesktop_closed(41_022, 2);
+        // A reason the specification leaves open.
+        if let Ok(mut ids) = ids().lock() {
+            ids.insert("unknown-test:1".to_owned(), 41_023);
+        }
+        freedesktop_closed(41_023, 7);
+        assert!(
+            seen.lock().unwrap().is_empty(),
+            "nothing to report: {:#?}",
+            seen.lock().unwrap()
         );
     }
 }
