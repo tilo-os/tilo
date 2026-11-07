@@ -171,6 +171,9 @@ fn the_session_environment_does_not_leak_into_the_sandbox() {
             "TILO_WORKSPACE_ROOTS".to_string(),
             "TILO_PARTICIPATION".to_string(),
             "TILO_CLI_COMMAND".to_string(),
+            // The shared font index's directory, set beside its bind
+            // (`appdir::push_font_index`).
+            tilo_process::environment::FONT_INDEX_ENV.to_string(),
             // The egress gate and proxy variables naming it. Absent here (this
             // fixture declares `net = "off"`), but part of the set.
             "TILO_NET_GATE".to_string(),
