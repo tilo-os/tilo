@@ -118,7 +118,8 @@ set -- room \
 
 # By default the relay announces the live plane at the relay origin's host on
 # the port it bound; an ingress that publishes it at another host or port (its
-# own https://live.… on UDP 443) names that origin.
+# own https://live.… on UDP 443) names that origin, and the certificate the
+# relay presents names its host too: pages pin that certificate for it.
 if [ -n "${TILO_ROOMS_LIVE_ORIGIN:-}" ]; then
   set -- "$@" --web-live-origin "${TILO_ROOMS_LIVE_ORIGIN%/}"
 fi

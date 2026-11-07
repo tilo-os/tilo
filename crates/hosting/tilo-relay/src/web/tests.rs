@@ -918,7 +918,13 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
     let config = WebConfig {
         listen: (std::net::Ipv4Addr::LOCALHOST, 0).into(),
         tls: TlsSource::Development {
-            hosts: vec!["localhost".into(), "127.0.0.1".into()],
+            hosts: vec![
+                "localhost".into(),
+                "127.0.0.1".into(),
+                // The published plane below is announced here, so the
+                // certificate the page pins names it.
+                "live.example".into(),
+            ],
             store: None,
         },
         allowed_origins: Vec::new(),

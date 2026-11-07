@@ -84,7 +84,9 @@ pub struct WebArgs {
     /// proxy publishes it at another host or port than the host's own origin
     /// on the port the plane bound (such as `https://live.example`, whose UDP
     /// 443 the proxy forwards). The port it names is the one pages dial, 443
-    /// when it names none.
+    /// when it names none. With `--tls dev` its host is a name the
+    /// development certificate carries, since pages pin that certificate for
+    /// this origin.
     #[arg(long = "web-live-origin", value_name = "ORIGIN", requires = "web")]
     pub web_live_origin: Option<String>,
     /// The web entry (ending in `/`, e.g. `https://app.example/`) where the
@@ -340,17 +342,36 @@ pub async fn start_relay_lending(
     })
 }
 
+/// The host an `https://host[:port]` origin names.
+fn origin_host(origin: &str) -> Option<String> {
+    let rest = origin.trim().strip_prefix("https://")?;
+    let host = rest.split([':', '/']).next().unwrap_or_default();
+    (!host.is_empty()).then(|| host.to_string())
+}
+
 pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {
     let tls = match &args.tls {
-        TlsArg::Dev => TlsSource::Development {
-            hosts: args
+        TlsArg::Dev => {
+            // The names pages may dial this host by: the name it publishes
+            // itself under, the live plane's announced host — pages pin the
+            // live listener's certificate for that origin — and loopback.
+            let mut hosts: Vec<String> = Vec::new();
+            let named = args
                 .public_host
-                .iter()
-                .cloned()
-                .chain(["localhost".into(), listen.ip().to_string()])
-                .collect(),
-            store: Some(state_root.join("web-dev-identity")),
-        },
+                .clone()
+                .into_iter()
+                .chain(args.web_live_origin.as_deref().and_then(origin_host))
+                .chain(["localhost".to_string(), listen.ip().to_string()]);
+            for host in named {
+                if !hosts.iter().any(|known| known.eq_ignore_ascii_case(&host)) {
+                    hosts.push(host);
+                }
+            }
+            TlsSource::Development {
+                hosts,
+                store: Some(state_root.join("web-dev-identity")),
+            }
+        }
         TlsArg::Files { chain, key } => TlsSource::Files {
             certificate_chain: chain.clone(),
             private_key: key.clone(),
