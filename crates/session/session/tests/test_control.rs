@@ -445,6 +445,75 @@ fn written(shot: &image::RgbaImage, rect: (f64, f64, f64, f64)) -> usize {
     light
 }
 
+/// Text typed through the socket into the canvas's entry reaches it: a click on the entry puts
+/// the caret there, and what is typed stands in the field as the person's own typing does.
+#[test]
+fn text_typed_through_the_socket_reaches_the_canvas_entry() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let mut session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            person: PERSON.to_owned(),
+            shell: true,
+            collab: false,
+            test_control: Some(socket.clone()),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    let menu = preset_menu(&mut session);
+    click(&mut session, &socket, &menu);
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control("Frames")
+            .is_some()),
+        "the preset menu offers Frames: {:?}",
+        session.accessible_labels()
+    );
+    click(&mut session, &socket, "Frames");
+    assert!(
+        reached(&mut session, |session| session
+            .shell_control(CANVAS_ENTRY)
+            .is_some()),
+        "the canvas: {:?}",
+        session.accessible_labels()
+    );
+
+    // The press a person's pointer makes on the field, waited out as a hand's is (the frame it
+    // lands on is the one that shows it), then text as the socket writes it.
+    let (x, y, w, h) = session.shell_control(CANVAS_ENTRY).expect("the entry");
+    let (cx, cy) = (x + w / 2.0, y + h / 2.0);
+    assert_eq!(
+        ask(
+            &mut session,
+            &socket,
+            &json!({"op": "click_at", "x": cx, "y": cy})
+        ),
+        json!({"ok": {}}),
+        "the click on the entry is taken"
+    );
+    assert!(
+        session.compositor().host_takes_keys(),
+        "the press put the caret in the entry: {:?}",
+        session.accessible_labels()
+    );
+    let typed = ask(
+        &mut session,
+        &socket,
+        &json!({"op": "type", "text": "groceries"}),
+    );
+    assert_eq!(typed, json!({"ok": {}}), "the text is typed");
+    assert!(
+        reached(&mut session, |session| session.shell_says("groceries")),
+        "the entry shows what was typed: {:?}; the shell refused {:?}",
+        session.accessible_labels(),
+        session.shell_refusals()
+    );
+}
+
 /// A note of the seeded notes app placed on the framed canvas is seen in the snapshot: its
 /// frame's title is drawn where the shell lays it out, not cut off by a canvas with no room.
 #[test]

@@ -47,6 +47,11 @@ pub(crate) struct SharedDesktops {
     notes: std::sync::Arc<crate::continuations::Continuations>,
     /// The heads each workspace's record was folded in at, by workspace.
     folded: RefCell<HashMap<WorkspaceId, Vec<ChangeHash>>>,
+    /// The revision each workspace's record was last captured at: the next read asks for the
+    /// record against it, so a record that did not move between passes is answered from the
+    /// admitted heads rather than captured and saved again. A desk is read every pass, and a
+    /// document saved for each read cost what the workspace's whole history weighs, every time.
+    revision: RefCell<HashMap<WorkspaceId, [u8; 32]>>,
     /// What each workspace's record held when this device last wrote it, how
     /// far this desk had moved by then, and what its windows showed: a look
     /// that finds all three again writes nothing, and one that finds any of
@@ -112,13 +117,15 @@ impl SharedDesktops {
     fn record(
         engine: &Engine,
         workspace: WorkspaceId,
-    ) -> Result<Option<automerge::AutoCommit>, String> {
-        let Some(bytes) = engine.record(&workspace.to_string(), DESKTOP_APP, DESKTOP_RECORD)?
+        known: Option<[u8; 32]>,
+    ) -> Result<Option<(automerge::AutoCommit, [u8; 32])>, String> {
+        let Some((bytes, revision)) =
+            engine.record_since(&workspace.to_string(), DESKTOP_APP, DESKTOP_RECORD, known)?
         else {
             return Ok(None);
         };
         automerge::AutoCommit::load(&bytes)
-            .map(Some)
+            .map(|doc| Some((doc, revision)))
             .map_err(|error| error.to_string())
     }
 
@@ -131,20 +138,27 @@ impl SharedDesktops {
         let local = tree.salt;
         let mut folded = self.folded.borrow_mut();
         let mut read = self.read.borrow_mut();
+        let mut revisions = self.revision.borrow_mut();
         let mut changed = false;
         for workspace in &mut tree.workspaces {
             let room = workspace.id();
             if room.is_nil() {
                 continue;
             }
-            let Some(mut doc) = Self::record(engine, room).ok().flatten() else {
+            let Some((mut doc, revision)) =
+                Self::record(engine, room, revisions.get(&room).copied())
+                    .ok()
+                    .flatten()
+            else {
                 // A workspace this device holds no record of (not its own,
                 // or one still arriving) says nothing of its desk yet: its
                 // record is read again next pass.
                 read.remove(&room);
+                revisions.remove(&room);
                 continue;
             };
             read.insert(room);
+            revisions.insert(room, revision);
             let heads = doc.get_heads();
             if folded.get(&room) == Some(&heads) {
                 continue;
@@ -198,7 +212,9 @@ impl SharedDesktops {
             .any(|strip| !strip.window_groups.is_empty());
         // What the workspace's copy of the record holds here: a record this
         // device was never sent, or cannot read, is one it holds nothing of.
-        let reached = Self::record(engine, room).unwrap_or(None);
+        let reached = Self::record(engine, room, self.revision.borrow().get(&room).copied())
+            .unwrap_or(None)
+            .map(|(doc, _)| doc);
         // A record nobody wrote yet is founded by the first desk with a window
         // in it: a device with nothing to show founds nothing, so the record
         // stays one the devices that do show something make.
@@ -442,7 +458,11 @@ impl SharedDesktops {
             return;
         };
         let room = workspace.id();
-        let Some(doc) = Self::record(engine, room).ok().flatten() else {
+        let Some(doc) = Self::record(engine, room, self.revision.borrow().get(&room).copied())
+            .ok()
+            .flatten()
+            .map(|(doc, _)| doc)
+        else {
             return;
         };
         let Some(shared) = shared_record::read(&doc, None) else {
