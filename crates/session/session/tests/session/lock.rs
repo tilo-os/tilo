@@ -1319,27 +1319,34 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
 
     // The sound key works here: it changes a level and reveals nothing behind
     // the lock. Its readout answers on the screen the key was pressed at.
-    tap(&mut session, keys::VOLUME_UP);
-    assert_eq!(
-        readout_saying(&mut session, "Speakers"),
-        "Speakers, Muted",
-        "the locked session answers the device key, naming the output"
-    );
-    // The frame the answer is drawn in, over the lock's own: step until a
-    // frame differs from the lock's and the next one is the same, so what is
-    // measured is the readout at rest rather than a frame of its arrival.
-    let mut last: Option<tilo_compositor::Screenshot> = None;
-    pump(&mut session, &mut [], |session, _| {
-        let now = session
-            .compositor()
-            .screenshot(DISPLAY)
-            .expect("screenshot");
-        let drawn = changed(&before, &now).is_some();
-        let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
-        last = Some(now);
-        drawn && settled
+    //
+    // The readout stands for a moment of its own, and a machine running the
+    // whole suite can spend that moment on the turn that raised it: the key,
+    // the words it answers with and the frame that draws them are read at one
+    // reading of the clock, so the frame measured is the one the key drew.
+    let after = ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        tap(&mut session, keys::VOLUME_UP);
+        assert_eq!(
+            readout_saying(&mut session, "Speakers"),
+            "Speakers, Muted",
+            "the locked session answers the device key, naming the output"
+        );
+        // The frame the answer is drawn in, over the lock's own: step until a
+        // frame differs from the lock's and the next one is the same, so what is
+        // measured is the readout at rest rather than a frame of its arrival.
+        let mut last: Option<tilo_compositor::Screenshot> = None;
+        pump(&mut session, &mut [], |session, _| {
+            let now = session
+                .compositor()
+                .screenshot(DISPLAY)
+                .expect("screenshot");
+            let drawn = changed(&before, &now).is_some();
+            let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
+            last = Some(now);
+            drawn && settled
+        });
+        last.expect("the readout's frame")
     });
-    let after = last.expect("the readout's frame");
     assert!(
         !asked.borrow().is_empty(),
         "the key reached the sound service while locked"
