@@ -261,7 +261,8 @@ impl SendToBox {
         self.dirty = true;
     }
 
-    /// Put it away with its menu.
+    /// Put it away with its menu: it leaves as it stood, so what it showed
+    /// is kept until the next [`Self::open`] clears it.
     pub fn close(&mut self) {
         if !self.open {
             return;
@@ -269,7 +270,6 @@ impl SendToBox {
         self.open = false;
         self.focused = false;
         self.hovered = None;
-        self.rows.clear();
         crate::shared_selection::set_box_open(false);
         self.dirty = true;
     }
