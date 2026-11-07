@@ -1040,53 +1040,10 @@ fn remote_party_event(event: &InternalEvent) -> Option<&'static str> {
 pub struct Actor;
 
 impl Actor {
-    pub fn spawn(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
-        Self::spawn_reporting_addrs(endpoint, lookup, None, Arc::new(Mutex::new(Vec::new())))
-    }
-
-    pub fn spawn_reporting_addrs(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
-        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
-    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
-        Self::spawn_deferring_relays(
-            endpoint,
-            lookup,
-            host_identity,
-            listen_addrs,
-            Reachability::default(),
-        )
-    }
-
-    /// [`Self::spawn_reporting_addrs`] for an endpoint whose relays wait in
-    /// `reachability` until something needs this device reachable: the
-    /// actor wakes them when it dials a remote party or one reaches it
-    /// (`remote_party_command`, `remote_party_event`).
-    pub fn spawn_deferring_relays(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
-        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
-        reachability: Reachability,
-    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
-        Self::spawn_serving(
-            endpoint,
-            lookup,
-            host_identity,
-            listen_addrs,
-            reachability,
-            Vec::new(),
-        )
-    }
-
-    /// [`Self::spawn_deferring_relays`] for an endpoint that also serves
-    /// `served` — protocol handlers the session's own features answer on,
-    /// beside the actor's: a device's action plane, say. Each names its own
-    /// ALPN and serves it for as long as the actor runs.
+    /// Spawn the actor for `endpoint`, also serving `served` — protocol
+    /// handlers the session's own features answer on, beside the actor's: a
+    /// device's action plane, say. Each names its own ALPN and serves it for
+    /// as long as the actor runs.
     pub fn spawn_serving(
         endpoint: Endpoint,
         lookup: MemoryLookup,
@@ -1107,33 +1064,9 @@ impl Actor {
         )
     }
 
-    /// [`Self::spawn_deferring_relays`] for a device that hosts the workspaces
-    /// placed on it: with `hosting`, its endpoint also serves this device's
-    /// workspace host's protocols (refusing them until the host opens), and the
-    /// native owner joins the workspaces hosted here through that host.
-    pub fn spawn_hosting(
-        endpoint: Endpoint,
-        lookup: MemoryLookup,
-        host_identity: Option<HostIdentity>,
-        listen_addrs: Arc<Mutex<Vec<EndpointAddr>>>,
-        reachability: Reachability,
-        hosting: Option<Hosting>,
-    ) -> (mpsc::Sender<NetCmd>, tokio::task::JoinHandle<()>) {
-        Self::spawn_with_heartbeat(
-            endpoint,
-            lookup,
-            host_identity,
-            listen_addrs,
-            HEARTBEAT_INTERVAL,
-            reachability,
-            hosting,
-            Vec::new(),
-        )
-    }
-
-    /// [`Self::spawn_reporting_addrs`] with an explicit liveness and
-    /// host-retry cadence, so a test can observe several heartbeats without
-    /// waiting out the production interval.
+    /// [`Self::spawn_serving`] with an explicit liveness and host-retry
+    /// cadence, so a test can observe several heartbeats without waiting out
+    /// the production interval.
     fn spawn_with_heartbeat(
         endpoint: Endpoint,
         lookup: MemoryLookup,
