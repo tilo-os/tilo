@@ -471,7 +471,7 @@ fn join_reply_json(reply: tilo_relay_protocol::workspaces::JoinReply) -> serde_j
             })),
         }),
         JoinReply::Challenge { .. } => serde_json::json!({"kind": "challenge"}),
-        JoinReply::Waiting => serde_json::json!({"kind": "waiting"}),
+        JoinReply::RetiredWaiting => serde_json::json!({"kind": "waiting"}),
         JoinReply::Admitted {
             workspace,
             workspace_id,

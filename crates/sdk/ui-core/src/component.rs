@@ -428,6 +428,10 @@ fn moment_of(at: &str) -> Option<Moment> {
 /// The day a moment's text names: its date, or the day an instant falls on.
 #[must_use]
 pub fn moment_day(text: &str) -> Option<chrono::NaiveDate> {
+    // An instant falls on the day it is in the person's zone, which is the day they picked.
+    if let Ok(at) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Some(at.with_timezone(&chrono::Local).date_naive());
+    }
     chrono::NaiveDate::parse_from_str(text.get(..10).unwrap_or(text), "%Y-%m-%d").ok()
 }
 

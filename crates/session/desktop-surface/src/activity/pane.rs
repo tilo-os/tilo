@@ -1131,7 +1131,6 @@ impl WorkspaceActivityPane {
                     })
                 })
                 .collect();
-            detail.can_undo = false;
         }
         Some(detail)
     }
@@ -1161,13 +1160,11 @@ impl WorkspaceActivityPane {
         // two namespaces.
         let selected_change = projected.map_or(*selected, |item| item.change);
         let origin_matches = match origin {
-            Some(super::index::HistoryOrigin::Record { id, .. }) => {
-                step.record.is_empty() || id.as_str() == step.record
-            }
-            Some(super::index::HistoryOrigin::AppRecord { .. }) => false,
-            Some(super::index::HistoryOrigin::DesktopTree) | None => {
-                indexed.source_record.is_none()
-            }
+            Some(origin) => origin.record().map_or_else(
+                || indexed.source_record.is_none(),
+                |id| step.record.is_empty() || id.as_str() == step.record,
+            ),
+            None => indexed.source_record.is_none(),
         };
         if !origin_matches {
             return false;
@@ -1178,21 +1175,12 @@ impl WorkspaceActivityPane {
 
         // History IDs are hashes, not sortable sequence numbers. Determine
         // membership from this origin's causal timeline order instead.
+        let wanted = origin.and_then(super::index::HistoryOrigin::record);
         let ids = self
             .history_index
             .entries()
             .iter()
-            .filter(|entry| match (&entry.id.origin, origin) {
-                (
-                    super::index::HistoryOrigin::Record { id: a, .. },
-                    Some(super::index::HistoryOrigin::Record { id: b, .. }),
-                ) => a == b,
-                (
-                    super::index::HistoryOrigin::DesktopTree,
-                    Some(super::index::HistoryOrigin::DesktopTree) | None,
-                ) => true,
-                _ => false,
-            })
+            .filter(|entry| entry.id.origin.record() == wanted)
             .map(|entry| entry.id.change)
             .collect::<Vec<_>>();
         let Some(at) = ids.iter().position(|id| *id == selected_change) else {
@@ -1604,6 +1592,13 @@ impl WorkspaceActivityPane {
                 ui::compare_entries(tree.document_mut(), &ids).ok()
             }
             super::index::HistoryOrigin::AppRecord { .. } => {
+                if let Some(compared) = records.and_then(|records| {
+                    records.with(first.origin.record()?, |doc| {
+                        ui::compare_entries(doc, &ids).ok()
+                    })
+                }) {
+                    return compared;
+                }
                 let mut doc = self
                     .detached_records
                     .iter()
@@ -2040,6 +2035,7 @@ impl WorkspaceActivityPane {
                 .refresh_detached(tree, query, &self.scoped_tree_rows, &records);
         self.detached_records = records;
         self.feed_coverage = self.history_index.coverage().clone();
+        self.refresh_detached_agent_runs(tree);
         if changed {
             self.projected_origins.clear();
             let rows = self
@@ -2265,6 +2261,47 @@ impl WorkspaceActivityPane {
                 source_record: Some(id.clone()),
                 run,
             }));
+        }
+        indexed.compact_sort_by(|a, b| {
+            b.run
+                .at
+                .cmp(&a.run.at)
+                .then_with(|| a.run.id.cmp(&b.run.id))
+        });
+        indexed.dedup_by(|a, b| a.source_record == b.source_record && a.run.id == b.run.id);
+        self.agent_runs = indexed;
+    }
+
+    /// The agent runs of every detached record the host admitted, and of the
+    /// workspace tree itself, each naming the record it came from.
+    fn refresh_detached_agent_runs(&mut self, tree: &impl ActivityTree) {
+        let mut ordered = self.detached_records.iter().collect::<Vec<_>>();
+        ordered.compact_sort_by_key(|record| record.origin());
+        self.open_agent_records = ordered
+            .iter()
+            .filter(|record| record.document.is_some())
+            .map(|record| record.checkout.id.clone())
+            .collect();
+        let mut indexed = ui::read_runs(tree.document())
+            .into_iter()
+            .map(|run| IndexedAgentRun {
+                source_record: None,
+                run,
+            })
+            .collect::<Vec<_>>();
+        for record in ordered {
+            let id = &record.checkout.id;
+            let Some(document) = &record.document else {
+                continue;
+            };
+            indexed.extend(
+                ui::read_runs(document)
+                    .into_iter()
+                    .map(|run| IndexedAgentRun {
+                        source_record: Some(id.clone()),
+                        run,
+                    }),
+            );
         }
         indexed.compact_sort_by(|a, b| {
             b.run
@@ -2686,23 +2723,13 @@ impl WorkspaceActivityPane {
             return false;
         }
         let origin = self.projected_origins.get(id).cloned();
-        if origin.as_ref().is_some_and(|address| {
-            matches!(
-                address.origin,
-                super::index::HistoryOrigin::AppRecord { .. }
-            )
-        }) {
-            return false;
-        }
-        if let Some(WorkspaceHistoryId {
-            origin: super::index::HistoryOrigin::Record { id: record, .. },
-            change,
-        }) = origin
+        if let Some(WorkspaceHistoryId { origin, change }) = &origin
+            && let Some(record) = origin.record()
         {
             return records.is_some_and(|records| {
                 records
-                    .with(&record, |doc| {
-                        let Some(target) = ui::heads_for_entry(doc, &change) else {
+                    .with(record, |doc| {
+                        let Some(target) = ui::heads_for_entry(doc, change) else {
                             return false;
                         };
                         let current = doc.get_heads();
@@ -2780,7 +2807,6 @@ impl WorkspaceActivityPane {
             (Some(first), Some(last)) if first.origin == last.origin => {
                 let run = ChangeRun::new(first.change, last.change);
                 match first.origin {
-                    super::index::HistoryOrigin::AppRecord { .. } => UndoApply::default(),
                     super::index::HistoryOrigin::DesktopTree => {
                         let Ok(outcome) =
                             ui::revert_run(tree.document_mut(), &run, None, self.source.authors())
@@ -2799,7 +2825,8 @@ impl WorkspaceActivityPane {
                             partial: !outcome.is_complete(),
                         }
                     }
-                    super::index::HistoryOrigin::Record { id, .. } => {
+                    super::index::HistoryOrigin::Record { id, .. }
+                    | super::index::HistoryOrigin::AppRecord { id, .. } => {
                         records.map_or_else(UndoApply::default, |records| {
                             records
                                 .with(&id, |doc| {

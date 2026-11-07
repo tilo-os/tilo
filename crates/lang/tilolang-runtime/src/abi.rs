@@ -110,6 +110,7 @@ imports! {
     (CollWhere, "coll_where", "ii", "i"),
     (CollRelatives, "coll_relatives", "iiiii", "i"),
     (CollCount, "coll_count", "i", "l"),
+    (CollCounted, "coll_counted", "i", "i"),
     (CollEmpty, "coll_empty", "i", "i"),
     (SetAdd, "set_add", "iii", ""),
     (SetRemove, "set_remove", "iii", ""),

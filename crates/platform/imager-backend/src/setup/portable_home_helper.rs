@@ -19,32 +19,6 @@ use zeroize::Zeroizing;
 fn failure() -> io::Error {
     io::Error::other("Portable home could not be authenticated or adopted")
 }
-fn arguments(args: impl IntoIterator<Item = OsString>) -> io::Result<BTreeMap<String, OsString>> {
-    let mut args = args.into_iter();
-    let mut values = BTreeMap::new();
-    while let Some(key) = args.next() {
-        let key = key.into_string().map_err(|_| failure())?;
-        if ![
-            "--package",
-            "--receipt",
-            "--setup-package",
-            "--setup-quarantine",
-            "--home",
-            "--workspace",
-            "--action",
-        ]
-        .contains(&key.as_str())
-            || values.contains_key(&key)
-        {
-            return Err(failure());
-        }
-        values.insert(key, args.next().ok_or_else(failure)?);
-    }
-    if values.len() != 7 {
-        return Err(failure());
-    }
-    Ok(values)
-}
 fn path(values: &BTreeMap<String, OsString>, key: &str) -> io::Result<PathBuf> {
     let path = PathBuf::from(values.get(key).ok_or_else(failure)?);
     if !path.is_absolute() {
@@ -102,7 +76,7 @@ pub fn run_with_admission(
     admission: impl FnOnce() -> io::Result<()>,
 ) -> io::Result<()> {
     admission()?;
-    let values = arguments(args)?;
+    let values = super::helper_arguments::parse(args, failure)?;
     let action = values
         .get("--action")
         .and_then(|value| value.to_str())

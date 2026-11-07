@@ -165,6 +165,9 @@ pub struct Phrase {
     pub day: Option<i64>,
     /// The time of day, in minutes after midnight.
     pub minutes: Option<i64>,
+    /// How long after the moment it is read at, in minutes: "later today", "in a bit", which
+    /// name no time of day by themselves.
+    pub after: Option<i64>,
     /// The word it starts at.
     pub from: usize,
     /// How many words it is, a lead word included.
@@ -258,6 +261,10 @@ fn time_of(word: &str, next: Option<&str>, bare: bool) -> Option<(i64, usize)> {
     match word {
         "noon" | "midday" | "mittag" => return Some((12 * 60, 1)),
         "midnight" | "mitternacht" => return Some((0, 1)),
+        // The hours people name instead of a clock ("tomorrow morning").
+        "morning" | "morgens" | "vormittag" => return Some((9 * 60, 1)),
+        "afternoon" | "nachmittag" => return Some((14 * 60, 1)),
+        "evening" | "abends" => return Some((18 * 60, 1)),
         _ => {}
     }
     let (body, suffix, used) = if let Some(b) = word.strip_suffix("am") {
@@ -295,6 +302,7 @@ fn time_of(word: &str, next: Option<&str>, bare: bool) -> Option<(i64, usize)> {
 struct Found {
     day: Option<i64>,
     minutes: Option<i64>,
+    after: Option<i64>,
     words: usize,
 }
 
@@ -307,6 +315,7 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
         Some(Found {
             day: Some(d),
             minutes: None,
+            after: None,
             words: n,
         })
     };
@@ -315,7 +324,18 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
         return Some(Found {
             day: Some(today),
             minutes: Some(20 * 60),
+            after: None,
             words: 2,
+        });
+    }
+    // "later today", "later": a couple of hours on, when the person has no hour in mind.
+    if matches!(first, "later" | "später" | "spaeter") {
+        let today_word = matches!(w(1), Some("today" | "heute"));
+        let bit = matches!(w(1), Some("on" | "in a bit" | "in a while"));
+        return Some(Found {
+            after: Some(120),
+            words: if today_word || bit { 2 } else { 1 },
+            ..Found::default()
         });
     }
     match first {
@@ -324,6 +344,7 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
             return Some(Found {
                 day: Some(today),
                 minutes: Some(20 * 60),
+                after: None,
                 words: 1,
             });
         }
@@ -456,6 +477,7 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
             out.push(Phrase {
                 day: found.day,
                 minutes: found.minutes,
+                after: found.after,
                 from: i,
                 words: lead + found.words,
             });
@@ -466,6 +488,7 @@ pub fn scan(words: &[Word], today: i64, lang: Language) -> Vec<Phrase> {
             out.push(Phrase {
                 day: None,
                 minutes: Some(minutes),
+                after: None,
                 from: i,
                 words: lead + n,
             });
@@ -499,16 +522,25 @@ pub fn when(text: &str, today: i64, second_of_day: i64, lang: Language) -> When 
     let mut used = vec![false; words.len()];
     let mut day = None;
     let mut minutes = None;
+    let mut after = None;
     for phrase in &phrases {
         if (day.is_none() && phrase.day.is_some())
             || (minutes.is_none() && phrase.minutes.is_some())
+            || (after.is_none() && phrase.after.is_some())
         {
             day = day.or(phrase.day);
             minutes = minutes.or(phrase.minutes);
+            after = after.or(phrase.after);
             used[phrase.from..phrase.from + phrase.words]
                 .iter_mut()
                 .for_each(|u| *u = true);
         }
+    }
+    // "later today": so long after now, on the quarter hour, and the day that lands on.
+    if let (None, None, Some(after)) = (day, minutes, after) {
+        let at = ((second_of_day / 60 + after + 14) / 15) * 15;
+        day = Some(today + at.div_euclid(24 * 60));
+        minutes = Some(at.rem_euclid(24 * 60));
     }
     // A time alone is today's while it is still to come, else tomorrow's.
     let day = day.or_else(|| {
@@ -667,6 +699,50 @@ mod tests {
         assert_eq!(read("x at 9").2, Some("2026-10-29T08:00:00Z".into()));
         assert_eq!(read("x noon").2, Some("2026-10-29T11:00:00Z".into()));
         assert_eq!(read("x tonight").2, Some("2026-10-29T19:00:00Z".into()));
+    }
+
+    #[test]
+    fn an_hour_of_the_day_reads_to_its_time() {
+        assert_eq!(
+            read("x tomorrow morning"),
+            (
+                "x".into(),
+                Some("2026-10-30".into()),
+                Some("2026-10-30T08:00:00Z".into())
+            )
+        );
+        assert_eq!(
+            read("x tomorrow evening").2,
+            Some("2026-10-30T17:00:00Z".into())
+        );
+        assert_eq!(
+            read("x friday afternoon").2,
+            Some("2026-10-30T13:00:00Z".into())
+        );
+    }
+
+    #[test]
+    fn later_is_a_couple_of_hours_on_the_quarter_hour() {
+        // It is 08:00 in Berlin: two hours on is 10:00 there.
+        assert_eq!(
+            dated("later today", NOW, BERLIN),
+            Dated {
+                text: "later today".into(),
+                day: Some("2026-10-29".into()),
+                at: Some("2026-10-29T09:00:00Z".into()),
+            },
+            "two hours on, on the quarter hour"
+        );
+        assert_eq!(
+            read("x later").2,
+            Some("2026-10-29T09:00:00Z".into()),
+            "later"
+        );
+        assert_eq!(
+            read("x later today").2,
+            Some("2026-10-29T09:00:00Z".into()),
+            "later today"
+        );
     }
 
     #[test]

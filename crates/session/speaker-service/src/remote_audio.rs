@@ -2086,6 +2086,7 @@ impl PcmCapture {
 )]
 mod tests {
     use super::*;
+    use tilo_device_fabric::clock::{fabric_monotonic_us, with_fabric_clock};
 
     fn binding(session: &str) -> PhysicalGamepadBinding {
         PhysicalGamepadBinding {
@@ -2878,6 +2879,44 @@ mod tests {
                     }
         }));
         assert!(due_keepalives(&mut state, now).is_empty());
+    }
+
+    #[test]
+    fn a_route_playing_another_device_leaves_its_syncing_clock_once_it_answers() {
+        let source = DeviceId::new("clock-source").unwrap();
+        let target = DeviceId::new("clock-target").unwrap();
+        let now = Instant::now();
+        let mut state = RemoteAudioState::default();
+        let mut route = inbound(&source, &target, now);
+        route.clock_sync = Some(hold_fabric_clock_sync(source.clone()));
+        state.inbound.insert([4; 16], route);
+        let phase = |state: &RemoteAudioState| route_views(state, false)[0].phase;
+        with_fabric_clock(|core| core.set_enabled(true, now));
+        assert_eq!(
+            phase(&state),
+            RemoteAudioPhase::SyncingClock,
+            "the source's clock is kept, and nothing is known of it yet"
+        );
+
+        // A probe the source answers, as the transport takes both.
+        let sent_us = fabric_monotonic_us().saturating_sub(5_000);
+        let probes = with_fabric_clock(|core| core.due_probes(|_| true, now, sent_us, || [3; 16]));
+        let PersonalFabricAction::FabricClockProbe { nonce, sent_us } = probes[0].1 else {
+            panic!("a clock probe");
+        };
+        let replied_us = fabric_monotonic_us();
+        let reply = with_fabric_clock(|core| {
+            core.answer(nonce, sent_us, replied_us.saturating_sub(1), replied_us)
+        })
+        .expect("a probe is answered while Media continuity is on");
+        assert!(tilo_device_fabric::clock::arrived(
+            &CountingLink::default(),
+            &source,
+            &reply,
+            Instant::now(),
+        ));
+
+        assert_eq!(phase(&state), RemoteAudioPhase::Streaming);
     }
 
     #[test]

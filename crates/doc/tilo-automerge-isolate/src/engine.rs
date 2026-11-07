@@ -59,85 +59,48 @@ pub(crate) fn document_change_hashes(bytes: &[u8], doc: &mut AutoCommit) -> Vec<
 /// [`Applied::MissingDependencies`] when any change is left waiting for a
 /// dependency; `doc` has then been changed and must be discarded.
 ///
-/// A payload of change chunks is taken as changes ([`take`]); a saved
-/// document or a bundle into a blank document is one strict load, the pass
-/// Automerge itself makes there, and applied otherwise.
+/// Into a blank document this is one strict load, the pass Automerge itself
+/// makes there, rather than a parse followed by the same load.
 pub(crate) fn apply(
     doc: &mut AutoCommit,
     incoming: &[u8],
     dependencies: Dependencies,
 ) -> Result<Applied, Rejected> {
-    let mut changes = Vec::new();
-    let mut whole = false;
-    for chunk in crate::precheck::chunks(incoming) {
-        match parse_alone(chunk)? {
-            Some(change) => changes.push(change),
-            None => whole = true,
-        }
-    }
-    if whole {
-        return whole_or_trusted(doc, incoming, dependencies);
-    }
-    take(doc, changes, dependencies)
-}
-
-/// [`apply`] for a payload no change parse splits into changes.
-fn whole_or_trusted(
-    doc: &mut AutoCommit,
-    incoming: &[u8],
-    dependencies: Dependencies,
-) -> Result<Applied, Rejected> {
-    if !is_blank(doc) {
-        return apply_trusted(doc, incoming, dependencies);
-    }
-    let loaded = match AutoCommit::load_with_options(
-        incoming,
-        strict().text_encoding(doc.document().text_encoding()),
-    ) {
-        Ok(loaded) => loaded,
-        // Strict loading reports this only after every chunk parsed and
-        // every decoded change was applied or queued. Repeating that
-        // validated input with Ignore retains the queue; no malformed tail
-        // can reach this branch. Both passes run inside the worker.
-        Err(automerge::AutomergeError::MissingDeps) => {
-            if dependencies == Dependencies::RequireComplete {
-                return Ok(Applied::MissingDependencies);
+    if is_blank(doc) {
+        let loaded = match AutoCommit::load_with_options(
+            incoming,
+            strict().text_encoding(doc.document().text_encoding()),
+        ) {
+            Ok(loaded) => loaded,
+            // Strict loading reports this only after every chunk parsed and
+            // every decoded change was applied or queued. Repeating that
+            // validated input with Ignore retains the queue; no malformed
+            // tail can reach this branch. Both passes run inside the worker.
+            Err(automerge::AutomergeError::MissingDeps) => {
+                if dependencies == Dependencies::RequireComplete {
+                    return Ok(Applied::MissingDependencies);
+                }
+                AutoCommit::load_with_options(
+                    incoming,
+                    strict()
+                        .text_encoding(doc.document().text_encoding())
+                        .on_partial_load(OnPartialLoad::Ignore),
+                )
+                .map_err(|e| Rejected::Invalid(e.to_string()))?
             }
-            AutoCommit::load_with_options(
-                incoming,
-                strict()
-                    .text_encoding(doc.document().text_encoding())
-                    .on_partial_load(OnPartialLoad::Ignore),
-            )
-            .map_err(|e| Rejected::Invalid(e.to_string()))?
+            Err(error) => return Err(Rejected::Invalid(error.to_string())),
+        };
+        let actor = doc.get_actor().clone();
+        *doc = loaded.with_actor(actor);
+        if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
+            return Ok(Applied::MissingDependencies);
         }
-        Err(error) => return Err(Rejected::Invalid(error.to_string())),
-    };
-    let actor = doc.get_actor().clone();
-    *doc = loaded.with_actor(actor);
-    if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
-        return Ok(Applied::MissingDependencies);
+        return Ok(Applied::Changed(!doc.get_heads().is_empty()));
     }
-    Ok(Applied::Changed(!doc.get_heads().is_empty()))
-}
-
-/// Take `changes` into `doc`, keeping the first change of a writer's
-/// sequence: one writer that wrote a sequence twice has two changes under
-/// it, and a record keeps the one that reached it first
-/// ([`tilo_automerge::keeping`]). Automerge refuses the whole call on such a
-/// change, which would drop the changes after it as well.
-fn take(
-    doc: &mut AutoCommit,
-    changes: Vec<automerge::Change>,
-    dependencies: Dependencies,
-) -> Result<Applied, Rejected> {
-    let before = doc.get_heads();
-    tilo_automerge::keeping::apply(doc, changes)
-        .map_err(|error| Rejected::Invalid(error.to_string()))?;
-    if dependencies == Dependencies::RequireComplete && !doc.get_missing_deps(&[]).is_empty() {
-        return Ok(Applied::MissingDependencies);
+    for chunk in crate::precheck::chunks(incoming) {
+        parse_alone(chunk)?;
     }
-    Ok(Applied::Changed(doc.get_heads() != before))
+    apply_trusted(doc, incoming, dependencies)
 }
 
 /// A document with no changes, applied or queued.
@@ -145,9 +108,8 @@ pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
     doc.get_heads().is_empty() && doc.get_missing_deps(&[]).is_empty()
 }
 
-/// Parse one chunk without applying it: the change it carries, or `None` for
-/// a chunk that is a document or a bundle, which is loaded on its own as it
-/// has no cheaper parse.
+/// Parse one chunk without applying it. A change costs only its own decode;
+/// a document or bundle is loaded on its own, as it has no cheaper parse.
 ///
 /// Parsing a change does not check its stored checksum, and into a document
 /// that is not blank `load_incremental` stops at a chunk with a bad checksum
@@ -155,7 +117,7 @@ pub(crate) fn is_blank(doc: &mut AutoCommit) -> bool {
 /// checksum is compared with its hash here, and the whole input is refused.
 /// For a compressed chunk that hash is the uncompressed change's, which
 /// Automerge requires the compressed chunk's checksum to match as well.
-fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<Option<automerge::Change>, Rejected> {
+fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<(), Rejected> {
     let invalid = |e: automerge::AutomergeError| Rejected::Invalid(e.to_string());
     match chunk.kind {
         crate::precheck::CHANGE | crate::precheck::COMPRESSED_CHANGE => {
@@ -164,30 +126,24 @@ fn parse_alone(chunk: crate::precheck::Chunk<'_>) -> Result<Option<automerge::Ch
             if chunk.bytes.get(4..8) != change.hash().0.get(..4) {
                 return Err(Rejected::Invalid("bad change checksum".into()));
             }
-            Ok(Some(change))
+            Ok(())
         }
         // On its own, a change whose dependencies are elsewhere loads as
         // `MissingDeps`: every chunk parsed, which is all this asks.
         _ => match automerge::Automerge::load_with_options(chunk.bytes, strict()) {
-            Ok(_) | Err(automerge::AutomergeError::MissingDeps) => Ok(None),
+            Ok(_) | Err(automerge::AutomergeError::MissingDeps) => Ok(()),
             Err(error) => Err(invalid(error)),
         },
     }
 }
 
 /// [`apply`] without the standalone parse: for bytes already shown to be
-/// complete, or produced by this process. A stream of changes is still taken
-/// through [`take`], so the rule holds wherever it is written.
+/// complete, or produced by this process.
 pub(crate) fn apply_trusted(
     doc: &mut AutoCommit,
     incoming: &[u8],
     dependencies: Dependencies,
 ) -> Result<Applied, Rejected> {
-    if let Ok(changes) = automerge::Automerge::parse_changes(incoming)
-        && !changes.is_empty()
-    {
-        return take(doc, changes, dependencies);
-    }
     let before = doc.get_heads();
     doc.load_incoming(incoming)
         .map_err(|e| Rejected::Invalid(e.to_string()))?;

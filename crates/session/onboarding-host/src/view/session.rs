@@ -110,14 +110,4 @@ impl super::OnboardingView {
             recovery_only,
         )
     }
-
-    /// [`Self::isolated`] for a Tilo session on an existing Linux host.
-    pub fn isolated_host_desktop(identity_dir: PathBuf) -> Self {
-        Self::new_in_session(
-            identity_dir,
-            SessionPaths::default(),
-            super::OnboardingContext::HostDesktop,
-            false,
-        )
-    }
 }

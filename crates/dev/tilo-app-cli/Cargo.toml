@@ -41,7 +41,7 @@ tilo-history = { path = "../../sdk/tilo-history" }
 tilo-actions = { path = "../../collab/actions" }
 sha2.workspace = true
 registry-types = { path = "../../packaging/registry-types" }
-registry-client = { path = "../../packaging/registry-client" }
+app-registry = { path = "../../packaging/app-registry" }
 tilo-paths = { path = "../../platform/tilo-paths" }
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 bounded-command = { path = "../../system/bounded-command" }

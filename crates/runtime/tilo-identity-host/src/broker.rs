@@ -18,7 +18,7 @@ use ed25519_dalek::Signer;
 use runtime_identity::wire::{FRAMING, HANDSHAKE_FRAMING, Request, Response};
 #[cfg(test)]
 use tilo_action_policy::Subject;
-use tilo_action_policy::{ActionKind, Answer, TreePath};
+use tilo_action_policy::{ActionKind, Answer};
 use tilo_clock::unix_now;
 use wire_frame::FrameError;
 
@@ -71,7 +71,7 @@ pub trait PersonRecordKinds: Send + Sync + 'static {
     fn attached(&self, _app_id: &str, _surface: &[u8]) {}
 
     /// The ids `app_id` had before, as the installed catalogue believes them (the same publisher
-    /// signed them, `tilo_installed_apps::earlier_ids`): the app keeps using the records of
+    /// signed them, `app_catalogue::apps::earlier_ids`): the app keeps using the records of
     /// those ids, so a route of one is its launch's own. None by default.
     fn earlier_ids(&self, _app_id: &str) -> Vec<String> {
         Vec::new()
@@ -405,17 +405,6 @@ fn metadata_response(
         total_shares: record.total_shares,
         share_index: record.share_index,
     }
-}
-
-/// The legacy node of `app`'s request to sign for `action`. Retained for
-/// existing policy records; grants here do not authorize generic signing.
-#[must_use]
-pub fn device_signature_node(workspace: &TreePath, app: &str, action: &str) -> TreePath {
-    workspace
-        .clone()
-        .app(app)
-        .resource(DEVICE_SIGNATURE_RESOURCE)
-        .action(action)
 }
 
 /// What a client's launch bound it to: its workspace and app, and the
@@ -808,35 +797,6 @@ pub struct LocalDeviceIdentity {
     pub device_public_key: [u8; 32],
 }
 
-/// The identity this device presents in `workspace` and its own key, only
-/// while the device holds a valid, enrolled, non-revoked certificate for it.
-///
-/// # Errors
-///
-/// Rejects an invalid or unminted workspace, one this device has no identity
-/// for, and a missing, mismatched, unenrolled or revoked device certificate.
-pub fn trusted_current_device_public(workspace: &str) -> io::Result<LocalDeviceIdentity> {
-    let workspace = WorkspaceId::parse(workspace)
-        .filter(|workspace| !workspace.is_nil())
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidInput, "invalid minted workspace id")
-        })?;
-    let profile =
-        crate::registry::identity_for_workspace(&workspace.to_string())?.ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "this device has no identity to sign in with",
-            )
-        })?;
-    let (device, _cert) = require_trusted_current_device(&profile)?;
-    Ok(LocalDeviceIdentity {
-        profile_id: profile.id.clone(),
-        principal_id: profile.principal_id(),
-        user_root_public_key: profile.user_public_key,
-        device_public_key: device.verifying_key().to_bytes(),
-    })
-}
-
 fn read_frame<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
     let bytes = HANDSHAKE_FRAMING.read(stream)?.ok_or(FrameError::Closed)?;
     serde_json::from_slice(&bytes)
@@ -907,7 +867,11 @@ mod tests {
         Grant::new(
             "notes-sign-save",
             Subject::App("so.tilo.notes".into()),
-            device_signature_node(&workspace.node(), "so.tilo.notes", "document.save"),
+            workspace
+                .node()
+                .app("so.tilo.notes")
+                .resource(DEVICE_SIGNATURE_RESOURCE)
+                .action("document.save"),
             KindSet::ALL,
             Answer::Allow,
             Subject::Person(

@@ -192,34 +192,12 @@ impl SealingMember {
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> R {
         let (result, message) = self.seal(workspace, change);
-        self.hand_to(workspaces, workspace, message).await;
-        result
-    }
-
-    /// [`Self::writes`] of `change` made to the record as it stood at
-    /// `heads`: a page that continued this writer from a copy that went
-    /// another way writes the writer's sequence a second time. This member's
-    /// replica keeps the record it holds.
-    pub async fn writes_forked<R>(
-        &self,
-        workspaces: &Workspaces,
-        workspace: &str,
-        heads: &[automerge::ChangeHash],
-        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
-    ) -> R {
-        let (result, message) = self.seal_forked(workspace, heads, change);
-        self.hand_to(workspaces, workspace, message).await;
-        result
-    }
-
-    /// Hand `message`, this member's write, to `workspaces` as the relay hands
-    /// it every member write.
-    async fn hand_to(&self, workspaces: &Workspaces, workspace: &str, message: NeighbourMsg) {
         let body = postcard::to_stdvec(&message).unwrap();
         workspaces
             .absorb(workspace, self.key.verifying_key().to_bytes(), &body)
             .await
             .unwrap();
+        result
     }
 
     /// The member folds the record's sealed history, as the workspace holds it
@@ -285,6 +263,7 @@ impl SealingMember {
         workspace: &str,
         change: impl FnOnce(&mut automerge::AutoCommit) -> R,
     ) -> (R, NeighbourMsg) {
+        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let mut document = self.document();
         let heads = document.get_heads();
         let result = change(&mut document);
@@ -292,35 +271,10 @@ impl SealingMember {
             .encode()
             .unwrap();
         *self.document.lock().unwrap() = document;
-        (result, self.seal_change(workspace, &plaintext))
-    }
-
-    /// [`Self::seal`] of `change` made to the record as it stood at `heads`,
-    /// by the same writer: the writer's sequence again, under another change.
-    pub fn seal_forked<R>(
-        &self,
-        workspace: &str,
-        heads: &[automerge::ChangeHash],
-        change: impl FnOnce(&mut automerge::AutoCommit) -> R,
-    ) -> (R, NeighbourMsg) {
-        let mut document = self.document();
-        let mut forked = document.fork_at(heads).unwrap();
-        forked.set_actor(document.get_actor().clone());
-        let result = change(&mut forked);
-        let plaintext = collab_types::DocumentMutation::Incremental(forked.save_after(heads))
-            .encode()
-            .unwrap();
-        (result, self.seal_change(workspace, &plaintext))
-    }
-
-    /// `plaintext`, one change of the record's history, sealed with the
-    /// record's channel keys and signed as this member's next write.
-    fn seal_change(&self, workspace: &str, plaintext: &[u8]) -> NeighbourMsg {
-        let (app, record) = (self.route.0.as_str(), self.route.1.as_str());
         let artifact = collab_types::document_artifact_id(app, workspace, record);
         let (metadata, payload) = self
             .keys
-            .seal_content(artifact, ContentRetention::Delta, plaintext)
+            .seal_content(artifact, ContentRetention::Delta, &plaintext)
             .unwrap();
         let author =
             collab_types::Ed25519PublicKey::from_bytes(self.key.verifying_key().to_bytes());
@@ -340,13 +294,14 @@ impl SealingMember {
         )
         .with_surface(self.surface);
         collab_types::sign_op(&mut envelope, &self.key).unwrap();
-        NeighbourMsg::AppDocument {
+        let message = NeighbourMsg::AppDocument {
             peer: tilo_peer_state::peer_handle(author.as_bytes()),
             app_id: app.into(),
             cluster_id: workspace.into(),
             record_id: record.into(),
             envelope: Box::new(envelope),
-        }
+        };
+        (result, message)
     }
 }
 

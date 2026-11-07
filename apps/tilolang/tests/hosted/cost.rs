@@ -197,30 +197,47 @@ struct Rest {
     instance_us: u64,
     window_us: u64,
     frames: Vec<ui::profiling::FrameTiming>,
-    /// The frames the window ran.
-    ran: u64,
+    /// The draw commands the step's frames encoded.
+    drawn: u64,
     /// The nodes the most demanding frame of them invalidated in the layout.
     marked: usize,
     /// The frames that placed every widget of the tree, not only those a view moved.
     full: u64,
+    /// The frames that placed every widget with nothing composed, measured or remounted: a walk
+    /// of the whole tree where only a view moved.
+    full_unasked: u64,
     /// The rounds of turn and frame the wait took.
     rounds: u32,
 }
 
+/// The session's window on the frame clock the session's own host presents on
+/// ([`tilo_ui_host::AppWindow`] under `ui::headless::FrameHarness`): the key down, the text and
+/// the key up of one keystroke reach one frame, as they do in a window whose host draws on the
+/// display's clock, instead of running a frame each.
+fn on_the_frame_clock(mut session: Session) -> Session {
+    session.window.harness().set_coalesce_input_frames(true);
+    session
+}
+
 /// The frame the window runs now: the frame of what the host just did (its patches wake the
-/// window and the frame reads them). A window at rest runs none: asking it by hand
-/// (`Window::frame`) is asking it to lay out and draw again, which is work no person's
-/// interaction made. A frame only the window's own clock asks for is not a step's cost either:
-/// these tests settle motion, and the frames a scroll's glide ran would be as many as the
-/// machine got through. What the window owes nothing for is asserted where the schedule is read
-/// (`a_window_at_rest_asks_its_host_for_no_frame`).
+/// window and the frame reads them), or one the window owes the tree that no turn brought — the
+/// frame an input waits for on the window's clock, whose events reached the widgets when they
+/// came. A window at rest runs none: asking it by hand (`Window::frame`) is asking it to lay out
+/// and draw again, which is work no person's interaction made. A frame only the window's own
+/// clock asks for is not a step's cost either: these tests settle motion, and the frames a
+/// scroll's glide ran would be as many as the machine got through. What the window owes nothing
+/// for is asserted where the schedule is read (`a_window_at_rest_asks_its_host_for_no_frame`).
 fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     match &mut session.window {
         Window::Harness(window) => {
             if changed {
                 window.relayout();
+                return true;
             }
-            changed
+            if !window.frame_schedule().queued_work {
+                return false;
+            }
+            window.poll_frame().unwrap_or(true)
         }
         Window::Live(app) => {
             Window::live_frame(app);
@@ -229,32 +246,62 @@ fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     }
 }
 
-/// The host's turns and the window's frames until neither has anything left to do.
-fn at_rest(session: &mut Session) -> Rest {
-    let mut rest = Rest::default();
+/// The host's turns and the window's frames until neither has anything left to do: the step's
+/// work, not the wakes the app's other threads hand the window while it waits.
+fn at_rest(session: &mut Session, drawn_before: u64) -> Rest {
+    let harness = session.window.harness();
+    let mut rest = Rest {
+        // What the input drew before the waits below is the step's drawing: a window on the
+        // frame clock runs no frame of its own for an event, one not on it runs one per event.
+        drawn: harness.drawn_commands().saturating_sub(drawn_before),
+        frames: harness.take_profile_samples(),
+        ..Rest::default()
+    };
     let mut quiet = 0_u32;
     while quiet < 3 {
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
         let changed = session.host.turn();
         rest.instance_us += since(start, wall.elapsed());
+        // What the tree itself owes a frame: the work of the step, or of the turn just taken.
+        let sources = session.window.harness().queued_work_sources();
+        let step_frame = changed || !sources.is_empty();
+        let drawn_round = session.window.harness().drawn_commands();
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
         let framed = frame_if_asked(session, changed);
         rest.window_us += since(start, wall.elapsed());
         if framed {
-            rest.ran = rest.ran.saturating_add(1);
-            let stats = session.window.harness().last_relayout();
-            rest.marked = rest.marked.max(stats.marked_dirty);
-            if !stats.placed_partly {
-                rest.full = rest.full.saturating_add(1);
+            // A frame the window ran for a wake that no source of the tree asked for is one
+            // another of the app's threads handed it: the window takes up the answer it carries
+            // and goes back to rest. It is not the step's frame, so it holds the wait off rest no
+            // more than it is counted as the step's work.
+            let samples = session.window.harness().take_profile_samples();
+            if step_frame {
+                rest.frames.extend(samples);
+                rest.drawn += session
+                    .window
+                    .harness()
+                    .drawn_commands()
+                    .saturating_sub(drawn_round);
+                let stats = session.window.harness().last_relayout();
+                rest.marked = rest.marked.max(stats.marked_dirty);
+                if !stats.placed_partly {
+                    rest.full = rest.full.saturating_add(1);
+                    if !(stats.rebuilt || stats.remounted || stats.measured)
+                        && stats.marked_dirty == 0
+                    {
+                        rest.full_unasked = rest.full_unasked.saturating_add(1);
+                    }
+                }
             }
         }
-        // The step is over when the host has nothing left to show the window. What an instance
-        // reads off its frames — its publication sweeping the workspace's records, one a turn,
-        // waking the window as each moves what a view shows — is the workspace's work, sized by
-        // the workspace and not by what the person did, so it does not hold the window here.
-        if changed {
+        // The step is over when the host has nothing left to show the window and the tree owes
+        // nothing of its own. What an instance reads off its frames — its publication sweeping
+        // the workspace's records, one a turn, waking the window as each moves what a view shows
+        // — is the workspace's work, sized by the workspace and not by what the person did, so
+        // it does not hold the window here.
+        if step_frame {
             quiet = 0;
         } else {
             quiet = quiet.saturating_add(1);
@@ -273,7 +320,6 @@ fn at_rest(session: &mut Session) -> Rest {
             );
         }
     }
-    rest.frames = session.window.harness().take_profile_samples();
     rest
 }
 
@@ -281,12 +327,13 @@ fn at_rest(session: &mut Session) -> Rest {
 /// what it did on screen.
 fn cost(session: &mut Session, label: &'static str, input: impl FnOnce(&mut Session)) -> Cost {
     session.window.harness().begin_profiling();
+    let drawn = session.window.harness().drawn_commands();
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
     input(session);
     // The frames the input itself ran are the window's too.
     let input_us = since(start, wall.elapsed());
-    let rest = at_rest(session);
+    let rest = at_rest(session, drawn);
     let (frames, instance_us, window_us) = (
         rest.frames,
         rest.instance_us,
@@ -496,7 +543,7 @@ fn what_the_interactions_a_person_feels_cost() {
     let storage = kept_index(&route, &chunks, "interactions");
     let start = ui::rt::thread_cpu_time();
     let wall = ui::time::Instant::now();
-    let mut session = Session::tasks_over_in(&route, chunks, Some(storage));
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, Some(storage)));
     let wall_us = wall.elapsed().as_micros() as u64;
     let cpu_us = since(start, wall.elapsed());
     costs.add(Cost {
@@ -765,26 +812,131 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     );
 }
 
-/// A cold open reads each chunk the record names once, and derives what it holds once: the work
-/// grows with the tasks, not with the square of the chunks they span. Measured in an optimised
-/// build, where the numbers mean something: `--ignored`.
+/// A window that opens over years of a person's workspace shows its first screen of rows from the
+/// first step of the index it builds, not once the whole workspace is read: the chunk the first
+/// screen's rows are in is derived first, the rest of the record off the frame while the person
+/// reads, and what the store has not read yet shows as not yet known rather than as a count. The
+/// first rows come in about as long at ten thousand tasks as at one thousand, and the lists the
+/// window ends on are the lists of a window that opens over the index the cold open kept.
 #[test]
-#[ignore = "a measurement for an optimised build"]
-fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
+fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
     let _motion = ui::motion::testing::settled();
     let mut measured = Vec::new();
     for &n in &[SEEDED / 10, SEEDED] {
         let chunks = seeded_tasks(n);
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-        let storage = kept_root(&format!("cold-{n}"));
+        let storage = kept_root(&format!("first-rows-{n}"));
+
+        let mut session =
+            Session::tasks_over_launched(&route, chunks.clone(), Some(storage.clone()));
+        // From the window opening, as a person waits on it: the package's build is what every
+        // window of the app pays once, and not what the workspace's size adds.
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
-        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-        session.wait_index();
-        let us = since(start, wall.elapsed());
-        eprintln!("cold open at {n} tasks: {:.2} ms", us as f64 / 1000.0);
-        measured.push((n, us));
+        show_rows(&mut session);
+        let rows_us = since(start, wall.elapsed());
+        shots(&format!("cold-{n}-first-rows"), &mut session);
+        assert!(
+            !session.titles().is_empty(),
+            "the window opens on the tasks's rows"
+        );
+        let first_rows_shown = session.titles();
         session.settle();
+        let whole_us = since(start, wall.elapsed());
+        assert!(
+            session.index_whole(),
+            "the window reads the whole workspace by the time it is at rest"
+        );
+        let settled = session.titles();
+        let shared = settled.len().min(first_rows_shown.len());
+        assert_eq!(
+            settled[..shared],
+            first_rows_shown[..shared],
+            "the rows the window opened on stay where they were while the rest is read: \
+             {first_rows_shown:?} then {settled:?}"
+        );
+        shots(&format!("cold-{n}-read"), &mut session);
+        let cold = shown(&mut session);
+        eprintln!(
+            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms of the window's CPU",
+            rows_us as f64 / 1000.0,
+            whole_us as f64 / 1000.0
+        );
+        measured.push((n, rows_us, whole_us));
+
+        // What the window ends on is what a window that opens over a kept index shows.
+        session.close();
+        let kept = kept_index(&route, &chunks, &format!("first-rows-kept-{n}"));
+        let mut warm = Session::tasks_over_in(&route, chunks, Some(kept));
+        assert_eq!(
+            warm.builds(),
+            0,
+            "the window over the kept index reads it, rather than building one"
+        );
+        assert_eq!(
+            shown(&mut warm),
+            cold,
+            "the window at rest shows what a window over the kept index shows"
+        );
+    }
+    if cfg!(debug_assertions) {
+        eprintln!("a development build: the first rows are reported, not bounded");
+        return;
+    }
+    let (small_n, small_rows, _) = measured[0];
+    let (large_n, large_rows, large_whole) = measured[1];
+    assert!(
+        large_rows < large_whole,
+        "the first rows come before the window has read the whole workspace: {large_rows}us of \
+         the {large_whole}us the open took"
+    );
+    assert!(
+        large_rows <= FIRST_ROWS_BUDGET_US,
+        "the first rows at {large_n} tasks took {large_rows}us of the window's CPU, over \
+         {FIRST_ROWS_BUDGET_US}us"
+    );
+    let ratio = large_rows as f64 / small_rows.max(1) as f64;
+    let items = large_n as f64 / small_n.max(1) as f64;
+    assert!(
+        ratio <= items / 2.0,
+        "the first rows wait for the chunk they are in, not the workspace: {large_n} tasks took \
+         {ratio:.1} times what {small_n} did, for {items:.0} times the tasks"
+    );
+}
+
+/// A cold open reads each chunk the record names once, and derives what it holds once: the work
+/// grows with the tasks, not with the square of the chunks they span. Measured in an optimised
+/// build, where the numbers mean something: `--ignored`.
+///
+/// The first rows lead the whole open at ten thousand tasks and not at a hundred thousand: there
+/// the record's own chunk is most of the open, and nothing is read off the frame before it. The
+/// hundred thousand open is reported rather than held to a ratio.
+#[test]
+#[ignore = "a measurement for an optimised build"]
+fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
+    let _motion = ui::motion::testing::settled();
+    let mut measured = Vec::new();
+    let mut first_rows = Vec::new();
+    for &n in &[SEEDED / 10, SEEDED, SEEDED_LARGE] {
+        let chunks = seeded_tasks(n);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let storage = kept_root(&format!("cold-{n}"));
+        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
+        // From the window opening: writing the workspace the session starts from is the test's
+        // work, not the open's.
+        let start = ui::rt::thread_cpu_time();
+        let wall = ui::time::Instant::now();
+        show_rows(&mut session);
+        let rows_us = since(start, wall.elapsed());
+        session.settle();
+        let us = since(start, wall.elapsed());
+        eprintln!(
+            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms",
+            rows_us as f64 / 1000.0,
+            us as f64 / 1000.0
+        );
+        measured.push((n, us));
+        first_rows.push((n, rows_us));
     }
     let (small_n, small) = measured[0];
     let (large_n, large) = measured[1];
@@ -793,6 +945,15 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
     assert!(
         ratio <= items * 2.0,
         "a cold open grows with the tasks: {large_n} took {ratio:.1} times what {small_n} did"
+    );
+    let (small_n, small) = first_rows[0];
+    let (large_n, large) = first_rows[1];
+    let ratio = large as f64 / small.max(1) as f64;
+    let items = large_n as f64 / small_n.max(1) as f64;
+    assert!(
+        ratio <= items / 4.0,
+        "the first rows do not wait for the workspace: {large_n} tasks took {ratio:.1} times \
+         what {small_n} did, for {items:.0} times the tasks"
     );
 }
 
@@ -910,6 +1071,26 @@ fn holding(session: &Session) -> Vec<tilolang_tilo::chunk::ChunkNo> {
         .collect()
 }
 
+/// The window's screen under `TILO_COLD_SHOTS`, named `name`, for review: nothing when the
+/// variable is not set.
+fn shots(name: &str, session: &mut Session) {
+    let Some(dir) = std::env::var_os("TILO_COLD_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        session.window.harness().set_theme(theme);
+        session.window.frame();
+        session
+            .window
+            .harness()
+            .render_png(&dir.join(format!("{name}-{shade}.png")));
+    }
+}
+
 /// What the window shows, as a person reads it off the accessibility tree: the role and the name
 /// of every node that has one.
 fn shown(session: &mut Session) -> Vec<(ui::a11y::Role, Option<String>)> {
@@ -929,6 +1110,13 @@ const OPEN_BUDGET_US: u64 = 500_000;
 /// The same for a hundred thousand tasks: the record's copy is what the workspace's size adds
 /// to an open.
 const OPEN_BUDGET_LARGE_US: u64 = 900_000;
+
+/// A loose ceiling on the window's CPU time a cold open may take to show its first screen of
+/// rows, whatever the workspace holds: the index is built in steps, the chunk the first screen's
+/// rows are in first, and the window reads from it while the rest of the workspace is derived off
+/// the frame. What the first rows cost beyond this is caught by the growth they are held to
+/// against a tenth of the workspace, and by their coming before the whole workspace is read.
+const FIRST_ROWS_BUDGET_US: u64 = 1_500_000;
 
 /// The directory the tests of this binary keep what a package keeps in, emptied first.
 fn kept_root(name: &str) -> std::path::PathBuf {
@@ -976,11 +1164,14 @@ fn kept_index(
     storage
 }
 
-/// The window's frames until its list shows a rendered row, as long as that took: from the
-/// first frame that could show it. Panics when none does.
+/// The window's frames until a list beside the page shows a row: the UI thread's CPU time it
+/// took, from the first turn that could show it. A cold window shows rows from the first step of
+/// the index it builds, while the rest of the workspace is derived off the frame, so this is
+/// short even where the whole workspace takes seconds.
 fn show_rows(session: &mut Session) -> u64 {
-    let start = ui::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_secs(120) {
+    let start = ui::rt::thread_cpu_time();
+    let wall = ui::time::Instant::now();
+    while wall.elapsed() < std::time::Duration::from_secs(120) {
         let changed = session.host.turn();
         session.window.frame();
         let shows = session.hosted().view().is_some_and(|view| {
@@ -992,10 +1183,12 @@ fn show_rows(session: &mut Session) -> u64 {
             })
         });
         if shows {
-            return start.elapsed().as_micros() as u64;
+            return since(start, wall.elapsed());
         }
         if !changed {
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            // Nothing on the frame to do: what the rows wait for is read beside the frames, and
+            // the host is woken when it is ready to be taken in.
+            session.woken.wait(std::time::Duration::from_millis(50));
         }
     }
     let ready = session.index_ready();
@@ -1792,7 +1985,6 @@ fn tmp_open_of_one_document() {
 struct Lay {
     built: u64,
     rebuilt: u64,
-    ran: u64,
     nodes: u64,
 }
 
@@ -1802,7 +1994,6 @@ impl Lay {
         Self {
             built: window.layout_nodes_built(),
             rebuilt: window.rebuilt_frames(),
-            ran: window.relayout_frames(),
             nodes: u64::try_from(window.layout_node_ids().len()).unwrap_or(u64::MAX),
         }
     }
@@ -1823,10 +2014,14 @@ fn a_step_lays_out_what_it_changes() {
     /// the rows that moved and the nodes above them.
     const MEASURED: u64 = 12;
 
+    /// The frames one input may run: the frame of the window's clock it asks for, and one more
+    /// for what it changed.
+    const STEPS_INPUT_FRAMES: u64 = 2;
+
     let _motion = ui::motion::testing::settled();
     let doc = seeded_tasks(SEEDED);
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
-    let mut session = Session::tasks_over_in(&route, doc, None);
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, doc, None));
     session.settle();
     session.window.chord(&["ctrl"], "n");
     session.settle();
@@ -1841,6 +2036,9 @@ fn a_step_lays_out_what_it_changes() {
     let at = shown_at(&mut session, &first);
     session.window.move_to(at.0, at.1);
     session.settle();
+    // Each step's frames as the harness timed them, and none of the settles before it.
+    session.window.harness().begin_profiling();
+    session.window.harness().take_profile_samples();
     let steps: [Step; 2] = [
         (
             "entry keystroke",
@@ -1853,17 +2051,29 @@ fn a_step_lays_out_what_it_changes() {
     ];
     for (label, input) in steps {
         let before = Lay::of(&mut session);
+        let drawn_before = session.window.harness().drawn_commands();
         input(&mut session);
         // The frames the input itself ran, then the frames its work asks the window for.
-        let rest = at_rest(&mut session);
+        let rest = at_rest(&mut session, drawn_before);
         let marked = rest
             .marked
             .max(session.window.harness().last_relayout().marked_dirty);
         let after = Lay::of(&mut session);
-        let ran = after.ran.saturating_sub(before.ran);
+        let ran = u64::try_from(rest.frames.len()).unwrap_or(u64::MAX);
+        let drawn = rest.drawn;
+        eprintln!(
+            "{label}: {ran} frames, {drawn} draw commands, {marked} of the window's {} nodes \
+             measured, {} of the {ran} frames placed every widget",
+            after.nodes, rest.full
+        );
+        // A keystroke or a notch of the scroll is one input on the window's clock, and one more
+        // frame if what it changed has to be composed: the key down and the key up of a character
+        // reach the same frame, whatever the tree's size.
         assert!(
-            ran > 0,
-            "{label} ran none of the frames that show what it did"
+            ran > 0 && ran <= STEPS_INPUT_FRAMES,
+            "{label} ran {ran} frames of the window's clock, {drawn} draw commands for its {} \
+             nodes: one input frame and at most one for what it changed",
+            after.nodes
         );
         // Whatever the step changed, one frame composes it; what comes after moves it.
         let rebuilds = after.rebuilt.saturating_sub(before.rebuilt);
@@ -1879,21 +2089,29 @@ fn a_step_lays_out_what_it_changes() {
             "{label} asked the layout to measure {marked} of the window's {} nodes",
             after.nodes
         );
-        assert!(
-            rest.full <= 1,
-            "{label} placed every widget of the window's {} in {} of the {} frames it ran",
-            after.nodes,
-            rest.full,
-            rest.ran
+        // A frame places every widget of the tree when it composes it or measures nodes it did
+        // not hold, which is what a change reaches; a frame with nothing composed or measured
+        // places only the widgets a view moved.
+        assert_eq!(
+            rest.full_unasked, 0,
+            "{label} placed every widget of the window's {} with nothing composed or measured, \
+             in {} of the {ran} frames it ran",
+            after.nodes, rest.full_unasked
         );
         let built = after.built.saturating_sub(before.built);
+        // What a step builds is what it composes or mounts once: a frame that recomposed the
+        // tree, or the rows the app published for the step, and the nodes the step measured.
+        // Frames that built the window's nodes again, which is what a walk of the whole tree
+        // costs a person, build past it once per frame.
         assert!(
-            built <= MEASURED.saturating_add(composition),
-            "{label} built {built} layout nodes of the window's {}, one recompose of them and \
-             its own changes allowed",
+            built <= after.nodes.saturating_add(MEASURED),
+            "{label} built {built} layout nodes of the window's {}, one composition of them at \
+             most",
             after.nodes
         );
         session.settle();
+        // What the settle after the step ran is not the step's.
+        session.window.harness().take_profile_samples();
     }
 }
 

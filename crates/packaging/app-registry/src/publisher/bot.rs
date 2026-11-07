@@ -11,7 +11,7 @@ use registry_types::{
     VersionArtifact,
 };
 
-use crate::EntryMetadata;
+use crate::publisher::EntryMetadata;
 
 pub struct BotRelease<'a> {
     /// The program's canonical bytes.
@@ -115,8 +115,8 @@ pub fn build_bot_entry(
     } else {
         versions.push(version);
     }
-    let versions = crate::entry::retain_versions(versions, &RetentionPolicy::default());
-    let fresh = crate::entry::FreshEntry {
+    let versions = crate::publisher::entry::retain_versions(versions, &RetentionPolicy::default());
+    let fresh = crate::publisher::entry::FreshEntry {
         package_id: release.package_id.to_owned(),
         kind: EntryKind::Bot,
         description: format!("{name} is a Tilo bot."),
@@ -124,7 +124,7 @@ pub fn build_bot_entry(
         name,
         categories: vec!["Bots".into()],
     };
-    crate::entry::signed_entry(
+    crate::publisher::entry::signed_entry(
         fresh,
         versions,
         previous,

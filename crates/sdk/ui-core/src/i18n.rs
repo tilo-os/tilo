@@ -987,14 +987,16 @@ impl I18nManager {
         PSEUDO_LOCALE.with(Cell::get)
     }
 
-    /// Resolve `key` in the active locale.
+    /// Resolve `key` in the window's language ([`Self::speaking_locale`]: the
+    /// selected locale when its catalogues are in it, the source language
+    /// otherwise).
     ///
-    /// Bundles are consulted in order: the active locale's own catalogue,
+    /// Bundles are consulted in order: that language's own catalogue,
     /// then a language-only catalogue of the same language, then other
     /// regions of that language in registration order, then the source
-    /// catalogue — formatted under the active locale's plural rules, so a
-    /// count follows the user's grammar even in fallback copy (a language
-    /// without CLDR rules formats with English ones, as before) —
+    /// catalogue — formatted under the window's language's plural rules, so
+    /// the copy and its count forms read in one language (a language without
+    /// CLDR rules formats with English ones) —
     /// then the shared toolkit catalogue. The first bundle that formats the
     /// message without errors wins; if every candidate reports errors the
     /// first best-effort rendering is returned, and a key no bundle defines
@@ -1116,8 +1118,8 @@ impl I18nManager {
                     || c.locale != *current
             });
             if stale {
-                // The same parsed resources, under the active locale's
-                // plural rules.
+                // The same parsed resources, under the window's
+                // language's plural rules.
                 let mut bundle = new_bundle(current);
                 for resource in &source.resources {
                     let _ = bundle.add_resource(Arc::clone(resource));

@@ -1,7 +1,6 @@
 //! Native qualification's admitted production main. This never mints a grant:
 //! original-user registration still goes through pkexec and the real helper RPC.
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use std::{
     cell::RefCell,
     fs::File,
@@ -36,7 +35,6 @@ fn denied() -> io::Error {
     io::ErrorKind::PermissionDenied.into()
 }
 fn digest(file: &File) -> io::Result<String> {
-    use std::os::unix::fs::FileExt;
     let before = file.metadata()?;
     if !before.is_file()
         || before.uid() != 0
@@ -46,43 +44,7 @@ fn digest(file: &File) -> io::Result<String> {
     {
         return Err(denied());
     }
-    let mut h = Sha256::new();
-    let mut offset = 0;
-    let mut buffer = [0; 65536];
-    loop {
-        let n = file.read_at(&mut buffer, offset)?;
-        if n == 0 {
-            break;
-        }
-        offset += n as u64;
-        if offset > before.len() {
-            return Err(denied());
-        }
-        h.update(&buffer[..n]);
-    }
-    let after = file.metadata()?;
-    if offset != before.len()
-        || (
-            before.dev(),
-            before.ino(),
-            before.len(),
-            before.mtime(),
-            before.mtime_nsec(),
-            before.ctime(),
-            before.ctime_nsec(),
-        ) != (
-            after.dev(),
-            after.ino(),
-            after.len(),
-            after.mtime(),
-            after.mtime_nsec(),
-            after.ctime(),
-            after.ctime_nsec(),
-        )
-    {
-        return Err(denied());
-    }
-    Ok(hex::encode(h.finalize()))
+    super::file_digest::stable(file, before.len(), denied)
 }
 fn duplicate(slot: i32) -> io::Result<File> {
     let fd = unsafe { libc::fcntl(slot, libc::F_DUPFD_CLOEXEC, 256) };

@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow, bail};
+use app_registry::publisher::{RegistryClient, key};
 use clap::Subcommand;
-use registry_client::{RegistryClient, key};
 use registry_types::application::{NamespaceClaim, proof_token};
 use serde_json::{Value, json};
 
@@ -111,7 +111,7 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
         let status = client
             .application(&public)?
             .ok_or_else(|| anyhow!("{} has no application from this key", client.base()))?;
-        println!("{}", registry_client::status_summary(&status));
+        println!("{}", app_registry::publisher::status_summary(&status));
         return Ok(status);
     }
     let mut claims: Vec<NamespaceClaim> = args
@@ -120,7 +120,7 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
         .map(|domain| NamespaceClaim::Domain { domain })
         .collect();
     for forge in &args.forges {
-        claims.push(registry_client::forge_claim(forge).context("--forge")?);
+        claims.push(app_registry::publisher::forge_claim(forge).context("--forge")?);
     }
     if claims.is_empty() {
         bail!("name a namespace to prove with --domain or --forge");
@@ -128,13 +128,13 @@ pub fn run_apply(args: ApplyArgs) -> Result<Value> {
     let token = proof_token(&public);
     eprintln!("[tilo-app] the registry looks for `{token}` at:");
     for claim in &claims {
-        for place in registry_client::proof_places(claim) {
+        for place in app_registry::publisher::proof_places(claim) {
             eprintln!("  {place}");
         }
     }
     let contact = args.contact.unwrap_or_default();
-    let status = registry_client::apply(&client, &key, claims, contact, args.note)?;
-    println!("{}", registry_client::status_summary(&status));
+    let status = app_registry::publisher::apply(&client, &key, claims, contact, args.note)?;
+    println!("{}", app_registry::publisher::status_summary(&status));
     eprintln!(
         "[tilo-app] the registry's owner reviews it; `tilo-app apply --status` reports the decision"
     );
@@ -153,7 +153,7 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
         .metadata
         .map(|path| {
             let text = std::fs::read(&path).with_context(|| format!("read {}", path.display()))?;
-            serde_json::from_slice::<registry_client::EntryMetadata>(&text)
+            serde_json::from_slice::<app_registry::publisher::EntryMetadata>(&text)
                 .with_context(|| format!("parse {}", path.display()))
         })
         .transpose()?;
@@ -163,7 +163,7 @@ pub fn run_publish(args: PublishArgs) -> Result<Value> {
             std::fs::read(package).with_context(|| format!("read {}", package.display()))
         })
         .collect::<Result<Vec<_>>>()?;
-    let outcomes = registry_client::publish(
+    let outcomes = app_registry::publisher::publish(
         &client,
         &key,
         &bytes,

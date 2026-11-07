@@ -38,6 +38,7 @@ use tilolang_host::hosted::{Hosted, Spec};
 use tilolang_host::phrases::Phrases;
 use tilolang_tilo::bundle::Bundle;
 use tilolang_tilo::instance::record::InstanceRecord;
+use tilolang_tilo::runtime::store::Store as _;
 use ui::headless::FrameHarness;
 use ui::widget::Widget;
 
@@ -692,7 +693,9 @@ impl Session {
         while quiet < QUIET_TURNS {
             let changed = self.host.turn();
             self.window.frame();
-            let waiting = (!self.index_ready() || self.search_index_pending())
+            // The window reads what the first step of a build holds while the rest of the
+            // workspace is derived off the frame: at rest only once the store has read all of it.
+            let waiting = (!self.index_whole() || self.search_index_pending())
                 && std::time::Instant::now() < deadline;
             if changed || waiting {
                 quiet = 0;
@@ -713,13 +716,14 @@ impl Session {
     }
 
     /// Whether the window's instance reads the workspace's indexes: until then it shows the
-    /// platform's loading state.
+    /// platform's loading state. An index being built answers from its first step, so this is
+    /// reached before the whole workspace is read.
     fn index_ready(&self) -> bool {
         self.host
             .instances()
             .next()
             .and_then(|hosted| hosted.instance().host())
-            .is_some_and(|host| host.index_ready())
+            .is_some_and(|host| host.index_answers())
     }
 
     /// Whether the instance is still reading the whole of the workspace's search index off the
@@ -743,6 +747,34 @@ impl Session {
             }
         }
         assert!(self.index_ready(), "the window reads the workspace's index");
+    }
+
+    /// Close the window and let the host end its instance, as the session's loop does when a
+    /// person closes one: the index the window built reaches the disk, and the workspace's
+    /// index is there for the next window to open over.
+    fn close(self) {
+        let Self {
+            mut host, window, ..
+        } = self;
+        drop(window);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        while host.instances().next().is_some() && std::time::Instant::now() < deadline {
+            host.turn();
+        }
+        assert!(
+            host.instances().next().is_none(),
+            "the window's instance ends with its window"
+        );
+    }
+
+    /// Whether the window's store has read the whole workspace: until it has, the lists it shows
+    /// are the part it has read, and a count it does not have yet shows as not yet known.
+    fn index_whole(&self) -> bool {
+        self.host
+            .instances()
+            .next()
+            .and_then(|hosted| hosted.instance().host())
+            .is_some_and(|host| host.store().settled())
     }
 
     /// How many indexes the window's instance built from its record: none when it opens over

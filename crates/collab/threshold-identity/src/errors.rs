@@ -60,17 +60,6 @@ pub enum ThresholdError {
     /// `collab-types` for symmetry with other signature-producing crates.
     #[error("canonical-bytes encoding failed: {0}")]
     Canonical(#[from] CanonicalError),
-
-    /// A BIP39 mnemonic decode failed (malformed words, wrong length,
-    /// checksum mismatch) — returned by `import_recovery_share`.
-    #[error("recovery-share mnemonic could not be decoded: {0}")]
-    BadRecoveryMnemonic(String),
-
-    /// Recovery-share metadata (index, threshold, verifying share)
-    /// disagrees with the `ThresholdIdentity` being recovered into — the
-    /// share belongs to a different group.
-    #[error("recovery-share metadata mismatch: {0}")]
-    RecoveryMismatch(&'static str),
 }
 
 impl From<frost_ed25519::Error> for ThresholdError {

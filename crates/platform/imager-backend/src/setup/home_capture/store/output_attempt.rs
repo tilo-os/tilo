@@ -955,6 +955,60 @@ fn bounded_private_bytes(
     })?;
     Ok(bytes)
 }
+/// Opens the committed original output store under a shared lease, and hands
+/// back the pinned `original-output` parent that holds the stage directories.
+fn open_original_output(
+    private: &Arc<PinnedDirectory>,
+    operation: &str,
+) -> io::Result<(Store, Arc<PinnedDirectory>)> {
+    let parent = existing_private(private, "original-output")?;
+    let records = existing_private(&parent, "records")?;
+    let snapshots = existing_private(&parent, "snapshots")?;
+    let operation = operation.to_owned();
+    super::operation(&operation)?;
+    let sentinel = storage(&records)?
+        .open_read(OsStr::new(&format!("{operation}.lock")), Privacy::OwnerOnly)?;
+    let ownership =
+        FileLease::try_acquire(sentinel, LeaseMode::Shared).map_err(io::Error::other)?;
+    let store = Store {
+        records,
+        snapshots,
+        operation,
+        _ownership: ownership,
+        records_path: None,
+    };
+    Ok((store, parent))
+}
+
+/// The attempt's own stage and completed-setup pins.
+fn attempt_stages(
+    parent: &Arc<PinnedDirectory>,
+    attempt: &str,
+) -> io::Result<(Arc<PinnedDirectory>, Arc<PinnedDirectory>)> {
+    Ok((
+        existing_private(parent, &format!("stage-{attempt}"))?,
+        existing_private(parent, &format!("completed-setup-{attempt}"))?,
+    ))
+}
+
+/// Refuses unless the stages the caller holds are this attempt's own.
+fn pin_attempt_stages(
+    parent: &Arc<PinnedDirectory>,
+    attempt: &str,
+    supplied: [&Arc<PinnedDirectory>; 2],
+) -> io::Result<()> {
+    let (stage, completed) = attempt_stages(parent, attempt)?;
+    for (supplied, named) in supplied.into_iter().zip([&stage, &completed]) {
+        supplied.validate_destination()?;
+        let a = supplied.file.metadata()?;
+        let b = named.file.metadata()?;
+        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
+            return Err(failure("Readonly committed stage differs"));
+        }
+    }
+    Ok(())
+}
+
 pub fn review_committed_original_selection(
     private: &Arc<PinnedDirectory>,
     declaration: &crate::setup::prepared_setup::OfflineHomePlan,
@@ -970,34 +1024,10 @@ pub fn review_committed_original_selection(
     }
     private.validate_destination()?;
     storage(private)?.validate_privacy(Privacy::OwnerOnly)?;
-    let parent = existing_private(private, "original-output")?;
-    let records = existing_private(&parent, "records")?;
-    let snapshots = existing_private(&parent, "snapshots")?;
-    let operation = declaration.source().operation_id.clone();
-    super::operation(&operation)?;
-    let sentinel = storage(&records)?
-        .open_read(OsStr::new(&format!("{operation}.lock")), Privacy::OwnerOnly)?;
-    let ownership =
-        FileLease::try_acquire(sentinel, LeaseMode::Shared).map_err(io::Error::other)?;
-    let store = Store {
-        records,
-        snapshots,
-        operation,
-        _ownership: ownership,
-        records_path: None,
-    };
+    let (store, parent) = open_original_output(private, &declaration.source().operation_id)?;
     let record = load(&store)?.ok_or_else(|| failure("Readonly committed checkpoint missing"))?;
     let digest: [u8; 32] = sha2::Sha256::digest(serde_json::to_vec(declaration)?).into();
-    let current_home = existing_private(&parent, &format!("stage-{attempt}"))?;
-    let current_completed = existing_private(&parent, &format!("completed-setup-{attempt}"))?;
-    for (supplied, named) in [(home, &current_home), (completed, &current_completed)] {
-        supplied.validate_destination()?;
-        let a = supplied.file.metadata()?;
-        let b = named.file.metadata()?;
-        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
-            return Err(failure("Readonly committed stage differs"));
-        }
-    }
+    pin_attempt_stages(&parent, attempt, [home, completed])?;
     let pending = crate::setup::media_setup::protected_output::PendingArea::parse(
         &bounded_private_bytes(private, "original-pending-area.json", 4096)?,
     )?;
@@ -1235,22 +1265,7 @@ pub fn lookup_committed_original_selection(
         Err(error) => return Err(error),
         Ok(_) => {}
     }
-    let parent = existing_private(private, "original-output")?;
-    let records = existing_private(&parent, "records")?;
-    let snapshots = existing_private(&parent, "snapshots")?;
-    let operation = declaration.source().operation_id.clone();
-    super::operation(&operation)?;
-    let sentinel = storage(&records)?
-        .open_read(OsStr::new(&format!("{operation}.lock")), Privacy::OwnerOnly)?;
-    let ownership =
-        FileLease::try_acquire(sentinel, LeaseMode::Shared).map_err(io::Error::other)?;
-    let store = Store {
-        records,
-        snapshots,
-        operation,
-        _ownership: ownership,
-        records_path: None,
-    };
+    let (store, parent) = open_original_output(private, &declaration.source().operation_id)?;
     store.check_original_output_filesystem(parent.file.metadata()?.dev())?;
     let Some(record) = load(&store)? else {
         return Ok(None);
@@ -1269,8 +1284,7 @@ pub fn lookup_committed_original_selection(
     // load() rejects malformed phase/checkpoint combinations. The canonical
     // reviewer below separately verifies declaration, namespace, root witnesses,
     // original caller, paired expectations, retired stages and committed marker.
-    let home = existing_private(&parent, &format!("stage-{}", record.attempt))?;
-    let completed = existing_private(&parent, &format!("completed-setup-{}", record.attempt))?;
+    let (home, completed) = attempt_stages(&parent, &record.attempt)?;
     let facts = review_committed_original_selection(
         private,
         declaration,
@@ -1337,37 +1351,10 @@ pub fn review_committed_original_applications_selection(
     }
     private.validate_destination()?;
     storage(private)?.validate_privacy(Privacy::OwnerOnly)?;
-    let parent = existing_private(private, "original-output")?;
-    let records = existing_private(&parent, "records")?;
-    let snapshots = existing_private(&parent, "snapshots")?;
-    let operation = declaration.source().operation_id.clone();
-    super::operation(&operation)?;
-    let sentinel = storage(&records)?
-        .open_read(OsStr::new(&format!("{operation}.lock")), Privacy::OwnerOnly)?;
-    let ownership =
-        FileLease::try_acquire(sentinel, LeaseMode::Shared).map_err(io::Error::other)?;
-    let store = Store {
-        records,
-        snapshots,
-        operation,
-        _ownership: ownership,
-        records_path: None,
-    };
+    let (store, parent) = open_original_output(private, &declaration.source().operation_id)?;
     let record = load(&store)?.ok_or_else(|| failure("Readonly committed checkpoint missing"))?;
     let digest = declaration.canonical_digest()?;
-    let current_applications = existing_private(&parent, &format!("stage-{attempt}"))?;
-    let current_completed = existing_private(&parent, &format!("completed-setup-{attempt}"))?;
-    for (supplied, named) in [
-        (applications, &current_applications),
-        (completed, &current_completed),
-    ] {
-        supplied.validate_destination()?;
-        let a = supplied.file.metadata()?;
-        let b = named.file.metadata()?;
-        if (a.dev(), a.ino()) != (b.dev(), b.ino()) {
-            return Err(failure("Readonly committed stage differs"));
-        }
-    }
+    pin_attempt_stages(&parent, attempt, [applications, completed])?;
     let pending = crate::setup::media_setup::protected_output::PendingArea::parse(
         &bounded_private_bytes(private, "original-pending-area.json", 4096)?,
     )?;
@@ -1448,22 +1435,7 @@ pub fn lookup_committed_original_applications_selection(
         Err(error) => return Err(error),
         Ok(_) => {}
     }
-    let parent = existing_private(private, "original-output")?;
-    let records = existing_private(&parent, "records")?;
-    let snapshots = existing_private(&parent, "snapshots")?;
-    let operation = declaration.source().operation_id.clone();
-    super::operation(&operation)?;
-    let sentinel = storage(&records)?
-        .open_read(OsStr::new(&format!("{operation}.lock")), Privacy::OwnerOnly)?;
-    let ownership =
-        FileLease::try_acquire(sentinel, LeaseMode::Shared).map_err(io::Error::other)?;
-    let store = Store {
-        records,
-        snapshots,
-        operation,
-        _ownership: ownership,
-        records_path: None,
-    };
+    let (store, parent) = open_original_output(private, &declaration.source().operation_id)?;
     store.check_original_output_filesystem(parent.file.metadata()?.dev())?;
     let Some(record) = load(&store)? else {
         return Ok(None);
@@ -1482,8 +1454,7 @@ pub fn lookup_committed_original_applications_selection(
     // load() rejects malformed phase/checkpoint combinations. The canonical
     // reviewer below separately verifies declaration, namespace, root witnesses,
     // original caller, paired expectations, retired stages and committed marker.
-    let applications = existing_private(&parent, &format!("stage-{}", record.attempt))?;
-    let completed = existing_private(&parent, &format!("completed-setup-{}", record.attempt))?;
+    let (applications, completed) = attempt_stages(&parent, &record.attempt)?;
     let facts = review_committed_original_applications_selection(
         private,
         declaration,

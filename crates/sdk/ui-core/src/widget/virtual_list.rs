@@ -976,13 +976,13 @@ impl<M: ListModel> VirtualList<M> {
         self
     }
 
-    fn key_for_semantic_target(&self, target: &str) -> Option<M::Key> {
-        let encoded = target.strip_prefix("key:")?;
+    /// The row the name `encoded` gives: the key it encodes, which is the name the accessibility
+    /// tree keys the row by and an agent chooses a row of a list by ([`Self::with_semantic_key`]).
+    fn key_for_name(&self, encoded: &str) -> Option<M::Key> {
         let encode = self.semantic_key.as_ref()?;
-        self.mounted
-            .iter()
-            .find(|row| encode(&row.key) == encoded)
-            .map(|row| row.key.clone())
+        (0..self.model.len())
+            .filter_map(|index| self.model.key_at(index))
+            .find(|key| encode(key) == encoded)
     }
 
     /// Enable row reordering. `validate` controls which stable-key targets

@@ -19,9 +19,9 @@
 
 use std::path::Path;
 
+use app_catalogue::apps::InstalledApp;
 use collaboration::record::RecordId;
 use desktop_entry::Scan;
-use tilo_installed_apps::InstalledApp;
 
 use crate::launch::{Launch, Open};
 
@@ -140,7 +140,28 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
+    /// An installed app whose signed manifest declares what it opens.
     fn app(id: &str, extensions: &[&str], mimes: &[&str], schemes: &[&str]) -> InstalledApp {
+        let list = |claims: &[&str]| {
+            claims
+                .iter()
+                .map(|claim| format!("{claim:?}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let manifest = format!(
+            "[package]\nid = {id:?}\nversion = \"1.0.0\"\nkind = \"app\"\n\
+             [publisher]\nidentity = \"\"\nsignature = \"\"\n\
+             [entrypoint]\nbin = \"bin/app\"\ntype = \"gui\"\n\
+             [sandbox]\nnamespaces = []\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\
+             [sandbox.net]\nmode = \"off\"\n\
+             [providers]\next = [{}]\nmime = [{}]\nschemes = [{}]\n",
+            list(extensions),
+            list(mimes),
+            list(schemes),
+        );
+        let manifest = tilo_app_package::manifest::Manifest::from_toml_str(&manifest)
+            .expect("the test manifest reads");
         InstalledApp {
             package_id: id.into(),
             display_name: id.into(),
@@ -157,6 +178,7 @@ mod tests {
             opens_uri_schemes: schemes.iter().map(|scheme| (*scheme).to_owned()).collect(),
             opens_secondary: false,
             offers: Vec::new(),
+            manifest,
         }
     }
 

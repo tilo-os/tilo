@@ -18,8 +18,6 @@
 //!   a free function so a coordinator can drive multiple devices independently.
 //! - [`shares::SecretShare`] — opaque secret-bearing share: no
 //!   `Serialize`, redacted `Debug`, zeroized on drop.
-//! - [`shares::RecoveryShare`] — paper-share format: 24 BIP39 words +
-//!   non-secret metadata.
 //! - [`errors::ThresholdError`] — the single fallible-result type.
 //!
 //! Non-goals: no device-enrolment UI (protocol primitives only; QR
@@ -50,7 +48,7 @@ pub mod signing;
 pub use dkg::{DkgOutcome, DkgSession, EnrolmentRound1, EnrolmentRound2};
 pub use errors::ThresholdError;
 pub use identity::ThresholdIdentity;
-pub use shares::{RecoveryShare, SecretShare};
+pub use shares::SecretShare;
 pub use signing::{
     SigningRound1, SigningRound1Commitment, SigningRound2Partial, SigningSessionNonces,
     aggregate_signature, sign_round1, sign_round2, verify_threshold_signature,

@@ -527,18 +527,16 @@ function shareCard({title, body, link}) {
 /** When a wait-list address was left, as the inviter reads dates. */
 const addedAt = atMs => new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(new Date(atMs));
 
-/** The people waiting to join, each to let in or turn away, and the
- * addresses on the workspace's wait list, each to invite (`invite(entry)` makes
- * and shares an invitation for it) or take off the list (`unlist`), as
- * `load()` resolves them (`{people, waitList}`); read again after every
- * decision. Resolves when closed. */
-function waitingCard({load, admit, decline, invite, unlist}) {
+/** The addresses on the workspace's wait list, each to invite (`invite(entry)`
+ * makes and shares an invitation for it) or take off the list (`unlist`), as
+ * `load()` resolves them; read again after every decision. Resolves when
+ * closed. */
+function waitingCard({load, invite, unlist}) {
   return new Promise(resolve => {
     const form = document.createElement('form');
     form.className = 'tilo-entry-card tilo-waiting';
     form.dataset.card = 'waiting';
     const heading = Object.assign(document.createElement('h2'), {textContent: 'Waiting to join'});
-    const list = document.createElement('ul');
     const listed = document.createElement('section');
     listed.dataset.list = 'wait-list';
     const error = document.createElement('p');
@@ -554,21 +552,15 @@ function waitingCard({load, admit, decline, invite, unlist}) {
       return made;
     };
     const show = async () => {
-      let people = [];
       let contacts = [];
-      try { ({people, waitList: contacts} = await load()); } catch (refusal) { said(refusal); }
-      list.replaceChildren(...people.map(person => {
-        const item = document.createElement('li');
-        const who = Object.assign(document.createElement('span'), {className: 'tilo-waiting-who', textContent: `${person.name} (${person.role})`});
-        item.append(who, button('Let in', () => decide(admit, person.requestId)), button('Turn away', () => decide(decline, person.requestId)));
-        return item;
-      }));
-      // Nobody to let in: said only where there is no wait list to show instead.
-      list.hidden = !people.length && contacts.length > 0;
-      if (!people.length) list.replaceChildren(Object.assign(document.createElement('li'), {className: 'tilo-waiting-none', textContent: 'Nobody is waiting to be let in.'}));
+      try { contacts = await load(); } catch (refusal) { said(refusal); }
       // The wait list: addresses people left at the door, oldest first.
       listed.replaceChildren();
-      if (!contacts.length) return;
+      if (!contacts.length) {
+        listed.append(Object.assign(document.createElement('p'), {className: 'tilo-waiting-none',
+          textContent: 'Nobody is waiting to join.'}));
+        return;
+      }
       const title = Object.assign(document.createElement('h3'), {textContent: `Wait list · ${contacts.length}`});
       const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
         textContent: 'They asked to join without an invitation. Invite sends them a link to join; they leave the list once they join.'});
@@ -611,7 +603,7 @@ function waitingCard({load, admit, decline, invite, unlist}) {
       try { await choice(requestId); } catch (refusal) { said(refusal); }
       await show();
     };
-    form.append(heading, list, listed, sent, error, close);
+    form.append(heading, listed, sent, error, close);
     document.body.append(form);
     void show();
   });

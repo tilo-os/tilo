@@ -30,13 +30,6 @@ impl Default for TimeFieldProps {
     }
 }
 
-/// A picked time as the moment a bound field holds: `09:00`, empty for none.
-fn moment(time: Option<chrono::NaiveTime>) -> String {
-    // format: machine (the time of day a bound moment field holds, which its DateField reads
-    // back; people read the day and its time through ui::format in the chip)
-    time.map_or_else(String::new, |time| time.format("%H:%M").to_string())
-}
-
 /// What a picked time does: writes it into the bound moment, and reports it as the field's
 /// `change` event.
 fn reports(
@@ -44,12 +37,16 @@ fn reports(
     change: &Event,
 ) -> impl FnMut(Option<chrono::NaiveTime>) + 'static {
     let bound = value.clone();
+    let held = value.state.clone();
     let change = change.clone();
     let mut run = matches!(&change, Event::Action(_))
         .then(|| change.clone().handler())
         .flatten();
     move |time| {
-        let said = crate::component::Value::Text(moment(time));
+        // The time of day changes, the day it is on stays: the moment the field holds is one
+        // value for the day and its time; a time of day on its own stays one.
+        let said =
+            crate::component::Value::Text(crate::widget::date_field::with_time(&held.get(), time));
         bound.edited(said.clone());
         change.fire(Some(said));
         if let Some(run) = run.as_mut() {

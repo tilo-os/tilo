@@ -129,6 +129,21 @@ fn e022_wrong_arguments() {
     );
 }
 
+/// A parameter no form can ask for says so where the action is run short, naming the action,
+/// the parameter and its type, rather than reading as one the person forgot.
+#[test]
+fn e022_names_a_parameter_no_form_can_ask_for() {
+    let body = "action remind(at: Time, every: std.Repeat) {\n}\naction go() {\n    remind(now)\n}";
+    let d = crate::common::compile_with(&format!("app t.x \"X\"\n{body}\n"), &[])
+        .expect_err("a form cannot ask for the repeat");
+    let message = &d[0].message;
+    assert_eq!(d[0].code, "E022");
+    assert!(
+        message.contains("remind") && message.contains("every") && message.contains("std.Repeat"),
+        "{message}"
+    );
+}
+
 #[test]
 fn e023_container_outside_field() {
     expect("E023", "fn f(a: Set<Text>) -> Int {\n    return 1\n}");

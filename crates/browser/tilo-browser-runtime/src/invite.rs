@@ -150,7 +150,7 @@ impl PageInvite {
     }
 
     /// Put the sheet up on the workspace this page is in.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&self) {
         self.choosing.set(Choosing::default());
         self.link.set(String::new());
         self.made.borrow_mut().opening();
@@ -484,7 +484,7 @@ impl PageInvite {
         tilo_workspace_directory::web_origin(&format!("{origin}/")).ok()
     }
 
-    fn close(&mut self) {
+    fn close(&self) {
         self.presentation.close();
     }
 }

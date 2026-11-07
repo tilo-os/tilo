@@ -680,7 +680,7 @@ pub trait LauncherServices: Send + Sync {
     fn observe_executing_binding(&self, _observation: u64, _phase: ExecutingBindingPhase) {}
     fn applications(&self) -> Vec<LaunchableApplication>;
     /// The ids installed apps were published under before, as the installed catalogue believes
-    /// them (`tilo_installed_apps::earlier_ids`): an application target naming one opens the app
+    /// them (`app_catalogue::apps::earlier_ids`): an application target naming one opens the app
     /// that took its place. None where no app was renamed.
     fn earlier_ids(&self) -> tilo_action_policy::EarlierIds {
         tilo_action_policy::EarlierIds::default()

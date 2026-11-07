@@ -31,6 +31,12 @@ impl Store for TiloStore {
         crate::reading::reading(self, reference)
     }
 
+    /// The store answers from every chunk the record names once it has read them all: until
+    /// then what it lists is the part it has read, and a count of it is not the workspace's.
+    fn settled(&self) -> bool {
+        self.index_whole()
+    }
+
     fn fresh_id(&mut self, prefix: &str) -> String {
         self.changing().fresh(prefix)
     }
@@ -81,7 +87,7 @@ impl Store for TiloStore {
         let target = at.id_string();
         let list = linked_list(&target);
         let mut out: Vec<Link> = Vec::new();
-        for held in inner.apps.values().filter(|held| held.ready()) {
+        for held in inner.apps.values().filter(|held| held.answers()) {
             let snapshot = &held.snapshot;
             let pages = snapshot.pages(&list).map_err(backend)?;
             let mut entries: Vec<Entry> = (0..pages.len())

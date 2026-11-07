@@ -31,7 +31,7 @@ use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-#[cfg(feature = "iroh")]
+#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
 use super::Host;
 use super::{Command, Link, PeerEvent, Task, lock};
 use crate::ChannelContentKeys;
@@ -385,6 +385,7 @@ async fn native(
         &scope.id(),
         keys.epoch(),
         certificate,
+        Vec::new(),
     )
     .map_err(|_| Failed::Unavailable)?;
     Plane::join(
@@ -570,7 +571,7 @@ impl Task {
                     keys,
                     members,
                 ),
-                #[cfg(feature = "iroh")]
+                #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
                 Link::Iroh { endpoint, .. } => {
                     let Host::Iroh { addr, relay_url } = &self.config.host else {
                         continue;

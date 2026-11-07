@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "The convergent state one person's certified devices share: presence, media, clipboard, roaming settings, sealed Wi-Fi credentials, speaker groups, clocks, unlock, tethering and realtime calls, and the actions that change it."
+description = "The convergent state one person's certified devices share: presence, media, clipboard, roaming settings, sealed Wi-Fi credentials, speaker groups, clocks, unlock and realtime audio, and the actions that change it."
 
 [lib]
 name = "tilo_device_fabric"

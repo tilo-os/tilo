@@ -1834,7 +1834,7 @@ fn catalogue(
             })
         })
         .collect();
-    let installed = match tilo_installed_apps::signed_surfaces_from_env() {
+    let installed = match app_catalogue::apps::signed_surfaces_from_env() {
         Ok(installed) => installed,
         Err(error) => {
             tracing::warn!(%error, "agent door: the installed apps' surfaces are not read");

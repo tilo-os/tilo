@@ -1485,7 +1485,7 @@ impl SecretPrompt {
                 let body_h = self.measure_body(width, text, &theme);
                 let actions = self.modal_actions();
                 let spec = self.modal_spec(&actions, body_h);
-                let modal = modal_dialog::layout(room, &spec, text, &theme);
+                let modal = modal_dialog::layout_for(room, &spec, text, &theme, self.environment);
                 let mut layout = self.layout_body(modal.body, &theme);
                 layout.cancel = modal.actions.first().copied().unwrap_or(Rect::ZERO);
                 layout.primary = modal.actions.get(1).copied().unwrap_or(Rect::ZERO);

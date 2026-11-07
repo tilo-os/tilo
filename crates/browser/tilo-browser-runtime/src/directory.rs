@@ -105,7 +105,7 @@ impl PageDirectory {
 
     /// Put the sheet up, reading the page's directory as the session's shell
     /// reads its community's.
-    pub(crate) fn open(&mut self) {
+    pub(crate) fn open(&self) {
         self.query.set(String::new());
         self.store.set_note(None);
         self.store.read(self.community.clone(), None);
@@ -229,7 +229,7 @@ impl PageDirectory {
         }
     }
 
-    fn close(&mut self) {
+    fn close(&self) {
         self.presentation.close();
     }
 }

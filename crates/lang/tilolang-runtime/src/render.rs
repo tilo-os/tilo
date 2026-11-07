@@ -525,10 +525,12 @@ impl Core {
             place_unread_divider(&mut children, &unread.target);
         }
         if below.preview.is_some() {
-            props.insert(
-                LIST_LEN.to_owned(),
-                Value::Int(i64::try_from(rows_total).unwrap_or(i64::MAX)),
-            );
+            // How many rows the list has, the ones not built included: the count it carries
+            // when its rows are built in place ([`crate::view::LIST_LEN`]), else the rows its
+            // loops made.
+            props
+                .entry(LIST_LEN.to_owned())
+                .or_insert_with(|| Value::Int(i64::try_from(rows_total).unwrap_or(i64::MAX)));
         }
         let mut node = UiNode {
             kind: n.kind.clone(),

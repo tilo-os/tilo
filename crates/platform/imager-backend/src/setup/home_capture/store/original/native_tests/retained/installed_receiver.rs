@@ -32,8 +32,6 @@ fn denied() -> std::io::Error {
     std::io::ErrorKind::PermissionDenied.into()
 }
 fn hash(file: &File) -> std::io::Result<String> {
-    use sha2::{Digest, Sha256};
-    use std::os::unix::fs::FileExt;
     let before = file.metadata()?;
     if !before.is_file()
         || before.uid() != 0
@@ -43,43 +41,7 @@ fn hash(file: &File) -> std::io::Result<String> {
     {
         return Err(denied());
     }
-    let mut h = Sha256::new();
-    let mut buffer = [0; 65536];
-    let mut offset = 0;
-    loop {
-        let n = file.read_at(&mut buffer, offset)?;
-        if n == 0 {
-            break;
-        }
-        offset += n as u64;
-        if offset > before.len() {
-            return Err(denied());
-        }
-        h.update(&buffer[..n]);
-    }
-    let after = file.metadata()?;
-    if offset != before.len()
-        || (
-            before.dev(),
-            before.ino(),
-            before.len(),
-            before.mtime(),
-            before.mtime_nsec(),
-            before.ctime(),
-            before.ctime_nsec(),
-        ) != (
-            after.dev(),
-            after.ino(),
-            after.len(),
-            after.mtime(),
-            after.mtime_nsec(),
-            after.ctime(),
-            after.ctime_nsec(),
-        )
-    {
-        return Err(denied());
-    }
-    Ok(hex::encode(h.finalize()))
+    crate::setup::file_digest::stable(file, before.len(), denied)
 }
 impl Receiver {
     pub(super) fn from_inherited() -> std::io::Result<Option<Self>> {

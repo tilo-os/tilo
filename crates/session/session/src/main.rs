@@ -1213,7 +1213,7 @@ fn search_options() -> tilo_session::SearchOptions {
     // What a reference written under an app's earlier id names, for search
     // and for every decision this process makes.
     let content = tilo_desktop_search::content_index::session();
-    match tilo_installed_apps::earlier_ids_from_env() {
+    match app_catalogue::apps::earlier_ids_from_env() {
         Ok(earlier) => {
             tilo_action_policy::earlier::register_all(&earlier);
             content.set_earlier_ids(earlier);

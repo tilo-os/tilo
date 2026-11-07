@@ -26,112 +26,41 @@ function desktop() {
 }
 
 /** Ada's page in her workspace on her own machine, as the host answers it. */
-function adasRoom({owner = true, letsIn = owner} = {}) {
+function adasRoom({owner = true, letsIn = owner, waitList = []} = {}) {
   const calls = [];
-  let waiting = [{requestId: '02'.repeat(32), name: 'Bo', role: 'editor', userPublicKey: 'bb'.repeat(32)}];
   return {calls, peer: {
     origin: 'https://node.example:8443', workspace: WORKSPACE, userPublicKey: ADA, host: {hostCert: {user_public_key: bytes(ADA)}},
     createInvitation: async options => { calls.push(['invite', options]); return 'SIGNED-invitation'; },
     membership: {
       list: async () => {
-        if (!owner) throw new Error('only the owner lists requests');
+        if (!owner) throw new Error('only the owner lists people');
         return {name: 'Acme', members: [{userPublicKey: ADA, owner: true}]};
       },
-      requests: async () => {
-        if (!letsIn) throw new Error('only someone the room lets invite lists requests');
-        return waiting;
+      waitList: async () => {
+        if (!letsIn) throw new Error('only someone the room lets invite lists the wait list');
+        return waitList;
       },
-      admit: async requestId => { calls.push(['admit', requestId]); waiting = []; },
-      decline: async requestId => { calls.push(['decline', requestId]); waiting = []; },
+      unlist: async requestId => { calls.push(['unlist', requestId]); },
+      mailInvite: async (requestId, link) => { calls.push(['mail', requestId, link]); },
     },
   }};
 }
 
-test('the owner hears once who asks, and lets them in from the banner', async () => {
-  const {peer, calls} = adasRoom();
-  const {mount, shown, banners} = desktop();
-  const polls = [];
-  const actions = createWorkspaceActions({peer, every: run => { polls.push(run); return () => {}; },
-    inviteLink: sealedLink,
-    ui: {fail: async text => assert.fail(text)}});
-  await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, JOIN_WORKSPACE.id, WAITING.id]);
-
-  await polls[0]();
-  assert.equal(banners.length, 1, 'a request is offered once, however often the page asks');
-  assert.equal(banners[0].title, 'Bo asks to join');
-  assert.ok(actions.handles(banners[0].action.id));
-  await actions.perform(banners[0].action.id);
-  assert.deepEqual(calls.at(-1), ['admit', '02'.repeat(32)]);
-  assert.equal(banners.at(-1).title, 'Bo joined');
-});
-
-test('a member the workspace lets invite hears who asks to join and lets them in', async () => {
-  const {peer, calls} = adasRoom({owner: false, letsIn: true});
-  const {mount, shown, banners} = desktop();
-  const polls = [];
-  const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
-    every: run => { polls.push(run); return () => {}; }, inviteLink: sealedLink, ui: {fail: async text => assert.fail(text)}});
-  await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
-  assert.equal(banners.length, 1);
-  assert.equal(banners[0].title, 'Bo asks to join');
-  await actions.perform(banners[0].action.id);
-  assert.deepEqual(calls.at(-1), ['admit', '02'.repeat(32)]);
-});
-
-test('a page made able to answer join requests while it stands open starts answering them, with no reload', async () => {
-  const base = adasRoom({owner: false}).peer;
-  const requests = [{requestId: '02'.repeat(32), name: 'Bo', role: 'commenter'}];
-  let allows = false;
-  const peer = {...base, userPublicKey: 'bb'.repeat(32), membership: {...base.membership,
-    requests: async () => {
-      if (!allows) throw new Error('only someone the room lets invite lists requests');
-      return requests;
-    }}};
-  const {mount, shown, banners} = desktop();
-  const polls = [];
-  const actions = createWorkspaceActions({peer, every: run => { polls.push(run); return () => {}; },
-    inviteLink: sealedLink, ui: {fail: async text => assert.fail(text)}});
-  await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'a person the room does not let invite is offered no wait list');
-  await polls[0]();
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'the host’s refusal is nobody to let in, not a person to answer');
-  assert.equal(banners.length, 0);
-  // The workspace makes this person one it lets invite while the page stands
-  // open: the next pass answers what the host now offers, without a reload.
-  allows = true;
-  await polls[0]();
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
-  assert.equal(banners.length, 1);
-  assert.equal(banners[0].title, 'Bo asks to join');
-  assert.equal(banners[0].body, 'Bo wants to join “this workspace” as commenter.');
-  // Taken back, the page stops answering them again.
-  allows = false;
-  await polls[0]();
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
-});
-
-test('the wait list is listed with who waits, gets no banner, and each address is invited with a link of its own', async () => {
-  const {peer, calls} = adasRoom({owner: false, letsIn: true});
+test('the wait list is listed, gets no banner, and each address is invited with a link of its own', async () => {
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
-  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [],
-    waitList: async () => [ed], unlist: async requestId => { calls.push(['unlist', requestId]); },
-    mailInvite: async () => { throw new Error('this door sends no mail'); }}};
+  const {peer, calls} = adasRoom({owner: false, letsIn: true, waitList: [ed]});
+  const member = {...peer, userPublicKey: 'bb'.repeat(32),
+    membership: {...peer.membership, mailInvite: async () => { throw new Error('this door sends no mail'); }}};
   const {mount, shown, banners} = desktop();
-  const polls = [];
   const shared = [];
   let listed = null;
-  const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
-    inviteLink: sealedLink,
+  const actions = createWorkspaceActions({peer: member, inviteLink: sealedLink,
     ui: {share: async offer => { shared.push(offer); }, waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  await polls[0]();
-  // Nobody to let in now: the inviter finds the address in the list.
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
-  assert.equal(banners.length, 0);
+  assert.equal(banners.length, 0, 'nobody is waiting to be let in, so nothing is offered');
   await actions.perform(WAITING.id);
-  assert.deepEqual(await listed.load(), {people: [], waitList: [ed]});
+  assert.deepEqual(await listed.load(), [ed]);
   assert.deepEqual(await listed.invite(ed), {mailed: false, link: SEALED});
   assert.deepEqual(calls.at(-1), ['invite', {role: 'editor', waitListEntry: ed.requestId}]);
   assert.equal(shared[0].title, 'Invite ed@example.org');
@@ -142,38 +71,28 @@ test('the wait list is listed with who waits, gets no banner, and each address i
 });
 
 test('a host that sends mail mails the invitation to the address, and nothing is shared', async () => {
-  const {peer, calls} = adasRoom({owner: false, letsIn: true});
   const ed = {requestId: '05'.repeat(32), contact: 'ed@example.org', addedAtMs: 1000};
-  const member = {...peer, userPublicKey: 'bb'.repeat(32), membership: {...peer.membership, requests: async () => [],
-    waitList: async () => [ed], mailInvite: async (requestId, link) => { calls.push(['mail', requestId, link]); }}};
+  const {peer, calls} = adasRoom({owner: false, letsIn: true, waitList: [ed]});
+  const member = {...peer, userPublicKey: 'bb'.repeat(32)};
   const {mount} = desktop();
-  const polls = [];
   let listed = null;
-  const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
-    inviteLink: sealedLink,
+  const actions = createWorkspaceActions({peer: member, inviteLink: sealedLink,
     ui: {share: async () => assert.fail('mailed, not shared'), waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
-  await polls[0]();
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.invite(ed), {mailed: true, link: SEALED});
   assert.deepEqual(calls.at(-1), ['mail', ed.requestId, SEALED]);
 });
 
-test('someone the workspace does not let invite is never offered anyone to let in', async () => {
+test('someone the workspace does not let invite is never offered the wait list', async () => {
   const {peer} = adasRoom({owner: false});
-  const {mount, shown, banners} = desktop();
-  const polls = [];
+  const {mount, shown} = desktop();
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
-    every: run => { polls.push(run); return () => {}; }, inviteLink: sealedLink, ui: {}});
+    inviteLink: sealedLink, ui: {}});
   await actions.attach(mount);
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
-  // The page asks, so that a role granted while it is open reaches it; the
-  // host's refusal is no one to answer, not a failure said.
-  await polls[0]();
-  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
-  assert.deepEqual(banners, []);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'a host that keeps its door from this person offers nothing');
   await actions.perform(WAITING.id);
-  assert.deepEqual(banners, []);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
 });
 
 test('a new workspace is made on a machine the person set up, and opened', async () => {

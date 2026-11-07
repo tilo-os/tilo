@@ -101,7 +101,7 @@ fn disconnected(error: &NotAvailable) -> bool {
 /// once more on a fresh one when the runtime went away since the last call.
 #[allow(
     clippy::future_not_send,
-    reason = "the Cap'n Proto client is Rc-based and runs on this thread's LocalSet"
+    reason = "the filesystem client is Rc-based and runs on this thread's LocalSet"
 )]
 async fn answer(connection: &mut Option<FsClient>, socket: &Path, request: &Request) -> Answer {
     let mut retried = false;
@@ -146,7 +146,7 @@ fn json(value: impl Serialize) -> Result<Value, Failure> {
 
 #[allow(
     clippy::future_not_send,
-    reason = "the Cap'n Proto client is Rc-based and runs on this thread's LocalSet"
+    reason = "the filesystem client is Rc-based and runs on this thread's LocalSet"
 )]
 async fn run(fs: &FsClient, request: &Request) -> Result<Value, Failure> {
     match request {

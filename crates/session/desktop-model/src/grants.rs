@@ -15,11 +15,13 @@ use crate::tree::DesktopTree;
 use crate::workspace::{UserId, WORKSPACE_GOVERNANCE_APP_ID};
 
 impl DesktopTree {
-    /// Grant `grant` in `slot` on behalf of `grantor` at `now`: the
-    /// grant as stored, or why it was refused (the workspace is gone, the
-    /// grantor may not grant, or not this much). Whether this machine may
-    /// write the workspace's governance at all is the host's question, asked
-    /// first.
+    /// Grant `grant` in `slot` at `now`, as `grantor` who must be allowed to
+    /// grant in the workspace: the grant as stored, or why it was refused (the
+    /// workspace is gone, the grantor may not grant, or not this much). The
+    /// stored grant keeps the grantor its change names, which is not always
+    /// `grantor`: a member who asks their workspace's host to share keeps the
+    /// share theirs. Whether this machine may write the workspace's governance
+    /// at all is the host's question, asked first.
     ///
     /// # Errors
     /// The governance refusal.
@@ -223,8 +225,11 @@ mod tests {
         )
     }
 
+    /// Only a host that may govern records a grant, and the grant keeps the
+    /// grantor its change names: one member's share stays theirs even when a
+    /// host records it, and every device reads the same name.
     #[test]
-    fn only_a_governor_grants_and_the_stored_grant_names_them() {
+    fn only_a_governor_grants_and_the_stored_grant_keeps_the_grantor_it_names() {
         let (mut tree, id) = tree();
         let workspace_id = tree.workspaces[0].policy.workspace.clone();
         assert!(
@@ -239,7 +244,11 @@ mod tests {
             .iter()
             .find(|grant| grant.id.as_str() == "app-open")
             .unwrap();
-        assert_eq!(stored.granted_by, Subject::person("owner"));
+        assert_eq!(
+            stored.granted_by,
+            Subject::person("someone else"),
+            "the governor does not rewrite the grantor the change names"
+        );
         assert!(
             tree.grant_in_workspace_at(
                 WorkspaceSlot(2),

@@ -41,6 +41,7 @@ use tilo_render_protocol::patch::{self as ui, Lane, ToApp, ToUi, Transport, Word
 
 use crate::bundle::Bundle;
 use crate::host::{Host, Opening, Package, RootView};
+use crate::meta::MetaExt;
 use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
@@ -1459,11 +1460,17 @@ impl Instance {
             ToApp::Invoke { address, argument } => {
                 // The window's own bar, its palette and anyone else took an action of this
                 // window: a press, which the host runs as the person's own step, so it holds
-                // the address and the argument until its next frame.
-                self.fired = self.fired.saturating_add(1);
-                let press = self.fired;
-                self.chosen.push_back((press, address, argument));
-                Ok(())
+                // the address and the argument until its next frame. A command that still needs
+                // arguments opens its form first, the one way every action asks for what it was
+                // not given.
+                let fired = self.fired.saturating_add(1);
+                self.fired = fired;
+                if argument.is_none() && self.open_chosen_form(&address) {
+                    Ok(())
+                } else {
+                    self.chosen.push_back((fired, address, argument));
+                    Ok(())
+                }
             }
         };
         if let Err(words) = outcome {
@@ -1598,13 +1605,24 @@ impl Instance {
         else {
             return false;
         };
-        let Some(pending) = form::Pending::new(
-            self.forms.saturating_add(1),
-            (lane, key.to_owned()),
-            view,
-            aref,
-            meta,
-        ) else {
+        self.open_form_with(Some((lane, key.to_owned())), view, aref, meta)
+    }
+
+    /// Show the form of `aref`, an action of `meta` waiting for arguments a form asks for,
+    /// standing where `from` names the control that ran it, or on its own.
+    fn open_form_with(
+        &mut self,
+        from: Option<(Lane, String)>,
+        view: Rc<RefCell<ViewInstance>>,
+        aref: ActionRef,
+        meta: Meta,
+    ) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let Some(pending) =
+            form::Pending::new(self.forms.saturating_add(1), from, view, aref, meta)
+        else {
             return false;
         };
         self.forms = pending.id;
@@ -1613,6 +1631,64 @@ impl Instance {
         ))));
         self.form = Some(pending);
         true
+    }
+
+    /// Show the form of the action `address` names, which the window's bar or the palette ran,
+    /// when it still needs arguments a form asks for: the action as the record it is bound to
+    /// gives it. Whether it opened one.
+    fn open_chosen_form(&mut self, address: &ActionAddress) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let Some(meta) = host
+            .packages()
+            .into_iter()
+            .map(|package| package.meta)
+            .find(|meta| {
+                meta.actions
+                    .iter()
+                    .any(|action| action.id == address.action)
+            })
+        else {
+            return false;
+        };
+        let Some(action) = meta
+            .actions
+            .iter()
+            .find(|action| action.id == address.action)
+            .cloned()
+        else {
+            return false;
+        };
+        // What the address names the action of, when the action's first parameter is its
+        // subject: the resource the descriptor was published on.
+        let mut args = Vec::new();
+        if let Some(subject) = meta.subject_of(&action.params) {
+            // The address names the resource as the door publishes it (`tl:<app>:<id>`); the
+            // runtime holds it by its id.
+            let id = address
+                .resource
+                .strip_prefix(&crate::publish::resource_id(&meta.app, ""))
+                .unwrap_or(&address.resource);
+            let Some(target) = ResourceRef::parse_id(id, subject.id.clone()) else {
+                return false;
+            };
+            args.push(Value::resource(&target));
+        }
+        // Nothing is left to ask: the palette runs the action as it is.
+        if action.params.len() <= args.len() {
+            return false;
+        }
+        let Some(view) = self.view(Lane::Root) else {
+            return false;
+        };
+        let aref = ActionRef {
+            action: action.id,
+            args,
+            author: None,
+            from: None,
+        };
+        self.open_form_with(None, Rc::clone(&view), aref, meta)
     }
 
     /// The field `field` of the form `id` now holds `text`: kept, and the form shown as it
@@ -1957,9 +2033,10 @@ impl Instance {
             None => host,
         };
         if !self.started {
-            // Until the indexes are read from, the lists would show nothing: the window shows
-            // the platform's loading state.
-            if host.index_ready() {
+            // Until the indexes hold rows to read, the lists would show nothing: the window
+            // shows the platform's loading state. Once the first step of a build is taken in
+            // it opens over those rows, and the rest of the record is read under them.
+            if host.index_answers() {
                 self.started = true;
                 self.loading = false;
                 if !self.rootless {

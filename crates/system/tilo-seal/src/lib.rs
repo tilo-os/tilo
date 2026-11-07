@@ -13,6 +13,9 @@
 //!   (Diffie-Hellman, AES-128-CBC), fixed by that specification.
 //! * [`web`]: AES-256-GCM under an HKDF-SHA256 key, the wrap a browser
 //!   computes with `WebCrypto`, so native code opens what a page sealed.
+//! * [`wrapped`]: one framed, password-wrapped ciphertext artifact kind
+//!   (a fresh content key under a password, the content under that key),
+//!   with the migration password policy every such artifact shares.
 //! * [`compat`]: the fixed KDF, AES-CBC and AES-CTR of other applications'
 //!   on-disk formats (Chromium `OSCrypt`, rclone obscure) that Tilo imports.
 //!
@@ -40,9 +43,11 @@ pub mod keys;
 pub mod label;
 pub mod secret_service;
 pub mod web;
+pub mod wrapped;
 
 pub use envelope::{Context, PasswordParams};
 pub use error::{Error, Result};
 pub use hpke::SealedBox;
 pub use keys::{KeyId, PublicKey, SecretKey, SymmetricKey, fill_random};
 pub use label::Label;
+pub use wrapped::{Frame, FrameError, migration_password};

@@ -164,36 +164,7 @@ pub fn inspect_prepared_consumer(
 /// Read one explicitly granted private native file with bounded/no-follow
 /// access. Readers can also use from_bytes for an enclosing setup package.
 fn read_artifact(path: &Path) -> std::io::Result<PasswordSealedAccounts> {
-    use crate::{destination_security, migration_directory::PinnedDirectory};
-    use cap_fs_ext::{OpenOptionsFollowExt, OpenOptionsSyncExt};
-    use cap_primitives::fs::{FollowSymlinks, OpenOptions};
-    let parent = PinnedDirectory::open_absolute(
-        path.parent()
-            .ok_or_else(|| std::io::Error::other("Artifact parent missing"))?,
-    )?;
-    destination_security::check_private_file(&parent.file)?;
-    parent.validate_destination()?;
-    let mut options = OpenOptions::new();
-    options.read(true).follow(FollowSymlinks::No).nonblock(true);
-    let mut file = cap_primitives::fs::open(
-        &parent.file,
-        Path::new(
-            path.file_name()
-                .ok_or_else(|| std::io::Error::other("Artifact name missing"))?,
-        ),
-        &options,
-    )?;
-    destination_security::check_private_file(&file)?;
-    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_ARTIFACT as u64 {
-        return Err(std::io::Error::other(
-            "Artifact exceeds bounds or is not a file",
-        ));
-    }
-    let mut bytes = Vec::new();
-    (&mut file)
-        .take(MAX_ARTIFACT as u64 + 1)
-        .read_to_end(&mut bytes)?;
-    parent.validate()?;
+    let bytes = crate::destination_security::read_private_file(path, MAX_ARTIFACT)?;
     PasswordSealedAccounts::from_bytes(&bytes)
         .map_err(|_| std::io::Error::other("Malformed account artifact"))
 }

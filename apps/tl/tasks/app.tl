@@ -515,8 +515,12 @@ fn subtask_count(kids: List<Task>, t: Task) -> Option<Text> {
     let mine = kids.filter(x -> x.parent == .some(t))
     if mine.is_empty() {
         .none
+    } else if let total = mine.counted() {
+        .some("{mine.count(x -> x.done)}/{total}")
     } else {
-        .some("{mine.count(x -> x.done)}/{mine.len()}")
+        // The window has not read the whole workspace yet: what is under the task so far is
+        // not what is under it.
+        .none
     }
 }
 
@@ -560,6 +564,12 @@ fn sections_of(p: Project) -> List<Section> {
 /// section. A subtask is not a card of its own; it goes where the task it is under goes.
 fn lane_of(p: Project, s: Option<Section>) -> List<Task> {
     tasks.items.filter(t -> t.project == p and t.section == s and not t.done and t.parent == .none)
+}
+
+/// How many wait somewhere, as a badge shows it: none when nothing waits, and none while the
+/// window has not read the whole workspace, so a part read so far never reads as a count.
+fn waiting(count: Option<Int>) -> Option<Int> {
+    if let n = count { if n > 0 { count } else { .none } } else { .none }
 }
 
 /// The tasks window: Inbox, Today, Upcoming, Done and what is assigned to the person looking,
@@ -609,8 +619,10 @@ view home(t: Tasks) {
     // The places whose badge says how many wait there, by key: what a person goes to, not the
     // lists they read their way through. A project's place is its own list, not a tally.
     let counted: List<Text> = ["inbox", "today", "assigned_to_me"]
+    // A badge counts the workspace, so it is a number once the window has read all of it and
+    // none before ([`waiting`]).
     let header_count: Option<Int> = if let c = chosen {
-        if counted.any(k -> k == c.key) and found.len() > 0 { .some(found.len()) } else { .none }
+        if counted.any(k -> k == c.key) { waiting(found.counted()) } else { .none }
     } else { .none }
     // The entry says where what is typed will go.
     let entry_placeholder = if let p = project {
@@ -628,16 +640,10 @@ view home(t: Tasks) {
         sidebar: {
             ui.NavList(selected: place) {
                 for f in side {
-                    let held = if counted.any(k -> k == f.key) {
-                        t.items.matching(f).len()
-                    } else { 0 }
-                    // A count of zero shows nothing: the badge says what waits.
-                    ui.NavItem(
-                        f,
-                        f.label,
-                        icon: f.icon,
-                        count: if held > 0 { .some(held) } else { .none },
-                    ) {
+                    let badge = if counted.any(k -> k == f.key) {
+                        waiting(t.items.matching(f).counted())
+                    } else { .none }
+                    ui.NavItem(f, f.label, icon: f.icon, count: badge) {
                         on select: set(place, f)
                     }
                 }
@@ -793,7 +799,7 @@ view project_board(p: Project) {
                 }
                 for s in sections {
                     let cards = lane_of(p, .some(s))
-                    ui.BoardLane(s, title: s.name, count: cards.count()) {
+                    ui.BoardLane(s, title: s.name, count: cards.counted()) {
                         on drop(moved: Task, at: Int): place(moved, .some(s), at)
                         foot: {
                             std.add_entry("New task", new_task(tasks, p: .some(p), s: .some(s)))
@@ -915,19 +921,14 @@ view task_page(t: Task) {
                         }
                     }
                 }
-                // When the person is told of it, or nothing while it is not.
+                // When the person is told of it, or nothing while it is not: the menu runs
+                // the action, and its form asks when.
                 ui.MenuButton(
                     if t.remind == .none { "Remind" } else { "Reminder set" },
                     icon: .bell,
                 ) {
-                    ui.MenuItem("In 10 minutes", icon: .clock) {
-                        on choose: remind_at(t, .some(10m))
-                    }
-                    ui.MenuItem("In an hour", icon: .clock) {
-                        on choose: remind_at(t, .some(1h))
-                    }
-                    ui.MenuItem("Tomorrow at this time", icon: .alarm_clock) {
-                        on choose: remind_at(t, .some(1d))
+                    ui.MenuItem("Remind me…", icon: .bell) {
+                        on choose: remind_at(t)
                     }
                     ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
                         on choose: remind_at(t, .none)

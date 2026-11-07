@@ -23,7 +23,7 @@ pub mod desk_verbs;
 pub mod desk_widgets;
 pub mod desktop_host;
 pub mod display_identify;
-pub mod emoji_picker;
+pub mod emoji;
 pub mod feedback;
 pub mod feedback_picker;
 pub mod follow_banner;

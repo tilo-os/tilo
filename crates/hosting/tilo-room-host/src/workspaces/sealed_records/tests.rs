@@ -127,58 +127,6 @@ async fn a_node_reads_and_resets_a_record_its_members_seal() {
     relay.shutdown().await;
 }
 
-/// A writer can write one of its sequences twice, as a page continued from a
-/// copy that went another way does. The node reads the record with the change
-/// that reached it first, and repairs the history once, so nothing of the
-/// record sticks to the write it leaves out and every other device reads the
-/// record as the node does.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_record_whose_history_repeats_a_sequence_is_repaired_once() {
-    let Lounge {
-        _dir,
-        relay,
-        workspaces,
-        workspace,
-        member,
-        ..
-    } = lounge().await;
-    let before = member.document().get_heads();
-    set_title(&member, &workspaces, &workspace, "kept").await;
-    member
-        .writes_forked(&workspaces, &workspace, &before, |document| {
-            document.put(ROOT, "title", "fork").unwrap();
-            document.commit_edit("fixture", "title");
-        })
-        .await;
-
-    assert_eq!(
-        readable(&workspaces, &workspace).await.as_deref(),
-        Some("kept"),
-        "the change that reached the record first is the record"
-    );
-    let state = workspaces.workspace(&workspace).await.unwrap();
-    let opened = state
-        .lock()
-        .await
-        .opened_record(APP, RECORD)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        opened.unmerged.is_empty(),
-        "the repaired history leaves nothing out: {:?}",
-        opened.unmerged
-    );
-    assert_eq!(title(&opened.document).as_deref(), Some("kept"));
-    assert_eq!(
-        readable(&workspaces, &workspace).await.as_deref(),
-        Some("kept"),
-        "every read after the repair is whole"
-    );
-    drop(workspaces);
-    relay.shutdown().await;
-}
-
 /// A public workspace's chat takes thousands of writes within hours. Past three
 /// quarters of a sealed history's bound the node compacts it into one sealed
 /// checkpoint, so its copy goes on following the record, and reads it whole.

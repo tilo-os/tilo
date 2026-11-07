@@ -156,7 +156,7 @@ bytes = { workspace = true, optional = true }
 # The pages' live plane: the WebTransport listener beside the HTTPS one, and
 # the relay that copies its sealed bytes (admission preface, moq-lite, and the
 # same relay the native carrier reaches over iroh).
-tilo-live = { path = "../../collab/tilo-live", features = ["native"], optional = true }
+tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
 # SHA-256 of the live listener's certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
 # Who-is-here lines may be summarised by a model provider the operator

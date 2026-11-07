@@ -32,8 +32,8 @@ pub(super) fn assemble(raw: RawReport) -> SupportReport {
         network(ComponentKind::Wifi, &raw.wifi),
         network(ComponentKind::Ethernet, &raw.ethernet),
         bluetooth(&raw.bluetooth),
-        audio(&raw.sound_cards),
-        microphone(&raw.sound_cards),
+        sound(&raw.sound_cards, SoundDirection::Playback),
+        sound(&raw.sound_cards, SoundDirection::Capture),
         camera(&raw.cameras),
         fingerprint(&raw.fingerprint),
         power(raw.battery.as_ref(), raw.ac_online, &raw.suspend_states),
@@ -495,62 +495,49 @@ fn sound_names(cards: &[RawSoundCard]) -> String {
         .join(", ")
 }
 
-fn audio(cards: &[RawSoundCard]) -> ComponentSupport {
-    if cards.is_empty() {
-        return absent(ComponentKind::Audio, Remedy::Connect);
+/// A sound card's direction decides which endpoint kind it answers for.
+#[derive(Clone, Copy)]
+enum SoundDirection {
+    Playback,
+    Capture,
+}
+impl SoundDirection {
+    fn observed(self, card: &RawSoundCard) -> bool {
+        match self {
+            Self::Playback => card.playback > 0,
+            Self::Capture => card.capture > 0,
+        }
     }
-    let names = sound_names(cards);
-    let evidence = sound_evidence(cards);
-    if cards.iter().any(|card| card.playback > 0) {
-        return observed(
-            ComponentKind::Audio,
-            names,
-            true,
-            SupportState::Unverified,
-            SupportReason::DriverBound {
-                bindings: cards
-                    .iter()
-                    .filter(|card| card.playback > 0)
-                    .map(|card| DeviceBinding {
-                        device: card.name.clone(),
-                        driver: card.driver.clone(),
-                    })
-                    .collect(),
-            },
-            evidence,
-        );
+    fn kind(self) -> ComponentKind {
+        match self {
+            Self::Playback => ComponentKind::Audio,
+            Self::Capture => ComponentKind::Microphone,
+        }
     }
-    with_remedy(
-        observed(
-            ComponentKind::Audio,
-            names,
-            true,
-            SupportState::Limited,
-            SupportReason::NoPlayback {
-                device: sound_names(cards),
-            },
-            evidence,
-        ),
-        Remedy::Connect,
-    )
+    fn lacking(self, device: String) -> SupportReason {
+        match self {
+            Self::Playback => SupportReason::NoPlayback { device },
+            Self::Capture => SupportReason::NoCapture { device },
+        }
+    }
 }
 
-fn microphone(cards: &[RawSoundCard]) -> ComponentSupport {
+fn sound(cards: &[RawSoundCard], direction: SoundDirection) -> ComponentSupport {
     if cards.is_empty() {
-        return absent(ComponentKind::Microphone, Remedy::Connect);
+        return absent(direction.kind(), Remedy::Connect);
     }
     let names = sound_names(cards);
     let evidence = sound_evidence(cards);
-    if cards.iter().any(|card| card.capture > 0) {
+    if cards.iter().any(|card| direction.observed(card)) {
         return observed(
-            ComponentKind::Microphone,
+            direction.kind(),
             names,
             true,
             SupportState::Unverified,
             SupportReason::DriverBound {
                 bindings: cards
                     .iter()
-                    .filter(|card| card.capture > 0)
+                    .filter(|card| direction.observed(card))
                     .map(|card| DeviceBinding {
                         device: card.name.clone(),
                         driver: card.driver.clone(),
@@ -562,13 +549,11 @@ fn microphone(cards: &[RawSoundCard]) -> ComponentSupport {
     }
     with_remedy(
         observed(
-            ComponentKind::Microphone,
+            direction.kind(),
             names,
             true,
             SupportState::Limited,
-            SupportReason::NoCapture {
-                device: sound_names(cards),
-            },
+            direction.lacking(sound_names(cards)),
             evidence,
         ),
         Remedy::Connect,

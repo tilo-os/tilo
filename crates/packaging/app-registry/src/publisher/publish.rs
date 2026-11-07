@@ -8,8 +8,8 @@ use ed25519_dalek::SigningKey;
 use registry_types::EntryAction;
 use registry_types::retention::RetentionPolicy;
 
-use crate::client::RegistryClient;
-use crate::entry::{EntryMetadata, Platform, build_entry, check_package};
+use crate::publisher::client::RegistryClient;
+use crate::publisher::entry::{EntryMetadata, Platform, build_entry, check_package};
 
 /// One package [`publish`] uploaded.
 #[derive(Clone, Debug)]
@@ -62,7 +62,7 @@ pub fn publish(
         if let Some(previous) = &published_entry
             && !previous
                 .publisher_pubkey_hex
-                .eq_ignore_ascii_case(&crate::key::public_hex(key))
+                .eq_ignore_ascii_case(&crate::publisher::key::public_hex(key))
         {
             bail!("{package_id} is published by another key");
         }
