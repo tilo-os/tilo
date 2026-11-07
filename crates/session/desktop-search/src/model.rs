@@ -76,6 +76,16 @@ pub enum Target {
     Prefer { source: String, enabled: bool },
 }
 
+/// A line as the palette compares it: folded, and without the sentence
+/// punctuation that ends it, so a description that repeats its own name up
+/// to a full stop is still the same line said twice.
+#[must_use]
+pub fn spoken(text: &str) -> String {
+    ui::search::fold_search_text(text.trim())
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', '\u{2026}', ' '])
+        .to_owned()
+}
+
 /// The provider name of what the desktop itself publishes (its chrome's and
 /// its desk's actions): a row the desktop runs on itself, by address, as
 /// every other caller of the action protocol does.

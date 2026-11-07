@@ -515,8 +515,7 @@ impl Published {
             // once: the row's line under the name is for what the name
             // does not already say.
             subtitle: action.description.clone().filter(|description| {
-                ui::search::fold_search_text(description)
-                    != ui::search::fold_search_text(&action.action_label)
+                crate::model::spoken(description) != crate::model::spoken(&action.action_label)
             }),
             facts: Vec::new(),
             score,

@@ -268,7 +268,7 @@ pub(super) fn everywhere<'a>(
 /// What a row says under its title: its subtitle and its facts, each
 /// dropped when it repeats the title or says what another already said.
 fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
-    let title = ui::search::fold_search_text(hit.title.trim());
+    let title = crate::model::spoken(hit.title.trim());
     let mut said: Vec<String> = vec![title];
     let subtitle = hit
         .subtitle
@@ -276,7 +276,7 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
         .map(|subtitle| subtitle.trim())
         .filter(|subtitle| !subtitle.is_empty())
         .filter(|subtitle| {
-            let folded = ui::search::fold_search_text(subtitle);
+            let folded = crate::model::spoken(subtitle);
             if said.contains(&folded) {
                 return false;
             }
@@ -290,7 +290,7 @@ fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
         if fact.is_empty() {
             continue;
         }
-        let folded = ui::search::fold_search_text(fact);
+        let folded = crate::model::spoken(fact);
         if said.contains(&folded) {
             continue;
         }

@@ -279,6 +279,18 @@ impl SessionSearch {
                 && address.action == "search";
             !searching && !opening
         });
+        // The desk's own resources are named after the person and the
+        // desktop, not after the thing an action acts on: matched as a
+        // word, that name would list every one of the desk's actions for a
+        // query that names the person.
+        for action in &mut published {
+            if matches!(
+                action.address.resource.as_str(),
+                tilo_surface_host::shell_part::DESK_RESOURCE | tilo_desktop_search::CHROME_RESOURCE
+            ) {
+                action.resource_label.clear();
+            }
+        }
         *self.own.borrow_mut() = published;
         *self.own_types.borrow_mut() = tilo_desktop_search::providers::types_of(own);
         *self.open_tabs.borrow_mut() = open_tabs;

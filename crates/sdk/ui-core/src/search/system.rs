@@ -635,6 +635,12 @@ pub fn application_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> 
 /// rank: "bat" is not yet "battery saver".
 #[must_use]
 pub fn action_ranks(tier: super::MatchTier, weight: super::FieldWeight) -> Option<i32> {
+    // An action is found by a word of it begun, never by letters a longer
+    // word hides it in: "shut" is not the incomplete items a command's
+    // sentence happens to hold.
+    if tier == super::MatchTier::Contains {
+        return None;
+    }
     if weight == super::FieldWeight::KEYWORD && tier == super::MatchTier::Exact {
         return super::MatchTier::Prefix.rank_in(super::FieldWeight::TITLE);
     }
