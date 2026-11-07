@@ -102,9 +102,9 @@ impl<'a, W: Write> Sealer<'a, W> {
         maximum: u64,
         cancel: &'a AtomicBool,
     ) -> io::Result<Self> {
-        if std::str::from_utf8(password).map_or(true, |text| text.chars().count() < 15) {
+        if !tilo_seal::migration_password(password) {
             return Err(invalid(
-                "Migration password must have at least 15 characters",
+                "Migration password must have 15 to 4096 characters",
             ));
         }
         let mut prefix = MAGIC.to_vec();

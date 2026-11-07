@@ -9,7 +9,7 @@ use std::path::Path;
 
 use accounts::{Account, AccountId, AccountStore, Secret, SecretVault};
 use serde::{Deserialize, Serialize};
-use tilo_seal::{Context, Label, PasswordParams, SymmetricKey, envelope};
+use tilo_seal::{Context, Frame, FrameError, Label, SymmetricKey, envelope, migration_password};
 use zeroize::{Zeroize, Zeroizing};
 
 /// A portable artifact was malformed, unauthenticated, or could not be stored.
@@ -98,11 +98,14 @@ impl SealedAccounts {
     }
 }
 
-const ARTIFACT_MAGIC: &[u8; 8] = b"TILOACC1";
-const WRAP_DOMAIN: &[u8] = b"tilo-prepared-account-key/v1\0";
-const MAX_WRAPPED: usize = 256;
+const ARTIFACT: Frame = Frame::new(
+    b"TILOACC1",
+    b"tilo-prepared-account-key/v1\0",
+    256,
+    MAX_SEALED,
+);
 /// Largest accepted password-wrapped artifact, in bytes.
-pub const MAX_ARTIFACT: usize = 16 + MAX_WRAPPED + MAX_SEALED;
+pub const MAX_ARTIFACT: usize = ARTIFACT.max_len();
 
 /// A portable password-wrapped artifact: sealed selected accounts and a fresh
 /// wrapped transport key. The password and unwrapped key are never serialized.
@@ -122,7 +125,7 @@ impl PasswordSealedAccounts {
     /// # Errors
     /// Refuses invalid framing, envelope types or password-derivation parameters.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, PortableError> {
-        parse_artifact(bytes)?;
+        ARTIFACT.parse(bytes).map_err(frame_error)?;
         Ok(Self(bytes.to_vec()))
     }
     fn open(
@@ -131,89 +134,23 @@ impl PasswordSealedAccounts {
         setup: &[u8],
     ) -> Result<(SealedAccounts, SymmetricKey), PortableError> {
         validate_password(password)?;
-        let context = wrap_binding(setup)?;
-        let (wrapped, selected) = parse_artifact(&self.0)?;
-        let key = envelope::open_with_password(
-            password,
-            Context::new(Label::MigrationPackage, &context),
-            wrapped,
-        )
-        .map_err(|_| PortableError::CredentialUnavailable)?;
-        let mut key: [u8; 32] = key
-            .as_slice()
-            .try_into()
-            .map_err(|_| PortableError::CredentialUnavailable)?;
-        let transport = SymmetricKey::from_bytes(key);
-        key.zeroize();
-        Ok((SealedAccounts::from_bytes(selected)?, transport))
+        let (transport, selected) = ARTIFACT
+            .open(password, setup, &self.0)
+            .map_err(frame_error)?;
+        Ok((SealedAccounts::from_bytes(&selected)?, transport))
+    }
+}
+fn frame_error(error: FrameError) -> PortableError {
+    match error {
+        FrameError::Malformed => PortableError::InvalidConfiguration,
+        FrameError::Unauthenticated => PortableError::CredentialUnavailable,
     }
 }
 fn validate_password(password: &[u8]) -> Result<(), PortableError> {
-    if password.len() > 4096
-        || std::str::from_utf8(password).map_or(true, |text| text.chars().count() < 15)
-    {
+    if !migration_password(password) {
         return Err(PortableError::InvalidConfiguration);
     }
     Ok(())
-}
-fn wrap_binding(setup: &[u8]) -> Result<Vec<u8>, PortableError> {
-    binding(setup)?;
-    let mut context = WRAP_DOMAIN.to_vec();
-    context.extend_from_slice(setup);
-    Ok(context)
-}
-fn parse_artifact(bytes: &[u8]) -> Result<(&[u8], &[u8]), PortableError> {
-    if bytes.len() > MAX_ARTIFACT || bytes.get(..8) != Some(ARTIFACT_MAGIC) {
-        return Err(PortableError::InvalidConfiguration);
-    }
-    let length = |offset: usize| -> Result<usize, PortableError> {
-        let end = offset
-            .checked_add(4)
-            .ok_or(PortableError::InvalidConfiguration)?;
-        let bytes: [u8; 4] = bytes
-            .get(offset..end)
-            .ok_or(PortableError::InvalidConfiguration)?
-            .try_into()
-            .map_err(|_| PortableError::InvalidConfiguration)?;
-        Ok(u32::from_le_bytes(bytes) as usize)
-    };
-    let wrapped_len = length(8)?;
-    if wrapped_len > MAX_WRAPPED {
-        return Err(PortableError::InvalidConfiguration);
-    }
-    let wrapped_end = 12_usize
-        .checked_add(wrapped_len)
-        .ok_or(PortableError::InvalidConfiguration)?;
-    let wrapped = bytes
-        .get(12..wrapped_end)
-        .ok_or(PortableError::InvalidConfiguration)?;
-    let selected_len = length(wrapped_end)?;
-    let start = wrapped_end
-        .checked_add(4)
-        .ok_or(PortableError::InvalidConfiguration)?;
-    if selected_len > MAX_SEALED || start.checked_add(selected_len) != Some(bytes.len()) {
-        return Err(PortableError::InvalidConfiguration);
-    }
-    let parsed =
-        envelope::Envelope::parse(wrapped).map_err(|_| PortableError::CredentialUnavailable)?;
-    // Reject untrusted expensive KDF costs before deriving any key. Version 1
-    // writes only this canonical policy.
-    if !matches!(parsed.source, envelope::KeySource::Password { params, salt } if params == PasswordParams::DEFAULT && salt.len() == envelope::SALT_LEN)
-    {
-        return Err(PortableError::InvalidConfiguration);
-    }
-    let selected = bytes
-        .get(start..)
-        .ok_or(PortableError::InvalidConfiguration)?;
-    if !matches!(
-        envelope::Envelope::parse(selected)
-            .map_err(|_| PortableError::CredentialUnavailable)?
-            .source,
-        envelope::KeySource::Key(_)
-    ) {
-        return Err(PortableError::InvalidConfiguration);
-    }
-    Ok((wrapped, selected))
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -293,34 +230,12 @@ pub fn seal_selected_accounts_with_password(
     setup_binding: &[u8],
 ) -> Result<PasswordSealedAccounts, PortableError> {
     validate_password(password)?;
-    let context = wrap_binding(setup_binding)?;
+    binding(setup_binding)?;
     let key = SymmetricKey::generate().map_err(|_| PortableError::CredentialUnavailable)?;
-    let selected = seal_selected_accounts(root, selected, &key, setup_binding)?;
-    let wrapped = envelope::seal_with_password(
-        password,
-        PasswordParams::DEFAULT,
-        Context::new(Label::MigrationPackage, &context),
-        key.expose_secret(),
-    )
-    .map_err(|_| PortableError::CredentialUnavailable)?;
-    let capacity = 16_usize
-        .checked_add(wrapped.len())
-        .and_then(|size| size.checked_add(selected.0.len()))
-        .ok_or(PortableError::InvalidConfiguration)?;
-    let mut bytes = Vec::with_capacity(capacity);
-    bytes.extend_from_slice(ARTIFACT_MAGIC);
-    bytes.extend_from_slice(
-        &u32::try_from(wrapped.len())
-            .map_err(|_| PortableError::InvalidConfiguration)?
-            .to_le_bytes(),
-    );
-    bytes.extend_from_slice(&wrapped);
-    bytes.extend_from_slice(
-        &u32::try_from(selected.0.len())
-            .map_err(|_| PortableError::InvalidConfiguration)?
-            .to_le_bytes(),
-    );
-    bytes.extend_from_slice(selected.as_bytes());
+    let content = seal_selected_accounts(root, selected, &key, setup_binding)?;
+    let bytes = ARTIFACT
+        .seal(password, setup_binding, &key, content.as_bytes())
+        .map_err(frame_error)?;
     PasswordSealedAccounts::from_bytes(&bytes)
 }
 /// Explicit selected local accounts only. Read credentials from canonical
