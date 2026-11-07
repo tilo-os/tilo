@@ -61,7 +61,6 @@ fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError)
 }
 
 mod sealed_outbox;
-pub mod workspace_governance;
 mod workspace_lane;
 #[cfg(test)]
 mod workspace_lane_tests;
@@ -391,17 +390,6 @@ pub enum NetCmd {
     PublishToHosts {
         ws: u64,
         msg: NeighbourMsg,
-    },
-    /// Invoke what a relay answers itself (a workspace's governance, or a
-    /// member's own business in it) on a workspace's relay session, and answer
-    /// the relay's receipt.
-    WorkspaceGovernance(Box<workspace_governance::Request>),
-    /// Tell `ended` once workspace `ws` has no session with a host left: at
-    /// once when it has none now. What waits on a workspace's host lasts as long
-    /// as the workspace's sessions do.
-    WatchHostSessions {
-        ws: u64,
-        ended: tokio::sync::oneshot::Sender<()>,
     },
     /// Take part in workspace `ws`: its events reach `on_event`, and its
     /// workspace hosts are dialled. A workspace's traffic travels over its host
@@ -1097,7 +1085,6 @@ fn remote_party_command(command: &NetCmd) -> Option<&'static str> {
     Some(match command {
         NetCmd::Connect { .. } => "dialling a peer",
         NetCmd::ConnectHost { .. } | NetCmd::NativeConnect(..) => "dialling a host",
-        NetCmd::WorkspaceGovernance(_) => "talking to a workspace's host",
         NetCmd::PublishPersonalFabricTarget { .. } | NetCmd::PublishNearbyTransfer { .. } => {
             "sending to one of the person's devices"
         }
@@ -1280,7 +1267,6 @@ struct ActorState {
     /// workspaces hosted here.
     local_host: Option<crate::local_host::LocalHost>,
     /// Governance invocations waiting for their workspace's relay to answer.
-    workspace_governance: workspace_governance::Waiting,
     /// The endpoint's relays, held back until a remote party appears.
     reachability: Reachability,
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -1530,11 +1516,6 @@ impl ActorState {
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
             Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
-            Some(NetCmd::WorkspaceGovernance(request)) => self.send_workspace_governance(*request),
-            Some(NetCmd::WatchHostSessions { ws, ended }) => {
-                let now = self.sessions_of(ws);
-                self.workspace_governance.watch_sessions(ws, now, ended);
-            }
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
                 self.handle_join_workspace(ws, on_event);
             }
@@ -2373,47 +2354,6 @@ impl ActorState {
         }
     }
 
-    /// Send `request` to the workspace's relay device it is addressed to
-    /// ([`workspace_governance`]), on any session of the workspace.
-    fn send_workspace_governance(&mut self, request: workspace_governance::Request) {
-        let (ws, to) = (request.ws, request.to);
-        workspace_governance::trace::note(|| {
-            format!(
-                "send {:?} {} on ws {ws} to {to:?}: sessions {:?}, replaying {:?}",
-                request.invoke.invocation,
-                request.invoke.target.address.action,
-                self.sessions_of(ws),
-                self.host_sessions
-                    .iter()
-                    .filter(|((session_ws, _), _)| *session_ws == ws)
-                    .map(|((_, host), runtime)| (
-                        host.fmt_short().to_string(),
-                        runtime.replaying.load(std::sync::atomic::Ordering::Acquire)
-                    ))
-                    .collect::<Vec<_>>()
-            )
-        });
-        // Its answer comes on a session of its workspace: with none up it
-        // waits for one being established, and with none of those there is
-        // nothing to wait for.
-        match self.sessions_of(ws) {
-            workspace_governance::Sessions::Open => {}
-            workspace_governance::Sessions::Connecting => {
-                self.workspace_governance.hold_for_session(request);
-                return;
-            }
-            workspace_governance::Sessions::Closed => {
-                let _ = request.reply.send(Err(
-                    "this device holds no session with the workspace's host".into(),
-                ));
-                return;
-            }
-        }
-        if let Some(frame) = self.workspace_governance.send(request, to, Instant::now()) {
-            self.publish_to_host_sessions(ws, to, &frame);
-        }
-    }
-
     /// The host at `peer` subscribed this device to `ws`: refresh what its
     /// native session holds. Only a workspace host's is news to the
     /// shell: this device's own host and the person's devices are no
@@ -2446,33 +2386,6 @@ impl ActorState {
             .get(&(ws, peer))
             .is_some_and(|runtime| !runtime.local || runtime.native_scope.is_some())
             .then_some(NetEvent::HostReady { ws, peer })
-    }
-
-    /// Send `frame`, addressed to the workspace host whose device is `host`, on a
-    /// host session of `ws`: the one whose handshake authenticated that
-    /// device, else any other, which routes it there. Never the direct
-    /// surface route: a device hosting its own workspaces is also a member of
-    /// them under the same key, and its shell does not answer for its host.
-    fn publish_to_host_sessions(&self, ws: WorkspaceId, host: EndpointId, frame: &[u8]) {
-        let device = *host.as_bytes();
-        let mut sessions: Vec<_> = self
-            .host_sessions
-            .iter()
-            .filter(|((session_ws, _), runtime)| *session_ws == ws && reaches_governor(runtime))
-            .map(|(_, runtime)| &runtime.session)
-            .collect();
-        sessions.sort_by_key(|session| session.relay_device_public_key() != device);
-        let sent = sessions.into_iter().any(|session| {
-            session
-                .publish_remote_action(device, frame.to_vec())
-                .is_ok()
-        });
-        workspace_governance::trace::note(|| {
-            format!("published to ws {ws} host {host}: sent {sent}")
-        });
-        if !sent {
-            tracing::warn!(ws, %host, "no session with the workspace's host to send a request on");
-        }
     }
 
     fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
@@ -2693,12 +2606,9 @@ impl ActorState {
                 session,
                 event,
             }) => {
-                // A workspace's governance answering this device is taken here:
-                // its caller waits off the thread other answers go to.
                 if self.host_sessions.get(&(ws, peer)).is_some_and(|runtime| {
                     std::sync::Weak::ptr_eq(&session, &Arc::downgrade(&runtime.session))
-                }) && !self.workspace_governance.takes(ws, &event)
-                {
+                }) {
                     self.handle_host_event(ws, peer, event).await;
                 }
             }
@@ -3231,61 +3141,6 @@ impl ActorState {
                 .any(|ws| !self.host_sessions.keys().any(|(topic, _)| *topic == ws))
     }
 
-    /// Where workspace `ws` stands with its hosts, this device's own
-    /// included: a session up, one being established, or neither.
-    fn sessions_of(&self, ws: u64) -> workspace_governance::Sessions {
-        // A session with a host standing in for a workspace's governor carries
-        // none of its governance: only the governor's own counts.
-        if self
-            .host_sessions
-            .iter()
-            .any(|((session_ws, _), runtime)| *session_ws == ws && reaches_governor(runtime))
-        {
-            workspace_governance::Sessions::Open
-        } else if self.native_routes.establishing(ws)
-            // A room this device hosts itself is joined in process, and that
-            // join is retried until it is up: its session is coming, not
-            // gone, so what waits for a session waits for it rather than
-            // being refused as if the room had no host.
-            || self.native_routes.is_local(ws)
-            || self
-                .connecting_hosts
-                .iter()
-                .any(|(connecting_ws, _)| *connecting_ws == ws)
-        {
-            workspace_governance::Sessions::Connecting
-        } else {
-            workspace_governance::Sessions::Closed
-        }
-    }
-
-    /// Settle what waits on where workspaces stand with their hosts
-    /// ([`workspace_governance::Waiting::sessions_changed`]), and send what
-    /// waited for a session now up. Every change to a workspace's sessions
-    /// is made handling one event of [`run`]'s loop, which settles before
-    /// it waits again, so a session ending with nothing else going on is
-    /// settled at once. Costs nothing while nothing waits.
-    fn settle_session_waits(&mut self) {
-        if !self.workspace_governance.waits_on_sessions() {
-            return;
-        }
-        let sessions: HashMap<u64, workspace_governance::Sessions> = self
-            .workspace_governance
-            .workspaces()
-            .into_iter()
-            .map(|ws| (ws, self.sessions_of(ws)))
-            .collect();
-        let ready = self.workspace_governance.sessions_changed(|ws| {
-            sessions
-                .get(&ws)
-                .copied()
-                .unwrap_or(workspace_governance::Sessions::Closed)
-        });
-        for request in ready {
-            self.send_workspace_governance(request);
-        }
-    }
-
     /// Whether a host session goes to another machine: sessions with this
     /// device's own host keep nothing up.
     fn remote_host_sessions(&self) -> bool {
@@ -3295,16 +3150,15 @@ impl ActorState {
     /// Whether `command` stays in this process: it goes to this device's
     /// own host, so it needs no relay up.
     fn stays_local(&self, command: &NetCmd) -> bool {
-        let own = self.endpoint.id();
-        match command {
-            NetCmd::NativeConnect(connect) => self.host_identity.as_ref().is_some_and(|identity| {
-                connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
-                    tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
+        matches!(
+            command,
+            NetCmd::NativeConnect(connect)
+                if self.host_identity.as_ref().is_some_and(|identity| {
+                    connect.material(identity).is_ok_and(|(hint, cert, _, _)| {
+                        tilo_peer_state::owner::session::hosted_by(&hint, &cert.device_public_key)
+                    })
                 })
-            }),
-            NetCmd::WorkspaceGovernance(request) => request.to == own,
-            _ => false,
-        }
+        )
     }
 
     /// The remote party this actor is connected to or keeps dialling, if
@@ -3553,15 +3407,6 @@ impl ActorState {
             }
         }
     }
-}
-
-/// Whether `runtime` may carry its workspace's governance: any session but one
-/// with a host standing in for the workspace's governor.
-fn reaches_governor(runtime: &HostRuntime) -> bool {
-    runtime
-        .native_scope
-        .as_ref()
-        .is_none_or(|scope| scope.reaches_governor())
 }
 
 async fn send_nearby_transfer_frame(
@@ -3818,7 +3663,6 @@ async fn run(
         native_routes: native_ingress::Routes::default(),
         channel_queue: None,
         local_host,
-        workspace_governance: workspace_governance::Waiting::default(),
         lanes,
         internal_tx,
         topics: HashMap::new(),
@@ -3868,9 +3712,6 @@ async fn run(
     let mut reported_party = None;
 
     loop {
-        // What waited on a workspace's sessions follows them, however they
-        // changed.
-        state.settle_session_waits();
         // The relays stay up while a remote party lasts, and rest a while
         // after the last one is gone (`tilo_endpoint_reachability`).
         let party = state.remote_party();

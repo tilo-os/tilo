@@ -64,10 +64,6 @@ impl Routes {
             route.link.retry();
         }
     }
-    /// Whether the room on topic `ws` is hosted on this device.
-    pub(super) fn is_local(&self, ws: u64) -> bool {
-        self.entries.get(&ws).is_some_and(|route| route.local)
-    }
     /// Every room this device hosts itself, as its routes now stand: their
     /// sessions join in process, and a join that has not happened yet is
     /// work this device's loop keeps, not nothing.
