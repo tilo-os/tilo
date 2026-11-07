@@ -1683,7 +1683,7 @@ impl Instance {
             return false;
         };
         let aref = ActionRef {
-            action: action.id.clone(),
+            action: action.id,
             args,
             author: None,
             from: None,

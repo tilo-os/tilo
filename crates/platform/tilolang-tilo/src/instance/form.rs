@@ -274,7 +274,7 @@ impl Pending {
                 parts.push(text_node(field, "~text", Some("tomorrow"), &label, false));
             }
             FieldType::Time => {
-                parts.push(self.quick_node(field, text, moments(host), optional));
+                parts.push(Self::quick_node(field, text, moments(host), optional));
                 parts.push(day_node(field, text, optional, true));
                 parts.push(text_node(
                     field,
@@ -285,7 +285,7 @@ impl Pending {
                 ));
             }
             FieldType::Duration => {
-                parts.push(self.quick_node(field, text, lengths(), optional));
+                parts.push(Self::quick_node(field, text, lengths(), optional));
                 parts.push(text_node(field, "~text", Some("1h 30m"), &label, false));
             }
             other => {
@@ -345,7 +345,6 @@ impl Pending {
     /// The quick choices of `field` showing `text`: the few values the type is often given,
     /// as segments, and none of them when the field may be empty.
     fn quick_node(
-        &self,
         field: &Field,
         text: &str,
         cases: Vec<(String, String)>,

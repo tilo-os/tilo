@@ -76,9 +76,7 @@ pub fn shown_text(kind: &str, value: &str) -> String {
         "time" => {
             moment_of(value).map_or_else(|| value.to_owned(), |at| ui::format::list_date(&at))
         }
-        "duration" => {
-            duration_of(value).map_or_else(|| value.to_owned(), |secs| ui::format::duration(secs))
-        }
+        "duration" => duration_of(value).map_or_else(|| value.to_owned(), ui::format::duration),
         _ => value.to_owned(),
     }
 }
