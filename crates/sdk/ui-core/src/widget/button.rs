@@ -530,6 +530,36 @@ impl Button {
         self.dirty = true;
     }
 
+    /// Take the words and the glyph of `fresh`, keeping this button's place, its press and what
+    /// it holds (`false` when the two are a shape apart: an icon-only face where there was a
+    /// label, another role or size, which only building the widget again can change).
+    ///
+    /// A control whose words the desk renames — the workspace in the bar — says the new ones
+    /// without being built again, so what stands against it (the menu it opened) stays open.
+    pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
+        if fresh.icon.is_some() != self.icon.is_some()
+            || fresh.label.is_empty() != self.label.is_empty()
+            || fresh.role != self.role
+            || fresh.control_size != self.control_size
+        {
+            return false;
+        }
+        self.set_label(fresh.label.clone(), fresh.placeholder);
+        if let Some(icon) = fresh.icon {
+            self.set_icon(icon);
+        }
+        if fresh.accessible_name != self.accessible_name {
+            if let Some(name) = &fresh.accessible_name {
+                self.set_accessible_name(name);
+            } else {
+                self.accessible_name = None;
+                self.dirty = true;
+            }
+        }
+        self.tooltip.clone_from(&fresh.tooltip);
+        true
+    }
+
     /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
     /// new things wait behind the control (unread notifications, new mail), as an app icon's
     /// count stands on it. Only an icon-only face shows it. The count stays inside the face,

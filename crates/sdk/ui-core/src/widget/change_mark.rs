@@ -276,11 +276,20 @@ pub fn entry() -> component::Entry {
     fn slot_views<'a>(_: &'a mut Element, _: &str) -> Option<&'a mut dyn component::SlotViews> {
         None
     }
+    fn part_views<'a>(
+        _: &'a mut Element,
+        _: &str,
+        _: &str,
+        _: &str,
+    ) -> Option<&'a mut dyn component::SlotViews> {
+        None
+    }
     component::Entry {
         name: ChangeMarkProps::NAME,
         describe: ChangeMarkProps::describe,
         build,
         update,
         slot_views,
+        part_views,
     }
 }
