@@ -42,6 +42,14 @@ pub(super) struct ListMenu<M: ListModel> {
 /// carries a subject (its send-to box docks beside it, about the row).
 pub(super) type RowAbout<K> = Box<dyn Fn(&K) -> Option<SharedSelection>>;
 
+impl<M: ListModel> ListMenu<M> {
+    /// The menu this list paints, as it stands.
+    #[cfg(test)]
+    pub(super) fn context_menu(&self) -> &ContextMenu {
+        &self.menu
+    }
+}
+
 /// Where a host opens its own menu for a row: the row's key, its box on screen, and the point
 /// the menu opens at.
 pub(super) type RowMenuReport<K> = Box<dyn FnMut(K, Rect, Point)>;
