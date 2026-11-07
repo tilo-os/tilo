@@ -21,6 +21,8 @@ impl Shared {
                     .map(|held| (held.id().to_string(), held.policy.clone()))
                     .collect()
             });
+        self.agents
+            .charge(&workspaces, &self.person, &self.conversations.take_spent());
         let kept = self.agents.feed(&self.person, &workspaces);
         if let Some(apps) = &self.launch {
             for agent in &kept {

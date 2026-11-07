@@ -1497,6 +1497,7 @@ struct TaskRunEnvelope {
     execution_budget: Option<collab_types::task_budget::TaskExecutionBudget>,
     action_context: tilo_actions::ActionContext,
     model: Option<runtime_collab::TaskRunModel>,
+    spend: Option<runtime_collab::TaskRunSpend>,
 }
 
 #[derive(Clone, Debug)]
@@ -9700,6 +9701,7 @@ fn task_run_json(run: TaskRunEnvelope) -> Result<String, BrokerError> {
         action_context: serde_json::to_value(run.action_context)
             .map_err(|error| BrokerError::failed(error.to_string()))?,
         model: run.model,
+        spend: run.spend,
     };
     serde_json::to_string(&payload).map_err(|error| BrokerError::failed(error.to_string()))
 }
