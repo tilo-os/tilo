@@ -30,8 +30,6 @@ pub use policy::{Refusal, Standing, may_command, may_create_workspace};
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
-/// Resource prefix of the per-application open action (`desktop:app:<app>`).
-pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
 /// Action id of the per-application open action.
 pub const OPEN_APP_ACTION: &str = "open";
 
@@ -42,11 +40,7 @@ pub mod layout {
     pub const PROVIDER: &str = "tilo.desktop";
     /// Open a resource, content or web address in a new window.
     pub const OPEN: &str = "open";
-    pub const CREATE_STRIP: &str = "create-strip";
-    pub const RENAME_STRIP: &str = "rename-strip";
-    pub const MOVE_GROUP: &str = "move-group";
     pub const ARRANGE: &str = "arrange";
-    pub const LIST_WINDOWS: &str = "list-windows";
     /// Take a run of layout changes back (`{"run": …}`), as every
     /// history's `undo` does.
     pub const UNDO: &str = "undo";

@@ -331,48 +331,6 @@ pub fn workspace_shortcuts_of(doc: &AutoCommit) -> Vec<tilo_automation::SavedSho
     shortcuts
 }
 
-/// Project a workspace's schedule claims as one map value per schedule
-/// ([`ScheduleClaim::key`](tilo_automation::ScheduleClaim::key)). A key this
-/// workspace no longer holds is deleted, as for shortcuts.
-///
-/// # Errors
-///
-/// The document's error when the claims map cannot be created.
-pub fn project_schedule_claims(
-    doc: &mut AutoCommit,
-    claims: &[tilo_automation::ScheduleClaim],
-) -> Result<(), automerge::AutomergeError> {
-    use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-
-    let map = match doc.get(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY).ok().flatten() {
-        Some((_, id)) => id,
-        None if claims.is_empty() => return Ok(()),
-        None => doc.put_object(&ROOT, WORKSPACE_SCHEDULE_CLAIMS_KEY, ObjType::Map)?,
-    };
-    let stale: Vec<String> = doc
-        .keys(&map)
-        .filter(|key| !claims.iter().any(|claim| claim.key() == *key))
-        .collect();
-    for key in stale {
-        doc.delete(&map, key.as_str())?;
-    }
-    for claim in claims {
-        let Ok(blob) = serde_json::to_vec(claim) else {
-            continue;
-        };
-        let key = claim.key();
-        let unchanged = matches!(
-            doc.get(&map, key.as_str()).ok().flatten(),
-            Some((Value::Scalar(value), _))
-                if matches!(value.as_ref(), ScalarValue::Bytes(current) if current == &blob)
-        );
-        if !unchanged {
-            doc.put(&map, key.as_str(), ScalarValue::Bytes(blob))?;
-        }
-    }
-    Ok(())
-}
-
 /// The schedule claims a workspace document carries. A value that does not
 /// decode, or that is filed under another schedule's key, is skipped.
 pub fn schedule_claims_of(doc: &AutoCommit) -> Vec<tilo_automation::ScheduleClaim> {

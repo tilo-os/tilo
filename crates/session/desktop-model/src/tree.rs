@@ -71,10 +71,6 @@ pub struct DesktopTree {
     /// the host so replication can reach it. Not persisted.
     #[serde(skip, default)]
     pub workspace_records_held: HashMap<WorkspaceId, BTreeMap<String, String>>,
-    /// References that arrived from a peer and have not been folded into
-    /// the local index yet. Drained by the host.
-    #[serde(skip, default)]
-    pub workspace_records_inbound: Vec<(WorkspaceId, String, String)>,
     /// The salt of the device this tree belongs to: the high 16 bits of
     /// every id the tree mints, and the namespace replication treats as its
     /// own. `0` until the device's session sets it. Kept beside the state
@@ -97,7 +93,6 @@ impl Default for DesktopTree {
             fullscreen: None,
             collaborators: Vec::new(),
             workspace_records_held: HashMap::new(),
-            workspace_records_inbound: Vec::new(),
             salt: 0,
         }
     }
@@ -271,38 +266,6 @@ impl DesktopTree {
             .and_then(|group| self.outputs.display_of(group))
             .or_else(|| self.outputs.focused_display())?;
         Some((ws, strip, display))
-    }
-
-    /// `strip` became the active strip: across several displays that
-    /// happens on the focused display only. Focus stays there, on the
-    /// strip's focused window if it is on that display, else the one last
-    /// focused there, else on none (so a new window opens there), instead
-    /// of following the strip's focus to another display, which would move
-    /// that display's strip too.
-    pub fn keep_focus_on_display(&mut self, strip: StripId) {
-        let Some(display) = self
-            .outputs
-            .focused_display()
-            .filter(|_| self.is_partitioned())
-        else {
-            return;
-        };
-        let target = self
-            .active_group_for(strip)
-            .filter(|group| self.outputs.display_of(*group) == Some(display))
-            .or_else(|| {
-                self.active_workspace()
-                    .and_then(|ws| ws.strips.iter().find(|s| s.id == strip))
-                    .and_then(|s| self.outputs.focus_target(s, display))
-            });
-        match target {
-            Some(group) => {
-                self.active_group.insert(strip, group);
-            }
-            None => {
-                self.active_group.remove(&strip);
-            }
-        }
     }
 
     /// Focus moves to `display`: the display it leaves keeps showing the

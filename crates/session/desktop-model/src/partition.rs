@@ -277,21 +277,6 @@ impl OutputPartition {
         changed
     }
 
-    /// Home a group that has none yet on `display`, where it was created.
-    /// Returns whether it was placed.
-    pub fn place_new(&mut self, group: GroupId, display: u32) -> bool {
-        let Some(monitor) = self.monitor_of(display).map(str::to_owned) else {
-            return false;
-        };
-        match self.home.entry(group) {
-            std::collections::btree_map::Entry::Vacant(slot) => {
-                slot.insert(monitor);
-                true
-            }
-            std::collections::btree_map::Entry::Occupied(_) => false,
-        }
-    }
-
     /// Show `group` on `display` from now on, leaving the strip's order to
     /// the caller. It forgets where it came from, so a monitor coming back
     /// no longer reclaims it, and becomes `display`'s last focused group in

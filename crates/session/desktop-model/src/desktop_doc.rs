@@ -1223,13 +1223,6 @@ fn delete_blob(doc: &mut AutoCommit, slot: WorkspaceSlot, map_key: &str, key: &s
     doc.delete(&map, key).is_ok()
 }
 
-/// Record a grant. Grants are a map keyed by id rather than a list:
-/// deleting a map key merges concurrently, while deleting list index 3 on
-/// two peers removes two different grants.
-pub fn insert_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, grant: &Grant) -> bool {
-    upsert_blob(doc, slot, GRANTS_KEY, grant.id.as_str(), grant)
-}
-
 /// Delete a grant, so a revocation is not only local.
 pub fn revoke_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, id: &GrantId) -> bool {
     delete_blob(doc, slot, GRANTS_KEY, id.as_str())
@@ -1243,12 +1236,6 @@ pub fn insert_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap: &CapOverri
 /// Delete a sandbox capability.
 pub fn revoke_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap_id: &str) -> bool {
     delete_blob(doc, slot, SANDBOX_KEY, cap_id)
-}
-
-/// Record a named grant set under its name's key.
-pub fn upsert_preset(doc: &mut AutoCommit, slot: WorkspaceSlot, preset: &Preset) -> bool {
-    let key = preset_key(&preset.name);
-    upsert_blob(doc, slot, PRESETS_KEY, &key, preset)
 }
 
 /// Record a shortcut under its id, replacing any earlier version of it.
@@ -1278,21 +1265,6 @@ pub fn remove_shortcut(doc: &mut AutoCommit, slot: WorkspaceSlot, shortcut_id: &
         && doc.delete(&shortcuts, shortcut_id).is_ok()
 }
 
-/// Record a schedule claim under its schedule, replacing the earlier one.
-pub fn upsert_schedule_claim(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    claim: &tilo_automation::ScheduleClaim,
-) -> bool {
-    upsert_blob(
-        doc,
-        slot,
-        WORKSPACE_SCHEDULE_CLAIMS_KEY,
-        &claim.key(),
-        claim,
-    )
-}
-
 /// Record an effect receipt under its invocation.
 pub fn upsert_effect_receipt(
     doc: &mut AutoCommit,
@@ -1301,23 +1273,6 @@ pub fn upsert_effect_receipt(
 ) -> bool {
     let key = receipt.invocation.0.to_string();
     upsert_blob(doc, slot, WORKSPACE_EFFECT_RECEIPTS_KEY, &key, receipt)
-}
-
-/// Delete one tab, or its whole group when the tab was the group's last: the narrow
-/// mirror of a user-driven close, so a later merge cannot resurrect the tab.
-/// Whether `doc` holds what [`remove_tab`] with the same arguments would delete.
-pub fn holds_tab(
-    doc: &AutoCommit,
-    strip_id: StripId,
-    group_id: GroupId,
-    tab_id: TabId,
-    remove_group: bool,
-) -> bool {
-    if remove_group {
-        group_anywhere(doc, group_id).is_some()
-    } else {
-        tab_in_strip(doc, strip_id, tab_id).is_some()
-    }
 }
 
 pub fn remove_tab(
@@ -1449,28 +1404,6 @@ pub fn move_group(
         insert_group(doc, &groups, index, group);
         Some(())
     })
-}
-
-/// Replace one strip's group list with `groups`, leaving the rest of the
-/// document — and concurrent changes to it — alone.
-pub fn rewrite_strip_groups(
-    doc: &mut AutoCommit,
-    strip_id: StripId,
-    groups: &[WindowGroup],
-) -> bool {
-    let Some((_, strip_entry, _)) = strip_entries(doc)
-        .into_iter()
-        .find(|(id, _, _)| *id == strip_id.raw())
-    else {
-        return false;
-    };
-    let Ok(list) = doc.put_object(&strip_entry, GROUPS_KEY, ObjType::List) else {
-        return false;
-    };
-    for (i, group) in groups.iter().enumerate() {
-        insert_group(doc, &list, i, group);
-    }
-    true
 }
 
 /// Replace one group's tab list with `tabs`, in order.
