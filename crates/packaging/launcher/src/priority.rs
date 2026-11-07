@@ -182,9 +182,26 @@ mod tests {
         let foreground = tier_properties(Tier::Foreground, Some(32 * GIB));
         // The order a person's work is served in: what they just asked for,
         // then the desk showing it, then what they can see, then the rest.
-        assert!(STARTUP_WEIGHT > SESSION_WEIGHT);
-        assert!(SESSION_WEIGHT > FOREGROUND_WEIGHT);
-        assert!(FOREGROUND_WEIGHT > BACKGROUND_WEIGHT);
+        let cpu_weight = |tier| {
+            tier_properties(tier, Some(32 * GIB))
+                .into_iter()
+                .find_map(|(name, value)| (name == "CPUWeight").then_some(value))
+        };
+        let order = [
+            Tier::Startup,
+            Tier::Session,
+            Tier::Foreground,
+            Tier::Background,
+        ];
+        for pair in order.windows(2) {
+            let (above, below) = (cpu_weight(pair[0]), cpu_weight(pair[1]));
+            assert!(
+                above > below,
+                "{:?} does not outrank {:?}: {above:?} against {below:?}",
+                pair[0],
+                pair[1]
+            );
+        }
         assert!(session.len() < foreground.len());
         for props in [&startup, &session, &foreground] {
             assert!(!props.iter().any(|(name, _)| name.contains("Max")));
