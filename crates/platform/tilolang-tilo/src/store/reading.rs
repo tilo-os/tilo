@@ -85,21 +85,43 @@ pub(super) fn mirror_of(record: &Doc) -> Doc {
     mirror
 }
 
-/// Name each resource in `ends` as changed in its versions: the record's changes made them,
-/// which marks and history read, and a change reaches the views of a resource even when the
-/// values it writes read as the ones the store already held, as they do when the steps were
-/// written locally first. A document the change reached whole names no field and is left as
-/// it is: every view of it reads the document anew.
+/// The fields of `resource` its versions changed, as those who read them name them
+/// ([`Inner::provisional_versions`] writes them into the index): the version that made it and
+/// the one that last changed it ([`tilolang_runtime::store::Reflected::CREATED`],
+/// [`tilolang_runtime::store::Reflected::UPDATED`]), when each field `end` changed last was
+/// changed (`changed(r, .field)`), and its versions, which marks and history read.
+pub(super) fn version_fields(resource: &str, end: &idx::reflect::Ends) -> Vec<FieldKey> {
+    let mut fields = vec![
+        FieldKey {
+            resource: resource.to_owned(),
+            field: VERSIONS.to_owned(),
+        },
+        FieldKey {
+            resource: resource.to_owned(),
+            field: idx::reflect::CREATED.to_owned(),
+        },
+        FieldKey {
+            resource: resource.to_owned(),
+            field: idx::reflect::UPDATED.to_owned(),
+        },
+    ];
+    for field in end.fields.keys() {
+        fields.push(FieldKey {
+            resource: resource.to_owned(),
+            field: idx::reflect::changed_field(field),
+        });
+    }
+    fields
+}
+
+/// Name each resource in `ends` as changed in its versions ([`version_fields`]): the record's
+/// changes made them, and a change reaches the views of a resource even when the values it
+/// writes read as the ones the store already held, as they do when the steps were written
+/// locally first. A document the change reached whole names no field and is left as it is:
+/// every view of it reads the document anew.
 pub(super) fn name_version_changes(ends: &Ends, docs: &mut BTreeMap<DocId, Vec<FieldKey>>) {
-    for resource in ends.keys() {
-        note_derived(
-            docs,
-            doc_of(resource),
-            vec![FieldKey {
-                resource: resource.clone(),
-                field: VERSIONS.to_owned(),
-            }],
-        );
+    for (resource, end) in ends {
+        note_derived(docs, doc_of(resource), version_fields(resource, end));
     }
 }
 

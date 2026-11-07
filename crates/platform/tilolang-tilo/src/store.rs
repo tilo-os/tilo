@@ -329,7 +329,7 @@ mod reading;
 use index_build::AppIndex;
 use reading::{
     collections_by_doc, everything, mirror_of, name_version_changes, note_derived, scan,
-    write_as_a_known_actor,
+    version_fields, write_as_a_known_actor,
 };
 mod outbox;
 mod plan;
@@ -1816,32 +1816,18 @@ impl Inner {
         let mut ends = Ends::new();
         for made in made {
             let resource = made.resource.clone();
-            // A version that made or removed the resource names no fields: it changed every
-            // field the resource was made with, which `changed` reads from the making.
-            let changed = made
-                .fields
-                .iter()
-                .map(|field| idx::reflect::changed_field(field));
-            let fields = std::iter::once(idx::reflect::CREATED.to_owned())
-                .chain(std::iter::once(idx::reflect::UPDATED.to_owned()))
-                .chain(changed);
-            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
-            let touched = reached.entry(doc).or_default();
-            for field in fields {
-                touched.push(FieldKey {
-                    resource: resource.clone(),
-                    field,
-                });
-            }
-            ends.insert(
-                resource,
-                idx::reflect::Ends::of(
-                    &stamp,
-                    &made.fields,
-                    made.kind,
-                    made.kind == tilolang_runtime::store::VersionKind::Removed,
-                ),
+            let end = idx::reflect::Ends::of(
+                &stamp,
+                &made.fields,
+                made.kind,
+                made.kind == tilolang_runtime::store::VersionKind::Removed,
             );
+            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
+            reached
+                .entry(doc)
+                .or_default()
+                .extend(version_fields(&resource, &end));
+            ends.insert(resource, end);
         }
         // Kept with the action's last write, so they go when its writes go.
         let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
