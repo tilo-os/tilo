@@ -58,7 +58,17 @@ impl Window {
     /// # Panics
     /// The device's session serves no display, or the window is not placed.
     pub fn open(device: &Path, app: &str, title: &str) -> Self {
-        let stream = UnixStream::connect(display(device)).unwrap();
+        Self::on(&display(device), app, title)
+    }
+
+    /// Map a window of `app` called `title` on the display at `socket`: what a
+    /// package's window connects to, named by its own path rather than a
+    /// device's runtime directory.
+    ///
+    /// # Panics
+    /// The display refuses the connection, or the window is not placed.
+    pub fn on(socket: &Path, app: &str, title: &str) -> Self {
+        let stream = UnixStream::connect(socket).unwrap();
         stream
             .set_nonblocking(true)
             .expect("a window's connection reads what is there");
@@ -86,7 +96,7 @@ impl Window {
             assert!(
                 Instant::now() < deadline,
                 "{}'s session announced no compositor and xdg shell",
-                device.display()
+                socket.display()
             );
             std::thread::sleep(Duration::from_millis(5));
         };
