@@ -5,7 +5,10 @@
 //! ([`ChannelEncryption`]). What its members send for a channel reaches it
 //! through the workspace host's [`ChannelSink`], and what it settles is
 //! retained by the workspace as its own governance, so whoever joins the
-//! workspace later reads the group's history from it.
+//! workspace later reads the group's history from it. Each workspace hands the
+//! service its governance as the workspace settles
+//! ([`ChannelSink::settled`]), so the service decides a record's channel from
+//! the same state the host does, at the same moment.
 //!
 //! A relay whose device may not own workspaces runs no channel service: its
 //! workspaces retain what their members' channels are made of, and this device
@@ -50,7 +53,6 @@ const ROOMS: &str = "rooms";
 pub(crate) struct Channels {
     device: DeviceKeys,
     link: Arc<Link>,
-    directory: Directory,
     _pump: GovernancePump,
     following: Mutex<Vec<JoinHandle<()>>>,
 }
@@ -69,7 +71,6 @@ impl Channels {
         let directory = Directory {
             states: Arc::new(Mutex::new(HashMap::new())),
         };
-        let link = Link::new();
         let service = ChannelEncryption::open(
             ChannelEncryptionConfig {
                 root,
@@ -79,6 +80,7 @@ impl Channels {
             Box::new(directory.clone()),
             Arc::new(Mutex::new(BrokerChannels::default())),
         )?;
+        let link = Link::new(directory);
         let park = Arc::clone(&link.park);
         let poke = Arc::clone(&park);
         let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
@@ -94,7 +96,6 @@ impl Channels {
         Ok(Self {
             device: Arc::new(Keys(keys)),
             link,
-            directory,
             _pump: pump,
             following: Mutex::new(Vec::new()),
         })
@@ -110,10 +111,9 @@ impl Channels {
         }
     }
 
-    /// Read who may read the channels of the workspaces `workspaces` governs,
-    /// and follow it from now on: every workspace it holds is read once, each
-    /// one whose governance moves read again, and what this service settles is
-    /// retained by its workspace.
+    /// Retain what this service settles for `workspaces`, and read who may
+    /// read their channels from the governance each one notes as it settles
+    /// ([`ChannelSink::settled`]).
     pub(crate) fn attach(&self, workspaces: &Workspaces) {
         let (publish, mut outgoing) = tokio::sync::mpsc::unbounded_channel();
         *lock(&self.link.publish) = Some(publish);
@@ -132,32 +132,7 @@ impl Channels {
                 }
             }
         });
-        let reading = workspaces.clone();
-        let directory = self.directory.clone();
-        let link = Arc::clone(&self.link);
-        let follower = tokio::spawn(async move {
-            let mut changes = reading.governance_changes();
-            for summary in reading.list().await {
-                remember(&directory, &reading, &summary.workspace).await;
-            }
-            link.park.poke();
-            loop {
-                match changes.recv().await {
-                    Ok(workspace) => remember(&directory, &reading, &workspace).await,
-                    // More moved than the listener kept up with: every
-                    // workspace is read again, which is what any of them may
-                    // need.
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
-                        for summary in reading.list().await {
-                            remember(&directory, &reading, &summary.workspace).await;
-                        }
-                    }
-                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
-                }
-                link.park.poke();
-            }
-        });
-        lock(&self.following).extend([publisher, follower]);
+        lock(&self.following).push(publisher);
         self.link.park.poke();
     }
 }
@@ -204,12 +179,20 @@ impl ChannelSink for Link {
         drop(inbound);
         self.park.poke();
     }
+
+    fn settled(&self, workspace: &str, state: StatePeer) {
+        self.directory.note(workspace, state);
+        self.park.poke();
+    }
 }
 
 /// The workspace transport the relay's channel governance travels on: what its
 /// members sent, waiting for the next pass, and what the pass settles, on its
 /// way to the workspace's store.
 struct Link {
+    /// Who may read the channels of the workspaces this relay governs, as each
+    /// noted its governance when it settled.
+    directory: Directory,
     /// Governance the workspace host's sessions carried here, waiting for the
     /// next pass.
     inbound: Mutex<Vec<InboundChannelGovernance>>,
@@ -220,8 +203,9 @@ struct Link {
 }
 
 impl Link {
-    fn new() -> Arc<Self> {
+    fn new(directory: Directory) -> Arc<Self> {
         Arc::new(Self {
+            directory,
             inbound: Mutex::default(),
             publish: Mutex::default(),
             park: GovernancePark::new(),
@@ -244,10 +228,17 @@ impl GovernanceTransport for Link {
 /// governance last stood.
 #[derive(Clone)]
 struct Directory {
-    /// Each workspace's state as it last moved, by workspace UUID: a handle to
-    /// the same document the workspace holds. Shared, so the pump reads it on
-    /// its own thread without reaching for the workspace.
+    /// Each workspace's state as it last settled, by workspace UUID: a handle
+    /// to the same document the workspace holds. Shared, so the pump reads it
+    /// on its own thread without reaching for the workspace.
     states: Arc<Mutex<HashMap<String, StatePeer>>>,
+}
+
+impl Directory {
+    /// `workspace`'s state, as the workspace noted it when it settled.
+    fn note(&self, workspace: &str, state: StatePeer) {
+        lock(&self.states).insert(workspace.to_owned(), state);
+    }
 }
 
 impl ChannelDirectory for Directory {
@@ -283,14 +274,6 @@ impl ChannelDirectory for Directory {
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         state.governance().unit_scope(at, route).ok()
     }
-}
-
-/// Read `workspace`'s state again into `directory`.
-async fn remember(directory: &Directory, workspaces: &Workspaces, workspace: &str) {
-    let Some(state) = workspaces.state(workspace).await else {
-        return;
-    };
-    lock(&directory.states).insert(workspace.to_owned(), state);
 }
 
 /// The workspace a channel governance message names.
@@ -396,6 +379,7 @@ mod tests {
         assert!(device.sink.is_some());
         assert!(
             channels
+                .link
                 .directory
                 .allowed_devices(
                     tilo_desktop_model::WorkspaceId::new(),
