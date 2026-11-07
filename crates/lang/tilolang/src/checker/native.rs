@@ -102,6 +102,20 @@ impl Checker<'_> {
         }
     }
 
+    /// `preview_rows()`: how many rows a `list` inside a card shows
+    /// ([`crate::prims::PREVIEW_ROWS`]), for a view composing a card that says how many of its
+    /// items the card leaves out.
+    pub(super) fn builtin_preview_rows(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if !args.is_empty() {
+            self.err(
+                "E022",
+                span,
+                "`preview_rows` takes nothing: it is how many rows a card's list shows",
+            );
+        }
+        Ex::new(Ek::Int(prims::PREVIEW_ROWS), Ty::Int)
+    }
+
     /// A row view's body is one list row, after any `let`s it reads.
     pub(super) fn row_view_body(&mut self, view: &str, ty: &str, rest: &[UiStmt], span: Span) {
         if !self.body_is_row(rest) {
@@ -164,13 +178,23 @@ impl Checker<'_> {
             return n;
         };
         let list = self.expr(items, None);
-        let Some(Ty::Record(key)) = list.ty.element().cloned() else {
-            if !list.ty.is_error() {
+        let elem = list.ty.element().cloned().unwrap_or(Ty::Error);
+        // A list draws resources: a record type's items, or a union's, each by the row view of
+        // the type its item is (the categories, channels and direct conversations of one page).
+        match &elem {
+            Ty::Record(_) | Ty::Error => {}
+            Ty::Union(keys) if keys.iter().all(|key| self.env.row_view(key).is_some()) => {}
+            Ty::Union(_) => {
+                let t = self.show(&list.ty);
+                self.err("E097", items.span, format!("`list` draws each item of a union by the row view of its own type, and {t} has a type without one: declare `row view <view> for <type>` for each"));
+                return n;
+            }
+            _ => {
                 let t = self.show(&list.ty);
                 self.err("E097", items.span, format!("`list` shows resources: its items are a List or Collection of a record type, and this is {t}. Show plain values with `for x in xs {{ ... }}` in a `stack`"));
+                return n;
             }
-            return n;
-        };
+        }
         // A list in a card is the card's summary: it shows its first rows, and the card opens
         // the resource for the rest.
         if self.st.ui.in_card {
@@ -193,9 +217,19 @@ impl Checker<'_> {
                 );
                 false
             }
-            (None, _) if self.env.row_view(&key).is_some() => true,
+            (None, _) if matches!(&elem, Ty::Union(_)) => {
+                self.err("E097", c.call.span, "a list of a union writes its rows, each by the row view of its item's own type: `list(xs) { x -> show(x, row: true) }`");
+                false
+            }
+            (None, _) if matches!(&elem, Ty::Record(key) if self.env.row_view(key).is_some()) => {
+                true
+            }
             (None, _) => {
-                self.err("E097", c.call.span, format!("a list of {0} needs its rows: write an item block, `list(xs) {{ x -> row(x.title) }}`, or declare the type's row, `row view <view> for {0}`", key.name));
+                let name = match &elem {
+                    Ty::Record(key) => key.name.clone(),
+                    _ => "the type".to_owned(),
+                };
+                self.err("E097", c.call.span, format!("a list of {name} needs its rows: write an item block, `list(xs) {{ x -> row(x.title) }}`, or declare the type's row, `row view <view> for {name}`"));
                 false
             }
         };

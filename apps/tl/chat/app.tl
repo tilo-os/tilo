@@ -86,6 +86,12 @@ default view direct for Direct
 
 default view thread for Thread
 
+row view channel_summary for TextChannel
+
+row view direct_summary for Direct
+
+row view category_summary for Category
+
 /// Adds a text channel to the sidebar.
 primary action new_channel(all: Conversations, name: Text = "new-channel") -> TextChannel (
     icon: .plus,
@@ -223,6 +229,20 @@ action start_thread(c: TextChannel | Direct, m: Message, name: Text = m.body.exc
     }
 }
 
+/// What another app's page summarizes of this one's place: the conversations the sidebar
+/// holds, in its order, each drawn by its type's row view. A category holding no channel is no
+/// place anyone can go, so it is not one, and an empty group never stands on another app's
+/// page.
+fn conversations_of(all: Conversations) -> List<Category | TextChannel | Direct> {
+    all.channels.filter(
+        x -> match x {
+            c: Category => not c.channels.is_empty(),
+            ch: TextChannel => true,
+            d: Direct => true,
+        },
+    )
+}
+
 /// The sidebar: channels outside any category first, then each category with its channels.
 /// Choosing one shows it beside the sidebar.
 /// TODO(language): a resource's own key for a navigation item; the category and name stand in.
@@ -234,16 +254,23 @@ view sidebar(all: Conversations) {
                 for item in all.channels {
                     match item {
                         c: Category => {
-                            ui.NavSection(c.name, collapsible: true) {
-                                for ch in c.channels {
-                                    ui.NavItem(
-                                        "{c.name}/{ch.name}",
-                                        ch.name,
-                                        icon: .hash,
-                                        item: ch,
-                                        mentions: mentions(ch),
-                                    ) {
-                                        on select: set(shown, "{c.name}/{ch.name}").then(open(ch))
+                            // A group is its channels: one with none shows no header over
+                            // nothing.
+                            if not c.channels.is_empty() {
+                                ui.NavSection(c.name, collapsible: true) {
+                                    for ch in c.channels {
+                                        ui.NavItem(
+                                            "{c.name}/{ch.name}",
+                                            ch.name,
+                                            icon: .hash,
+                                            item: ch,
+                                            mentions: mentions(ch),
+                                        ) {
+                                            on select: set(shown, "{c.name}/{ch.name}")
+                                                .then(
+                                                    open(ch),
+                                                )
+                                        }
                                     }
                                 }
                             }
@@ -348,6 +375,31 @@ view direct(d: Direct) {
             composer(d, draft, replying, "Message {d.name}")
         }
     }
+}
+
+/// A channel as another app's page summarizes it: its name, and what it is about.
+view channel_summary(c: TextChannel) {
+    row("# {c.name}", secondary: c.topic, icon: .hash)
+}
+
+/// A direct conversation as another app's page summarizes it: whose it is and the last thing
+/// said in it. The conversation with yourself is your notes, as the sidebar names it.
+view direct_summary(d: Direct) {
+    let last = d.messages.last()
+    row(
+        if d.person == workspace.me { "Notes to self" } else { d.name },
+        secondary: if let m = last { m.body.excerpt } else { "" },
+        icon: .message_circle,
+    )
+}
+
+/// A category as another app's page summarizes it: its name and how many channels it holds.
+view category_summary(c: Category) {
+    row(
+        c.name,
+        secondary: if c.channels.len() == 1 { "1 channel" } else { "{c.channels.len()} channels" },
+        icon: .folder,
+    )
 }
 
 /// A message of a direct conversation, with what can be done to it on hover.

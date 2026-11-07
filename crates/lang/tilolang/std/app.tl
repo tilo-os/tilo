@@ -371,6 +371,25 @@ view page<R>(
     }
 }
 
+/// One app's collection on another app's page: a card that stands for `of`, names it `title`,
+/// says how many items it lists, and shows the first of them as their own rows (`row`, as the
+/// collection's type draws a row). A card is a summary, so a list longer than the rows it shows
+/// ends with the way into the rest: `Show all`, which opens `of`, as pressing the card does.
+/// The count is the number of items the card lists, so a card never says more than it shows.
+template view summary<R, T>(of: R, title: Text, items: List<T>, row: (T) -> View) {
+    ui.Card(item: of, title: title, count: items.len()) {
+        list(items) { x ->
+            row(x)
+        }
+        if items.len() > preview_rows() {
+            ui.Button("Show all {items.len()}") {
+                on press: open(of)
+            }
+        }
+        on activate: open(of)
+    }
+}
+
 /// A window that is a conversation of `of`: its items in order, the latest at the foot, each a
 /// `row`, built as they show, above the composer, which stays at the foot. Who wrote each item
 /// and when come from the log (`created`), and the list draws them as every conversation does:

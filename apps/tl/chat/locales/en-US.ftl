@@ -158,6 +158,12 @@ d-ymtess4x = Channel
 d-jbezqvlc = Direct
     .w-send = Send
 
+d-q45utnmh = Channel summary
+
+d-enkldjck = Direct summary
+
+d-oqg63mfd = Category summary
+
 d-enkgjyn7 = Thread
     .w-send = Send
 

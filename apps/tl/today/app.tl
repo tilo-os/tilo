@@ -27,48 +27,30 @@ action morning_cleanup(list: todo.Tasks, nb: notes.Notebook) -> Int {
     n
 }
 
-/// Today's window: a card per app, holding that app's resources as rows that open them: the
-/// open todos, the pinned notes, the chat's channels.
-/// TODO(language): `list` over a collection of a union, a row per channel or category.
+/// Today's window: a card per app, holding that app's place as its own rows say it: the open
+/// todos, the pinned notes, the conversations the chat's sidebar holds. Each card says how
+/// many there are and opens the app for the rest.
 view today(t: Today) {
     let todos = todo.tasks
     let pinned = notes.notebook.notes.filter(.pinned)
-    let talks = chat.conversations.channels
+    let talks = chat.conversations_of(chat.conversations)
     std.page(t, canvas: true) {
         header: {
             button(morning_cleanup(todos, notes.notebook)) as morning
         }
         grid(min: 22rem) {
-            ui.Card(
-                item: todos,
-                title: meta(todos).title,
-                count: todos.items.count(item -> not item.done),
-            ) {
-                list(todos.items.filter(item -> not item.done)) { item ->
-                    row(item)
-                }
+            std.summary(
+                todos,
+                meta(todos).title,
+                todos.items.filter(item -> not item.done),
+            ) { item ->
+                show(item, row: true)
             }
-            ui.Card(item: notes.notebook, title: meta(notes.notebook).title, count: pinned.len()) {
-                list(pinned) { n ->
-                    row(n)
-                }
+            std.summary(notes.notebook, meta(notes.notebook).title, pinned) { n ->
+                show(n, row: true)
             }
-            ui.Card(
-                item: chat.conversations,
-                title: meta(chat.conversations).title,
-                count: talks.len(),
-            ) {
-                stack(gap: .related) {
-                    for x in talks {
-                        match x {
-                            c: chat.Category => text(c.name, role: .caption),
-                            t: chat.TextChannel => button("# {t.name}", on: open(t)),
-                            // A direct conversation is a person, not a room: its place is
-                            // the person's name.
-                            d: chat.Direct => button(d.name, on: open(d)),
-                        }
-                    }
-                }
+            std.summary(chat.conversations, meta(chat.conversations).title, talks) { x ->
+                show(x, row: true)
             }
         }
     }
