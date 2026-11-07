@@ -10,8 +10,8 @@ use ui::icons::{Icon, app_glyph};
 use ui::peniko::Color;
 use ui::tokens::{PresenceHue, Rhythm};
 use ui::widget::{
-    Button, ButtonRole, ChipStyle, ColorSwatch, ColorSwatchPicker, Column, ControlSize, Dropdown,
-    Element, EmptyState, ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
+    Button, ButtonRole, ChipStyle, ColorSwatch, ColorSwatchPicker, Column, Container, ControlSize,
+    Dropdown, Element, EmptyState, ListRow, Row, Section, Segment, TextInput, ToggleGroup, Tone,
 };
 
 use super::general::{button, buttons, caption};
@@ -101,6 +101,24 @@ pub struct Models {
     pub note: Option<String>,
 }
 
+/// What an agent may spend a day, as its review shows it: the keeper's
+/// limit, what it spent of it, and the way its keeper sets it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Limit {
+    pub title: String,
+    /// What it may spend a day now: `$5 a day`, or none.
+    pub summary: String,
+    /// What it spent of it today: `$0.42 today`.
+    pub today: String,
+    /// What the limit is for, and who sets it.
+    pub note: String,
+    /// What the field says while it is empty.
+    pub placeholder: String,
+    pub set: String,
+    /// Whether the person here sets it: only the agent's keeper does.
+    pub can_choose: bool,
+}
+
 /// An action the person always allows the agent, without asking first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Exception {
@@ -134,6 +152,8 @@ pub struct AgentReview {
     pub empty: String,
     /// The model it plans with, for an agent the workspace keeps a record of.
     pub models: Option<Models>,
+    /// What it may spend a day, for an agent the workspace keeps a record of.
+    pub limit: Option<Limit>,
     pub use_model: String,
     pub in_use: String,
     pub exceptions_title: String,
@@ -525,6 +545,9 @@ fn reviewed(review: &AgentReview, parts: &Parts) -> Element {
     if let Some(models) = &review.models {
         groups.push(models_section(review, models, parts));
     }
+    if let Some(limit) = &review.limit {
+        groups.push(limit_section(review, limit, parts));
+    }
     if !review.exceptions.is_empty() {
         groups.push(Box::new(Section::titled(
             review.exceptions_title.clone(),
@@ -680,6 +703,50 @@ fn models_section(review: &AgentReview, models: &Models, parts: &Parts) -> Eleme
     Box::new(column)
 }
 
+/// What an agent may spend a day: what it is, what it spent of it, and for
+/// its keeper the way to set it — a number of dollars, taken by Set.
+fn limit_section(review: &AgentReview, limit: &Limit, parts: &Parts) -> Element {
+    let mut column = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(Rhythm::Related)
+        .push(Box::new(
+            ListRow::new("ws-agent-limit", limit.title.clone())
+                .meta(limit.today.clone())
+                .value(limit.summary.clone()),
+        ))
+        .push(caption(&limit.note));
+    if !limit.can_choose {
+        return Box::new(column);
+    }
+    let submit = parts.clone();
+    let typed = review.agent.clone();
+    let field = TextInput::from_state(&parts.limit)
+        .with_id("ws-agent-limit-field")
+        .with_placeholder(limit.placeholder.clone())
+        .with_accessible_name(limit.title.clone())
+        .on_submit_view(move |_| submit.commit_agent_limit(&typed));
+    let press = parts.clone();
+    let agent = review.agent.clone();
+    let set = Button::new("ws-agent-limit-set", &limit.set)
+        .control_size(ControlSize::Small)
+        .on_effect(move || press.commit_agent_limit(&agent));
+    column = column.push(Box::new(
+        Row::new()
+            .no_wrap()
+            .with_rhythm(Rhythm::Related)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_child(Box::new(field)),
+            ))
+            .push(Box::new(set)),
+    ));
+    Box::new(column)
+}
+
 /// The Agents tab as the workspace's owner sees it, for captures.
 pub(super) fn sample() -> Agents {
     let agent = |key: &str, name: &str, colour: u8, mine: bool, status: &str, model: &str| Agent {
@@ -724,7 +791,7 @@ pub(super) fn sample() -> Agents {
                 "Claude",
                 9,
                 true,
-                "Kept by you",
+                "Kept by you · $0.42 of $5 today",
                 "Model: Sonnet from Anthropic",
             ),
             agent(
@@ -740,7 +807,7 @@ pub(super) fn sample() -> Agents {
                 "Encrypted backup",
                 2,
                 false,
-                "Kept by Ada",
+                "Kept by Ada · $1.20 today",
                 "",
             ),
         ],
@@ -842,6 +909,15 @@ pub(super) fn sample_review() -> AgentReview {
             ],
             can_choose: true,
             note: Some("You choose the model it runs on your devices".to_owned()),
+        }),
+        limit: Some(Limit {
+            title: "Daily limit".to_owned(),
+            summary: "$5 a day".to_owned(),
+            today: "$0.42 today".to_owned(),
+            note: "Only you set what it may spend a day. It stops there and tells you when a run reaches it.".to_owned(),
+            placeholder: "Dollars a day".to_owned(),
+            set: "Set".to_owned(),
+            can_choose: true,
         }),
         use_model: "Use".to_owned(),
         in_use: "In use".to_owned(),

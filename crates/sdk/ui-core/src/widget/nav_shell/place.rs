@@ -173,35 +173,10 @@ fn place_header(
     let m = &inputs.metrics;
     let cy = header.center().y;
     let lead = g.lead_end(column, m);
-    let mut trail = g.trail_start(column, m).max(lead);
-    // The window has one bar over its columns: a section takes the room of the columns after
-    // it while they have nothing to say (no title, no controls, no actions), so that the bar's
-    // actions stand at the window's end rather than at a column edge nothing follows.
-    let quiet = |other: Column| {
-        !inputs.titled.get(other.index()).copied().unwrap_or(false)
-            && inputs.actions.get(other.index()).copied().unwrap_or(0) == 0
-            && !inputs.leading.get(other.index()).copied().unwrap_or(false)
-    };
-    if matches!(column, Column::Overview | Column::Content) {
-        let after_quiet = Column::ALL
-            .into_iter()
-            .skip(ci + 1)
-            .filter(|other| *other != Column::Inspector || g.header(*other) != Rect::ZERO)
-            .all(&quiet);
-        if after_quiet {
-            let mut end = if g.window_controls.width() > 0.0 {
-                g.window_controls.x0 - m.gap + m.inset
-            } else {
-                g.size.x - m.row.gutter
-            };
-            for button in [g.inspector_toggle, g.history] {
-                if button.width() > 0.0 {
-                    end = end.min(button.x0 - m.gap);
-                }
-            }
-            trail = trail.max(end.max(lead));
-        }
-    }
+    // A section's actions end at its own column's trailing edge, whether the columns after it
+    // are quiet or say something of their own: they stay beside what they act on, and they do
+    // not move as a person selects and deselects beside them.
+    let trail = g.trail_start(column, m).max(lead);
     let avail = trail - lead;
     let gap = m.gap;
     let centred = |x0: f64, w: f64, h: f64| -> Rect {

@@ -13,7 +13,7 @@
 //!   ([`TiloStore::take_committed`]). The mirror keeps what the store wrote as its open
 //!   transaction, never as a change of its own;
 //! * when the workspace record moves on (the executor applied the queued action, or a peer's change
-//!   arrived), [`TiloStore::sync_from`] drops the mirror's open transaction and the overlay,
+//!   arrived), [`TiloStore::sync`] drops the mirror's open transaction and the overlay,
 //!   applies the record's new changes to the mirror, derives what they changed into each index
 //!   (stamped with the record's heads) and tells each subscriber exactly which fields of which
 //!   resources they changed, and how each collection's listing moved.
@@ -21,7 +21,7 @@
 //! Lists, filters and the fields rows show are read from the index, page by page, so opening a
 //! window reads what it shows and not the record. The store may even open before the record is
 //! loaded ([`TiloStore::detached`]): it reads indexes stamped with the heads they reflect, and
-//! takes the record when it is had ([`TiloStore::sync_from`], or the loader the host gave it
+//! takes the record when it is had ([`TiloStore::sync`], or the loader the host gave it
 //! for a write or a field no index holds), catching each index up from its heads.
 //!
 //! **The unsaved layer.** What an origin derives from nothing at every start (the clock, the
@@ -29,7 +29,7 @@
 //! is never put in the record. Its writes go into the same mirror open transaction as any
 //! write, and so are read at once, but committing them queues nothing: they stay in the
 //! mirror's open transaction and its overlay, which is what reads answer from. The record
-//! moving on ([`TiloStore::sync_from`]) drops the store's saved writes (the record has them)
+//! moving on ([`TiloStore::sync`]) drops the store's saved writes (the record has them)
 //! and leaves the derived ones where they are, so an origin's update never round-trips through
 //! the record: no action is committed, no peer replays it, and no index is rebuilt for it.
 //!
@@ -38,7 +38,7 @@
 //!
 //! **Chunks.** The record may be split: resources it does not hold itself are in chunk documents
 //! above it ([`crate::chunk`]), each a document of its own the host sends when it is wanted. The
-//! store holds the chunks it was sent ([`TiloStore::sync_chunk`]) beside the record, and every
+//! store holds the chunks it was sent ([`TiloStore::sync`]) beside the record, and every
 //! read and write of a resource is routed to the chunk the record's manifest places it in, so a
 //! write reaches one document. A record written before chunks is one chunk whose manifest is
 //! empty, and reads and writes as it always did.
@@ -71,6 +71,7 @@ use crate::chunk::{self, ChunkNo, Chunks, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
 use crate::index::lists::Entry;
 use crate::index::overlay::{ListState, Overlay};
+use crate::index::select::Carried;
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -292,45 +293,15 @@ pub struct ReadStats {
     pub versions: u64,
 }
 
-/// A listing read once in this state of the store: until anything changes, a view's rows read
-/// it again rather than the index.
-struct ListedOnce {
-    resource: String,
-    field: String,
-    pred: Option<Pred>,
-    order: Option<tilolang_runtime::query::Order>,
-    listing: Rc<Listing>,
-}
-
-impl ListedOnce {
-    /// Whether a change of `key` may change this listing: its collection, the resource holding
-    /// it as a whole, or, for a filtered or sorted listing, the field of an item of its record
-    /// that the filter or order reads (any item: one in another collection may move into this
-    /// one). An item's other fields leave which items it lists, and their order, as they were.
-    fn reached_by(&self, key: &FieldKey) -> bool {
-        let item = key.resource.contains('/') && key.doc() == doc_of(&self.resource);
-        let filtered_on = |field: &str| {
-            let reads = |id: &str| id == field;
-            field == ANY_FIELD
-                || self
-                    .pred
-                    .as_ref()
-                    .is_some_and(|pred| pred.fields().iter().any(|read| reads(&read.spec.id)))
-                || self.order.as_ref().is_some_and(|order| {
-                    // Any change of an item is its last version.
-                    reads(&order.field) || order.field == idx::reflect::UPDATED
-                })
-        };
-        (key.resource == self.resource && (key.field == self.field || key.field == ANY_FIELD))
-            || (item && (self.pred.is_some() || self.order.is_some()) && filtered_on(&key.field))
-    }
-}
-
+mod listed;
+use listed::ListedOnce;
 mod scoped;
 mod sync;
 use scoped::{Changing, Held};
 
 mod index_build;
+mod loading;
+use loading::{planned_unheld, unloaded};
 mod reading;
 use index_build::AppIndex;
 use reading::{
@@ -350,6 +321,11 @@ use versions::{NO_VERSIONS, note_versions};
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
+
+/// Gives the store the chunk [`ChunkNo`] when it was not sent it: when something reads into it (a
+/// row a window shows, or a lookup the index routes to it) or a write is addressed to it. `None`
+/// when the chunk cannot be had.
+pub type ChunkLoader = Box<dyn FnMut(ChunkNo) -> Option<Doc>>;
 
 struct Inner {
     /// The documents the store holds: the workspace record (chunk [`chunk::FIRST`]) and the
@@ -374,6 +350,9 @@ struct Inner {
     /// Where the indexes are kept: `None` keeps them in memory, built when a package loads.
     index_dir: Option<PathBuf>,
     loader: Option<Loader>,
+    /// Where a chunk the store was not sent comes from when something reads into it or a write
+    /// is addressed to it ([`TiloStore::set_chunk_loader`]).
+    chunk_loader: Option<ChunkLoader>,
     /// Called when an index built off the frame is ready to be taken in.
     wake: Option<Waker>,
     /// What the store read of the record so far: derivation, and reads no index answered.
@@ -688,6 +667,7 @@ impl TiloStore {
                 overlay: Arc::default(),
                 index_dir,
                 loader: None,
+                chunk_loader: None,
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
@@ -1257,7 +1237,7 @@ impl TiloStore {
     /// # Errors
     /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record(&self, doc: &str) -> Result<DynRecord, StoreError> {
-        self.load_record()?;
+        self.load_doc(doc)?;
         let inner = self.held();
         let (app, _) = inner
             .index
@@ -1337,41 +1317,13 @@ impl TiloStore {
         Changing::of(&self.schemas(), &self.inner)
     }
 
-    /// Have the workspace record, if the store opened without it: from the loader.
-    fn load_record(&self) -> Result<(), StoreError> {
-        let loader = {
-            let mut inner = self.changing();
-            if inner.chunks.has_record() {
-                return Ok(());
-            }
-            inner.loader.take()
-        };
-        let Some(mut loader) = loader else {
-            return Err(StoreError::Backend(
-                "the workspace record is not loaded".into(),
-            ));
-        };
-        let record = loader();
-        let mut inner = self.mutate();
-        inner.loader = Some(loader);
-        let Some(record) = record else {
-            return Err(StoreError::Backend(
-                "the workspace record cannot be loaded".into(),
-            ));
-        };
-        inner.attach_document(chunk::FIRST, &record);
-        drop(inner);
-        self.changing().notify_all();
-        Ok(())
-    }
-
     /// The record of the resource at `at` (a document or an item in one), as the runtime
     /// sees it now: an item is read without reading its siblings.
     ///
     /// # Errors
     /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record_at(&self, at: &ResourceRef) -> Result<DynRecord, StoreError> {
-        self.load_record()?;
+        self.load_at(at)?;
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.held_doc(&at.doc)?;
@@ -1404,6 +1356,8 @@ impl TiloStore {
 
     /// [`Self::first_text`] as stored.
     fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
+        // A row the index answers needs no chunk; one it does not is read with its chunk.
+        let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at).ok()?;
         if let Some(view) = inner.view(&app) {
@@ -1475,7 +1429,7 @@ impl TiloStore {
     /// # Errors
     /// The type is not registered, the resource already exists, or the record cannot be had.
     pub fn create_with_id(&self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
-        self.load_record()?;
+        self.load_doc(id)?;
         let mut inner = self.mutate();
         if inner.index.contains_key(id) {
             return Err(invalid(format!("resource {id} exists")));
@@ -1535,7 +1489,7 @@ impl TiloStore {
         record: &NewRecord,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
-        self.load_record()?;
+        self.load_doc(id)?;
         let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
@@ -1599,31 +1553,55 @@ fn scan_of(chunks: &Chunks) -> BTreeMap<DocId, (AppId, TypeId)> {
     out
 }
 
-/// The versions the changes of each chunk since its `stamps` made, together: what an index
-/// stamped with those heads takes in. `None` when a stamped chunk is not held.
-fn ends_since(
-    chunks: &Chunks,
-    stamps: &Stamps,
-    docs: &BTreeMap<DocId, (AppId, TypeId)>,
-) -> Option<Ends> {
-    let mut ends = Ends::new();
-    for (chunk, heads) in stamps {
-        let doc = chunks.mirror(*chunk)?;
-        let since = doc.committed_document().get_changes(heads);
-        ends.extend(idx::reflect::ends_of(&since, doc, docs));
-    }
-    Some(ends)
+/// Whether the stamps `from` reflect every chunk the store holds: what a change's versions and
+/// placements take in, so an index stamped with them has nothing else to read.
+fn reflects_held(chunks: &Chunks, from: &Stamps) -> bool {
+    chunks
+        .docs()
+        .all(|(chunk, doc)| from.get(&chunk) == Some(&doc.committed_document().get_heads()))
 }
 
-/// Where the changes of each chunk since its `stamps` placed the items they placed: what the
-/// items that left a collection are written from when the index never held them.
-fn placed_since(chunks: &Chunks, stamps: &Stamps) -> idx::reflect::Placed {
-    let mut placed = idx::reflect::Placed::new();
-    for (chunk, heads) in stamps {
+/// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
+/// and the stamps of the chunks it was not sent, which its index still reflects.
+fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
+    let mut now = from.clone();
+    for (chunk, doc) in chunks.docs() {
+        now.insert(chunk, doc.committed_document().get_heads());
+    }
+    now
+}
+
+/// The versions the changes of the chunks `moved` since their stamps `from` made: what an
+/// index stamped with those heads takes in.
+fn ends_of_chunks(
+    chunks: &Chunks,
+    from: &Stamps,
+    moved: &[ChunkNo],
+    docs: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> Ends {
+    let mut ends = Ends::new();
+    for chunk in moved {
         if let Some(doc) = chunks.mirror(*chunk) {
-            placed.extend(idx::reflect::placed_by(
-                &doc.committed_document().get_changes(heads),
-            ));
+            let since = doc
+                .committed_document()
+                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
+            ends.extend(idx::reflect::ends_of(&since, doc, docs));
+        }
+    }
+    ends
+}
+
+/// Where the changes of the chunks `moved` since their stamps `from` placed the items they
+/// placed: what the items that left a collection are written from when the index never held
+/// them.
+fn placed_of_chunks(chunks: &Chunks, from: &Stamps, moved: &[ChunkNo]) -> idx::reflect::Placed {
+    let mut placed = idx::reflect::Placed::new();
+    for chunk in moved {
+        if let Some(doc) = chunks.mirror(*chunk) {
+            let since = doc
+                .committed_document()
+                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
+            placed.extend(idx::reflect::placed_by(&since));
         }
     }
     placed
@@ -1669,13 +1647,31 @@ impl Inner {
     /// [`Self::changed`], for a change that reached only `fields` (per record; an empty list
     /// for a record changed as a whole): the listings of collections it did not reach are
     /// still what they were, and are kept.
-    fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>) {
+    fn changed_within(&mut self, fields: &BTreeMap<DocId, Vec<FieldKey>>, items: &ItemTouches) {
         self.snapshot = std::sync::Weak::new();
-        self.listed.borrow_mut().retain(|held| {
-            match fields.get(tilolang_runtime::store::doc_of(&held.resource)) {
-                None => true,
-                Some(keys) => !keys.is_empty() && !keys.iter().any(|key| held.reached_by(key)),
+        self.listed.borrow_mut().retain_mut(|held| {
+            let Some(keys) = fields.get(tilolang_runtime::store::doc_of(&held.resource)) else {
+                return true;
+            };
+            if keys.is_empty() {
+                return false;
             }
+            let mut carry = held.carry.clone().unwrap_or_default();
+            let mut reached = false;
+            for key in keys {
+                if !held.reached_by(key) {
+                    continue;
+                }
+                reached = true;
+                let Some(ids) = held.touched_by(key, items) else {
+                    return false;
+                };
+                carry.extend(ids);
+            }
+            if reached {
+                held.carry = Some(carry);
+            }
+            true
         });
     }
 
@@ -1718,21 +1714,27 @@ impl Inner {
                 continue;
             };
             let index = Arc::clone(&held.index);
-            let seen = self.chunks.heads();
+            let seen = stamps_after(&self.chunks, &held.heads);
             let own;
             let docs = &self.index;
             let own_placed;
             let (ends, placed) = match since {
-                Some((from, ends, placed)) if held.heads == *from => (ends, placed),
+                // The index reflects every chunk the store held before the change: what the
+                // change made is all it has to take in.
+                Some((from, ends, placed)) if reflects_held(&self.chunks, from) => (ends, placed),
                 _ => {
-                    if !self.chunks.holds(&held.heads) {
-                        self.rebuild(&app);
-                        continue;
-                    }
                     // The versions of what changed since the index's heads, and where it put
-                    // the items it placed.
-                    own = ends_since(&self.chunks, &held.heads, docs).unwrap_or_default();
-                    own_placed = placed_since(&self.chunks, &held.heads);
+                    // the items it placed: the chunks it does not reflect yet, and only those.
+                    let moved: Vec<ChunkNo> = self
+                        .chunks
+                        .docs()
+                        .filter(|(chunk, doc)| {
+                            held.heads.get(chunk) != Some(&doc.committed_document().get_heads())
+                        })
+                        .map(|(chunk, _)| chunk)
+                        .collect();
+                    own = ends_of_chunks(&self.chunks, &held.heads, &moved, docs);
+                    own_placed = placed_of_chunks(&self.chunks, &held.heads, &moved);
                     (&own, &own_placed)
                 }
             };
@@ -1857,6 +1859,13 @@ impl Inner {
             return Err(StoreError::Backend(
                 "the workspace record is not loaded".into(),
             ));
+        }
+        // A chunk the manifest names and the store was not sent holds resources this write
+        // cannot see ([`unloaded`]).
+        if unloaded(self, chunk) {
+            return Err(StoreError::Backend(format!(
+                "the chunk holding what is in chunk {chunk} is not loaded"
+            )));
         }
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
@@ -2045,15 +2054,32 @@ impl Inner {
     ) -> Result<Rc<Listing>, StoreError> {
         let pred = query.and_then(|(_, p)| p);
         let resource = at.id_string();
-        if let Some(held) = self.listed.borrow().iter().find(|held| {
+        let same = |held: &ListedOnce| {
             held.resource == resource
                 && held.field == field
                 && held.pred.as_ref() == pred
                 && held.order.as_ref() == order
-        }) {
-            return Ok(Rc::clone(&held.listing));
-        }
+        };
+        // What it read before a change, and the items the change wrote: what it keeps of its
+        // checks rather than checking the whole run again.
+        let (before, carried) = {
+            let listed = self.listed.borrow();
+            match listed.iter().position(same) {
+                Some(before) => match listed.get(before) {
+                    Some(held) if held.carry.is_none() => {
+                        return Ok(Rc::clone(&held.listing));
+                    }
+                    Some(held) => (Some(before), held.filtered.clone().zip(held.carry.clone())),
+                    None => (Some(before), None),
+                },
+                None => (None, None),
+            }
+        };
+        let carried = carried
+            .as_ref()
+            .map(|(before, touched)| Carried { before, touched });
         let (app, ty) = self.locate(at)?;
+        let mut kept = None;
         let listing = match self.view(&app) {
             Some(view) => {
                 let ty = view
@@ -2074,12 +2100,14 @@ impl Inner {
                             .and_then(lookup)
                             .or_else(|| lookup(item))
                             .ok_or_else(|| not_found(format!("type {item}")))?;
-                        view.query(
+                        let answer = view.query(
                             (&resource, field),
                             item_schema,
                             (pred, order),
-                            &self.evaluated,
-                        )?
+                            (carried.as_ref(), &self.evaluated),
+                        )?;
+                        kept = answer.carry;
+                        answer.listing
                     }
                 }
             }
@@ -2093,13 +2121,20 @@ impl Inner {
             None => Listing::default(),
         };
         let listing = Rc::new(listing);
-        self.listed.borrow_mut().push(ListedOnce {
+        let held = ListedOnce {
             resource,
             field: field.to_owned(),
             pred: pred.cloned(),
             order: order.cloned(),
             listing: Rc::clone(&listing),
-        });
+            filtered: kept,
+            carry: None,
+        };
+        let mut listed = self.listed.borrow_mut();
+        match before.and_then(|at| listed.get_mut(at)) {
+            Some(entry) => *entry = held,
+            None => listed.push(held),
+        }
         Ok(listing)
     }
 }
@@ -2187,6 +2222,7 @@ impl Store for TiloStore {
     }
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
+        let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         if let Some(view) = inner.view(&app) {
@@ -2269,18 +2305,34 @@ impl Store for TiloStore {
     }
 
     fn apply(&mut self, txn: Txn, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
+        // A write into a chunk the store was not sent loads it first: planning reads the
+        // resource's map, and writing where its chunk is not held would start the chunk empty
+        // and lose what it holds.
+        self.load_at(at)?;
         let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
         }
         let (app, ty) = inner.locate(at)?;
+        let planned = inner.plan(at, m)?;
+        let needed = planned_unheld(&inner, &planned);
+        let planned = if needed.is_empty() {
+            planned
+        } else {
+            drop(inner);
+            for chunk in needed {
+                self.load_chunk(chunk)?;
+            }
+            inner = self.mutate();
+            inner.plan(at, m)?
+        };
         let Planned {
             edits: dyn_edits,
             item,
             touched,
             items,
             placed,
-        } = inner.plan(at, m)?;
+        } = planned;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));
@@ -2428,7 +2480,7 @@ impl Store for TiloStore {
             touched.entry(doc).or_default().extend(keys);
         }
         // What changed is told to those who read the mirror once, when the record brings the
-        // change back and the indexes hold what it derives ([`TiloStore::sync_from`]): told
+        // change back and the indexes hold what it derives ([`TiloStore::sync`]): told
         // here, it would be a second note of the same step, and one lacking what the record's
         // derivation adds. Until then the write is the mirror's open transaction, read through
         // the overlay like any other.

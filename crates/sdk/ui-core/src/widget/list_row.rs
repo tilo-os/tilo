@@ -436,6 +436,10 @@ pub struct ListRowFace<'a> {
     /// rows (48 for a finger, as a button's face grows to its target), so a finger never lands
     /// on the row beside it.
     min_target: f64,
+    /// The smallest the press on the leading box may be: the target the person's pointer needs
+    /// (`interaction::InteractionEnvironment::minimum_target`), so a finger on a box is never a
+    /// press on the row. Zero where nothing leads with a box.
+    check_target: f64,
     /// Where the leading checkbox is on its way at this frame, from the row's
     /// [`crate::widget::checkbox::CheckMotion`]; at rest on its value when unset.
     check_pose: Option<crate::widget::checkbox::CheckPose>,
@@ -505,6 +509,7 @@ impl<'a> ListRowFace<'a> {
             interaction: Interaction::default(),
             frame: None,
             min_target: 0.0,
+            check_target: 0.0,
             check_pose: None,
             card: false,
             dense: false,
@@ -2282,6 +2287,12 @@ impl ListRow {
             .interaction(interaction);
         if self.answers_pointer() {
             face.min_target = f64::from(self.environment.minimum_collection_row());
+        }
+        // The box a row leads with is a control of its own: its press reaches the target the
+        // person's pointer needs, as a button's does, while the row keeps its height and the
+        // box its size.
+        if matches!(self.leading, Some(Leading::Checkbox { .. })) {
+            face.check_target = f64::from(self.environment.minimum_target());
         }
         if let Some(prefix) = &self.prefix {
             face = face.prefix(prefix);

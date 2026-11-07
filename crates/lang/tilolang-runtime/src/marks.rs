@@ -703,6 +703,16 @@ impl Core {
             Value::Principal(Principal(version.who.clone())),
         );
         line.children.push(face);
+        // The line leads with the name, as history writes a sentence: name, then what they did
+        // ("Scout marked it done"). A face alone does not say who.
+        let mine = version.task.is_none() && viewer.0 == version.who;
+        let mut who = UiNode::empty("ui.Text", &format!("{key}~who"));
+        who.props.insert(
+            "value".to_owned(),
+            Value::Text(self.actor(&version.who, mine)),
+        );
+        who.props.insert("role".to_owned(), Value::text("label"));
+        line.children.push(who);
         let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
         said.props.insert(
             "value".to_owned(),

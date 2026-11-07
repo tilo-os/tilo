@@ -6,7 +6,7 @@
 //! any write — so reads see it at once — but committing it queues nothing ([`commit_derived`]).
 //! It stays in the mirror's open transaction and the overlay, which is what reads answer from.
 //!
-//! The record moving on ([`crate::store::TiloStore::sync_from`]) drops the store's saved writes
+//! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's saved writes
 //! (the record has them) and leaves the derived ones: [`Inner::drop_committed_local`] takes the
 //! saved ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs known,
 //! and [`Inner::reapply_derived`] writes them onto the record's new copy again. An origin's
@@ -117,17 +117,21 @@ impl Inner {
     pub(super) fn touch(&mut self, write: &LocalWrite) {
         let mut reached: std::collections::BTreeMap<DocId, Vec<FieldKey>> =
             std::collections::BTreeMap::new();
-        for key in write
-            .touched
-            .iter()
-            .chain(write.items.iter().map(|(key, _)| key))
-        {
+        let mut items: ItemTouches = ItemTouches::new();
+        for (key, id) in &write.items {
+            reached
+                .entry(key.doc().to_owned())
+                .or_default()
+                .push(key.clone());
+            items.entry(key.clone()).or_default().insert(id.clone());
+        }
+        for key in &write.touched {
             reached
                 .entry(key.doc().to_owned())
                 .or_default()
                 .push(key.clone());
         }
-        self.changed_within(&reached);
+        self.changed_within(&reached, &items);
     }
 
     /// Derive one write into the overlay, naming what it derived to whoever reads: a field may
@@ -222,6 +226,34 @@ impl Inner {
         }
     }
 
+    /// Re-read which resources the chunk `chunk` has, and only those: what [`super::scan`] found
+    /// in it now ([`Self::rescan`] reads every document the store holds). What the chunk held
+    /// before and does not any more leaves, unless the record's manifest places it in another
+    /// chunk, which the store reads when that chunk arrives. An origin's derived resources are
+    /// not the record's and stay where they are.
+    pub(super) fn scan_chunk(
+        &mut self,
+        chunk: ChunkNo,
+        now: BTreeMap<DocId, (AppId, TypeId)>,
+        before: Vec<DocId>,
+    ) {
+        for doc in before {
+            if now.contains_key(&doc) {
+                continue;
+            }
+            let derived = self
+                .index
+                .get(&doc)
+                .is_some_and(|(_, ty)| lookup(ty).is_some_and(crate::schema::TypeSchema::derived));
+            if !derived && self.chunks.chunk(&doc) == chunk {
+                self.index.remove(&doc);
+            }
+        }
+        for (doc, held) in now {
+            self.index.insert(doc, held);
+        }
+    }
+
     /// Drop the store's writes from the `start`th on (the caller applies the rest again).
     /// Returns the collection items they added, removed or moved.
     pub(super) fn drop_local_from(&mut self, start: usize) -> ItemTouches {
@@ -262,28 +294,16 @@ impl Inner {
 
 impl Inner {
     /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed.
+    /// index they were written over changed. What the record holds is the index's, not derived
+    /// here again ([`Self::settle_versions`]).
     pub(super) fn rebuild_overlay(&mut self) {
-        self.derive_overlay(|_| true);
-    }
-
-    /// Derive what an origin derives anew into an empty overlay, and none of the store's writes
-    /// the record holds: what those who read the mirror saw of the record before its change
-    /// ([`super::sync`]).
-    pub(super) fn rebuild_unsaved_overlay(&mut self) {
-        self.derive_overlay(|write| write.derived);
-    }
-
-    /// Derive the writes of `self.local` `keep` holds anew into an empty overlay, and none the
-    /// record holds: what those wrote is the index's ([`Self::settle_versions`]).
-    pub(super) fn derive_overlay(&mut self, keep: impl Fn(&LocalWrite) -> bool) {
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
             for write in self
                 .local
                 .iter()
-                .filter(|write| keep(write) && !settled.contains(&write.seed))
+                .filter(|write| !settled.contains(&write.seed))
             {
                 let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
                     continue;
@@ -361,6 +381,13 @@ impl Inner {
         };
         write.versions = Some(ends.clone());
         let items = write.items.clone();
+        let touched_items: ItemTouches = {
+            let mut touched = ItemTouches::new();
+            for (key, id) in &items {
+                touched.entry(key.clone()).or_default().insert(id.clone());
+            }
+            touched
+        };
         if let (true, Some(held)) = (
             self.chunks.has_record(),
             self.apps.get(app).filter(|held| held.ready()),
@@ -376,7 +403,7 @@ impl Inner {
             }
             derive_removed(&mut derive, &mut sink, app, &ends, &items);
         }
-        self.changed_within(&reached);
+        self.changed_within(&reached, &touched_items);
         reached
     }
 
@@ -386,7 +413,7 @@ impl Inner {
     /// its resources alone, so a rebuild of the overlay reads no version off the index again for
     /// a change those who read the mirror are told already. A transaction whose every version
     /// `told` holds is the record's, and stays only for the chunk record it goes to
-    /// ([`Self::derive_overlay`]).
+    /// ([`Self::rebuild_overlay`]).
     pub(super) fn settle_versions(&mut self, told: &super::Ends) {
         let mut settled = BTreeSet::new();
         for write in &mut self.local {

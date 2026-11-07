@@ -658,15 +658,7 @@ impl ListRowFace<'_> {
             RowLeading::Checkbox { checked, icon } => {
                 // The box stands first in the slot, a glyph after it where the row says what
                 // kind of thing it is.
-                let boxed = match icon {
-                    Some(_) => Rect::new(
-                        slot.x0,
-                        slot.center().y - m.icon / 2.0,
-                        slot.x0 + m.icon,
-                        slot.center().y + m.icon / 2.0,
-                    ),
-                    None => Rect::from_center_size(slot.center(), (m.icon, m.icon)),
-                };
+                let boxed = super::geometry::checkbox_box(slot, icon, m);
                 if let Some(icon) = icon {
                     let at = slot.x0 + m.icon + m.column_gap + m.icon / 2.0;
                     icon.draw(

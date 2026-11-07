@@ -507,7 +507,7 @@ impl DispatchCore {
         address: &ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) {
-        self.submit_remote(address.clone(), arguments, true);
+        self.submit_remote(address, arguments, true);
     }
 
     /// Submit `address` with `arguments` over the connection, as the person's
@@ -515,7 +515,7 @@ impl DispatchCore {
     /// [`Self::refuse`] as an edit applied now is.
     fn submit_remote(
         &self,
-        address: ActionAddress,
+        address: &ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
         in_person: bool,
     ) {
@@ -1084,7 +1084,7 @@ impl<R: Resource> Dispatcher<R> {
     /// Submissions go over `source`, the session's document host, rather
     /// than into the document a host lends the pass
     /// ([`super::Source::Connection`]).
-    pub(crate) fn from_source(mut self, source: super::Source) -> Self {
+    pub(crate) fn over_source(mut self, source: super::Source) -> Self {
         self.core.source = source;
         self
     }
@@ -1332,7 +1332,7 @@ impl<R: Resource> Dispatcher<R> {
             // gesture at this view, admitted and committed by its door
             // (`one-app-model.md` §4).
             self.core.submit_remote(
-                ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
+                &ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
                 invoke.arguments,
                 true,
             );
@@ -1483,7 +1483,7 @@ impl<R: Resource> Dispatcher<R> {
             return;
         }
         if self.core.submits_over_connection() {
-            self.core.submit_remote(address, arguments, true);
+            self.core.submit_remote(&address, arguments, true);
             return;
         }
         self.core.queue_invocation(address, arguments);
@@ -1797,7 +1797,7 @@ impl<R: Resource> Dispatcher<R> {
             // the session's reading follows it.
             let invoke = Invoke::<R>::apply(action).map_err(ActionError::Encode)?;
             self.core.submit_remote(
-                ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
+                &ActionAddress::new(self.core.resource_id.as_ref(), invoke.id),
                 invoke.arguments,
                 true,
             );

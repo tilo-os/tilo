@@ -199,6 +199,16 @@ impl Workspace {
         )
         .unwrap();
         let pred = store_pred(&resolved.pred, task, APP).unwrap();
+        self.query(Some(&pred), resolved.order.as_ref())
+    }
+
+    /// The board's tasks the store lists for `pred` and `order`.
+    fn query(
+        &self,
+        pred: Option<&tilolang_runtime::store::Pred>,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Rc<tilolang_runtime::store::Listing> {
+        let task = self.ty("Task");
         let field = field_id(&self.meta, "Board", "tasks");
         let spec = FieldSpec {
             id: field,
@@ -207,13 +217,7 @@ impl Workspace {
         self.ada
             .host
             .store()
-            .listing_query(
-                &self.board,
-                &spec,
-                &task.id,
-                Some(&pred),
-                resolved.order.as_ref(),
-            )
+            .listing_query(&self.board, &spec, &task.id, pred, order)
             .unwrap()
     }
 
@@ -408,6 +412,94 @@ fn filter_columns_answer_what_reading_every_item_finds_and_follow_every_change()
         let (kept, anew) = workspace.kept_and_anew();
         assert_eq!(kept, anew, "the columns after {action}");
     }
+}
+
+/// A filtered listing keeps what it checked across a change: an item put in, one made to be of
+/// the listing, one made not to be, and one taken out each list as the record read anew lists
+/// them.
+#[test]
+fn a_listing_kept_across_a_change_lists_as_one_read_anew() {
+    let mut workspace = Workspace::new();
+    let q = "is:open sort:-effort";
+    assert_eq!(workspace.listed(q), workspace.anew(q), "`{q}`");
+    let board = workspace.board.clone();
+    let steps: Vec<(&str, &str, Step)> = vec![
+        (
+            "put in",
+            "add",
+            Box::new(move |_: &Workspace| {
+                vec![Value::resource(&board), Value::text("e"), Value::Int(4)]
+            }),
+        ),
+        (
+            "made to be of it",
+            "check",
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[2])]),
+        ),
+        (
+            "made not to be of it",
+            "check",
+            Box::new(|r: &Workspace| vec![Value::resource(&r.tasks()[0])]),
+        ),
+        (
+            "taken out",
+            "remove",
+            Box::new(|r: &Workspace| {
+                vec![Value::resource(&r.board), Value::resource(&r.tasks()[1])]
+            }),
+        ),
+    ];
+    for (case, action, args) in steps {
+        workspace.call(action, args(&workspace));
+        assert_eq!(
+            workspace.listed(q),
+            workspace.anew(q),
+            "`{q}` after an item was {case}"
+        );
+    }
+}
+
+/// A listing ordered by when a field of an item changed stands what changed last first, read
+/// from the index's stamps of those changes and no item of the workspace.
+#[test]
+fn a_listing_ordered_by_when_a_field_changed_reads_the_indexs_stamps() {
+    let mut workspace = Workspace::new();
+    // Checked in this order, the task checked last stands first.
+    workspace.call("check", vec![Value::resource(&workspace.tasks()[0])]);
+    workspace.call("check", vec![Value::resource(&workspace.tasks()[2])]);
+    let task = workspace.ty("Task");
+    let resolved = resolve(
+        &find("is:done").unwrap(),
+        task,
+        &workspace.meta.enums,
+        &Clock::at(NOW).unwrap(),
+        None,
+    )
+    .unwrap();
+    let pred = store_pred(&resolved.pred, task, APP).unwrap();
+    let order = tilolang_runtime::query::Order {
+        field: format!("$changed.{}", field_id(&workspace.meta, "Task", "done")),
+        kind: FieldKind::Register,
+        descending: true,
+        absent_last: false,
+        then: None,
+    };
+    let before = workspace.ada.host.store().read_stats();
+    let ids = workspace.query(Some(&pred), Some(&order)).ids();
+    let after = workspace.ada.host.store().read_stats();
+    assert_eq!(
+        after.doc.fields, before.doc.fields,
+        "the order reads the index's stamps, not the items"
+    );
+    let titles: Vec<String> = ids
+        .into_iter()
+        .map(|id| workspace.title(&workspace.board.item(&id, task.id.clone())))
+        .collect();
+    assert_eq!(
+        titles,
+        ["c", "a", "d"],
+        "the task checked last stands first"
+    );
 }
 
 /// A field naming a person is a column like any other: a filter on it, or the one a named

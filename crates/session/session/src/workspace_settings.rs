@@ -267,12 +267,7 @@ fn ask(
         sheet::WorkspaceSettingsEffect::ShowTab { tab } => {
             show_picked_tab(seat, fed, &tab);
         }
-        sheet::WorkspaceSettingsEffect::DismissNotice => {
-            seat.dismiss_notice();
-            let shown = seat.settings();
-            let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
-            show(seat, fed, shown.tab, review.as_deref());
-        }
+        sheet::WorkspaceSettingsEffect::DismissNotice => dismiss_notice(seat, fed),
         // Closing is the sheet's own.
         sheet::WorkspaceSettingsEffect::Close => {}
         sheet::WorkspaceSettingsEffect::AddAgent {
@@ -359,12 +354,24 @@ fn ask(
         sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
             set_agent_model(seat, fed, &agent, &model);
         }
+        sheet::WorkspaceSettingsEffect::SetAgentSpendLimit { agent, dollars } => {
+            set_agent_limit(seat, fed, &agent, &dollars);
+        }
         sheet::WorkspaceSettingsEffect::SetAgentColour { agent, colour } => {
             set_agent_colour(seat, fed, &agent, &colour);
         }
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(seat, fed, &bot),
     }
+}
+
+/// Put the sheet's notice away and draw the tab it stands over again, review
+/// and all.
+fn dismiss_notice(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>) {
+    seat.dismiss_notice();
+    let shown = seat.settings();
+    let review = shown.agents.review.as_ref().map(|row| row.agent.clone());
+    show(seat, fed, shown.tab, review.as_deref());
 }
 
 /// Say what the desk does next, for the sheet.
@@ -676,6 +683,37 @@ fn set_agent_model(
         .tabs
         .agents
         .set_model(workspace.as_ref(), fed.person, agent, model)
+    {
+        Ok(()) => {
+            let shown = seat.settings();
+            show(seat, fed, shown.tab, Some(agent));
+        }
+        Err(reason) => refuse(seat, fed, &reason),
+    }
+}
+
+/// Set what an agent may spend a day, as its keeper: what its field held, in
+/// dollars, or no limit at all where it held nothing.
+fn set_agent_limit(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    agent: &str,
+    dollars: &str,
+) {
+    let limit_micros = if dollars.is_empty() {
+        None
+    } else {
+        let Some(micros) = ui::format::parse_money(dollars) else {
+            refuse(seat, fed, &t("workspace-settings-agent-limit-not-amount"));
+            return;
+        };
+        Some(micros)
+    };
+    let workspace = workspace_in_front(fed);
+    match fed
+        .tabs
+        .agents
+        .set_limit(workspace.as_ref(), fed.person, agent, limit_micros)
     {
         Ok(()) => {
             let shown = seat.settings();

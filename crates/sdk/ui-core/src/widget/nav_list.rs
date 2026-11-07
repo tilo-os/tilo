@@ -740,8 +740,8 @@ impl NavShared {
             let _ = action.emit(());
         } else if self.view.is_some() {
             // A list that answers through its view action opens the place
-            // itself: the row was selected on the way here, as an
-            // activation's selection is, so no choice of its own is due.
+            // itself: an activation chooses like a press, whether or not the
+            // row was already chosen.
             self.choose(key);
         }
     }

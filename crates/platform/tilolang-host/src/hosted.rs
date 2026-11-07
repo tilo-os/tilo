@@ -61,13 +61,7 @@ thread_local! {
 /// Bring `host` up to date with the record and every chunk of it a replica holds: the store reads
 /// and writes the resources each chunk holds where the record's manifest places them.
 fn sync_record(host: &Host, record: &InstanceRecord) {
-    for (chunk, doc) in record.chunks().docs() {
-        if chunk == tilolang_tilo::chunk::FIRST {
-            host.sync_from(doc);
-        } else {
-            host.sync_chunk(chunk, doc);
-        }
-    }
+    host.sync(record.chunks());
 }
 
 /// Who invokes, as the runtime reads the invoker the broker admitted.
@@ -1563,33 +1557,32 @@ impl Hosted {
         }
     }
 
-    /// Run what the person chose from the window's command palette as their own step: the same
-    /// door an invocation the broker delivered for them takes, so the action runs for them
-    /// however it reached the app. Whether anything changed.
+    /// Run the next action the person chose at the window as their own step: the same door an
+    /// invocation the broker delivered for them takes, so the action runs for them however it
+    /// reached the app. One a frame, so what a press opened is sent, and the window hears it
+    /// ran, before the press after it. Whether there was one.
     fn chosen(&mut self) -> bool {
-        let chosen = self.instance.take_chosen();
-        if chosen.is_empty() {
+        let Some((press, address, argument)) = self.instance.take_chosen() else {
             return false;
-        }
+        };
         let invoker = ActionInvoker::actor(self.spec.person.clone());
-        let mut changed = false;
-        for (address, argument) in chosen {
-            let opens_what_it_made = self.is_primary(&address);
-            match self.invoke(&address, argument.as_deref(), invoker.clone(), None) {
-                Ok(output) => {
-                    changed = true;
-                    // Choosing what a press of a primary action does asks for the same: what
-                    // it made opens beside the list.
-                    if opens_what_it_made {
-                        for anchor in output.resources {
-                            self.instance.opens_what_it_made(anchor);
-                        }
+        let opens_what_it_made = self.is_primary(&address);
+        match self.invoke(&address, argument.as_deref(), invoker, None) {
+            Ok(output) => {
+                // Choosing what a press of a primary action does asks for the same: what it
+                // made opens beside the list.
+                if opens_what_it_made {
+                    for anchor in output.resources {
+                        self.instance.opens_what_it_made(anchor);
                     }
                 }
-                Err(refused) => self.instance.action_refused(refused.message),
             }
+            Err(refused) => self.instance.action_refused(refused.message),
         }
-        changed
+        // The press ran: the frame after it sends what it opened, then tells the window it
+        // ran, so what the person typed after it goes there.
+        self.instance.press_ran(press);
+        true
     }
 
     /// Whether the app declares the action `address` names `primary`: what it made opens when

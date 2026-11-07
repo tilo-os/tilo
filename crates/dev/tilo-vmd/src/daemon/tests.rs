@@ -1283,6 +1283,81 @@ fn the_device_slot_re_merges_its_layers_at_boot() {
     assert!(apply.calls.is_empty(), "{:?}", apply.calls);
 }
 
+/// A board's own session runs in the host's mount namespace, like a laptop's
+/// login, so the `vm` slot and the `device` slot are one `/usr`: whichever of
+/// the two applies, the other's layers stay merged, and the boot restore
+/// merges both. A slot with a view of its own stacks the machine's layers
+/// under its own.
+#[test]
+fn a_board_merges_the_device_and_vm_slots_layers_whichever_applies() {
+    let root = tempfile::tempdir().unwrap();
+    let slots = SlotStore::new(root.path());
+    let layers = LayerStore::new(root.path());
+    // The machine's own session, with no greeter login: a board's seat.
+    let mut apply = RecordingApply::with_device("owner");
+    let mut expected = Vec::new();
+    for (slot, n) in [(VM_SLOT, 1u8), (DEVICE_SLOT, 2)] {
+        let mut record = slots.load_with(slot, apply.device.clone()).unwrap();
+        slots.save(&record).unwrap();
+        let hash = format!("{n:02x}").repeat(32);
+        let path = layers.path(&hash);
+        fs::create_dir_all(path.join("usr")).unwrap();
+        expected.push(path);
+        let (_, generation) = slots
+            .prepare_swap(
+                &record,
+                "component",
+                &hash,
+                ComponentInfo::new(Scope::Session, Vec::new()),
+            )
+            .unwrap()
+            .unwrap();
+        slots.set_current(&mut record, generation.number).unwrap();
+    }
+    let own = |slot: &str| {
+        let record = slots.load_with(slot, apply.device.clone()).unwrap();
+        layer_paths(&layers, &slots.generation(slot, record.current).unwrap()).unwrap()
+    };
+
+    // Both directions read the same machine set; neither is the other slot's
+    // own apply dropping it.
+    for slot in [VM_SLOT, DEVICE_SLOT] {
+        let record = slots.load_with(slot, apply.device.clone()).unwrap();
+        let system = system_layers(&slots, &layers, &record, own(slot)).unwrap();
+        assert_eq!(system, expected, "{slot} merges both slots' layers");
+    }
+
+    // A slot with its own view stacks the machine's layers under its own.
+    let mut review = slots
+        .create("review", SlotKind::Headless, Owner::default(), &[])
+        .unwrap()
+        .0;
+    let hash = "03".repeat(32);
+    let path = layers.path(&hash);
+    fs::create_dir_all(path.join("usr")).unwrap();
+    let (_, generation) = slots
+        .prepare_swap(
+            &review,
+            "component",
+            &hash,
+            ComponentInfo::new(Scope::Session, Vec::new()),
+        )
+        .unwrap()
+        .unwrap();
+    slots.set_current(&mut review, generation.number).unwrap();
+    let mut machine = expected.clone();
+    machine.push(path);
+    assert_eq!(
+        system_layers(&slots, &layers, &review, own("review")).unwrap(),
+        machine
+    );
+
+    // The boot restore merges both into `/usr`.
+    merge_system_layers(&slots, &layers, &mut apply).unwrap();
+    assert_eq!(apply.sysext, expected);
+    assert_eq!(apply.calls, ["link_sysext 2", "sysext_refresh"]);
+}
+
 #[test]
 fn daemon_sessions_and_seats_are_restored_and_required_for_exec() {
     // Phase `exec_needs_a_user_slot_with_a_running_session`.

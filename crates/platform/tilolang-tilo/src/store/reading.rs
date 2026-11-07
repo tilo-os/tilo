@@ -61,7 +61,7 @@ pub(super) fn path_to(prefix: &[Segment], field: &str) -> Vec<Segment> {
 /// document and its rollback remove it again, and Automerge renumbers every op's actor column
 /// for each: two passes over the whole document per keystroke. The mirror never commits (its
 /// writes are taken back before any change of the record is applied, see
-/// [`TiloStore::sync_from`]), so its ops under a borrowed actor never meet that actor's next
+/// [`TiloStore::sync`]), so its ops under a borrowed actor never meet that actor's next
 /// real change.
 pub(super) fn write_as_a_known_actor(mirror: &mut Doc) {
     let actor = mirror

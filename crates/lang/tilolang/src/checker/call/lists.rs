@@ -410,7 +410,10 @@ impl Checker<'_> {
         };
         // A Date or a Time is ISO text, which sorts in time order; one that may be absent is
         // read once, its presence and its value telling where the item stands: the items
-        // without one stand after those with one, whatever the direction.
+        // without one stand after those with one, whatever the direction. When a field last
+        // changed and one never did, it stands where no moment does: first, and last with
+        // `desc`, as the index keeps it.
+        let changed = matches!(&native, Some(super::super::order::SortKey::Changed { .. }));
         let (key, present) = match key.ty.clone() {
             Ty::Date | Ty::Time => (key.typed(Ty::Text), None),
             Ty::Option(ref inner) if matches!(**inner, Ty::Date | Ty::Time) => {
@@ -429,7 +432,7 @@ impl Checker<'_> {
                     ),
                     Ty::Text,
                 );
-                (key, Some(present))
+                (key, if changed { None } else { Some(present) })
             }
             _ => (key, None),
         };

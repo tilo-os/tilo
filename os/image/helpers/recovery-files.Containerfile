@@ -18,6 +18,7 @@ COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-esp-generator /usr/l
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-deployment-finalize.service \
     os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
     os/usr/lib/systemd/system/tilo-boot-fallback.service \
@@ -48,6 +49,8 @@ COPY \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.service.d/
 COPY os/usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf \
     /usr/lib/systemd/system/bootc-fetch-apply-updates.timer.d/05-tilo-composefs.conf
+COPY os/usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf \
+    /usr/lib/systemd/system/bootc-finalize-staged.service.d/10-tilo-finalize.conf
 COPY os/usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf \
     /usr/lib/systemd/system/systemd-bless-boot.service.d/10-tilo-writable-esp.conf
 COPY os/usr/lib/systemd/system/tilo-update-policy@.service /usr/lib/systemd/system/tilo-update-policy@.service
