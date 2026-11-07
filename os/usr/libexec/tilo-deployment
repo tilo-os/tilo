@@ -7,6 +7,7 @@
 #   tilo-deployment boot ENTRY        boot ENTRY (or booted, staged, rollback) once
 #   tilo-deployment update [--yes]    fetch and stage the current image again
 #   tilo-deployment entries           maintain the boot counters and repair entry
+#   tilo-deployment finalize          make the staged deployment the next boot's
 #   tilo-deployment fallback          after the boot loader went back, keep it there
 #   tilo-deployment repair-entry      just the repair entry
 #
@@ -1015,7 +1016,62 @@ cmd_entries() {
   # signer. Release this phase's descriptor before entering that operation.
   flock -u 6
 
+  # The staged entry carries its tries now, so the plan the next boot follows can
+  # be made from it (see `finalize`). It runs as its own unit: this pass keeps the
+  # ESP read-only, and bootc mounts it writable itself.
+  ${TILO_FINALIZE_CMD:-systemctl start --wait tilo-deployment-finalize.service} \
+    || warn "the staged update was not finalized; the next boot tries again"
+
   cmd_repair_entry
+}
+
+# --- the staged deployment becomes the one that boots next ---------------------
+#
+# bootc keeps a staged update as a plan beside the boot plan: loader/entries.staged
+# and /run/composefs/staged-deployment. It turns that plan into the plan by
+# exchanging the two entry directories at shutdown, from
+# bootc-finalize-staged.service (`bootc composefs-finalize-staged`), which also
+# merges the new image's /etc and collects the entries the staged plan replaced.
+# A machine that loses power instead of shutting down never reaches that step:
+# the update it staged — verified, downloaded, counted — stays a plan that no boot
+# follows, and the machine keeps starting the old deployment however often it is
+# restarted. That is the normal end for a board with no shutdown button.
+#
+# So Tilo runs that step itself: right after the staged entry has its try counter
+# (from the same update hook), and at every boot, where a staged plan still
+# present is one whose shutdown never came. The step is bootc's own and
+# unchanged. Like the boot counters it is idempotent: once the entries are
+# exchanged there is no staged plan left to exchange, so the shutdown hook that
+# runs it as well (bootc-finalize-staged.service.d/10-tilo-finalize.conf) has
+# nothing to do, and a finalize that failed halfway is simply retried by the next
+# boot. bootc keeps reporting the deployment as staged until the next boot, which
+# is what tilo-extension live:session finishes the update from.
+cmd_finalize() {
+  [ "$(id -u)" = 0 ] || die "finalize needs root"
+  local esp status
+  esp="$(esp_path)" || { log "$(esp_missing); nothing to finalize"; return 0; }
+  status="$(bootc_status_json)"
+  [ -n "$status" ] || die "bootc status said nothing"
+  if [ -z "$(status_field "$status" staged-image)" ]; then
+    log "no staged deployment to finalize"
+    return 0
+  fi
+  # No conf left under entries.staged means this deployment is already the boot
+  # plan: bootc would fail exchanging a directory that is not there.
+  if ! compgen -G "$esp/loader/entries.staged/*.conf" >/dev/null; then
+    log "the staged deployment is already the boot plan"
+    return 0
+  fi
+  bootc composefs-finalize-staged \
+    || { warn "bootc could not finalize the staged deployment; the machine keeps booting what it booted, and the next boot tries again"; return 1; }
+  # bootc reports success for a staged deployment it left alone as well (one still
+  # locked for download), so what the next boot reads is the answer, not the exit
+  # code.
+  if compgen -G "$esp/loader/entries.staged/*.conf" >/dev/null; then
+    warn "bootc reported the staged deployment finalized, but its staged entries are still there; the next boot tries again"
+    return 1
+  fi
+  log "$(image_label "$status" staged) boots next"
 }
 
 # Derive the repair-mode boot entry from whichever UKI the running deployment
@@ -1256,9 +1312,10 @@ case "${1:-}" in
   boot)         shift; cmd_boot "$@" ;;
   update)       shift; cmd_update "$@" ;;
   entries)      shift; cmd_entries "$@" ;;
+  finalize)     cmd_finalize ;;
   fallback)     cmd_fallback ;;
   repair-entry) shift; cmd_repair_entry "$@" ;;
   caveats)      print_rollback_caveats ;;
-  -h|--help|"") sed -n '2,12p' "$0" ;;
+  -h|--help|"") sed -n '2,13p' "$0" ;;
   *)            die "unknown subcommand: $1 (try --help)" ;;
 esac
