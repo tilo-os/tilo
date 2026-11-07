@@ -359,6 +359,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             last_effect: None,
             workspace: None,
             permissions,
+            _settled: None,
             marker: std::marker::PhantomData,
         })
     }
