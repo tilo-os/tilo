@@ -142,6 +142,7 @@ mod search;
 mod search_ask;
 mod seats;
 pub mod seeded_apps;
+mod send_to;
 mod service_sessions;
 pub mod session_package;
 mod setup;
@@ -2665,6 +2666,7 @@ impl Session {
     fn follow_app_asks(&mut self) {
         if let Some(tabs) = &mut self.tabs {
             tabs.follow(
+                &self.shared,
                 &self.shared.desktop,
                 self.shared.launch.as_deref(),
                 &mut self.compositor,

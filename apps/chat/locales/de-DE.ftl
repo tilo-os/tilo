@@ -485,3 +485,7 @@ chat-menu-report-sender = Absender melden
 chat-menu-ban = Aus dem Arbeitsbereich ausschließen
 chat-menu-volume = Lautstärke
 chat-attach-share = Datei teilen
+
+chat-send-empty = Schreib eine Nachricht oder häng etwas an.
+chat-send-needs-recipient = Wähle, an wen die Nachricht geht.
+chat-send-one-conversation = Ein Gespräch steht für sich: wähle es, oder die Personen, an die es geht.

@@ -32,6 +32,16 @@ const UNLOCK: &str = "unlock";
 /// How many index hits one query reads.
 const MAX_HITS: usize = 256;
 
+/// How many recipients one search answers a box with: what a person reads
+/// without scrolling.
+const MAX_RECIPIENTS: usize = 12;
+
+/// The conversation a `chat.workspace/channels/<id>` row keeps.
+fn conversation_id(resource: &str) -> Option<&str> {
+    let id = resource.rsplit_once('/')?.1;
+    (!id.is_empty()).then_some(id)
+}
+
 /// The index at one generation, ready to search.
 pub struct Snapshot {
     pub generation: u64,
@@ -590,6 +600,116 @@ impl IndexedContent {
         best.into_iter()
             .map(|(app, score)| self.unlock_row(&app, needle, score.max(1)))
             .collect()
+    }
+
+    /// The agents, people and conversations `needle` names, as a box that
+    /// sends a message lists whom it could go to: found by the same index the
+    /// palette reads, the app's own ranking first and, among equals, what it
+    /// says of when — the most recent at the top. An empty `needle` lists
+    /// what the workspace holds, the most recent first, which is what a box
+    /// opens on before anything is typed.
+    #[must_use]
+    pub fn recipients(&self, needle: &str) -> Vec<ui::floating_surface::Recipient> {
+        let snapshot = self.current();
+        let needle = needle.trim();
+        let matches: Vec<(i32, &IndexedEntry)> = if needle.is_empty() {
+            snapshot
+                .visible
+                .iter()
+                .map(|indexed| (0, indexed))
+                .collect()
+        } else {
+            snapshot
+                .index
+                .search(needle, Page::first(MAX_HITS))
+                .hits
+                .iter()
+                .filter_map(|hit| {
+                    let indexed = usize::try_from(hit.key)
+                        .ok()
+                        .and_then(|at| snapshot.visible.get(at))?;
+                    Some((hit.score, indexed))
+                })
+                .collect()
+        };
+        let mut found: Vec<(i32, i64, ui::floating_surface::Recipient)> = matches
+            .into_iter()
+            .filter_map(|(score, indexed)| {
+                let recipient = self.recipient(indexed)?;
+                let when = indexed.entry.when.unwrap_or(i64::MIN);
+                Some((score, when, recipient))
+            })
+            .collect();
+        // The best match first, and among what matches as well the most recent
+        // comes first; the sort is stable, so the app's own order settles the
+        // rest.
+        found.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
+        let mut seen: HashSet<(ui::floating_surface::RecipientKind, String)> = HashSet::new();
+        let mut out: Vec<ui::floating_surface::Recipient> = Vec::new();
+        for (_, _, recipient) in found {
+            if seen.insert((recipient.kind, recipient.id.clone())) {
+                out.push(recipient);
+            }
+        }
+        out.truncate(MAX_RECIPIENTS);
+        out
+    }
+
+    /// The recipient `indexed` names, when it names one a message can go to: an
+    /// agent the workspace keeps, a person, or a conversation. A person
+    /// sitting at this desk is no recipient of their own message.
+    fn recipient(&self, indexed: &IndexedEntry) -> Option<ui::floating_surface::Recipient> {
+        use ui::floating_surface::{Recipient, RecipientKind};
+        let entry = &indexed.entry;
+        let who = entry.people.first();
+        let recipient = match entry.kind? {
+            IndexKind::Agent => {
+                let agent = who?.identity.strip_prefix("agent:")?;
+                let kept = entry.keeper.as_ref().map_or_else(String::new, |keeper| {
+                    if keeper.identity == self.person {
+                        crate::i18n::t("search-kept-by-you")
+                    } else {
+                        keeper.name.clone()
+                    }
+                });
+                Recipient::found(RecipientKind::Agent, agent, &entry.title).with_detail(kept)
+            }
+            IndexKind::Person => {
+                let person = who?;
+                if person.identity == self.person {
+                    return None;
+                }
+                let kind = if person.agent {
+                    RecipientKind::Agent
+                } else {
+                    RecipientKind::Person
+                };
+                let id = person
+                    .identity
+                    .strip_prefix("agent:")
+                    .unwrap_or(&person.identity);
+                Recipient::found(kind, id, &entry.title)
+                    .with_detail(entry.subtitle.clone().unwrap_or_default())
+            }
+            IndexKind::Conversation => {
+                let id = conversation_id(&entry.resource)?;
+                let people: Vec<&str> = entry
+                    .people
+                    .iter()
+                    .map(|person| person.name.as_str())
+                    .filter(|name| !name.is_empty())
+                    .collect();
+                Recipient::found(RecipientKind::Conversation, id, &entry.title).with_detail(
+                    if people.is_empty() {
+                        entry.subtitle.clone().unwrap_or_default()
+                    } else {
+                        people.join(", ")
+                    },
+                )
+            }
+            IndexKind::Message => return None,
+        };
+        Some(recipient)
     }
 
     /// The row `id` names, as an empty query scores it.

@@ -720,7 +720,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             if text.trim().is_empty() {
                 return Err(crate::i18n::t("chat-person-chat-empty"));
             }
-            chat.borrow().post_to_conversation(&id, text)?;
+            chat.borrow().post_to_conversation(&id, text, Vec::new())?;
             let mut chat = chat.borrow_mut();
             if chat.active_channel == id.as_str() {
                 let held = chat.held_messages();
@@ -731,6 +731,11 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             return Ok(ui::framework::Effected::value(
                 serde_json::json!({"peer": peer, "accepted": true}),
             ));
+        }
+        ChatEffect::Send { to, attached, text } => {
+            let state = cx.live().get();
+            let mut chat = chat.borrow_mut();
+            return chat.send_from_box(to, attached.clone(), text, &state);
         }
         ChatEffect::ReadDirectConversation { public_key } => {
             let state = cx.live().get();

@@ -101,3 +101,10 @@ action    = "start-video-call"
 label     = "Start a video call"
 kind      = "undoable"
 operation = "effect"
+
+[[offers]]
+resource  = "chat.workspace"
+action    = "send"
+label     = "Send a message"
+kind      = "undoable"
+operation = "effect"

@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 /// What a recipient of a sent message is: someone the search found, or the
 /// agent the person is making by sending.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RecipientKind {
     /// An agent this send makes, kept by the person sending.

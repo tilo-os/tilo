@@ -181,6 +181,11 @@ pub struct AppTabs {
     /// The listener the apps connect to, taken off on the session's own pass,
     /// and the socket's path, which goes when the session ends.
     socket: Socket,
+    /// What the windows' boxes sent and asked on this pass, carried out once
+    /// every ask of theirs is answered: they reach the session's records and
+    /// its search, which the answers themselves do not.
+    sent: Vec<Sent>,
+    asked: Vec<Asked>,
 }
 
 /// An open shell-ui connection: the app it vouches for, the launch whose
@@ -270,6 +275,8 @@ impl AppTabs {
             launches,
             host_shell: HostShellAsks::default(),
             socket,
+            sent: Vec::new(),
+            asked: Vec::new(),
         })
     }
 
@@ -287,6 +294,7 @@ impl AppTabs {
     /// command, so the desk is read and changed on this thread alone.
     pub(crate) fn follow(
         &mut self,
+        shared: &crate::Shared,
         desktop: &DesktopHost,
         apps: Option<&Apps>,
         compositor: &mut Compositor,
@@ -308,6 +316,8 @@ impl AppTabs {
                 links: &mut self.links,
                 cards: &self.cards,
                 launches: &self.launches,
+                sent: &mut self.sent,
+                asked: &mut self.asked,
             };
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
@@ -319,12 +329,45 @@ impl AppTabs {
             // it, goes to the app drawing that window.
             answered.deliver_target_presses();
         }
+        // What the windows' boxes sent and asked, now that every ask of
+        // theirs is answered: a send is one action on the person's behalf,
+        // and a search is the desk's own.
+        self.deliver_sends(shared);
+        self.deliver_searches(shared);
         // Where each app's own card stands this pass: the floating layer's
         // place, which the desk lays the app's window out by.
         self.follow_cards(desktop, compositor);
         // The person may have answered a question about the device's own
         // shell since the last pass.
         self.host_shell.settle(services);
+    }
+
+    /// Send what the windows' boxes sent, each as one action the person's own
+    /// grants decide, and tell a window whose message this session could not
+    /// deliver why.
+    fn deliver_sends(&mut self, shared: &crate::Shared) {
+        for sent in std::mem::take(&mut self.sent) {
+            let delivered = shared.send_to(&sent.workspace, &sent.to, &sent.attached, &sent.text);
+            if let Err(reason) = delivered {
+                refuse(&sent.reply, &sent.app, "send_to", &reason);
+            }
+        }
+    }
+
+    /// Answer what the windows' boxes asked of the search: who a message
+    /// could go to, for what they typed.
+    fn deliver_searches(&mut self, shared: &crate::Shared) {
+        for asked in std::mem::take(&mut self.asked) {
+            let rows = shared.recipients(&asked.query);
+            tell(
+                &asked.reply,
+                &FloatingSurfaceHostMessage::Recipients {
+                    request: asked.request,
+                    rows,
+                },
+                &asked.app,
+            );
+        }
     }
 
     /// Stand each app's own card where the floating layer put it this pass,
@@ -528,6 +571,30 @@ struct Answers<'a> {
     links: &'a mut BTreeMap<u64, Link>,
     cards: &'a crate::cards::Cards,
     launches: &'a Launches,
+    /// The messages windows sent from their own boxes, and the searches they
+    /// asked, both carried out after the pass has every ask: they reach the
+    /// session's records, which the answers themselves do not touch.
+    sent: &'a mut Vec<Sent>,
+    asked: &'a mut Vec<Asked>,
+}
+
+/// A message a window's box sent: who it goes to, what it carries, and where
+/// it came from, so a refusal reaches the window that asked.
+struct Sent {
+    app: String,
+    workspace: String,
+    reply: Arc<Mutex<UnixStream>>,
+    to: Vec<ui::floating_surface::Recipient>,
+    attached: Vec<tilo_reference::Attached>,
+    text: String,
+}
+
+/// A window's box asking the search whom it could send to.
+struct Asked {
+    app: String,
+    reply: Arc<Mutex<UnixStream>>,
+    request: u64,
+    query: String,
 }
 
 impl Answers<'_> {
@@ -762,10 +829,30 @@ impl Answers<'_> {
             // agent about it, so it goes with the selection it seeds.
             FloatingSurfaceClientMessage::SelectionCapable
             | FloatingSurfaceClientMessage::WindowResource { .. }
-            | FloatingSurfaceClientMessage::AskAgent { .. }
             | FloatingSurfaceClientMessage::Pointed { .. }
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);
+            }
+            // The message its box sent, and whom its box could send to: both
+            // reach the session's records and the one search, so they are
+            // carried out after this pass has every ask.
+            FloatingSurfaceClientMessage::SendTo {
+                to, attached, text, ..
+            } => self.sent.push(Sent {
+                app,
+                workspace,
+                reply,
+                to,
+                attached,
+                text,
+            }),
+            FloatingSurfaceClientMessage::SearchRecipients { request, query } => {
+                self.asked.push(Asked {
+                    app,
+                    reply,
+                    request,
+                    query,
+                });
             }
             // What an app's page may be shared as, instead of video streamed
             // from it: the session asks no window to paint its page.

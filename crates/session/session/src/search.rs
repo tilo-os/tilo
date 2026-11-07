@@ -470,6 +470,16 @@ impl SessionSearch {
         self.lists.latest()
     }
 
+    /// The agents, people and conversations `query` names, as a window's box
+    /// lists whom a message could go to.
+    pub(crate) fn recipients(&self, query: &str) -> Vec<ui::floating_surface::Recipient> {
+        self.kept
+            .borrow()
+            .content
+            .as_ref()
+            .map_or_else(Vec::new, |content| content.recipients(query))
+    }
+
     /// The apps this session opens, for what it asks to be opened outside a
     /// search: a link a page names, a page a sheet asks for.
     pub(crate) fn apps(&self) -> Option<Rc<dyn AppActions>> {
