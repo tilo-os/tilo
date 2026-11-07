@@ -94,8 +94,8 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
     );
     assert_eq!(trailing.rect().y0, 120.0);
 
-    // A window too narrow for either side: it stays inside, over the menu
-    // where it must, rather than off the screen.
+    // A window too narrow for either side: it stands under the menu, clear of
+    // what the menu is about, and inside the window.
     let narrow = box_beside(
         Rect::new(150.0, 120.0, 250.0, 320.0),
         Rect::new(0.0, 0.0, 400.0, 600.0),
@@ -104,6 +104,22 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
         narrow.rect().x0 >= 0.0 && narrow.rect().x1 <= 400.0,
         "inside the window: {}",
         narrow.rect()
+    );
+    assert!(
+        narrow.rect().y0 >= 320.0 && narrow.rect().y1 <= 600.0,
+        "under the menu, over nothing it is about: {}",
+        narrow.rect()
+    );
+
+    // No room anywhere: it still stays inside the window, over the menu.
+    let tight = box_beside(
+        Rect::new(150.0, 20.0, 250.0, 160.0),
+        Rect::new(0.0, 0.0, 400.0, 200.0),
+    );
+    assert!(
+        tight.rect().x0 >= 0.0 && tight.rect().x1 <= 400.0 && tight.rect().y0 >= 0.0,
+        "inside the window: {}",
+        tight.rect()
     );
 
     // At the bottom: it moves up to keep its whole height in the window.

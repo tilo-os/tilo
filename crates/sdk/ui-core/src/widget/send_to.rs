@@ -262,8 +262,8 @@ impl SendToBox {
     }
 
     /// Stand the box beside `menu`: on its trailing side with the same top,
-    /// or its leading side where the window leaves no room, inside the
-    /// window.
+    /// or its leading side where the window leaves no room, or under it where
+    /// neither side holds it, inside the window.
     pub fn place(&mut self, menu: Rect, viewport: Option<Rect>) {
         if !self.open {
             self.rect = Rect::ZERO;
@@ -285,24 +285,30 @@ impl SendToBox {
         let gap = f64::from(GAP) * scale;
         let trailing = menu.x1 + gap;
         let leading = menu.x0 - gap - width;
-        let x = if trailing + width <= viewport.x1 {
-            trailing
+        // Kept inside the window, whatever the window leaves.
+        let inside = |x: f64| x.clamp(viewport.x0, (viewport.x1 - width).max(viewport.x0));
+        let top = menu
+            .y0
+            .min((viewport.y1 - height).max(viewport.y0))
+            .max(viewport.y0);
+        let (x, y) = if trailing + width <= viewport.x1 {
+            (trailing, top)
         } else if leading >= viewport.x0 {
-            leading
+            (leading, top)
+        } else if menu.y1 + gap + height <= viewport.y1 {
+            // Neither side holds it: it stands under the menu, clear of it,
+            // rather than over what the menu is about.
+            (inside(menu.x0), menu.y1 + gap)
         } else {
-            // Neither side holds it: it takes the roomier one and stays
-            // inside the window, over the menu where it must.
+            // The window is too small even for that: it takes the roomier side
+            // and stays inside, over the menu where it must.
             let x = if viewport.x1 - trailing >= leading - viewport.x0 {
                 trailing
             } else {
                 leading
             };
-            x.clamp(viewport.x0, (viewport.x1 - width).max(viewport.x0))
+            (inside(x), top)
         };
-        let y = menu
-            .y0
-            .min((viewport.y1 - height).max(viewport.y0))
-            .max(viewport.y0);
         let rect = Rect::new(x, y, x + width, y + height);
         if self.rect != rect {
             self.dirty = true;
