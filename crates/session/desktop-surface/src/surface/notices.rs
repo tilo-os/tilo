@@ -1461,7 +1461,8 @@ mod tests {
     /// The person opened the centre to read what it holds: no banner stands
     /// over the rows it covers, wherever the host draws the banners, what
     /// arrives meanwhile goes into the centre, and the ones that came before
-    /// are back on the desk once it closes.
+    /// are rows of it too — a banner is gone from the desk once the centre
+    /// took it.
     #[test]
     fn a_banner_never_stands_over_the_open_centre() {
         let (mut layer, notifications) = layer_with(2);
@@ -1498,10 +1499,20 @@ mod tests {
         layer.feed_stack();
         assert_eq!(
             notifications.feed().banners.len(),
-            2,
-            "the desk's banners come back"
+            0,
+            "the banners the centre took stay rows of the centre"
         );
-        assert_eq!(layer.stack.feed().banners.len(), 2);
+        assert!(
+            notifications.log().history().len() >= 3,
+            "all three are rows the person reads there"
+        );
+        // What arrives once it is closed is a banner again.
+        notifications.post(Notification::new("Das Wasser kocht", ""));
+        assert_eq!(
+            notifications.feed().banners.len(),
+            1,
+            "a desk with no centre over it shows banners again"
+        );
     }
 
     #[test]
