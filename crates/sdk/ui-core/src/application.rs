@@ -21,7 +21,10 @@ mod host;
 mod open_file;
 pub mod registry;
 mod surface;
-pub use host::{ApplicationHost, NativeProcessHost, NativeProfile};
+/// The variable a launch carries when the session's document host keeps the
+/// app's record (§8 step 2).
+pub use host::HOSTED_RESOURCE_ENV;
+pub use host::{ApplicationHost, NativeProcessHost, NativeProfile, session_hosted_resource};
 #[cfg(test)]
 pub(crate) use host::{follow_host_authority, manual_authority_watch};
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
@@ -158,6 +161,11 @@ pub struct HostContext {
     launch_options: Vec<LaunchOption>,
     private: bool,
     lent: Vec<Box<dyn std::any::Any>>,
+    /// The session's document host keeps this app's record: no record here,
+    /// read and written over its one connection (`prepare_session_hosted`,
+    /// `provide_connection`). Erased: the app framework's type, unnamed here.
+    hosted: bool,
+    connection: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
 /// Where playback stood on the device or app that handed the launch's media
@@ -684,6 +692,8 @@ impl HostContext {
             launch_options: Vec::new(),
             private: false,
             lent: Vec::new(),
+            hosted: false,
+            connection: None,
         })
     }
     /// Commit this instance's edits to its record under an actor of its
@@ -1040,27 +1050,6 @@ impl HostContext {
             .as_ref()
             .and_then(|initialization| initialization.workspace())
     }
-    pub(crate) fn callback_binding(&self) -> crate::bound_dispatch::CallbackBinding {
-        crate::bound_dispatch::CallbackBinding {
-            lifetime: self.wake_scope.handle(),
-            closing: self.closing.clone(),
-            registry_owner: Rc::downgrade(&self.construction),
-            lifetime_id: self.lifetime_id,
-            queued_controls: self.queued_controls.clone(),
-            search_requests: self.search_requests.clone(),
-            control_domain: self.control_domain.downgrade(),
-            instance_id: self.instance_id,
-            app_id: self.app_id.clone(),
-            device_id: self.device_id.clone(),
-            records: self.records.clone(),
-            checkout: self.record.clone(),
-            permissions: self.permissions.clone(),
-            author: self.author.clone(),
-            host_person: self.host_person.clone(),
-            operation_context: std::rc::Rc::new(self.action_context.clone()),
-            writes_as_author: self.writes_as_author,
-        }
-    }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
         SavedInstanceView {
             version: 2,
@@ -1168,10 +1157,11 @@ impl ApplicationDefinition {
     ) -> Result<AppComponent, LaunchError> {
         let records = context.records.clone();
         let record = context.record.clone();
+        let hosted = context.hosted;
         let result = self.instantiate_checked(context, target, restore);
 
         result.map_err(|source| {
-            if records.is_ready(&record.id) {
+            if !hosted && records.is_ready(&record.id) {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
                     record: Box::new(record),
@@ -1239,8 +1229,11 @@ impl ApplicationDefinition {
         };
         let entry = context.wake_scope.enter();
         let result = (self.create)(context, target, restore).and_then(|mut component| {
+            // A window the session serves opens no record here (§8 step 2).
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !(records.is_ready(&record.id) || records.is_opening(&record.id))
+                || !(component.context.hosted
+                    || records.is_ready(&record.id)
+                    || records.is_opening(&record.id))
             {
                 return Err(mismatch(
                     "a component of another construction, or its record neither open nor opening",
@@ -1864,9 +1857,10 @@ impl AppComponent {
             .as_deref_mut()
             .ok_or_else(|| ThawError::InvalidView("component is closed".into()))?;
         // Split root/context loans: preparation, generic restore and finalization share
-        // exactly one immutable latest-record loan and one component lifetime.
-        self.context
-            .read_record(|doc| {
+        // one immutable latest-record loan and one component lifetime. A window the session
+        // serves holds no record: what it saved is presentation, over an empty document.
+        let restore =
+            |root: &mut dyn crate::widget::AppWidget, doc: &AutoCommit| -> Result<(), ThawError> {
                 let policy = if let Some(local) = &saved.application {
                     if local.app_id != self.context.app_id {
                         return Err(ThawError::BindingMismatch);
@@ -1889,8 +1883,14 @@ impl AppComponent {
                     root.finish_application_view_restore()?;
                 }
                 Ok(())
-            })
-            .map_err(|error| ThawError::State(error.to_string()))??;
+            };
+        if self.context.hosted {
+            restore(root, &AutoCommit::new())?;
+        } else {
+            self.context
+                .read_record(|doc| restore(root, doc))
+                .map_err(|error| ThawError::State(error.to_string()))??;
+        }
         let (view, application) = self.capture_local_pair_owned(&saved.view)?;
         self.local_view = view;
         self.application_view = application;

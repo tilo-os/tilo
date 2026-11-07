@@ -86,6 +86,7 @@ pub(super) fn mount(
         host_person: UserId(author.into()),
         records: records.clone(),
         checkout: checkout.clone(),
+        hosted: false,
         permissions: crate::permissions::SharedPermissions::new(PermissionContext::permissive()),
         author: UserId(author.into()),
         operation_context: std::rc::Rc::default(),
