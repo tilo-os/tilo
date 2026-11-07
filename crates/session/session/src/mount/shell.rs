@@ -629,11 +629,25 @@ impl Shell {
     /// does the same thing and the picture of the command behind it, its
     /// submenu's rows with them.
     fn rows(&self, tab: TabId) -> Vec<Row> {
-        self.handle
+        let mut rows: Vec<Row> = self
+            .handle
             .window_menu(tab)
             .into_iter()
             .map(|row| self.reading_row(row))
-            .collect()
+            .collect();
+        // A window of one tab is its tab: the chord that closes the tab closes
+        // it, so its Close row says that chord. A window of several offers the
+        // tab's close beside the window's, and the chord does only the tab's.
+        if !rows.iter().any(|row| row.id == window_menu::CLOSE) {
+            let close = fixed_chord("fixed-close-tab");
+            for row in rows
+                .iter_mut()
+                .filter(|row| row.id == window_menu::CLOSE_WINDOW)
+            {
+                row.shortcut.clone_from(&close);
+            }
+        }
+        rows
     }
 
     /// One row of the window menu as the reading spells it.
@@ -668,14 +682,7 @@ impl Shell {
     /// else.
     fn row_shortcut(&self, id: &str) -> Option<String> {
         if let Some(fixed) = fixed_row_shortcut(id) {
-            return ui::shortcut_table::fixed_shortcut(fixed).map(|fixed| {
-                fixed
-                    .chords()
-                    .iter()
-                    .map(KeyChord::display)
-                    .collect::<Vec<_>>()
-                    .join("  /  ")
-            });
+            return fixed_chord(fixed);
         }
         let action = match id {
             window_menu::FULLSCREEN | window_menu::EXIT_FULLSCREEN => {
@@ -694,6 +701,23 @@ impl Shell {
             .get(&action)
             .map(KeyChord::display)
     }
+}
+
+/// The chord the catalogue fixes for `id`, in the system's own spelling: its
+/// Super form where the catalogue binds one, so a row reads the key the desk
+/// advertises rather than every alternative at once.
+fn fixed_chord(id: &str) -> Option<String> {
+    let chords = ui::shortcut_table::fixed_shortcut(id)?.chords();
+    let chord = chords
+        .iter()
+        .find(|chord| {
+            chord
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.eq_ignore_ascii_case("super"))
+        })
+        .or_else(|| chords.first())?;
+    Some(chord.display())
 }
 
 /// The fixed shortcut whose chord does what row `id` does, for the rows a
