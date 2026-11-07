@@ -79,14 +79,23 @@ impl TopBarChrome {
             return;
         }
         // Beside the clock where its words fit there; a question the bar
-        // cannot hold beside the lane takes the lane too, over the glance
-        // value it covers, rather than waiting where it cannot be read or
-        // answered.
-        let aside = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
-        let across = self.center_lane.x0 + f64::from(theme.tokens.spacing.s4);
-        let Some(words) = AskWords::fit(&ask, right_x - aside, theme, text_renderer)
-            .or_else(|| AskWords::fit(&ask, right_x - across, theme, text_renderer))
-        else {
+        // cannot hold beside the lane takes the lane's free room up to the
+        // clock, and, with no room there either, the clock too, rather than
+        // waiting where it cannot be read or answered.
+        let gap = f64::from(theme.tokens.spacing.s4);
+        let limits = [
+            self.center_lane.x1 + gap,
+            self.center_rect.x1 + gap,
+            self.center_lane.x0 + gap,
+        ];
+        let mut words = None;
+        for limit in limits {
+            words = AskWords::fit(&ask, right_x - limit, theme, text_renderer);
+            if words.is_some() {
+                break;
+            }
+        }
+        let Some(words) = words else {
             return;
         };
         let pad = f64::from(theme.tokens.spacing.s2);
