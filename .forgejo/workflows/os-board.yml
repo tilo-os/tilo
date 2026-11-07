@@ -3,8 +3,9 @@ name: Build / OS board image
 # Build a board's sealed development image on the native arm64 runner and move
 # the board's dev channel to it. The image chain is tools/ci/build-os.sh, the
 # same steps a development machine runs; the runner supplies what they need: a
-# native overlay store on a disposable ext4 volume and the Kata guest's loop
-# devices. The board image is what `tilo device update` pulls from
+# native overlay store on a disposable ext4 volume, the Kata guest's loop
+# devices, and the commit's date, which t hands the checks that build.
+# The board image is what `tilo device update` pulls from
 # registry.tilo.so/tilo/tilo-vm:<board>-ci; nothing here signs or releases.
 on:
   workflow_dispatch:
@@ -67,6 +68,24 @@ jobs:
           bash os/dev/ci-prepare-disk-devices.sh --kata-job
           bash os/dev/ci-native-podman-store.sh
 
+      - name: Date the images by this commit
+        # The image steps read no Git inside their build containers, as t gives them the
+        # date of what they build (tools/ci/publish/source-date.sh); a commit's time here.
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "$GITHUB_ENV"
+
+      - name: Prove the build containers read this commit
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse --verify HEAD)
+          mirror=$(awk -F '\t' '$1 == "registry.tilo.so/tilo/buildah" { print $1 "@" $3; exit }' \
+            tools/ci/publish/mirrored-images.tsv)
+          seen=$(podman run --rm --privileged --security-opt label=disable --workdir /src \
+            -v "$PWD:/src" -e HOME=/root --entrypoint bash "$mirror" -ec 'git rev-parse --verify HEAD')
+          [[ $seen == "$commit" ]] || {
+            echo "::error::$mirror sees commit $seen of the checkout, not $commit"
+            exit 1
+          }
+
       - name: Build the OS image, the development image and the board's sealed image
         env:
           BOARD: ${{ github.event.inputs.board }}
@@ -91,6 +110,12 @@ jobs:
           GITHUB_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
+          # The image is what main's board channel and its per-commit tag carry, so only
+          # main publishes it.
+          test "$GITHUB_REF" = refs/heads/main || {
+            echo "::error::board images publish from main, not $GITHUB_REF"
+            exit 1
+          }
           target="$(dirname "$CONTAINERS_STORAGE_CONF")/os"
           out="$target/publish/os-board/$BOARD"
           test "$(cat "$out/board")" = "$BOARD"
