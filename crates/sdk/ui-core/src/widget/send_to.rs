@@ -377,12 +377,39 @@ impl SendToBox {
         self.row_height() * 0.8
     }
 
-    /// What a chip asks for: the mark it leads with, its name at half a row a
-    /// letter, and the × that takes it off.
-    fn chip_ask(&self, name: &str, remove: bool) -> f64 {
+    /// How far a chip's mark stands from its leading edge, how big it is, and
+    /// how far its text starts: past the mark, not on it.
+    fn mark_lead(&self) -> f64 {
+        self.row_height() * 0.85
+    }
+
+    fn mark_size(&self) -> f64 {
+        self.row_height() * 0.62
+    }
+
+    fn text_lead(&self) -> f64 {
+        self.mark_lead() + self.mark_size() / 2.0 + self.row_height() * 0.15
+    }
+
+    /// How wide `label` sets in the box's own text: a chip is as wide as what
+    /// it says, so a name neither runs past its pill nor leaves it half empty.
+    fn text_width(&self, label: &str) -> f64 {
+        let style = self.theme.text(TextRole::Body);
+        let theme = &self.theme;
+        f64::from(crate::text_render::with_layout_renderer(
+            theme.text_scale,
+            |renderer| renderer.measure_style(label, None, &style).0,
+        ))
+    }
+
+    /// What a chip asks for: the mark it leads with, its label, and the × that
+    /// takes it off.
+    fn chip_ask(&self, label: &str, remove: bool) -> f64 {
         let row = self.row_height();
-        let letters = f64::from(u32::try_from(name.chars().count()).unwrap_or(u32::MAX));
-        row * 0.85 + letters * row * 0.5 + row * 0.8 + if remove { row * 0.6 } else { 0.0 }
+        self.text_lead()
+            + self.text_width(label)
+            + row * 0.45
+            + if remove { row * 0.55 } else { 0.0 }
     }
 
     /// Place chips asking for `asks` from the box's leading edge on line `y`,
@@ -449,7 +476,7 @@ impl SendToBox {
             .iter()
             .zip(&removable)
             .map(|(chip, remove)| {
-                remove.then(|| Rect::new(chip.x1 - row * 0.6, chip.y0, chip.x1, chip.y1))
+                remove.then(|| Rect::new(chip.x1 - row * 0.55, chip.y0, chip.x1, chip.y1))
             })
             .collect();
         let start = (x + gap).max(rect.x0 + pad);
@@ -948,11 +975,9 @@ impl SendToBox {
             let Some(recipient) = self.to.get(index) else {
                 continue;
             };
-            let mark = row * 0.62;
-            let mark_rect = Rect::from_center_size(
-                (chip.x0 + row * 0.85 - mark / 2.0, chip.center().y),
-                (mark, mark),
-            );
+            let mark = self.mark_size();
+            let mark_rect =
+                Rect::from_center_size((chip.x0 + self.mark_lead(), chip.center().y), (mark, mark));
             if recipient.kind == RecipientKind::NewAgent {
                 crate::icons::draw_icon(
                     scene,
@@ -969,7 +994,7 @@ impl SendToBox {
                 );
             }
             let remove = self.layout.removes.get(index).copied().flatten();
-            let text_x = chip.x0 + row * 0.85;
+            let text_x = chip.x0 + self.text_lead();
             let room = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
             let shown = text_renderer.elide_to_width_style(
                 &recipient.name,
@@ -1108,12 +1133,12 @@ impl SendToBox {
                 &RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0)),
             );
             if let Some(subject) = self.subjects.get(index) {
-                let mark = row * 0.55;
+                let mark = self.mark_size();
                 crate::icons::draw_icon(
                     scene,
                     transform,
                     Rect::from_center_size(
-                        (chip.x0 + row * 0.85 - mark / 2.0, chip.center().y),
+                        (chip.x0 + self.mark_lead(), chip.center().y),
                         (mark, mark),
                     ),
                     subject_glyph(subject),
@@ -1122,7 +1147,7 @@ impl SendToBox {
                 );
                 let shown = text_renderer.elide_to_width_style(
                     &subject_label(subject),
-                    (chip.width() - row * 1.05).max(1.0) as f32,
+                    (chip.width() - self.text_lead() - self.row_height() * 0.2).max(1.0) as f32,
                     &style,
                 );
                 let (_, height) = text_renderer.measure_style(&shown, None, &style);
@@ -1131,7 +1156,7 @@ impl SendToBox {
                     &shown,
                     ink,
                     transform.pre_translate(Vec2::new(
-                        chip.x0 + row * 0.85,
+                        chip.x0 + self.text_lead(),
                         chip.y0 + (chip.height() - f64::from(height)) / 2.0,
                     )),
                     None,
