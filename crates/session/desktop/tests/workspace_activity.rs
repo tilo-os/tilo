@@ -28,8 +28,12 @@ fn workspace_activity_review_keeps_live_heads() {
     let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
     pane.refresh(&mut tree);
+    pane.set_view(ActivityView::Replay);
     assert!(!pane.entries().is_empty(), "the rename is a feed change");
+    pane.set_author_filter(Some("absent-author".into()));
+    pane.set_author_filter(None);
     pane.finish_view(tree.active.raw());
+    assert!(!pane.replay_is_playing());
     assert_eq!(tree.doc.get_heads(), before);
 }
 
@@ -457,6 +461,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
     let mut pane = WorkspaceActivityPane::new();
     pane.begin_view(tree.active.raw());
     pane.refresh(&mut tree);
+    pane.set_view(ActivityView::Replay);
     pane.refresh(&mut tree);
     let replay = pane.serve_replay();
     let first = replay

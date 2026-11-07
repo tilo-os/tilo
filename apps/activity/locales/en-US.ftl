@@ -6,10 +6,12 @@ activity-place-replay = Replay
 
 
 activity-mark-viewed = Mark as viewed
+activity-title-catch-up = While you were away
 activity-sessions = Work sessions
 activity-caught-up = You're caught up
 activity-see-history = See history
 activity-history-pending = History is waiting for current edits to finish
+activity-summary-on-device = On-device summary
 activity-resume-heading = Where you left off
 activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
@@ -71,6 +73,7 @@ activity-replay-no-workspace = The workspace did not exist at this checkpoint
 activity-replay-empty-window = Empty window
 activity-replay-one-tab = One tab
 activity-replay-window = { $window }, { $share }% of the width
+activity-presence-trail = Present
 
 # What the system did, beside the workspace's changes.
 activity-ledger-heading = What this device did

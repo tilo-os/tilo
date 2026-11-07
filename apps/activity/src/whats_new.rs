@@ -67,11 +67,27 @@ fn parts(
     if let Some(resume) = &summary.resume {
         parts.push(resume_section(&provider, resume));
     }
+    if let Some(narrative) = &summary.narrative {
+        parts.push(narrative_section(narrative));
+    }
     parts.push(briefs(nav, opened, summary));
     if !summary.sources.is_empty() {
         parts.push(sources(&provider, &cx.actions(), &summary.sources));
     }
     parts
+}
+
+/// The on-device summary: what the work adds up to, set as the page's
+/// lede under the heading that says where it came from.
+fn narrative_section(narrative: &str) -> Element {
+    Box::new(Section::titled(
+        tr("activity-summary-on-device"),
+        vec![Box::new(
+            Text::new(narrative)
+                .with_id("activity-narrative")
+                .with_role(ui::TextRole::Body),
+        )],
+    ))
 }
 
 fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
@@ -107,7 +123,11 @@ fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
 }
 
 fn briefs(nav: &Nav, opened: &LocalState<Option<String>>, summary: &wire::Summary) -> Element {
-    let heading = tr("activity-sessions");
+    let heading = tr(if summary.away {
+        "activity-title-catch-up"
+    } else {
+        "activity-sessions"
+    });
     if summary.briefs.is_empty() {
         // Nothing to list: no heading over nothing, and the way on from here.
         if summary.pending {

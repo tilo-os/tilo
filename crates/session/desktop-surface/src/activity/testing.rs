@@ -4,7 +4,7 @@
 //! through the same `desktop_doc` mutations a native host uses, so the pane
 //! reads real Automerge history. [`TestHost`] answers for a device with a
 //! fixed local user and keeps its private read state in memory.
-use super::{ActivityHost, ActivityTree, WorkspaceSeenFrontier};
+use super::{ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::caps::CapOverride;
 use std::cell::RefCell;
@@ -367,6 +367,7 @@ impl ActivityTree for TestTree {
 #[derive(Default)]
 pub(crate) struct TestHost {
     frontiers: RefCell<HashMap<u64, WorkspaceSeenFrontier>>,
+    departures: RefCell<HashMap<u64, WorkspaceDeparture>>,
 }
 
 impl ActivityHost for TestHost {
@@ -384,6 +385,12 @@ impl ActivityHost for TestHost {
     }
     fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
         self.frontiers.borrow_mut().clone_from(frontiers);
+    }
+    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
+        self.departures.borrow().clone()
+    }
+    fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
+        self.departures.borrow_mut().clone_from(departures);
     }
     fn mutations_available(&self) -> bool {
         true

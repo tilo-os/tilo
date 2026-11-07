@@ -24,7 +24,8 @@ use durable_store::{DurableStore, StorageKey, WriteOp};
 use tilo_desktop_model::{DesktopTree, TabId, TileContent, WorkspaceSlot};
 use tilo_desktop_surface::activity::describer::{self, Describer, Job};
 use tilo_desktop_surface::activity::{
-    ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceSeenFrontier,
+    ActivityHost, ActivitySnapshot, DetachedRecordHistory, WorkspaceDeparture,
+    WorkspaceSeenFrontier,
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::{ActivityPaneCode, OpenActivity};
@@ -160,6 +161,12 @@ impl ActivityHost for PageActivityHost {
     }
     fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
         self.save("activity-seen", frontiers);
+    }
+    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
+        self.load("activity-departures")
+    }
+    fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
+        self.save("activity-departures", departures);
     }
     fn app_display_name(&self, app: &str) -> Option<String> {
         crate::desktop::known_application(app).map(Into::into)

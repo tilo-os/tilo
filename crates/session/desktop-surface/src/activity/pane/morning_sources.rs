@@ -154,6 +154,7 @@ impl WorkspaceActivityPane {
     }
 
     pub(super) fn morning_source_label(
+        &self,
         evidence: Option<&(ui::HistoryResourceTarget, SystemTime)>,
     ) -> String {
         evidence.map_or_else(
@@ -163,7 +164,7 @@ impl WorkspaceActivityPane {
                     "activity-morning-source",
                     &[
                         ("source", morning_source_name(target).into()),
-                        ("time", format_relative_time(*time, Self::now()).into()),
+                        ("time", format_relative_time(*time, self.now()).into()),
                     ],
                 )
             },
@@ -208,7 +209,7 @@ impl WorkspaceActivityPane {
         evidence: Option<&(ui::HistoryResourceTarget, SystemTime)>,
     ) -> String {
         if self.scope != WorkspaceScope::ThisWorkspace || evidence.is_none() {
-            return Self::morning_source_label(evidence);
+            return self.morning_source_label(evidence);
         }
         let payload = self
             .chosen_morning_sources()
@@ -220,11 +221,11 @@ impl WorkspaceActivityPane {
                 "activity-morning-recorded",
                 &[
                     ("source", morning_source_name(target).into()),
-                    ("time", format_relative_time(*time, Self::now()).into()),
+                    ("time", format_relative_time(*time, self.now()).into()),
                 ],
             )
         } else {
-            Self::morning_source_label(evidence)
+            self.morning_source_label(evidence)
         }
     }
     pub(super) fn morning_payload_text(&self, key: &str) -> String {

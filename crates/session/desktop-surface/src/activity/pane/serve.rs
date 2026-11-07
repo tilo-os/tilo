@@ -253,6 +253,10 @@ impl WorkspaceActivityPane {
             brief.entry_ids.hash(&mut hasher);
             brief.title.hash(&mut hasher);
         }
+        self.narrative
+            .as_ref()
+            .map(|narrative| &narrative.text)
+            .hash(&mut hasher);
         self.replay_frames.len().hash(&mut hasher);
         self.replay_frames
             .last()
@@ -470,6 +474,10 @@ impl WorkspaceActivityPane {
                     entries: brief.entry_ids.iter().map(hex).collect(),
                 })
                 .collect(),
+            narrative: self
+                .narrative
+                .as_ref()
+                .map(|narrative| narrative.text.clone()),
             resume: local_resume_snapshot(self.timeline.entries(), &self.local_user()).map(
                 |resume| wire::Resume {
                     target: target(&resume.target),
@@ -478,6 +486,10 @@ impl WorkspaceActivityPane {
                     at_ms: millis(resume.timestamp),
                 },
             ),
+            away: self.last_active.is_some()
+                && self.last_active == self.presence_workspace
+                && self.away_digest.total_changes > 0
+                && self.digest == self.away_digest,
             sources_available: self.host.morning_sources_available()
                 && self.scope == WorkspaceScope::ThisWorkspace,
             sources,
@@ -513,6 +525,14 @@ impl WorkspaceActivityPane {
                                     width_permille: group.width_permille,
                                 })
                                 .collect(),
+                        })
+                        .collect(),
+                    pointers: frame
+                        .pointers
+                        .iter()
+                        .map(|pointer| wire::ReplayPointer {
+                            name: pointer.name.clone(),
+                            rgb: [pointer.color.0, pointer.color.1, pointer.color.2],
                         })
                         .collect(),
                 })
@@ -712,6 +732,7 @@ impl WorkspaceActivityPane {
     /// when the showing ends ([`Self::end_summary`]) or it says so.
     pub fn begin_summary(&mut self, workspace: u64) {
         self.begin_view(workspace);
+        self.view = ActivityView::CatchUp;
     }
 
     /// Stop showing what changed: what was shown counts as seen.
@@ -727,6 +748,13 @@ impl WorkspaceActivityPane {
         }
         let shown = self.viewed_changes.entry(workspace).or_default();
         for id in viewed.entries.iter().filter_map(|hex| entry_id(hex)) {
+            if self
+                .external_entry
+                .as_ref()
+                .is_some_and(|entry| entry.id == id)
+            {
+                continue;
+            }
             shown.insert(
                 self.projected_origins
                     .get(&id)
@@ -794,10 +822,11 @@ impl WorkspaceActivityPane {
                                     || item.id.strip_prefix("file:") == Some(resource)
                             })
                         }) || self.projected_origins.get(&entry.id).is_some_and(|origin| {
-                            origin
-                                .origin
-                                .record()
-                                .is_some_and(|id| id.as_str() == resource)
+                            matches!(
+                                &origin.origin,
+                                crate::activity::index::HistoryOrigin::Record { id, .. }
+                                    if id.as_str() == resource
+                            )
                         })
                     })
                     .map(|entry| entry.id)

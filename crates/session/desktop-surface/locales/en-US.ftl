@@ -193,6 +193,7 @@ activity-view-catch-up = What's new
 activity-view-tasks = Tasks
 activity-view-explore = History
 activity-view-replay = Replay
+activity-title-catch-up = While you were away
 activity-title-whats-new = What's new
 activity-title-explore = Workspace activity
 activity-title-replay = Replay workspace
@@ -268,6 +269,7 @@ activity-history-gone = These changes are no longer in the history.
 activity-served-personal-only = Only the person at this device can do this.
 activity-served-read-only = This desktop shows the history but can't change it.
 activity-served-unavailable = This workspace's history isn't kept here.
+activity-summary-on-device = On-device summary
 activity-session-move-newer = 1 action newer
 activity-session-move-older = 1 action older
 activity-more-sessions = More work sessions…
@@ -370,6 +372,7 @@ activity-replay-position = Checkpoint { $position } of { $total } · { $when }
 activity-replay-no-workspace = The workspace did not exist at this checkpoint
 activity-replay-empty-window = Empty window
 activity-replay-layout-not-recorded = Window sizes and selected tabs were not recorded
+activity-presence-trail = Presence trail
 workspace-create-task = { $manual ->
     [true] Created the task “{ $title }” to do by hand
    *[false] Created the task “{ $title }”
