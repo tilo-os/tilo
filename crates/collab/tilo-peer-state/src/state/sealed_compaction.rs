@@ -174,6 +174,26 @@ pub struct OpenedRecord {
     pub unmerged: Vec<UnmergedWrite>,
 }
 
+impl OpenedRecord {
+    /// Whether every write the read leaves out is a repeated writer sequence
+    /// ([`UnmergedReason::AlreadyHeld`]): this record keeps the change that
+    /// reached it first of such a sequence, and nothing of it is missing.
+    #[must_use]
+    pub fn only_repeated_sequences(&self) -> bool {
+        self.unmerged
+            .iter()
+            .all(|write| matches!(write.reason, UnmergedReason::AlreadyHeld { .. }))
+    }
+
+    /// Whether this record is one compaction makes whole for every reader:
+    /// it leaves out writes, and every one of them is a repeated writer
+    /// sequence ([`Self::only_repeated_sequences`]).
+    #[must_use]
+    pub fn needs_repair(&self) -> bool {
+        !self.unmerged.is_empty() && self.only_repeated_sequences()
+    }
+}
+
 /// A sealed write [`OpenedRecord::document`] leaves out.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnmergedWrite {
@@ -242,16 +262,16 @@ pub(super) enum WriteMerge {
 /// A write is decided on its own: a replica adds a change under a writer's
 /// sequence once, and a write that writes a sequence the record already holds
 /// (a writer that forked, whose two changes share one sequence) is named
-/// rather than failing the whole record. Automerge itself refuses the second
-/// change under a sequence, so that refusal is read as the fork it is.
+/// rather than failing the whole record. The merge keeps the first change of
+/// each writer's sequence everywhere a record is read
+/// ([`tilo_automerge::keeping`]), so the write's other changes still apply
+/// and only the repeated sequence is left out.
 pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) -> WriteMerge {
     match crate::document::merge_committed_with_status(record, mutation) {
-        Ok(crate::document::MergeOutcome::Changed(_)) => WriteMerge::Applied,
+        Ok(crate::document::MergeOutcome::Changed(true)) => WriteMerge::Applied,
+        Ok(crate::document::MergeOutcome::Changed(false)) => unchanged(record, mutation),
         Ok(crate::document::MergeOutcome::MissingDependencies) => WriteMerge::Waiting,
-        Err(crate::document::MergeError::Invalid(why)) => match already_held(record, mutation) {
-            Some((actor, seq)) => WriteMerge::AlreadyHeld { actor, seq },
-            None => WriteMerge::Refused(why),
-        },
+        Err(crate::document::MergeError::Invalid(why)) => WriteMerge::Refused(why),
         // A write is merged between frames and between actions: it is never
         // handed a record with ops of its own still open.
         Err(crate::document::MergeError::Busy) => {
@@ -260,31 +280,20 @@ pub(super) fn merge_write(record: &mut AutoCommit, mutation: &DocumentMutation) 
     }
 }
 
-/// The change of `mutation` whose writer and sequence `record` already holds,
-/// when it carries every change of that write: `None` when any of its changes
-/// would be new (then the write is not merely a second one).
-fn already_held(record: &mut AutoCommit, mutation: &DocumentMutation) -> Option<(String, u64)> {
+/// A write that changed nothing: the sequence it writes again when every
+/// change of it is one the record already holds, either as itself or as the
+/// other change under its writer's sequence.
+fn unchanged(record: &mut AutoCommit, mutation: &DocumentMutation) -> WriteMerge {
     let DocumentMutation::Incremental(bytes) = mutation else {
-        return None;
+        return WriteMerge::Applied;
     };
-    let changes = automerge::Automerge::parse_changes(bytes).ok()?;
-    if changes.is_empty() {
-        return None;
+    match tilo_automerge::keeping::repeated_sequence(record, bytes) {
+        Some(left) => WriteMerge::AlreadyHeld {
+            actor: left.actor,
+            seq: left.seq,
+        },
+        None => WriteMerge::Applied,
     }
-    let held = record.get_changes(&[]);
-    let mut found = None;
-    for change in &changes {
-        let is_held = held
-            .iter()
-            .any(|held| held.actor_id() == change.actor_id() && held.seq() == change.seq());
-        if !is_held {
-            return None;
-        }
-        if found.is_none() {
-            found = Some((change.actor_id().to_hex_string(), change.seq()));
-        }
-    }
-    found
 }
 
 /// What a caller does with a write its record cannot take.

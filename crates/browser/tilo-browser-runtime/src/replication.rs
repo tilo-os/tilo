@@ -1426,7 +1426,9 @@ impl Joined {
                     }
                 }
                 DocumentMutation::Incremental(bytes) => {
-                    doc.load_incoming(&bytes)
+                    // A writer that wrote one sequence twice leaves out the
+                    // change that came second, and the run's rest applies.
+                    tilo_automerge::keeping::apply_bytes(&mut doc, &bytes)
                         .map_err(|error| error.to_string())?;
                     runs.push(bytes);
                 }
