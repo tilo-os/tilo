@@ -16,7 +16,7 @@ use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Banner, Button, ButtonRole, Column, ControlSize, Divider, Element, ListRow, ModalDialog,
-    QrWidget, Row, Section, Segment, Text, TextInput, ToggleGroup,
+    QrWidget, Row, Section, Segment, Spacer, Text, TextInput, ToggleGroup,
 };
 
 use crate::presentation::Presentation;
@@ -26,10 +26,11 @@ pub const APP_ID: &str = "so.tilo.invite";
 
 /// How wide each module of the made link's code is drawn: an invitation's
 /// signed bytes run to about a kilobyte, and a code that dense turns to
-/// speckle unless its squares are counted rather than guessed at. The code
-/// takes the line this width asks for; the test that scans the sheet's code
+/// speckle unless its squares are counted rather than guessed at. Two pixels
+/// a module make the whole code, quiet zone and all, shorter than the sheet,
+/// so a scanner can take it in at once; the test that scans the sheet's code
 /// draws it at the same width.
-pub const CODE_MODULE_PX: u32 = 4;
+pub const CODE_MODULE_PX: u32 = 2;
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
@@ -427,11 +428,17 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
         .with_id("invite-code")
         .with_module_px(CODE_MODULE_PX)
         .with_alt(created.alt.clone());
-    // The code stands on a line of its own: the room its modules need is
-    // wider than what is left beside a field.
+    // The code stands on a line of its own, centred: the room its modules
+    // need is wider than what is left beside a field.
     vec![
         caption(&created.link_label),
-        Box::new(code),
+        Box::new(
+            Row::new()
+                .with_rhythm(Rhythm::Tight)
+                .push(Box::new(Spacer::new()))
+                .push(Box::new(code))
+                .push(Box::new(Spacer::new())),
+        ),
         Box::new(
             Column::new()
                 .with_intrinsic_height()

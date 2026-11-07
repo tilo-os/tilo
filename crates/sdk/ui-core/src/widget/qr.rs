@@ -229,15 +229,19 @@ impl Widget for QrWidget {
     ) -> NodeId {
         // 240x240 unless the caller named a module size: then the box is as
         // large as the modules the code carries need, and a card gives it the
-        // line that room takes.
-        let side = self
-            .module_px
-            .and_then(|px| {
-                u32::try_from(self.total_modules())
-                    .ok()
-                    .map(|mods| mods.saturating_mul(px))
-            })
-            .map_or(240.0, |side| side as f32);
+        // line that room takes. A code that could not be made keeps the usual
+        // box, which is where its error is written.
+        let side = if self.error.is_some() {
+            240.0
+        } else {
+            self.module_px
+                .and_then(|px| {
+                    u32::try_from(self.total_modules())
+                        .ok()
+                        .map(|mods| mods.saturating_mul(px))
+                })
+                .map_or(240.0, |side| side as f32)
+        };
         let style = Style {
             size: Size::from_lengths(side, side),
             ..Default::default()
@@ -269,9 +273,9 @@ impl Widget for QrWidget {
         // paints a black-on-black QR a scanner can't see.
         let light = Color::from_rgb8(0xFF, 0xFF, 0xFF);
         let dark = Color::from_rgb8(0, 0, 0);
-        scene.fill(Fill::NonZero, transform, light, None, &self.rect);
 
         if let Some(err) = &self.error {
+            scene.fill(Fill::NonZero, transform, light, None, &self.rect);
             let msg = format!("QR error: {err}");
             // Affine composition: pure `f64` matrix multiply, cannot panic
             // regardless of operand magnitude.
@@ -314,6 +318,11 @@ impl Widget for QrWidget {
         let drawn = module * total;
         let origin_x = self.rect.x0 + (self.rect.width() - drawn) / 2.0;
         let origin_y = self.rect.y0 + (self.rect.height() - drawn) / 2.0;
+        // The white is the code's own ground, as wide as the code: a slot
+        // wider or taller than the code then shows it centred on the surface
+        // rather than as a pale band around it.
+        let ground = Rect::new(origin_x, origin_y, origin_x + drawn, origin_y + drawn);
+        scene.fill(Fill::NonZero, transform, light, None, &ground);
         let quiet = self.quiet_modules as f64 * module;
         for y in 0..self.matrix_size {
             for x in 0..self.matrix_size {
@@ -467,11 +476,13 @@ mod tests {
         let mut code = QrWidget::new(vec![b'i'; 1000]).with_module_px(px);
         assert!(code.error().is_none(), "an invitation-sized payload fits");
         assert_eq!(code.module_px(), Some(px));
-        let want = u32::try_from(code.total_modules()).expect("the code's modules fit") * px;
+        let want = u16::try_from(code.total_modules())
+            .expect("the code's modules fit")
+            .saturating_mul(u16::try_from(px).expect("the module width fits"));
         let mut taffy = TaffyTree::new();
         let node = code.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
         let laid = taffy.style(node).expect("the code is laid out").size;
-        let want = taffy::Dimension::length(want as f32);
+        let want = taffy::Dimension::length(f32::from(want));
         assert_eq!(laid.width, want);
         assert_eq!(laid.height, want);
 
