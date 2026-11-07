@@ -179,10 +179,6 @@ pub(crate) fn refresh_mounts() {
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[expect(
-    clippy::struct_excessive_bools,
-    reason = "independent switches the page passes in its JSON config"
-)]
 struct Config {
     /// One application to mount on its own; absent (or `desktop`) mounts
     /// the session desktop.

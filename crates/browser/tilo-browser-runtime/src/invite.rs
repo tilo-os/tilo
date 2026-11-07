@@ -237,7 +237,7 @@ impl PageInvite {
             return;
         };
         if let Err(error) = self.ask(Answer::Pending, move |_| WorkspacesRequest::Pending {
-            workspace: workspace.clone(),
+            workspace,
         }) {
             self.asking.set(false);
             self.refused("invite-failed", &error);
@@ -269,7 +269,7 @@ impl PageInvite {
 
     /// Take what the host answered since the last pass. Whether anything
     /// arrived.
-    fn take_answers(&mut self) -> bool {
+    fn take_answers(&self) -> bool {
         let answers: Vec<Answer> = std::mem::take(
             &mut *self
                 .answers
@@ -382,13 +382,13 @@ impl PageInvite {
         };
         let recipient = match recipient {
             "" => None,
-            key => match hex::decode(key).ok().and_then(|key| key.try_into().ok()) {
-                Some(key) => Some(key),
-                None => {
+            key => {
+                let Some(key) = hex::decode(key).ok().and_then(|key| key.try_into().ok()) else {
                     self.refused("invite-failed", "that is not a person's key");
                     return;
-                }
-            },
+                };
+                Some(key)
+            }
         };
         let mut request_id = [0u8; 32];
         if let Err(error) = getrandom::fill(&mut request_id) {
