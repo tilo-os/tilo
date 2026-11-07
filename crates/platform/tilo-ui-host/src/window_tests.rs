@@ -1247,6 +1247,11 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
 /// A page whose overview is one list over the rows the app renders, as `std.list` builds it:
 /// the list inside the page an app docks its composer or bar under.
 fn list_page() -> Vec<ToUi> {
+    list_page_keyed("shell")
+}
+
+/// [`list_page`], its shell under `key`: a new key is a shell the window builds anew.
+fn list_page_keyed(key: &str) -> Vec<ToUi> {
     let mut list = UiNode::empty("ui.VirtualList", "list");
     list.props.insert("in_column".to_owned(), Value::Bool(true));
     let mut docked = UiNode::empty("ui.Docked", "docked");
@@ -1256,7 +1261,7 @@ fn list_page() -> Vec<ToUi> {
         .props
         .insert("name".to_owned(), Value::text("overview"));
     overview.children.push(docked);
-    let mut shell = UiNode::empty("ui.NavShell", "shell");
+    let mut shell = UiNode::empty("ui.NavShell", key);
     shell.children.push(overview);
     vec![ToUi::Open {
         lane: Lane::Root,
@@ -1264,6 +1269,32 @@ fn list_page() -> Vec<ToUi> {
         tree: shell,
         front: None,
     }]
+}
+
+/// A shell built anew opens on the screen a new window opens on; the window remembers the
+/// column the person is looking at, and hands it to the shell it builds.
+#[test]
+fn a_window_keeps_the_column_in_front_when_its_shell_is_built_anew() {
+    let (mut app, window_end) = tilo_render_protocol::patch::local::pair();
+    let mut window = AppWindow::new(Box::new(window_end), Vec::new());
+    send(&mut app, &list_page());
+    window.receive();
+    // The person taps a row: the window shows it in front of the list.
+    send(&mut app, &[ToUi::Front(wire::Front::Input)]);
+    window.receive();
+    assert_eq!(
+        window.shell_ref().map(NavShell::front_pane),
+        Some(NavPane::Content)
+    );
+    // The app's views change key, so the shell is built anew.
+    send(&mut app, &list_page_keyed("again"));
+    window.receive();
+    assert!(window.failed().is_none(), "{:?}", window.failed());
+    assert_eq!(
+        window.shell_ref().map(NavShell::front_pane),
+        Some(NavPane::Content),
+        "the new shell shows the column the person is looking at, not the one a window opens on"
+    );
 }
 
 /// The list of the view's overview.
