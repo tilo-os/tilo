@@ -70,41 +70,68 @@ pub fn apply(
     doc: &mut AutoCommit,
     changes: impl IntoIterator<Item = Change>,
 ) -> Result<Keeping, AutomergeError> {
-    let mut kept = Vec::new();
-    let mut left_out = Vec::new();
-    let mut taken: Vec<(ActorId, u64)> = Vec::new();
-    let mut hashes: Vec<ChangeHash> = Vec::new();
-    for change in changes {
-        let hash = change.hash();
-        // A change this stream already carried, as `apply_changes` skips it.
-        if hashes.contains(&hash) {
-            continue;
-        }
-        hashes.push(hash);
-        let held = doc.committed_document().applied_seq(change.actor_id()) >= change.seq()
-            || taken
-                .iter()
-                .any(|(actor, seq)| actor == change.actor_id() && *seq == change.seq());
-        if held {
-            // A change this document already holds is a replay, not a fork.
-            let replay = doc.committed_document().change_hashes().contains(&hash);
-            if !replay {
-                left_out.push(LeftOut {
-                    actor: change.actor_id().to_hex_string(),
-                    seq: change.seq(),
-                });
-            }
-            continue;
-        }
-        taken.push((change.actor_id().clone(), change.seq()));
-        kept.push(change);
-    }
+    let (kept, left_out) = take(doc, changes);
     let before = doc.get_heads();
     doc.apply_incoming(kept)?;
     Ok(Keeping {
         changed: doc.get_heads() != before,
         left_out,
     })
+}
+
+/// What a document makes of one change of an incoming stream, among the
+/// changes `taken` before it: `None` when it takes it, and whether it already
+/// holds exactly that change (`true`) or another change of its writer's
+/// sequence (`false`, a fork).
+fn held_by(doc: &AutoCommit, change: &Change, taken: &[(ActorId, u64)]) -> Option<bool> {
+    let document = doc.committed_document();
+    let held = document.applied_seq(change.actor_id()) >= change.seq()
+        || taken
+            .iter()
+            .any(|(actor, seq)| actor == change.actor_id() && *seq == change.seq());
+    held.then(|| document.change_hashes().contains(&change.hash()))
+}
+
+/// Split `changes` into those `doc` takes and the ones it leaves out, in the
+/// order they came (see the module documentation).
+fn take(
+    doc: &AutoCommit,
+    changes: impl IntoIterator<Item = Change>,
+) -> (Vec<Change>, Vec<LeftOut>) {
+    let mut kept = Vec::new();
+    let mut left_out = Vec::new();
+    let mut taken: Vec<(ActorId, u64)> = Vec::new();
+    let mut hashes: Vec<ChangeHash> = Vec::new();
+    for change in changes {
+        // A change this stream already carried, as `apply_changes` skips it.
+        if hashes.contains(&change.hash()) {
+            continue;
+        }
+        hashes.push(change.hash());
+        match held_by(doc, &change, &taken) {
+            Some(false) => left_out.push(LeftOut {
+                actor: change.actor_id().to_hex_string(),
+                seq: change.seq(),
+            }),
+            Some(true) => {}
+            None => {
+                taken.push((change.actor_id().clone(), change.seq()));
+                kept.push(change);
+            }
+        }
+    }
+    (kept, left_out)
+}
+
+/// The first change of `data` whose writer's sequence `doc` already holds
+/// under another change: a fork, which Automerge cannot hold, and which
+/// [`apply`] leaves out. `None` when every change of `data` is one `doc`
+/// would take or one it already holds. A reader whose document is decided by
+/// its changes as a whole refuses the fork rather than reading one branch.
+#[must_use]
+pub fn fork(doc: &AutoCommit, data: &[u8]) -> Option<LeftOut> {
+    let changes = automerge::Automerge::parse_changes(data).ok()?;
+    take(doc, changes).1.into_iter().next()
 }
 
 /// The writer and sequence `data` writes again, when it carries no change
@@ -114,23 +141,12 @@ pub fn apply(
 #[must_use]
 pub fn repeated_sequence(doc: &mut AutoCommit, data: &[u8]) -> Option<LeftOut> {
     let changes = automerge::Automerge::parse_changes(data).ok()?;
-    let mut repeated = None;
-    for change in changes {
-        let document = doc.committed_document();
-        if document.change_hashes().contains(&change.hash()) {
-            continue;
-        }
-        if document.applied_seq(change.actor_id()) < change.seq() {
-            // This record would take it: the stream is not a repeat of a
-            // sequence it already holds.
-            return None;
-        }
-        repeated.get_or_insert_with(|| LeftOut {
-            actor: change.actor_id().to_hex_string(),
-            seq: change.seq(),
-        });
+    let (kept, left_out) = take(doc, changes);
+    if kept.is_empty() {
+        left_out.into_iter().next()
+    } else {
+        None
     }
-    repeated
 }
 
 #[cfg(test)]

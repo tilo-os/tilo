@@ -1111,11 +1111,12 @@ fn concurrent_distinct_invites_for_one_device_preserve_both_spends_after_restore
     }
 }
 
-/// Two participants may admit through one invitation at once, each before it
-/// holds the other's receipt: every receiver keeps both, whichever arrives
-/// first, so all replicas agree.
+/// Two participants may redeem one invitation at once, each before it holds
+/// the other's receipt. An invitation admits one person: every receiver keeps
+/// the redemption that reached it first and refuses the other, whichever of
+/// the two arrives first.
 #[test]
-fn concurrent_receipts_for_one_invite_converge_in_either_order() {
+fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first() {
     let (base, authority_key, _, _, now) = seeded();
     let NeighbourMsg::SyncResp {
         changes,
@@ -1169,19 +1170,24 @@ fn concurrent_receipts_for_one_invite_converge_in_either_order() {
     let receive = |first: NeighbourMsg, second: NeighbourMsg| {
         let mut receiver = base.clone();
         receiver.receive_from(from, first, now).unwrap();
-        receiver.receive_from(from, second, now).unwrap();
-        receiver.workspace_message()
-    };
-    let governed = |message: NeighbourMsg| {
-        let NeighbourMsg::SyncResp { changes, .. } = message else {
+        let refused = receiver.receive_from(from, second, now).unwrap_err();
+        assert!(
+            refused.contains("conflicting redemption"),
+            "the second redemption of one invitation must be refused: {refused}"
+        );
+        let held = receiver.workspace_message();
+        let NeighbourMsg::SyncResp { changes, .. } = held else {
             panic!("workspace message is a SyncResp")
         };
-        crate::workspace::governance_of(Some(&crate::workspace::candidate(None, &changes).unwrap()))
+        crate::workspace::candidate(None, &changes).unwrap()
     };
-    let one = governed(receive(message(left.clone()), message(right.clone())));
-    let other = governed(receive(message(right), message(left)));
-    assert_eq!(one, other);
-    assert_eq!(one.invitation_receipts[&hex::encode(invite_id)].len(), 2);
+    for redemption in [
+        receive(message(left.clone()), message(right.clone())),
+        receive(message(right), message(left)),
+    ] {
+        let held = crate::workspace::invitation_receipts(&redemption).unwrap();
+        assert_eq!(held[&hex::encode(invite_id)].len(), 1);
+    }
 }
 
 #[test]

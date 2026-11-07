@@ -275,8 +275,9 @@ pub fn invitation_admits(
 /// the batch adds to the workspace's ledger must be one: the invitation it
 /// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
-/// the workspace gives them its role. A receipt the workspace holds stays as it is,
-/// so a spent invitation stays spent.
+/// the workspace gives them its role. That an invitation is redeemed once is
+/// every writer's rule, checked for the whole candidate
+/// ([`super::redemptions_kept`]).
 fn redemptions(
     workspace: &str,
     held: &WorkspacePolicy,
@@ -357,19 +358,6 @@ fn redemptions(
                 )));
             }
             invited.insert(person, (role, device));
-        }
-    }
-    // A receipt the workspace held stays as it is, so a spent invitation stays
-    // spent, whichever change of the batch would take it back.
-    for (invite, values) in &before.invitation_receipts {
-        let kept = written.invitation_receipts.get(invite);
-        if values
-            .iter()
-            .any(|value| !kept.is_some_and(|kept| kept.contains(value)))
-        {
-            return Err(MembershipRefusal::Refused(format!(
-                "the redemption of invitation {invite} is the workspace's record"
-            )));
         }
     }
     Ok(invited)
