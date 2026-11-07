@@ -436,6 +436,21 @@ impl Staged {
         out
     }
 
+    /// Tap the window at `at`, as a finger does, and let it answer: a row of a list is painted
+    /// by the list, one widget without a place of its own to tap by name, so a person's hand
+    /// lands on where the row is drawn.
+    pub fn tap_at(&mut self, at: (f64, f64)) -> Result<(), String> {
+        self.harness.tap_at(at.0, at.1);
+        self.exchange();
+        self.settle()
+    }
+
+    /// The resource the window shows after its list: what a row opened.
+    pub fn detail_target(&mut self) -> Option<ResourceRef> {
+        let window = self.window()?;
+        window.detail_target().cloned()
+    }
+
     /// The tree the window composed from what the app sent, as sent: every view that ran is in
     /// it, keyed by its view, even one that drew nothing (a bare `if let` whose value is
     /// absent leaves an empty fragment), where the laid-out widgets keep no trace of it.

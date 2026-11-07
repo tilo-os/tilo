@@ -21,6 +21,7 @@ use std::sync::PoisonError;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 pub use audit::Kind;
+use tilo_render_protocol::patch::ResourceRef;
 use ui::interaction::InteractionEnvironment;
 
 /// A window size people use, in logical pixels, and whether it is held in the hand.
@@ -367,7 +368,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
             })
         })
         .collect();
-    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(2));
+    let mut planned = Vec::with_capacity(scenes.len().saturating_mul(3));
     for scene in &scenes {
         planned.extend(scene.units());
     }
@@ -379,17 +380,18 @@ pub fn check(options: &Options) -> Result<Report, String> {
     let mut layouts_run: usize = 0;
     let mut gathered: Vec<BTreeMap<Identity, Finding>> = Vec::new();
     gathered.resize_with(apps.len(), BTreeMap::new);
-    for ((scene, pair), opened) in scenes
+    for ((scene, units), opened) in scenes
         .iter()
-        .zip(phase.chunks_mut(2))
+        .zip(phase.chunks_mut(3))
         .zip(opened.iter_mut())
     {
-        let [scenario, press] = pair else {
+        let [scenario, press, push] = units else {
             continue;
         };
         layouts_run = layouts_run
             .saturating_add(scenario.layouts)
             .saturating_add(press.layouts)
+            .saturating_add(push.layouts)
             .saturating_add(opened.layouts);
         let Some(held) = gathered.get_mut(scene.app) else {
             continue;
@@ -397,6 +399,7 @@ pub fn check(options: &Options) -> Result<Report, String> {
         merge(held, std::mem::take(&mut scenario.gathered));
         merge(held, std::mem::take(&mut opened.gathered));
         merge(held, std::mem::take(&mut press.gathered));
+        merge(held, std::mem::take(&mut push.gathered));
     }
     // A label no window carried anywhere is the one the run reports: a control a scenario
     // shows and the next does not — a window's change mark — is pressed where it stands,
@@ -521,8 +524,9 @@ struct Scene {
 }
 
 impl Scene {
-    /// The units every scene has: the scenario as staged, and its primary actions pressed.
-    fn units(&self) -> [Unit; 2] {
+    /// The units every scene has: the scenario as staged, its primary actions pressed, and what
+    /// a row it opened shows a person holding the window.
+    fn units(&self) -> [Unit; 3] {
         [
             Unit {
                 scene: self.at(),
@@ -531,6 +535,10 @@ impl Scene {
             Unit {
                 scene: self.at(),
                 what: What::Press,
+            },
+            Unit {
+                scene: self.at(),
+                what: What::Push,
             },
         ]
     }
@@ -607,6 +615,9 @@ enum What {
     Opens { shown: BTreeSet<String> },
     /// The scenario with each of its primary actions pressed, at every size.
     Press,
+    /// The scenario at every size it is held in the hand, with the row it opened tapped as a
+    /// finger taps it: the window a person comes to after choosing what to read.
+    Push,
 }
 
 /// What one unit of work found.
@@ -753,7 +764,7 @@ fn run_opens(
             let Some(scene) = scenes.get(index) else {
                 continue;
             };
-            let [scenario, press] = scene_units(phase, index);
+            let [scenario, press, push] = scene_units(phase, index);
             let mut seed = shown.clone();
             if let Some(scenario) = scenario {
                 seed.extend(scenario.shown.iter().cloned());
@@ -767,6 +778,9 @@ fn run_opens(
             };
             if let Some(press) = press {
                 shown.extend(press.shown.iter().cloned());
+            }
+            if let Some(push) = push {
+                shown.extend(push.shown.iter().cloned());
             }
             opened.push((index, found));
         }
@@ -808,26 +822,23 @@ fn run_opens(
         }
     }
     for (index, scene) in scenes.iter().enumerate() {
-        let [scenario, press] = scene_units(phase, index);
+        let [scenario, press, push] = scene_units(phase, index);
         let Some(held) = shown.get_mut(scene.app) else {
             continue;
         };
-        if let Some(scenario) = scenario {
-            held.extend(scenario.shown.iter().cloned());
-        }
-        if let Some(press) = press {
-            held.extend(press.shown.iter().cloned());
+        for found in [scenario, press, push].into_iter().flatten() {
+            held.extend(found.shown.iter().cloned());
         }
     }
     Ok((opened, shown))
 }
 
-/// The two units every scene has in the first phase, in the order the check ran them.
-fn scene_units(phase: &[Found], index: usize) -> [Option<&Found>; 2] {
-    let mut held = [None, None];
+/// The units every scene has in the first phase, in the order the check ran them.
+fn scene_units(phase: &[Found], index: usize) -> [Option<&Found>; 3] {
+    let mut held = [None, None, None];
     for (slot, found) in held
         .iter_mut()
-        .zip(phase.chunks(2).nth(index).unwrap_or_default())
+        .zip(phase.chunks(3).nth(index).unwrap_or_default())
     {
         *slot = Some(found);
     }
@@ -867,7 +878,7 @@ impl Worker<'_> {
             ran: 0,
             shown: match &unit.what {
                 What::Opens { shown } => shown.clone(),
-                What::Scenario | What::Press => BTreeSet::new(),
+                What::Scenario | What::Press | What::Push => BTreeSet::new(),
             },
             pressed: BTreeSet::new(),
         };
@@ -1084,6 +1095,70 @@ fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Opt
         .find_map(|child| painted_button_named(child, label))
 }
 
+/// Whether `node` stands where a finger on the window reaches it: drawn, and at least partly
+/// inside the window. What a push screen leaves behind it stands off the window, and a press
+/// there is one nobody can make.
+fn reachable(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
+    node.rect[2] > 0.0
+        && node.rect[3] > 0.0
+        && node.rect[0] + node.rect[2] > 0.0
+        && node.rect[1] + node.rect[3] > 0.0
+        && node.rect[0] < f64::from(viewport.0)
+        && node.rect[1] < f64::from(viewport.1)
+}
+
+/// Where a finger taps to open what the window shows after its list: the middle of the row the
+/// window selects for it, drawn where the person holding the window can reach it. A row a list
+/// selects and the screen shows is the one the person whose window narrowed is looking at;
+/// anything off the window (the places behind the list) is not.
+fn row_opened(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
+    let selected = node.semantics.as_ref().is_some_and(|access| {
+        access.role == ui::a11y::Role::ListItem && access.state.selected && !access.state.disabled
+    });
+    if selected && reachable(node, viewport) {
+        return Some((
+            node.rect[0] + node.rect[2] / 2.0,
+            node.rect[1] + node.rect[3] / 2.0,
+        ));
+    }
+    node.children
+        .iter()
+        .find_map(|child| row_opened(child, viewport))
+}
+
+/// Where a finger taps to open a row when the window keeps none chosen: the middle of the first
+/// row of its list, drawn where the person holding the window can reach it. A list that keeps
+/// no row of its own — the places, which the app keeps — is one a person still picks a row of.
+fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Option<(f64, f64)> {
+    let row = node
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.role == ui::a11y::Role::ListItem && !access.state.disabled);
+    if row && reachable(node, viewport) {
+        return Some((
+            node.rect[0] + node.rect[2] / 2.0,
+            node.rect[1] + node.rect[3] / 2.0,
+        ));
+    }
+    node.children
+        .iter()
+        .find_map(|child| first_row(child, viewport))
+}
+
+/// Whether the window shows its Back chip where a finger reaches it: how a person holding a
+/// narrow window comes back to the list it opened something from.
+fn back_chip(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
+    (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
+        || node.children.iter().any(|child| back_chip(child, viewport))
+}
+
+/// Where a finger taps to open a row of the list the window shows now: the row it keeps
+/// chosen, or else the first of the list.
+fn tappable_row(staged: &stage::Staged, viewport: (u32, u32)) -> Option<(f64, f64)> {
+    let root = &staged.harness().inspection().root;
+    row_opened(root, viewport).or_else(|| first_row(root, viewport))
+}
+
 /// One app's check under way.
 struct AppCheck<'a> {
     dir: &'a Path,
@@ -1122,6 +1197,7 @@ impl AppCheck<'_> {
                 self.open_views(&mut staged, &title)
             }
             What::Press => self.press(packages, unit),
+            What::Push => self.push(packages, unit),
         }
     }
 
@@ -1244,6 +1320,105 @@ impl AppCheck<'_> {
         }
         Ok(())
     }
+    /// What a person holding the window comes to after choosing what to read: at every size it
+    /// is held in the hand, a row of the list the window shows tapped as a finger taps it,
+    /// which pushes what the row opens in front of that list, and the list itself brought back
+    /// by its Back chip where the state the app opened stands in front of it. A scene whose
+    /// window opened nothing has no such state, and no list to come back to.
+    fn push(&mut self, packages: &Rc<stage::Packages>, unit: &Unit) -> Result<(), String> {
+        let all = layouts();
+        for size in SIZES.iter().filter(|size| size.touch) {
+            let viewport = (size.width, size.height);
+            let of_size: Vec<Layout> = all
+                .iter()
+                .copied()
+                .filter(|layout| layout.size == *size)
+                .collect();
+            let Some(first) = of_size.first().copied() else {
+                continue;
+            };
+            let mut staged = stage::Staged::over(
+                &self.meta.app,
+                packages,
+                &unit.scene.scenario,
+                viewport,
+                first.theme(),
+                unit.scene.root.as_deref(),
+                self.states,
+            )?;
+            if staged.detail_target().is_none() {
+                return Ok(());
+            }
+            let layer = on_layer(&unit.scene.scenario, unit.scene.root.as_deref());
+            staged.lay_out(viewport, first.theme(), first.input(), first.display_scale)?;
+            // What the app opened stands in front of the list it came from: a finger goes back
+            // to that list before it can tap a row of it.
+            let mut tapped = tappable_row(&staged, viewport);
+            if tapped.is_none() {
+                if !back_chip(&staged.harness().inspection().root, viewport) {
+                    continue;
+                }
+                staged.press(ui::widget::WINDOW_BACK, true)?;
+                let label = format!("{layer}, then Back pressed");
+                for layout in of_size.iter().copied() {
+                    staged.lay_out(
+                        (layout.size.width, layout.size.height),
+                        layout.theme(),
+                        layout.input(),
+                        layout.display_scale,
+                    )?;
+                    self.audit(&mut staged, layout, &label)?;
+                }
+                tapped = tappable_row(&staged, viewport);
+            }
+            // The row the window keeps chosen, or else the first of the list: what a person
+            // reaches for, which opens in front of the list as the app declares.
+            let Some(tapped) = tapped else {
+                continue;
+            };
+            staged.tap_at(tapped)?;
+            // The tap pushes what its row opens in front of the list; a row whose tap opens
+            // nothing leaves the list showing, and the shot's name says so.
+            let label = match (
+                row_opened(&staged.harness().inspection().root, viewport).is_none(),
+                staged.detail_target(),
+            ) {
+                (true, Some(opened)) => {
+                    format!("{layer}, then a {} in front", self.view_opening(&opened))
+                }
+                _ => format!("{layer}, then the row tapped"),
+            };
+            for layout in of_size {
+                staged.lay_out(
+                    (layout.size.width, layout.size.height),
+                    layout.theme(),
+                    layout.input(),
+                    layout.display_scale,
+                )?;
+                self.audit(&mut staged, layout, &label)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The view a window opens `target` in: its type's default view, which is what a row of it
+    /// opens.
+    fn view_opening(&self, target: &ResourceRef) -> String {
+        self.meta
+            .default_views
+            .iter()
+            .find(|default| default.ty == target.ty)
+            .and_then(|default| {
+                let view = self
+                    .meta
+                    .views
+                    .iter()
+                    .find(|view| view.id == default.view)?;
+                Some(view.name.clone())
+            })
+            .unwrap_or_else(|| target.ty.clone())
+    }
+
     /// Lay `staged` out at every layout and gather what is wrong, as staged by `label`.
     fn run(&mut self, staged: &mut stage::Staged, label: &str) -> Result<(), String> {
         // The keys reach the window at the size it is read at, where a shot shows them; a

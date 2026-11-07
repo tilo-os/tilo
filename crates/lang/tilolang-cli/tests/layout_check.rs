@@ -4,6 +4,7 @@
 //! already name, so a new one fails here.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use tilolang_cli::layout_check::{self, Kind, Options};
 
@@ -294,6 +295,35 @@ fn a_state_the_run_stages_lays_the_window_out_there() {
         refused.contains("declares no filter `nonsense`"),
         "the run says what it could not stage: {refused}"
     );
+}
+
+/// A window held in the hand shows its list; the row a person taps opens what it holds in
+/// front of the list. The run stages every such screen, named after what it shows.
+#[test]
+fn a_phone_layout_shows_what_a_tapped_row_opens() {
+    use tilo_test_env::SpawnUnderEnvLock as _;
+
+    let notes = manifest().join("../../../apps/tl/notes");
+    let output = Command::new(env!("CARGO_BIN_EXE_tilolang"))
+        .arg("layout-check")
+        .arg(&notes)
+        .args(["--dump", "390x844"])
+        .output_locked()
+        .expect("the check runs");
+    let doc = String::from_utf8_lossy(&output.stderr).into_owned();
+    assert!(
+        output.status.success(),
+        "the app is laid out: {}",
+        doc.lines().last().unwrap_or_default()
+    );
+    let headers: Vec<&str> = doc.lines().filter(|line| line.starts_with("== ")).collect();
+    for shows in [" in front at 390×844", ", then Back pressed at 390×844"] {
+        assert!(
+            headers.iter().any(|header| header.contains(shows)),
+            "a phone window shows what `{shows}` names:\n{}",
+            headers.join("\n")
+        );
+    }
 }
 
 #[test]
