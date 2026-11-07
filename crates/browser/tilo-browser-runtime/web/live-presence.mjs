@@ -165,14 +165,15 @@ export function createPresencePublisher({
    * relayed, so the layer sets the rate the link carries. */
   minIntervalMs = PRESENCE_MIN_INTERVAL_MS,
   keepaliveMs = PRESENCE_KEEPALIVE_MS,
-  // The relay forwards only strictly increasing sequence numbers per
-  // publisher; seeding from the wall clock (microseconds, < 2^53) keeps a
-  // reloaded page ahead of its previous incarnation.
-  initialSeq = Math.floor(wallNow()) * 1000,
+  // A view's sequence travels in 32 bits, and every publisher (a desktop's
+  // shell, an agent, this page) counts from zero. A page that reloads starts
+  // again at zero; receivers take it once its send time is clearly newer
+  // than the frames they hold.
+  initialSeq = 0,
 }) {
   if (typeof encode !== 'function' || typeof send !== 'function') throw new TypeError('encode and send are required');
   let state = emptyState();
-  if (!Number.isSafeInteger(initialSeq) || initialSeq < 0) throw new TypeError('initialSeq must be a safe non-negative integer');
+  if (!Number.isInteger(initialSeq) || initialSeq < 0 || initialSeq > 0xffff_ffff) throw new TypeError('initialSeq must be a 32-bit non-negative integer');
   let seq = initialSeq;
   let dirty = false;
   let pending; // undefined | 'task' | timer handle of a rate-limited send
@@ -193,7 +194,7 @@ export function createPresencePublisher({
     timer = undefined;
   };
   function transmit(repeat) {
-    seq += 1;
+    seq = (seq + 1) >>> 0;
     const value = {seq, sentAtMs: Math.round(wallNow()), ...state};
     let bytes;
     try { bytes = encode(value); } catch (error) { stats.dropped++; throw error; }
