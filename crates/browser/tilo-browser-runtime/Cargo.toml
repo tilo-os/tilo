@@ -51,6 +51,8 @@ tilo-feedback-transport = { version = "0.1.0", path = "../../collab/feedback-tra
 # session's own, over the page's `fetch`.
 tilo-sheets = { version = "0.1.0", path = "../../session/sheets" }
 tilo-workspace-directory = { version = "0.1.0", path = "../../session/workspace-directory" }
+# The invitation behind a short link, opened from what a site's shelf keeps.
+tilo-workspace-join = { version = "0.1.0", path = "../../collab/workspace-join" }
 serde.workspace = true
 serde_json.workspace = true
 # Warnings and errors reach the console (src/console_log.rs).
@@ -80,6 +82,8 @@ tilo-relay-protocol = { version = "0.1.0", path = "../../hosting/tilo-relay-prot
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 ed25519-dalek.workspace = true
 hex.workspace = true
+# Request ids for the invitations the page asks its host to make.
+getrandom = { workspace = true, features = ["wasm_js"] }
 uuid.workspace = true
 url.workspace = true
 postcard = { workspace = true, features = ["use-std"] }

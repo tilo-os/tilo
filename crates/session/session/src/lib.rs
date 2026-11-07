@@ -400,7 +400,7 @@ struct Shared {
     /// Inviting people: the sheet a link into the workspace in front is made
     /// from, and what it made in this opening.
     invite: Option<InviteSeat>,
-    invite_made: RefCell<invite::Made>,
+    invite_made: RefCell<tilo_sheets::invite::Making>,
     /// The question deleting a workspace asks, and the workspace it is about.
     delete_workspace: Option<DeleteWorkspaceSeat>,
     delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceSlot>>,

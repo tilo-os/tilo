@@ -55,7 +55,7 @@ function fakeRuntime({phase = 'ready'} = {}) {
     async inspectInvitation(post, invitation) {
       calls.inspected = [...invitation];
       return JSON.stringify({kind: 'invitation', room: WORKSPACE, workspaceId: '7', name: 'Acme', role: 'Editor', expiresAtNs: '9',
-        inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+        members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
     },
     async askToJoin(post, invitation, root, custody, requestId, name, label, token) {
       calls.asked = {invitation: [...invitation], root, requestId, name, label, token: token && new TextDecoder().decode(token)};
@@ -943,7 +943,7 @@ test('recertification retires voice before disposing the certified peer', async 
   await peer.dispose();
 });
 
-test('joining with an invitation waits for the owner, then connects with the root-certified device', async () => {
+test('an invitation asks the door to admit the root-certified device, and a door that answers waiting is polled', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
   const rows = new Map();
@@ -951,8 +951,10 @@ test('joining with an invitation waits for the owner, then connects with the roo
   const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)};
   const offer = await inspectInvitation('https://host.example:8443', 'AQID', {runtime});
   assert.deepEqual(runtime.calls.inspected, [1, 2, 3]);
+  // What the card says comes from here: the workspace, how many people are in
+  // it, the part offered and who offers it.
   assert.deepEqual(offer, {workspaceName: 'Acme', role: 'editor', room: WORKSPACE, workspaceId: '7', expiresAtNs: '9',
-    inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
+    members: 4, inviter: {name: 'Ada', userPublicKey: 'aa'.repeat(32)}});
 
   const progress = [];
   const peer = await joinWorkspace({

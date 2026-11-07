@@ -8,13 +8,13 @@
 //! person may invite at all, keeping the sheet current while it is up, and
 //! putting the link on the clipboard long enough to hand it over.
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime};
 
 use tilo_desktop::workspace_settings as domain;
 use tilo_desktop_model::role_from_id;
-use tilo_desktop_surface::i18n::{t, t_args};
 use tilo_sheets::Seat as _;
-use tilo_sheets::invite::{self as sheet};
+use tilo_sheets::invite as sheet;
+use tilo_sheets::{word, words};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
 use crate::Shared;
@@ -25,26 +25,13 @@ use crate::mount::clipboard::Ask;
 /// link is what admits them.
 const ON_CLIPBOARD_FOR: Duration = Duration::from_secs(300);
 
-/// What the session keeps of the sheet between passes: the link it last
-/// made, the link being left on its site's shelf, and what became of the last
-/// ask.
-#[derive(Default)]
-pub(crate) struct Made {
-    created: Option<sheet::Created>,
-    /// The link made while its invitation is on its way to a site's shelf:
-    /// shown once the site answers, as the short link, or in the invitation's
-    /// own text when the site will not keep it.
-    shelving: Option<sheet::Created>,
-    note: Option<sheet::Note>,
-}
-
 impl Shared {
     /// Open the invite sheet on the workspace in front.
     pub(crate) fn open_invite(&self) {
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
-        *self.invite_made.borrow_mut() = Made::default();
+        self.invite_made.borrow_mut().opening();
         self.show_invite();
         seat.presentation().open(false);
     }
@@ -91,20 +78,8 @@ impl Shared {
     /// own text when the site would not keep it.
     fn follow_shelved(&self) {
         for (invite, shelved) in self.directory_store.take_shelved() {
-            let mut made = self.invite_made.borrow_mut();
-            let Some(mut created) = made.shelving.take() else {
-                continue;
-            };
-            if created.invite != invite {
-                made.shelving = Some(created);
-                continue;
-            }
-            if let Ok(shelved) = shelved {
-                created.link.clone_from(&shelved.link);
-                created.code = shelved.link.into_bytes();
-            }
-            made.created = Some(created);
-            made.note = None;
+            let link = shelved.ok().map(|shelved| shelved.link);
+            self.invite_made.borrow_mut().shelved(&invite, link);
         }
     }
 
@@ -114,29 +89,8 @@ impl Shared {
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
-        let asked = seat.take_asked();
-        if asked.is_empty() {
+        if sheet::drive(seat, &DeskInvites(self)) == 0 {
             return;
-        }
-        for effect in asked {
-            match effect {
-                sheet::InviteEffect::Create { role, recipient } => {
-                    self.make_invite(&role, &recipient);
-                }
-                sheet::InviteEffect::Revoke { invite } => self.revoke_invite(&invite),
-                sheet::InviteEffect::Copy { link } => {
-                    self.clipboard.ask(Ask::Copy {
-                        mime: tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
-                        bytes: link.into_bytes(),
-                        kept_for: ON_CLIPBOARD_FOR,
-                    });
-                    self.say(t("invite-copied"), false);
-                }
-                sheet::InviteEffect::ClearNote => self.invite_made.borrow_mut().note = None,
-                // The sheet put itself away as it asked; the presentation
-                // says so (`crate::sheets` sees it out).
-                sheet::InviteEffect::Done => {}
-            }
         }
         self.show_invite();
     }
@@ -146,100 +100,7 @@ impl Shared {
         let Some(seat) = self.invite.as_ref() else {
             return;
         };
-        seat.show(self.invite_sheet());
-    }
-
-    /// The sheet's data: the workspace's people and the parts this person may
-    /// hand out, the links that still work, and this opening's link.
-    fn invite_sheet(&self) -> sheet::Invite {
-        let invited = self.invite_made.borrow();
-        let may = self.may_invite_here();
-        let mut data = sheet::Invite {
-            title: t("invite-title"),
-            description: t("invite-description"),
-            close: t("invite-close"),
-            may_invite: may,
-            refusal: t("invite-refusal"),
-            role_label: t("invite-role-label"),
-            for_label: t("invite-for-label"),
-            anyone: t("invite-anyone"),
-            create: t("invite-create"),
-            pending_title: t("invite-pending-title"),
-            pending_empty: t("invite-pending-empty"),
-            created: invited.created.clone(),
-            note: invited.note.clone(),
-            ..sheet::Invite::default()
-        };
-        if !may {
-            return data;
-        }
-        let workspace = self
-            .handle
-            .read(|tree| {
-                tree.active_workspace()
-                    .map(|workspace| workspace.id().to_string())
-            })
-            .unwrap_or_default();
-        let Some(engine) = self.engine.as_deref() else {
-            return data;
-        };
-        let own = hex::encode(engine.identity().device_cert.user_public_key);
-        data.roles = engine
-            .invitable_roles(&workspace)
-            .into_iter()
-            .map(|role| {
-                let role = role.into();
-                sheet::Role {
-                    key: tilo_desktop_model::role_id(role).to_owned(),
-                    label: domain::role_label(role),
-                    brings: domain::role_capability_preview(role),
-                }
-            })
-            .collect();
-        // Everyone this device knows by name, from every workspace it is
-        // part of, the workspace in front first: a link can be made for
-        // someone the person works with elsewhere too, and the same people
-        // a send-to picker would offer.
-        let mut seen = std::collections::HashSet::new();
-        let mut people = Vec::new();
-        let workspaces = std::iter::once(workspace.clone())
-            .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
-        for held in workspaces {
-            for member in engine.people(&held).unwrap_or_default() {
-                if member.removed || member.person == own || !seen.insert(member.person.clone()) {
-                    continue;
-                }
-                people.push(sheet::Person {
-                    name: if member.name.is_empty() {
-                        member.person.chars().take(8).collect()
-                    } else {
-                        member.name
-                    },
-                    key: member.person,
-                });
-            }
-        }
-        data.people = people;
-        let now = SystemTime::now();
-        data.pending = engine
-            .invitations(&workspace, now)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|invite| sheet::Pending {
-                key: hex::encode(invite.invite_id),
-                title: domain::role_label(invite.role.into()),
-                whose: match (&invite.invitee_name, invite.recipient_user_public_key) {
-                    (Some(name), _) => {
-                        t_args("invite-for-person", &[("name", name.as_str().into())])
-                    }
-                    (None, Some(_)) => t("invite-for-someone"),
-                    (None, None) => t("invite-for-anyone"),
-                },
-                lasts: lasts(invite.expires_at_ns),
-                revoke: t("invite-revoke"),
-            })
-            .collect();
-        data
+        seat.show(sheet::view(&DeskInvites(self)));
     }
 
     /// Make a link into the workspace in front, through the desk's own action:
@@ -256,13 +117,13 @@ impl Shared {
                 .borrow_mut()
                 .invoke(DESK_RESOURCE, "issue-invitation", &arguments)
         else {
-            self.say(t("invite-no-answer"), true);
+            self.say(word("invite-no-answer"), true);
             return;
         };
         let value = match started {
             Ok(tilo_service::Started::Done(output)) => output.value,
             Ok(tilo_service::Started::Accepted) => {
-                self.say(t("invite-no-answer"), true);
+                self.say(word("invite-no-answer"), true);
                 return;
             }
             Err(error) => {
@@ -276,7 +137,7 @@ impl Shared {
             .and_then(|value| value.get("link"))
             .and_then(serde_json::Value::as_str)
         else {
-            self.say(t("invite-no-answer"), true);
+            self.say(word("invite-no-answer"), true);
             return;
         };
         let invite = value
@@ -292,14 +153,11 @@ impl Shared {
             .unwrap_or_default();
         let role = role_from_id(role).map_or_else(|| role.to_owned(), domain::role_label);
         let brings = if recipient.is_empty() {
-            t_args("invite-created-anyone", &[("role", role.as_str().into())])
+            sheet::brings(&role, None)
         } else {
             let name = self.name_of(recipient);
             let name = name.unwrap_or_else(|| recipient.chars().take(8).collect());
-            t_args(
-                "invite-created-for",
-                &[("name", name.into()), ("role", role.as_str().into())],
-            )
+            sheet::brings(&role, Some(&name))
         };
         // The code the sheet draws is the invitation itself: its text spells
         // those bytes out in base64, which is longer than a code fits. It is
@@ -321,7 +179,7 @@ impl Shared {
         let shelving = crate::directory::community_site().is_some_and(|site| {
             match self
                 .directory_store
-                .shelve(&invite, code.clone(), expires_at_ns, &site)
+                .shelve(&invite, code.clone(), expires_at_ns, &site, None)
             {
                 Ok(()) => true,
                 Err(error) => {
@@ -330,31 +188,12 @@ impl Shared {
                 }
             }
         });
-        let created = sheet::Created {
-            invite,
-            link: link.to_owned(),
-            code,
-            link_label: t("invite-link-label"),
-            brings,
-            lasts: t_args(
-                "invite-created-lasts",
-                &[("minutes", minutes_left(expires_at_ns).into())],
-            ),
-            copy: t("invite-copy"),
-            revoke: t("invite-revoke"),
-            alt: t("invite-code-alt"),
-        };
-        let mut made = self.invite_made.borrow_mut();
+        let created = sheet::made(&invite, link, code, brings, expires_at_ns);
         // While the site is being handed the invitation, the sheet waits
         // rather than drawing a code a whole sheet wide for a link that is
         // about to be a short one; a site that refuses shows it in its own
         // text, which every build still takes.
-        made.created = (!shelving).then(|| created.clone());
-        made.shelving = shelving.then_some(created);
-        made.note = shelving.then(|| sheet::Note {
-            text: t("invite-making"),
-            bad: false,
-        });
+        self.invite_made.borrow_mut().show(created, shelving);
     }
 
     /// The name the workspace in front knows `person` by, when it knows one.
@@ -381,36 +220,160 @@ impl Shared {
                 // The site's copy goes too: a link handed out before is not
                 // one that waits there to be fetched.
                 self.directory_store.unshelve(invite);
-                let mut made = self.invite_made.borrow_mut();
                 // A link taken back is not a link to hand over: the one this
                 // opening showed goes with it, and another stays.
-                made.created = made
-                    .created
-                    .take()
-                    .filter(|created| created.invite != invite);
-                made.shelving = made
-                    .shelving
-                    .take()
-                    .filter(|created| created.invite != invite);
-                drop(made);
-                self.say(t("invite-revoked"), false);
+                self.invite_made.borrow_mut().revoked(invite);
+                self.say(word("invite-revoked"), false);
             }
             Some(Err(error)) => {
                 tracing::warn!(%error, "the invitation was not cancelled");
                 self.refused("invite-revoke-failed", &error.to_string());
             }
-            None => self.say(t("invite-no-answer"), true),
+            None => self.say(word("invite-no-answer"), true),
         }
     }
 
     /// Say in the sheet what went wrong, and why.
     fn refused(&self, key: &str, reason: &str) {
-        self.say(t_args(key, &[("reason", reason.into())]), true);
+        self.say(words(key, &[("reason", reason)]), true);
     }
 
     /// Say in the sheet what became of the last ask.
     fn say(&self, text: String, bad: bool) {
-        self.invite_made.borrow_mut().note = Some(sheet::Note { text, bad });
+        self.invite_made.borrow_mut().say(text, bad);
+    }
+}
+
+/// The session's side of the invite sheet: the workspace in front's people,
+/// the parts this person may hand out, the links that still work, and the
+/// presses carried out through the desk's own actions.
+struct DeskInvites<'a>(&'a Shared);
+
+impl sheet::Invitations for DeskInvites<'_> {
+    fn may_invite(&self) -> bool {
+        self.0.may_invite_here()
+    }
+
+    fn roles(&self) -> Vec<sheet::Role> {
+        let Some(engine) = self.0.engine.as_deref() else {
+            return Vec::new();
+        };
+        let workspace = self
+            .0
+            .handle
+            .read(|tree| {
+                tree.active_workspace()
+                    .map(|workspace| workspace.id().to_string())
+            })
+            .unwrap_or_default();
+        engine
+            .invitable_roles(&workspace)
+            .into_iter()
+            .map(|role| {
+                let role = role.into();
+                sheet::Role {
+                    key: tilo_desktop_model::role_id(role).to_owned(),
+                    label: domain::role_label(role),
+                    brings: domain::role_capability_preview(role),
+                }
+            })
+            .collect()
+    }
+
+    fn people(&self) -> Vec<sheet::Person> {
+        let Some(engine) = self.0.engine.as_deref() else {
+            return Vec::new();
+        };
+        let Some(workspace) = self.0.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            return Vec::new();
+        };
+        let own = hex::encode(engine.identity().device_cert.user_public_key);
+        // Everyone this device knows by name, from every workspace it is
+        // part of, the workspace in front first: a link can be made for
+        // someone the person works with elsewhere too, and the same people
+        // a send-to picker would offer.
+        let mut seen = std::collections::HashSet::new();
+        let mut people = Vec::new();
+        let workspaces = std::iter::once(workspace)
+            .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
+        for held in workspaces {
+            for member in engine.people(&held).unwrap_or_default() {
+                if member.removed || member.person == own || !seen.insert(member.person.clone()) {
+                    continue;
+                }
+                people.push(sheet::Person {
+                    name: if member.name.is_empty() {
+                        member.person.chars().take(8).collect()
+                    } else {
+                        member.name
+                    },
+                    key: member.person,
+                });
+            }
+        }
+        people
+    }
+
+    fn pending(&self) -> Vec<sheet::Pending> {
+        let Some(engine) = self.0.engine.as_deref() else {
+            return Vec::new();
+        };
+        let Some(workspace) = self.0.handle.read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        }) else {
+            return Vec::new();
+        };
+        engine
+            .invitations(&workspace, SystemTime::now())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|invite| {
+                sheet::pending(
+                    &hex::encode(invite.invite_id),
+                    &domain::role_label(invite.role.into()),
+                    invite.invitee_name.as_deref(),
+                    invite.recipient_user_public_key.is_some(),
+                    invite.expires_at_ns,
+                )
+            })
+            .collect()
+    }
+
+    fn made(&self) -> Option<sheet::Created> {
+        self.0.invite_made.borrow().made()
+    }
+
+    fn making(&self) -> bool {
+        self.0.invite_made.borrow().making()
+    }
+
+    fn note(&self) -> Option<sheet::Note> {
+        self.0.invite_made.borrow().note()
+    }
+
+    fn create(&self, role: &str, recipient: &str) {
+        self.0.make_invite(role, recipient);
+    }
+
+    fn revoke(&self, invite: &str) {
+        self.0.revoke_invite(invite);
+    }
+
+    fn copy(&self, link: &str) {
+        self.0.clipboard.ask(Ask::Copy {
+            mime: tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
+            bytes: link.as_bytes().to_vec(),
+            kept_for: ON_CLIPBOARD_FOR,
+        });
+        self.0.say(word("invite-copied"), false);
+    }
+
+    fn clear_note(&self) {
+        self.0.invite_made.borrow_mut().clear();
     }
 }
 
@@ -433,22 +396,4 @@ pub(crate) fn may_invite(
 fn recipient_key(recipient: &str) -> Option<[u8; 32]> {
     let key = hex::decode(recipient).ok()?;
     <[u8; 32]>::try_from(key).ok()
-}
-
-/// How long a link has left, in the whole minutes the sheet says.
-fn minutes_left(expires_at_ns: u64) -> usize {
-    let now_ns = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|since| u64::try_from(since.as_nanos()).unwrap_or(u64::MAX))
-        .unwrap_or_default();
-    let left = expires_at_ns.saturating_sub(now_ns);
-    usize::try_from(left / 60_000_000_000).unwrap_or(usize::MAX)
-}
-
-/// What the sheet says of how long a link still works.
-fn lasts(expires_at_ns: u64) -> String {
-    t_args(
-        "invite-lasts",
-        &[("minutes", minutes_left(expires_at_ns).into())],
-    )
 }

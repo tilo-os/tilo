@@ -1251,8 +1251,10 @@ const invitationBytes = invitation => {
 /**
  * What an invitation (its signed bytes, or them as base64/base64url) offers
  * at the host `relayUrl`: `{workspaceName, role, workspace, workspaceId,
- * expiresAtNs, inviter}`. `inviter` is `{name, userPublicKey}` as the host
- * signed it into the invitation, or undefined when it names nobody.
+ * expiresAtNs, members, inviter}`. `members` is how many people the workspace
+ * has, so the invitation says what someone joins, not only where. `inviter`
+ * is `{name, userPublicKey}` as the host signed it into the invitation, or
+ * undefined when it names nobody.
  */
 export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: fetcher} = {}) {
   runtime ??= await pageRuntime();
@@ -1265,8 +1267,23 @@ export async function inspectInvitation(relayUrl, invitation, {runtime, fetch: f
   }
   return {
     workspaceName: reply.name, role: reply.role.toLowerCase(), room: reply.room, workspaceId: reply.workspaceId,
-    expiresAtNs: reply.expiresAtNs, inviter: reply.inviter ?? undefined,
+    expiresAtNs: reply.expiresAtNs, members: reply.members ?? null, inviter: reply.inviter ?? undefined,
   };
+}
+
+/**
+ * The invitation a link's `invite` secret names, as `inspectInvitation` and
+ * `joinWorkspace` take one: fetched from the shelf of `site` — the site that
+ * keeps it, which the link names — and opened with the key the link carries.
+ * Resolves to `{invitation, host}`, the invitation's own text and, where the
+ * device that left it named one, the origin of the host it admits into: a
+ * link names the site that keeps the invitation, not the host it admits
+ * into. A secret that is an invitation's own text is answered as it came,
+ * with no host, so links of every build join the same way.
+ */
+export async function openInvitation(site, secret, {runtime} = {}) {
+  runtime ??= await pageRuntime();
+  return JSON.parse(await runtime.redeemInvitation(site, secret));
 }
 
 /**
@@ -1306,13 +1323,14 @@ const hexOf = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '
 /**
  * Join the workspace `invitation` (as `inspectInvitation` takes) offers at
  * `origin`, as `identity` (default the current one): this page's device for
- * that host is certified by the person's own root, the request waits for
- * the workspace's owner (`onProgress({phase: 'waiting'})`, polled every
- * `pollMs`), and once admitted the page connects. Resolves to the
- * `CertifiedPeer` in the workspace; rejects when declined or refused. A page that
- * reloads while waiting asks again under the same request. With
- * `admissionToken` (the one-time token of the owner's pre-admission for this
- * invitation) the host admits the page at once.
+ * that host is certified by the person's own root, and the invitation is the
+ * approval of whoever made it, so the host admits at once. Resolves to the
+ * `CertifiedPeer` in the workspace; rejects when the host refuses. A door
+ * that answers `waiting` anyway (a build of its own) is polled every
+ * `pollMs` (`onProgress({phase: 'waiting'})`), and a page that reloads while
+ * waiting asks again under the same request. With `admissionToken` (the
+ * one-time token of an owner's pre-admission for this invitation) the host
+ * admits the page at once too.
  */
 export async function joinWorkspace(options) {
   const identity = options.identity ?? currentIdentity();

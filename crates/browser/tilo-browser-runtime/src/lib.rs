@@ -113,6 +113,8 @@ mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
 #[cfg(target_arch = "wasm32")]
+mod invite;
+#[cfg(target_arch = "wasm32")]
 pub use feedback_code::{
     FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,
 };

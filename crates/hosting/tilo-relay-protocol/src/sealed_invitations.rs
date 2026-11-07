@@ -54,14 +54,24 @@ pub struct Stored {
     /// The secret that takes it back, base64url. It is in no link: only the
     /// device that sealed the invitation keeps it.
     pub delete: String,
+    /// The `https://` origin of the host serving the workspace the invitation
+    /// is for. A link names the site that keeps the invitation, not the host
+    /// it admits into, so a page opening the link is told where to ask
+    /// ([`Fetched::host`]). Absent from what builds before it wrote it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
-/// What a fetch answers: the sealed invitation, and nothing else.
+/// What a fetch answers: the sealed invitation, and where it admits.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Fetched {
     /// The sealed signed invitation, base64url.
     pub sealed: String,
+    /// The origin the invitation admits into ([`Stored::host`]), when the
+    /// inviter's build named it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
 }
 
 /// What taking an invitation back names.

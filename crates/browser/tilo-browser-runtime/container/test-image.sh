@@ -190,6 +190,26 @@ for entry in / /app/; do
       || fail "$entry preloads $hint, which the image does not serve"
   done < <(hints_of "$body")
 done
+# A sealed invitation's link opens the page at the site that keeps the
+# invitation: https://<site>/i/<handle>#<key>. A browser navigating there
+# gets the entry page, which reads the site's own configuration and files
+# (/entry.json, /v/…); the page's own request for the invitation — a caller
+# that asks for anything but the page — is the deployment's relay's to answer
+# (TILO_WEB_SHELF), never the page.
+handle=abcdefghijklmnop
+browser_accept='text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+cmp -s <(get "/i/$handle" -H "Accept: $browser_accept") <(get /) \
+  || fail "a sealed link must open the entry page"
+grep -q '^content-type: text/html' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
+  || fail "a sealed link must be served as a page"
+grep -q '^cache-control: no-cache' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
+  || fail "a sealed link's page must revalidate"
+# With no relay named there is no shelf: a request for the invitation is not
+# answered with the page, which would hand a stranger the editor instead of
+# nothing.
+shelf_answer=$(head_of "/i/$handle" -H 'Accept: application/octet-stream' | head -1)
+[[ $shelf_answer != 'HTTP/1.1 200 OK' ]] \
+  || fail "a request for the invitation itself must not answer with the page"
 grep -q '^cache-control: no-cache' <(head_of /) || fail "/ must revalidate"
 # Safari's home-screen icon sits beside the entry pages, as their links and
 # Safari's own unasked lookup expect.

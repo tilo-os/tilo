@@ -315,6 +315,7 @@ pub fn verify_invitation(text: &str, person: &Person) -> Result<Granted, String>
 pub(crate) async fn leave(
     client: &Client,
     site: &url::Url,
+    host: Option<&str>,
     sealed: &tilo_workspace_join::sealed::Sealed,
     expires_at_ns: u64,
 ) -> Result<String, String> {
@@ -325,6 +326,7 @@ pub(crate) async fn leave(
         sealed: sealed.sealed_text(),
         expires_at_ns,
         delete: sealed.delete.clone(),
+        host: host.map(str::to_owned),
     };
     let response = client
         .post(url.as_str())
@@ -393,7 +395,8 @@ pub(crate) async fn take_back(
 
 /// The invitation a sealed `link` names, fetched from the site that keeps it
 /// and opened with the key the link carries: its text, as every build hands
-/// one over.
+/// one over, and the origin of the host it admits into where the inviter
+/// named one.
 ///
 /// # Errors
 /// Why there is none: the site could not be reached, holds nothing under the
@@ -401,7 +404,7 @@ pub(crate) async fn take_back(
 pub(crate) async fn redeem(
     client: &Client,
     link: &tilo_workspace_join::sealed::SealedLink,
-) -> Result<String, String> {
+) -> Result<SealedInvitation, String> {
     let site = web_origin(&format!("{}/", link.site))?;
     let url = site
         .join(&format!("i/{}", link.handle))
@@ -460,7 +463,46 @@ pub(crate) async fn redeem(
                     "directory-error-invitation-broken",
                 )
             })?;
-    Ok(tilo_workspace_join::encode_invitation_text(&invitation))
+    Ok(SealedInvitation {
+        invitation: tilo_workspace_join::encode_invitation_text(&invitation),
+        host: fetched.host,
+    })
+}
+
+/// An invitation read off a site's shelf ([`redeem`]): its own text, and the
+/// host it admits into.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SealedInvitation {
+    /// The invitation's text, as every build hands one over.
+    pub invitation: String,
+    /// The origin of the host serving the workspace it admits into, where the
+    /// device that left it named one: a link names the site that keeps the
+    /// invitation, not the host it admits into.
+    pub host: Option<String>,
+}
+
+/// The invitation the link's `secret` names, fetched from `site` and opened:
+/// its text, as every build hands one over, and where it admits. A `secret`
+/// that names no sealed invitation — an invitation's own text — is answered
+/// as it came, with no host.
+///
+/// # Errors
+/// Why there is none: the site could not be reached, holds nothing under the
+/// handle any more, or the key does not open what it answered with.
+pub async fn sealed_invitation(site: &str, secret: &str) -> Result<SealedInvitation, String> {
+    let Some((handle, key)) = tilo_workspace_join::sealed::parse_ref(secret) else {
+        return Ok(SealedInvitation {
+            invitation: secret.to_owned(),
+            host: None,
+        });
+    };
+    let link = tilo_workspace_join::sealed::SealedLink {
+        site: site.to_owned(),
+        handle: handle.to_owned(),
+        key: key.to_owned(),
+    };
+    redeem(&client()?, &link).await
 }
 
 /// The workspace an invitation for this person joins, without redeeming it:
@@ -686,7 +728,7 @@ pub(crate) async fn take(client: &Result<Client, String>, text: &str, person: &P
                 Err(error) => Err(format!("no network to join over: {error}")),
                 Ok(client) => redeem(client, &link)
                     .await
-                    .and_then(|text| verify_invitation(&text, person)),
+                    .and_then(|sealed| verify_invitation(&sealed.invitation, person)),
             },
         },
         Pasted::Site { entry, workspace } => match client {
@@ -946,6 +988,8 @@ mod tests {
         url::Url::parse(&format!("{}/", responder.url())).expect("the site's address")
     }
 
+    /// The host an invitation admits into.
+    const HOST: &str = "https://host.example";
     /// The key a link's fragment carries.
     fn key_of(link: &str) -> String {
         link.rsplit_once('#')
@@ -970,6 +1014,7 @@ mod tests {
                 .body(
                     serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
                         sealed: sealed.sealed_text(),
+                        host: Some(HOST.to_owned()),
                     })
                     .expect("a shelf's answer"),
                 ),
@@ -982,6 +1027,7 @@ mod tests {
             let link = leave(
                 &client,
                 &site,
+                Some(HOST),
                 &sealed,
                 now.saturating_add(3_600_000_000_000),
             )
@@ -995,12 +1041,16 @@ mod tests {
         .expect("a shelf round trip");
 
         // What comes back is the signed invitation itself, so it verifies as
-        // one: the same workspace, for the person it was granted to.
+        // one: the same workspace, for the person it was granted to. The
+        // host it admits into comes back with it, since the link names the
+        // site that keeps it and not the host it joins.
         assert_eq!(
-            redeemed, text,
+            redeemed.invitation, text,
             "the link carries the invitation byte for byte"
         );
-        let granted = verify_invitation(&redeemed, &person).expect("the invitation verifies");
+        assert_eq!(redeemed.host.as_deref(), Some(HOST), "and where it admits");
+        let granted =
+            verify_invitation(&redeemed.invitation, &person).expect("the invitation verifies");
         assert_eq!(granted.workspace, WORKSPACE);
         assert_eq!(
             verify_invitation(&text, &person).expect("the invitation verifies"),
@@ -1016,6 +1066,7 @@ mod tests {
         let body = post.body_text();
         assert!(body.contains(&sealed.sealed_text()), "{body}");
         assert!(body.contains(&sealed.delete), "{body}");
+        assert!(body.contains(&format!("\"{HOST}\"")), "{body}");
         assert!(!body.contains(&key), "the key stays in the link: {body}");
         let fetch = responder.next_request();
         assert_eq!(fetch.method, "GET");
@@ -1081,6 +1132,7 @@ mod tests {
                 .body(
                     serde_json::to_string(&tilo_relay_protocol::sealed_invitations::Fetched {
                         sealed: sealed.sealed_text(),
+                        host: None,
                     })
                     .expect("a shelf's answer"),
                 ),

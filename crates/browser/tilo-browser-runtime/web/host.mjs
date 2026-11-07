@@ -129,6 +129,11 @@ export async function mountDesktop(target,options={}) {
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
+  // What the desktop hands over says so where every copy does: the status
+  // line, and the page's own status.
+  const writeClipboard=text=>globalThis.navigator?.clipboard?.writeText
+    ?globalThis.navigator.clipboard.writeText(text)
+    :Promise.reject(new Error('this page cannot reach the clipboard'));
   const report=data=>{
     // A finished copy is the app's to show, in its own window; the page only speaks it.
     if(data.clipboard==='copied')status.show('Copied to system clipboard',{spoken:true,again:true});
@@ -147,8 +152,9 @@ export async function mountDesktop(target,options={}) {
   // Administration is opt-in and never borrows the inference session token.
   if(options.providerManagement)config.providerManagement={endpoint:options.providerManagement.endpoint,sessionToken:options.providerManagement.sessionToken};
   delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;delete config.presenceUrl;
-  // The desktop offers Invite only when the page takes it.
-  config.invite=typeof options.onInvite==='function';delete config.onInvite;
+  // The desktop shows its invite sheet when the page configures one: what it
+  // makes links through, as `mountDesktop({invite})` hands it over.
+  delete config.onInvite;
   // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
   delete config.hostActions;delete config.onHostAction;
   // The workspace directory's door granted this person a workspace: only the page joins with it.
@@ -246,7 +252,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(request==='invite')options.onInvite?.();else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}else if(request?.['room-action']){const asked=request['room-action'];void runRecordAction(options.peer?.actions,asked).then(answer=>{if(active())runtime.desktop_record_action_answer(id,asked.id,JSON.stringify(answer));});}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});liveCursors?.wake();}
     // This person's latest wave, which the one it is for shows once.

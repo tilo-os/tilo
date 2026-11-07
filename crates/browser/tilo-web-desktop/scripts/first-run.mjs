@@ -7,8 +7,6 @@
 // 4. The overview opens from its chord, lists the window and offers a new
 //    workspace; Escape closes it.
 // 5. A reload restores the same window instead of the welcome.
-// 6. A page that takes invitations (`mountDesktop({onInvite})`) gets the
-//    launchpad's Invite.
 //
 // usage: node first-run.mjs BUNDLE_DIR
 //   BUNDLE_DIR  build.sh --bundle desktop output
@@ -131,13 +129,6 @@ try {
   check(JSON.stringify(await windows()) === '["Notes"]', 'a reload restores the window');
   check(!(await named('Welcome to Tilo')), 'a reload does not welcome again');
   await shot('restored');
-
-  // 6. Invite reaches a page that takes it.
-  await open('?room=bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb&workspace=Acme%20Robotics&invite');
-  check(await named('Acme Robotics') || (await nodes()).some(n => n.name.includes('Acme Robotics')), 'the workspace takes the page\'s name');
-  check(await press('Invite people'), 'the Invite card is a control');
-  check(await until(async () => (await tab.evaluate('globalThis.tiloInvites')) > 0), 'Invite calls the page\'s onInvite');
-  await shot('invite');
 
   const exceptions = tab.log.filter(line => line.startsWith('EXC') || /panic/i.test(line));
   check(exceptions.length === 0, `no exceptions or panics${exceptions.length ? `: ${exceptions.join(' | ')}` : ''}`);

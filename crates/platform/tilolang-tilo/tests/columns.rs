@@ -897,15 +897,16 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
     ada.host.set_clock(move || read.borrow().clone());
     let mut view = ada.view(INBOX_APP);
     assert_eq!(texts(view.tree()).len(), 999);
-    // A query reads the running clock to the minute: the view waits for the next one.
-    assert_eq!(
-        view.wakes_at(),
-        tilolang::calendar::instant("2026-10-27T10:01:00Z")
-    );
+    // An idle view waits for the instant the snooze ends, not for the next minute: nothing reads
+    // it in between, and it wakes exactly there.
+    let ends = tilolang::calendar::instant("2027-01-01T00:00:00Z").unwrap();
+    assert_eq!(view.wakes_at(), Some(ends));
+    *clock.borrow_mut() = "2026-12-31T23:59:00Z".to_owned();
+    assert!(!view.is_stale(), "the view woke before the snooze ended");
 
     // The clock reaches the snooze's end: the view runs again, and the conversation moves in,
     // its row built (one item read), not the workspace read again.
-    *clock.borrow_mut() = "2027-06-01T00:00:00Z".to_owned();
+    *clock.borrow_mut() = "2027-01-01T00:00:00Z".to_owned();
     assert!(view.is_stale(), "the snooze's end opened the inbox");
     let before = ada.host.store().read_stats().evaluated;
     view.poll_patches().unwrap();
@@ -919,6 +920,13 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
         .evaluated
         .saturating_sub(before);
     assert!(filled <= 2, "the change checked {filled} items");
+    // No value the filter compares lies after it: the view has nothing to wait for, and no
+    // minute of the clock wakes it again.
+    assert_eq!(
+        view.wakes_at(),
+        None,
+        "the inbox waits for no time it reads"
+    );
 }
 
 /// A list filtered by a set's member and more, of conversations the person's device has just

@@ -308,6 +308,35 @@ impl<F> Pred<F> {
         }
     }
 
+    /// The fields it compares with the clock ([`Operand::Clock`]), each with whether it reads
+    /// the person's day or the instant, and by how much it offsets the clock: the values that
+    /// turning the clock over changes what it answers.
+    #[must_use]
+    pub fn clock_fields(&self) -> Vec<(&F, bool, i64)> {
+        let mut out = Vec::new();
+        self.each_clock_field(&mut |field, day, offset| out.push((field, day, offset)));
+        out
+    }
+
+    fn each_clock_field<'a>(&'a self, f: &mut impl FnMut(&'a F, bool, i64)) {
+        match self {
+            Self::Not(p) => p.each_clock_field(f),
+            Self::And(ps) | Self::Or(ps) => ps.iter().for_each(|p| p.each_clock_field(f)),
+            Self::Cmp(_, a, b) => {
+                // Either side may be the field: a filter may ask `f <= now` or `now <= f`.
+                let (field, clock) = match (a, b) {
+                    (Operand::Field(field), Operand::Clock { day, offset })
+                    | (Operand::Clock { day, offset }, Operand::Field(field)) => {
+                        (field, (*day, *offset))
+                    }
+                    _ => return,
+                };
+                f(field, clock.0, clock.1);
+            }
+            _ => {}
+        }
+    }
+
     /// Whether it reads the time it is asked at ([`Operand::Clock`]).
     #[must_use]
     pub fn reads_clock(&self) -> bool {

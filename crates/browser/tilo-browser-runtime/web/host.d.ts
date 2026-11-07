@@ -87,10 +87,24 @@ export interface MountOptions {
   restartOnCrash?: boolean;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
   /**
-   * The desktop's Invite (its launchpad card and the people control in its
-   * top bar) calls this; without it the desktop offers no invitation.
+   * The invite sheet this page's desktop shows (its launchpad card, the
+   * people control in its top bar, and anywhere else inviting is offered):
+   * the workspace whose host makes and lists its links, the site the links
+   * open, and who this page's person is. Without it the desktop offers no
+   * invitation, as an embed has nothing to invite into.
    */
-  onInvite?: () => void;
+  invite?: {
+    /** The page's entry, as a link names it (`https://tilo.coffee/`). */
+    base: string;
+    /** The workspace's host: where an invitation waits, and where the link points. */
+    origin: string;
+    /** The workspace, by its id. */
+    workspace: string;
+    /** How this page's person is named in an invitation. */
+    name?: string;
+    /** This person's root key, hex: the one member a link is never made for. */
+    user?: string;
+  };
   /**
    * What only the page can do for the person (keeping their identity):
    * desktop search lists these beside its own commands, and choosing one,

@@ -7,20 +7,19 @@
  *   else one this browser set up for them. The host creates it and admits
  *   this device as its owner (`workspaces.create`, `enter`); the page then
  *   opens it.
- * - `invite-someone` (also the desktop's own Invite): an invitation to the
- *   workspace this page is in (`createInvitation`), presented as a link with its
- *   `invite` secret to copy and send. Whoever opens it asks to join; the
- *   owner lets them in. A public workspace (anyone may join it as a guest)
- *   needs no invitation: inviting copies its own link and says so.
+ * Inviting someone is the desktop's own invite sheet (`invite.rs`): it makes
+ * and lists the workspace's invitations through its host, so the page carries
+ * no invite action of its own.
+ *
  * - `waiting-to-join`: the people who asked, each to let in or turn away
  *   (`membership.requests`, `admit`, `decline`), for the owner and anyone
  *   else the host lets see who asks (whoever it lets invite). While they
  *   are in the workspace, each new request is also offered on a banner to let
  *   them in. A workspace that takes people by invitation also lists the
  *   addresses people left at its door (`membership.waitList`): each is
- *   answered with an invitation of the inviter's own, a link they send to
- *   that address, made for the entry so it shows as invited and leaves the
- *   list once someone joins with it; or taken off the list by hand
+ *   answered with an invitation of the inviter's own, a short link to that
+ *   address, made for the entry so it shows as invited and leaves the list
+ *   once someone joins with it; or taken off the list by hand
  *   (`unlist`). They are nobody to let in, so they get no banner.
  *
  * Every step is the host's decision: a refusal is said, never worked
@@ -32,11 +31,6 @@ export const NEW_WORKSPACE = Object.freeze({id: 'new-workspace', title: 'New wor
  * desktop opens itself (it needs nothing of the page but its site). */
 export const JOIN_WORKSPACE = Object.freeze({id: 'join-workspace', title: 'Join a workspace',
   label: 'Join a workspace…', subtitle: 'Browse the workspaces this site lists', source: 'workspace'});
-export const INVITE = Object.freeze({id: 'invite-someone', title: 'Invite someone',
-  subtitle: 'Copy a link that asks to join this workspace'});
-/** Invite people in a public workspace: its link is the invitation. */
-export const INVITE_PUBLIC = Object.freeze({...INVITE, title: 'Invite people',
-  subtitle: 'Copy the link: anyone can join this public workspace with it'});
 export const WAITING = Object.freeze({id: 'waiting-to-join', title: 'Waiting to join',
   subtitle: 'Let in people who asked to join, or invite those on the wait list'});
 const ADMIT = 'admit-request:';
@@ -63,23 +57,24 @@ export const ownHost = peer => Boolean(peer?.userPublicKey) && hex(peer.host?.ho
  * The workspace actions of a page whose peer is `peer` (`null` on the
  * person's own desktop). `machines()` lists the origins of the machines
  * this browser set up for the person; `lobby(origin)` connects to one
- * without a workspace and resolves to that peer. `inviteLink(invitation)` is
- * the workspace's link carrying it; `open({origin, room, name, hostDevice})` opens
- * a workspace, held by the host whose device key is `hostDevice`.
+ * without a workspace and resolves to that peer. `inviteLink(invitation)`
+ * resolves to the short link the workspace's site keeps the invitation
+ * under, `https://<site>/i/<handle>#<key>`; `open({origin, room, name,
+ * hostDevice})` opens a workspace, held by the host whose device key is
  * `ui` draws what the page shows: `askWorkspaceName(save)`,
  * `chooseMachine(origins)`, `share({title, body, link})`, `copy(text)`
  * (resolves whether it reached the clipboard),
  * `waitingList({load, admit, decline, invite, unlist})` (`load()` resolves
  * to `{people, waitList}`; `invite(entry)` makes the invitation for a
  * wait-list address and has the host mail it, else shares it, resolving to
- * `{mailed, link}`) and `fail(text)`. `publicLink()` is
- * the link anyone joins the workspace in front with when it is a public
- * workspace, else `null`. Attach the desktop with `attach(mount)`; route its
- * host actions to `perform`.
+ * `{mailed, link}`) and `fail(text)`. Attach the desktop with `attach(mount)`;
+ * route its host actions to `perform`.
  */
 export function createWorkspaceActions({
-  peer = null, machines = () => [], lobby, inviteLink, publicLink = () => null, open, ui,
-  every = (run, ms) => { const timer = setInterval(run, ms); return () => clearInterval(timer); },
+  peer = null, machines = () => [], lobby, inviteLink, open, ui,
+  // The poll follows the workspace while the page stands; it is not a reason
+  // for the page's process to stay alive (a browser keeps its timers anyway).
+  every = (run, ms) => { const timer = setInterval(run, ms); timer.unref?.(); return () => clearInterval(timer); },
   onError = error => console.warn('workspaces:', error),
 }) {
   let mount;
@@ -92,7 +87,6 @@ export function createWorkspaceActions({
   const actions = () => [
     ...(ownHost(peer) || machines().length ? [NEW_WORKSPACE] : []),
     JOIN_WORKSPACE,
-    ...(inWorkspace ? [publicLink() ? INVITE_PUBLIC : INVITE] : []),
     ...(lettingIn ? [WAITING] : []),
   ];
   const refresh = () => mount?.setHostActions?.(actions());
@@ -101,9 +95,19 @@ export function createWorkspaceActions({
     void ui.fail(`${what}: ${error?.message ?? error}`);
   };
 
+  /** Who asks to join, every pass: each new request is offered once, and
+   * whether the host lets this person answer follows its answers, because
+   * that changes while the page is open (someone made owner, a role changed,
+   * a workspace that took people at its door now letting its members invite).
+   * A host that keeps its door from this person says so on every pass: that
+   * is nobody to let in, not a failure to report. */
   const askWaiting = async () => {
     let people;
-    try { people = await peer.membership.requests(); } catch (error) { onError(error); return false; }
+    try { people = await peer.membership.requests(); } catch (error) {
+      if (lettingIn) { lettingIn = false; refresh(); }
+      return;
+    }
+    if (!lettingIn) { lettingIn = true; refresh(); }
     const now = new Set(people.map(person => person.requestId));
     for (const id of offered) if (!now.has(id)) offered.delete(id);
     for (const person of people) {
@@ -112,19 +116,8 @@ export function createWorkspaceActions({
       offered.add(person.requestId);
       mount?.offerHostAction?.({action: {id: `${ADMIT}${person.requestId}`, title: `Let ${person.name} in`},
         title: `${person.name} asks to join`,
-        body: `${person.name} wants to join “${workspaceName ?? 'this workspace'}” as ${person.role}. Let in only someone you invited.`});
+        body: `${person.name} wants to join “${workspaceName ?? 'this workspace'}” as ${person.role}.`});
     }
-    return true;
-  };
-
-  /** Hear who asks to join from now on, and offer the list of them. */
-  const letPeopleIn = async () => {
-    if (stop) return;
-    // Someone the host does not show who asks hears nothing more.
-    if (!await askWaiting()) return;
-    lettingIn = true;
-    refresh();
-    stop = every(() => { void askWaiting(); }, WAITING_POLL_MS);
   };
 
   const newWorkspace = async (on = null) => {
@@ -146,40 +139,13 @@ export function createWorkspaceActions({
     if (created) await open({origin, room: created.room, name: created.name, hostDevice: created.hostDevice});
   };
 
-  const invite = async () => {
-    if (!inWorkspace) return;
-    const open = publicLink();
-    if (open) {
-      // Anyone may join a public workspace: its link is the invitation, and
-      // no one is asked to let them in.
-      const named = workspaceName ? `“${workspaceName}”` : 'this workspace';
-      if (await ui.copy?.(open)) {
-        mount?.acknowledge?.(`Link copied: anyone can join ${named} with it`);
-        return;
-      }
-      await ui.share({title: `Invite people to ${named}`,
-        body: 'This workspace is public: anyone with this link can join it.', link: open});
-      return;
-    }
-    let text;
-    try { text = await peer.createInvitation({role: 'editor'}); } catch (error) { say(error, 'Could not invite someone'); return; }
-    // Whom they invite asks to join, and they let them in here: the host
-    // that let them invite shows them who asks.
-    if (!lettingIn) void letPeopleIn();
-    await ui.share({
-      title: `Invite someone to “${workspaceName ?? 'this workspace'}”`,
-      body: 'Send this link to the person you invite. They ask to join with it, and you let them in here.',
-      link: inviteLink(text),
-    });
-  };
-
   /** An invitation for the address `entry` left at the door: mailed there
    * by the host where it sends mail, else shared for the inviter to send.
    * Resolves to `{mailed, link}`; the entry leaves the list once someone
    * joins with it. */
   const inviteContact = async entry => {
     const text = await peer.createInvitation({role: 'editor', waitListEntry: entry.requestId});
-    const link = inviteLink(text);
+    const link = await inviteLink(text);
     try {
       await peer.membership.mailInvite(entry.requestId, link);
       return {mailed: true, link};
@@ -189,7 +155,7 @@ export function createWorkspaceActions({
     }
     await ui.share({
       title: `Invite ${entry.contact}`,
-      body: `Send this link to ${entry.contact}. They join ${workspaceName ? `“${workspaceName}”` : 'this workspace'} with it, and you let them in here. They leave the wait list once they join.`,
+      body: `Send this link to ${entry.contact}. Following it brings them into ${workspaceName ? `“${workspaceName}”` : 'this workspace'} as an editor.`,
       link,
     });
     return {mailed: false, link};
@@ -206,26 +172,25 @@ export function createWorkspaceActions({
   return {
     actions,
     /** Whether `id` is one of these actions. */
-    handles: id => [NEW_WORKSPACE.id, INVITE.id, WAITING.id].includes(id) || id.startsWith(ADMIT),
-    /** Show the actions in `mount`'s desktop; someone who lets people in
-     * hears who asks to join from now on. */
+    handles: id => [NEW_WORKSPACE.id, WAITING.id].includes(id) || id.startsWith(ADMIT),
+    /** Show the actions in `mount`'s desktop; whoever the host lets answer
+     * for its door hears who asks to join, from now on and after. */
     async attach(target) {
       mount = target;
       refresh();
       if (!inWorkspace) return;
-      let owner = false;
       try {
-        const state = await peer.membership.list();
-        workspaceName = state.name;
-        owner = state.members.some(member => member.owner && member.userPublicKey === peer.userPublicKey);
+        workspaceName = (await peer.membership.list()).name;
       } catch {
         // The host may keep its member list to the owner.
       }
-      // The host shows who asks to join to whoever it lets invite, and
-      // they let in whom they invited: the owner, and members of a workspace
-      // that has its members invite people.
-      if (owner || await peer.membership.requests().then(() => true, () => false)) await letPeopleIn();
-      else refresh();
+      // The host shows who asks to join to whoever it lets invite, and they
+      // let in whom they invited: the owner, and members of a workspace that
+      // has its members invite people. Asked every pass, never once: someone
+      // made owner while the page is open starts answering join requests
+      // without a reload.
+      stop = every(() => { void askWaiting(); }, WAITING_POLL_MS);
+      await askWaiting();
     },
     /** Make a workspace on the machine at `origin` (one just set up). */
     async createOn(origin) {
@@ -235,7 +200,6 @@ export function createWorkspaceActions({
     async perform(id) {
       try {
         if (id === NEW_WORKSPACE.id) await newWorkspace();
-        else if (id === INVITE.id) await invite();
         else if (id === WAITING.id && lettingIn) {
           // The wait list beside them, where the workspace keeps one: a workspace
           // without one, or a host that keeps it from this person, lists none.
