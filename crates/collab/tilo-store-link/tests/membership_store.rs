@@ -19,202 +19,28 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
-use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::{
-    ArtifactId, ChannelId, CommitNamed as _, ContentRetention, EncryptionMetadata, SignedOp,
+mod common;
+
+use automerge::{AutoCommit, ROOT, transaction::Transactable};
+use channel_crypto::{ChannelGroup, MemberKey};
+use collab_types::CommitNamed as _;
+use common::{
+    APP, RECORD, addr, artifact, channel, compact, device, endpoint, held_bytes, hint, invitation,
+    joins, outgoing, publish, read_value,
 };
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
-use neighbour_wire::NeighbourMsg;
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tilo_delivery_protocol::workspace_join::{
-    IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceHostMode,
-};
-use tilo_desktop_model::WorkspaceId;
-use tilo_identity_host::custody::HostIdentity;
+use tilo_delivery_protocol::workspace_join::WORKSPACE_JOIN_ALPN;
 use tilo_peer_state::TransportOrigin;
-use tilo_peer_state::join::invitations::IssueInvitationRequest;
-use tilo_peer_state::join::{self, MemberRole, TransportHint};
 use tilo_peer_state::join_answer::JoinAnswer;
-use tilo_peer_state::owner::{
-    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file, testing,
-};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_peer_state::owner::{ApplicationRecord, OwnerJoinWorkspaces, open_file, testing};
 use tilo_relay_protocol::{DeviceMeshProfile, DeviceRole, ReplicationIntent, ServiceCapabilities};
-use tilo_relay_session::workspace_join::{WorkspaceJoinClient, WorkspaceJoinProtocol};
+use tilo_relay_session::workspace_join::WorkspaceJoinProtocol;
 use tilo_store_link::{ALPN, StoreService, StoreSession, appetite, workspace_of};
 use tilo_store_node::Appetite;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
-
-const APP: &str = "test.app";
-const RECORD: &str = "tab:1";
-const SECOND: u64 = 1_000_000_000;
-
-fn device(
-    root: &SigningKey,
-    seed: u8,
-    capabilities: DeviceCapabilities,
-) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{seed}"),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
-
-fn ns(now: SystemTime) -> u64 {
-    u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
-}
-
-fn hint(
-    endpoint: &Endpoint,
-    cert: &DeviceCert,
-    key: &SigningKey,
-    workspace_id: &WorkspaceId,
-    workspace: u64,
-) -> TransportHint {
-    IrohWorkspaceHostHintV1 {
-        version: 1,
-        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-        room: workspace_id.to_string(),
-        workspace_id: workspace,
-        endpoint_addr: addr(endpoint),
-        host_user_public_key: cert.user_public_key,
-        host_device_certificate: cert.clone(),
-        packet_relay_url: "iroh:direct".into(),
-    }
-    .transport_hint(key)
-    .unwrap()
-}
-
-fn custody(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
-    HostIdentity {
-        device_cert: cert.clone(),
-        device_signing_key: key.clone(),
-        workspace_device_certs: HashMap::default(),
-        workspace_revocations: HashMap::default(),
-        identity_paths: None,
-    }
-}
-
-fn channel(workspace_id: &WorkspaceId) -> ChannelId {
-    collab_types::document_channel_id(APP, &workspace_id.to_string(), RECORD)
-}
-
-fn artifact(workspace_id: &WorkspaceId) -> ArtifactId {
-    collab_types::document_artifact_id(APP, &workspace_id.to_string(), RECORD)
-}
-
-fn sealer(
-    keys: &ChannelContentKeys,
-    artifact: ArtifactId,
-    retention: ContentRetention,
-) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-    let keys = keys.clone();
-    move |plaintext| {
-        keys.seal_content(artifact, retention, plaintext)
-            .map_err(|error| error.to_string())
-    }
-}
-
-fn opener(keys: &ChannelContentKeys) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> {
-    let keys = keys.clone();
-    move |op| {
-        let metadata = op.encryption.ok_or("not sealed")?;
-        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-        keys.open_content(op.artifact, &metadata, &ciphertext)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-}
-
-/// Invite `guest` into the workspace, redeemed at the device that answers joins.
-fn invitation(
-    owner: &NativeWorkspaceOwner,
-    workspace_id: &WorkspaceId,
-    member: &DeviceCert,
-    key: &SigningKey,
-    guest: &DeviceCert,
-    host: TransportHint,
-    now: SystemTime,
-) -> String {
-    let issued = owner
-        .issue_invitation(
-            *workspace_id,
-            member,
-            IssueInvitationRequest {
-                request_id: [7; 32],
-                role: MemberRole::Editor,
-                recipient_user_public_key: Some(guest.user_public_key),
-                invitee_name: Some(guest.device_label.clone()),
-                expires_at_ns: ns(now).saturating_add(600 * SECOND),
-                inviter_name: None,
-            },
-            vec![host],
-            key,
-            now,
-        )
-        .unwrap();
-    join::encode_invitation_text(&issued.signed_invitation)
-}
-
-/// `guest` joins `workspace` with `invitation` from `endpoint`, taking the
-/// workspace in at `owner`.
-async fn joins(
-    endpoint: Endpoint,
-    cert: &DeviceCert,
-    key: &SigningKey,
-    workspace: u64,
-    invitation: String,
-    owner: &NativeWorkspaceOwner,
-    now: SystemTime,
-) {
-    let enrollment = tilo_peer_state::owner::enroll::prepare_and_complete(
-        WorkspaceJoinClient::new(endpoint),
-        custody(cert, key),
-        workspace,
-        None,
-        invitation,
-        owner.clone(),
-    )
-    .await
-    .unwrap();
-    owner.install(&enrollment, now).unwrap();
-}
+use tilo_user_identity::DeviceCapabilities;
 
 /// What the store device's mesh policy says it keeps: this workspace, whole.
 fn store_profile(device: [u8; 32], workspace: u64) -> DeviceMeshProfile {
@@ -227,35 +53,6 @@ fn store_profile(device: [u8; 32], workspace: u64) -> DeviceMeshProfile {
         },
         replication: BTreeMap::from([(workspace, ReplicationIntent::FullWorkspace)]),
         filesystem_endpoints: Vec::new(),
-    }
-}
-
-/// What `owner` holds for `workspace` that the devices of the workspace have
-/// not been given yet.
-fn outgoing(
-    owner: &NativeWorkspaceOwner,
-    workspace_id: WorkspaceId,
-    now: SystemTime,
-) -> Vec<NeighbourMsg> {
-    owner
-        .with_outgoing(workspace_id, now, |_, outgoing| {
-            Ok(outgoing
-                .entries()
-                .map(|entry| postcard::from_bytes(entry.bytes()).unwrap())
-                .collect())
-        })
-        .unwrap()
-}
-
-/// Every byte the store device holds, file by file.
-fn held_bytes(root: &Path, found: &mut Vec<Vec<u8>>) {
-    for entry in std::fs::read_dir(root).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            held_bytes(&path, found);
-        } else {
-            found.push(std::fs::read(&path).unwrap());
-        }
     }
 }
 
@@ -280,13 +77,13 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
     a.prepare_application_record(workspace_id, &a_cert, &a_key, &record, now)
         .unwrap();
     let group = ChannelGroup::create(
-        channel(&workspace_id),
+        channel(&workspace_id.to_string()),
         MemberKey::generate("owner").unwrap(),
     )
     .unwrap();
     let keys = group.content_keys().unwrap();
     let b_keys = keys.clone();
-    let artifact = artifact(&workspace_id);
+    let artifact = artifact(&workspace_id.to_string());
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "before the guests").unwrap();
     document.commit_edit("fixture", "value");
@@ -504,107 +301,4 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
             .is_err(),
         "a device the workspace never admitted is not given the workspace"
     );
-}
-
-/// Publish `change` to the record as A's sealed write.
-fn publish(
-    owner: &NativeWorkspaceOwner,
-    workspace_id: WorkspaceId,
-    change: &[u8],
-    keys: &ChannelContentKeys,
-    artifact: ArtifactId,
-    key: &SigningKey,
-    now: SystemTime,
-) {
-    owner
-        .commit_document_with_current(
-            workspace_id,
-            |view| {
-                let mut peer = view.peer().clone();
-                let message = peer.publication_mut().publish_sealed_incremental(
-                    APP,
-                    RECORD,
-                    change.to_vec(),
-                    &mut sealer(keys, artifact, ContentRetention::Delta),
-                    key,
-                    now,
-                )?;
-                document_write(message)
-            },
-            now,
-        )
-        .unwrap();
-}
-
-/// Fold the record's sealed history into the sealed checkpoint a store keeps
-/// in place of the writes it covers.
-fn compact(
-    owner: &NativeWorkspaceOwner,
-    workspace_id: WorkspaceId,
-    keys: &ChannelContentKeys,
-    artifact: ArtifactId,
-    key: &SigningKey,
-    now: SystemTime,
-) {
-    owner
-        .commit_document_with_current(
-            workspace_id,
-            |view| {
-                let mut peer = view.peer().clone();
-                let message = peer.publication_mut().compact_sealed_history(
-                    APP,
-                    RECORD,
-                    &mut opener(keys),
-                    &mut sealer(keys, artifact, ContentRetention::Checkpoint),
-                    key,
-                    now,
-                )?;
-                document_write(message)
-            },
-            now,
-        )
-        .unwrap();
-}
-
-/// The document message `message` is, as this device's commit of it.
-fn document_write(message: NeighbourMsg) -> Result<OwnerCommitRequest, String> {
-    let NeighbourMsg::AppDocument {
-        cluster_id,
-        envelope,
-        ..
-    } = message
-    else {
-        return Err("a document publish is a document write".into());
-    };
-    Ok(OwnerCommitRequest {
-        workspace: cluster_id,
-        operation: CommitOperation::Document {
-            app: APP.into(),
-            record: RECORD.into(),
-            envelope,
-        },
-    })
-}
-
-fn read_value(
-    owner: &NativeWorkspaceOwner,
-    workspace_id: WorkspaceId,
-    keys: &ChannelContentKeys,
-) -> String {
-    let opened = owner
-        .with_current(workspace_id, |view| {
-            view.peer()
-                .publication()
-                .opened_document(APP, RECORD, &mut opener(keys))
-        })
-        .unwrap()
-        .expect("the workspace holds the record");
-    assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
-    AutoCommit::load(&opened.document)
-        .unwrap()
-        .get(ROOT, "value")
-        .unwrap()
-        .expect("the record has a value")
-        .0
-        .to_string()
 }

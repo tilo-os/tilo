@@ -13,13 +13,13 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
+mod common;
+
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
-use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
-use collab_types::{
-    ArtifactId, ChannelId, CommitNamed as _, ContentRetention, EncryptionMetadata, SignedOp,
-};
+use channel_crypto::{ChannelGroup, MemberKey};
+use collab_types::CommitNamed as _;
+use common::{APP, RECORD, addr, artifact, channel, device, endpoint, opener, sealer, seq};
 use ed25519_dalek::SigningKey;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,89 +27,17 @@ use tilo_peer_state::direct::DirectSync;
 use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
 use tilo_store_link::{StoreSession, cursors, workspace_of};
 use tilo_store_node::{ALPN, Appetite, Cursor, FixedAccess, Lineage, Store, StoreNode};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const APP: &str = "test.app";
-const RECORD: &str = "tab:1";
-
-fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{seed}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
-
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
-}
-
-fn channel() -> ChannelId {
-    collab_types::document_channel_id(APP, WORKSPACE, RECORD)
-}
-
-fn artifact() -> ArtifactId {
-    collab_types::document_artifact_id(APP, WORKSPACE, RECORD)
-}
-
-fn sealer(
-    keys: &ChannelContentKeys,
-    retention: ContentRetention,
-) -> impl FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> {
-    let artifact = artifact();
-    move |plaintext| {
-        keys.seal_content(artifact, retention, plaintext)
-            .map_err(|error| error.to_string())
-    }
-}
-
-fn seq(message: &NeighbourMsg) -> u64 {
-    match message {
-        NeighbourMsg::AppDocument { envelope, .. } => envelope.seq,
-        _ => 0,
-    }
-}
-
-fn opener(keys: &ChannelContentKeys) -> impl FnMut(&SignedOp) -> Result<Vec<u8>, String> {
-    let keys = keys.clone();
-    move |op| {
-        let metadata = op.encryption.ok_or("not sealed")?;
-        let ciphertext = collab_types::sealed_ciphertext(op).map_err(|error| error.to_string())?;
-        keys.open_content(op.artifact, &metadata, &ciphertext)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
-    }
-}
 
 #[tokio::test(flavor = "multi_thread")]
 async fn a_device_that_was_away_catches_up_from_the_store() {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let (a_key, a_cert) = device(&root, 2);
-    let (b_key, b_cert) = device(&root, 3);
-    let (store_key, _) = device(&root, 4);
+    let (a_key, a_cert) = device(&root, 2, DeviceCapabilities::member());
+    let (b_key, b_cert) = device(&root, 3, DeviceCapabilities::member());
+    let (store_key, _) = device(&root, 4, DeviceCapabilities::member());
     let roster = vec![a_cert.clone(), b_cert.clone()];
     let now = SystemTime::UNIX_EPOCH + Duration::from_secs(2000);
     let author = a_key.verifying_key().to_bytes();
@@ -144,7 +72,8 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
     let a = DirectSync::new(a, a_key.clone());
 
     // The record's keys are the members'; the store is never given them.
-    let group = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap()).unwrap();
+    let group =
+        ChannelGroup::create(channel(WORKSPACE), MemberKey::generate("owner").unwrap()).unwrap();
     let keys = group.content_keys().unwrap();
     let b_keys = keys.clone();
 
@@ -185,7 +114,11 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
                 APP,
                 RECORD,
                 change.clone(),
-                &mut sealer(&keys, ContentRetention::Delta),
+                &mut sealer(
+                    &keys,
+                    artifact(WORKSPACE),
+                    collab_types::ContentRetention::Delta,
+                ),
                 key,
                 when,
             )
@@ -206,7 +139,11 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
                 APP,
                 RECORD,
                 &mut opener(&keys),
-                &mut sealer(&keys, ContentRetention::Checkpoint),
+                &mut sealer(
+                    &keys,
+                    artifact(WORKSPACE),
+                    collab_types::ContentRetention::Checkpoint,
+                ),
                 key,
                 when,
             )
@@ -287,7 +224,11 @@ async fn a_device_that_was_away_catches_up_from_the_store() {
                 APP,
                 RECORD,
                 change.clone(),
-                &mut sealer(&keys, ContentRetention::Delta),
+                &mut sealer(
+                    &keys,
+                    artifact(WORKSPACE),
+                    collab_types::ContentRetention::Delta,
+                ),
                 key,
                 when,
             )
