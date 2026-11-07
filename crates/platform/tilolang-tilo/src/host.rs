@@ -957,11 +957,19 @@ impl Host {
         Ok(Self { inner })
     }
 
-    /// Whether every loaded package's index is read from: until then its lists show nothing,
-    /// and the window shows the platform's loading state (see [`TiloStore::index_ready`]).
+    /// Whether every loaded package's index covers the record: none is being built, or waits
+    /// for it (see [`TiloStore::index_ready`]).
     #[must_use]
     pub fn index_ready(&self) -> bool {
         self.inner.store.index_ready()
+    }
+
+    /// Whether every loaded package's index holds rows to read, though they may not be the
+    /// whole record's yet: until then its lists show nothing, and the window shows the
+    /// platform's loading state (see [`TiloStore::index_answers`]).
+    #[must_use]
+    pub fn index_answers(&self) -> bool {
+        self.inner.store.index_answers()
     }
 
     /// Take in indexes built off the frame; whether one was (see [`TiloStore::poll_index`]).

@@ -2323,6 +2323,12 @@ impl Checker<'_> {
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "len") if args.is_empty() => {
                 Ex::host(Imp::ListLen, vec![r], Ty::Int)
             }
+            // How many it holds, once the store has read the whole workspace: none until then,
+            // so a window that counts what it shows never shows a part as the whole
+            // ([`Imp::CollCounted`]).
+            (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "counted") if args.is_empty() => {
+                Ex::host(Imp::CollCounted, vec![r], Ty::Option(Box::new(Ty::Int)))
+            }
             (Ty::List(_) | Ty::Set(_) | Ty::Collection(_), "is_empty") if args.is_empty() => {
                 // Whether it holds nothing reads whether it shows a first item: a filtered
                 // collection's length is only the most it can hold, so measuring it said an

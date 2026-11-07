@@ -1957,9 +1957,10 @@ impl Instance {
             None => host,
         };
         if !self.started {
-            // Until the indexes are read from, the lists would show nothing: the window shows
-            // the platform's loading state.
-            if host.index_ready() {
+            // Until the indexes hold rows to read, the lists would show nothing: the window
+            // shows the platform's loading state. Once the first step of a build is taken in
+            // it opens over those rows, and the rest of the record is read under them.
+            if host.index_answers() {
                 self.started = true;
                 self.loading = false;
                 if !self.rootless {

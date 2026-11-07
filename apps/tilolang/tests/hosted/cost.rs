@@ -765,6 +765,98 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     );
 }
 
+/// A window that opens over years of a person's workspace shows its first screen of rows from the
+/// first step of the index it builds, not once the whole workspace is read: the chunk the first
+/// screen's rows are in is derived first, the rest of the record off the frame while the person
+/// reads, and what the store has not read yet shows as not yet known rather than as a count. The
+/// first rows come in about as long at ten thousand tasks as at one thousand, and the lists the
+/// window ends on are the lists of a window that opens over the index the cold open kept.
+#[test]
+fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
+    let _motion = ui::motion::testing::settled();
+    let mut measured = Vec::new();
+    for &n in &[SEEDED / 10, SEEDED] {
+        let chunks = seeded_tasks(n);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        let storage = kept_root(&format!("first-rows-{n}"));
+
+        let mut session =
+            Session::tasks_over_launched(&route, chunks.clone(), Some(storage.clone()));
+        // From the window opening, as a person waits on it: the package's build is what every
+        // window of the app pays once, and not what the workspace's size adds.
+        let start = ui::rt::thread_cpu_time();
+        let wall = ui::time::Instant::now();
+        show_rows(&mut session);
+        let rows_us = since(start, wall.elapsed());
+        shots(&format!("cold-{n}-first-rows"), &mut session);
+        assert!(
+            !session.titles().is_empty(),
+            "the window opens on the tasks's rows"
+        );
+        let first_rows_shown = session.titles();
+        session.settle();
+        let whole_us = since(start, wall.elapsed());
+        assert!(
+            session.index_whole(),
+            "the window reads the whole workspace by the time it is at rest"
+        );
+        let settled = session.titles();
+        let shared = settled.len().min(first_rows_shown.len());
+        assert_eq!(
+            settled[..shared],
+            first_rows_shown[..shared],
+            "the rows the window opened on stay where they were while the rest is read: \
+             {first_rows_shown:?} then {settled:?}"
+        );
+        shots(&format!("cold-{n}-read"), &mut session);
+        let cold = shown(&mut session);
+        eprintln!(
+            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms of the window's CPU",
+            rows_us as f64 / 1000.0,
+            whole_us as f64 / 1000.0
+        );
+        measured.push((n, rows_us, whole_us));
+
+        // What the window ends on is what a window that opens over a kept index shows.
+        session.close();
+        let kept = kept_index(&route, &chunks, &format!("first-rows-kept-{n}"));
+        let mut warm = Session::tasks_over_in(&route, chunks, Some(kept));
+        assert_eq!(
+            warm.builds(),
+            0,
+            "the window over the kept index reads it, rather than building one"
+        );
+        assert_eq!(
+            shown(&mut warm),
+            cold,
+            "the window at rest shows what a window over the kept index shows"
+        );
+    }
+    if cfg!(debug_assertions) {
+        eprintln!("a development build: the first rows are reported, not bounded");
+        return;
+    }
+    let (small_n, small_rows, _) = measured[0];
+    let (large_n, large_rows, large_whole) = measured[1];
+    assert!(
+        large_rows < large_whole,
+        "the first rows come before the window has read the whole workspace: {large_rows}us of \
+         the {large_whole}us the open took"
+    );
+    assert!(
+        large_rows <= FIRST_ROWS_BUDGET_US,
+        "the first rows at {large_n} tasks took {large_rows}us of the window's CPU, over \
+         {FIRST_ROWS_BUDGET_US}us"
+    );
+    let ratio = large_rows as f64 / small_rows.max(1) as f64;
+    let items = large_n as f64 / small_n.max(1) as f64;
+    assert!(
+        ratio <= items / 2.0,
+        "the first rows wait for the chunk they are in, not the workspace: {large_n} tasks took \
+         {ratio:.1} times what {small_n} did, for {items:.0} times the tasks"
+    );
+}
+
 /// A cold open reads each chunk the record names once, and derives what it holds once: the work
 /// grows with the tasks, not with the square of the chunks they span. Measured in an optimised
 /// build, where the numbers mean something: `--ignored`.
@@ -773,18 +865,27 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
 fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
     let _motion = ui::motion::testing::settled();
     let mut measured = Vec::new();
-    for &n in &[SEEDED / 10, SEEDED] {
+    let mut first_rows = Vec::new();
+    for &n in &[SEEDED / 10, SEEDED, SEEDED_LARGE] {
         let chunks = seeded_tasks(n);
         let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
         let storage = kept_root(&format!("cold-{n}"));
+        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
+        // From the window opening: writing the workspace the session starts from is the test's
+        // work, not the open's.
         let start = ui::rt::thread_cpu_time();
         let wall = ui::time::Instant::now();
-        let mut session = Session::tasks_over_launched(&route, chunks, Some(storage));
-        session.wait_index();
-        let us = since(start, wall.elapsed());
-        eprintln!("cold open at {n} tasks: {:.2} ms", us as f64 / 1000.0);
-        measured.push((n, us));
+        show_rows(&mut session);
+        let rows_us = since(start, wall.elapsed());
         session.settle();
+        let us = since(start, wall.elapsed());
+        eprintln!(
+            "cold open at {n} tasks: first rows {:.2} ms, whole {:.2} ms",
+            rows_us as f64 / 1000.0,
+            us as f64 / 1000.0
+        );
+        measured.push((n, us));
+        first_rows.push((n, rows_us));
     }
     let (small_n, small) = measured[0];
     let (large_n, large) = measured[1];
@@ -793,6 +894,15 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
     assert!(
         ratio <= items * 2.0,
         "a cold open grows with the tasks: {large_n} took {ratio:.1} times what {small_n} did"
+    );
+    let (small_n, small) = first_rows[0];
+    let (large_n, large) = first_rows[2];
+    let ratio = large as f64 / small.max(1) as f64;
+    let items = large_n as f64 / small_n.max(1) as f64;
+    assert!(
+        ratio <= items / 4.0,
+        "the first rows do not wait for the workspace: {large_n} tasks took {ratio:.1} times \
+         what {small_n} did, for {items:.0} times the tasks"
     );
 }
 
@@ -910,6 +1020,26 @@ fn holding(session: &Session) -> Vec<tilolang_tilo::chunk::ChunkNo> {
         .collect()
 }
 
+/// The window's screen under `TILO_COLD_SHOTS`, named `name`, for review: nothing when the
+/// variable is not set.
+fn shots(name: &str, session: &mut Session) {
+    let Some(dir) = std::env::var_os("TILO_COLD_SHOTS") else {
+        return;
+    };
+    let dir = std::path::PathBuf::from(dir);
+    if std::fs::create_dir_all(&dir).is_err() {
+        return;
+    }
+    for (shade, theme) in [("light", ui::Theme::light()), ("dark", ui::Theme::dark())] {
+        session.window.harness().set_theme(theme);
+        session.window.frame();
+        session
+            .window
+            .harness()
+            .render_png(&dir.join(format!("{name}-{shade}.png")));
+    }
+}
+
 /// What the window shows, as a person reads it off the accessibility tree: the role and the name
 /// of every node that has one.
 fn shown(session: &mut Session) -> Vec<(ui::a11y::Role, Option<String>)> {
@@ -929,6 +1059,13 @@ const OPEN_BUDGET_US: u64 = 500_000;
 /// The same for a hundred thousand tasks: the record's copy is what the workspace's size adds
 /// to an open.
 const OPEN_BUDGET_LARGE_US: u64 = 900_000;
+
+/// A loose ceiling on the window's CPU time a cold open may take to show its first screen of
+/// rows, whatever the workspace holds: the index is built in steps, the chunk the first screen's
+/// rows are in first, and the window reads from it while the rest of the workspace is derived off
+/// the frame. What the first rows cost beyond this is caught by the growth they are held to
+/// against a tenth of the workspace, and by their coming before the whole workspace is read.
+const FIRST_ROWS_BUDGET_US: u64 = 1_500_000;
 
 /// The directory the tests of this binary keep what a package keeps in, emptied first.
 fn kept_root(name: &str) -> std::path::PathBuf {
@@ -976,11 +1113,14 @@ fn kept_index(
     storage
 }
 
-/// The window's frames until its list shows a rendered row, as long as that took: from the
-/// first frame that could show it. Panics when none does.
+/// The window's frames until a list beside the page shows a row: the UI thread's CPU time it
+/// took, from the first turn that could show it. A cold window shows rows from the first step of
+/// the index it builds, while the rest of the workspace is derived off the frame, so this is
+/// short even where the whole workspace takes seconds.
 fn show_rows(session: &mut Session) -> u64 {
-    let start = ui::time::Instant::now();
-    while start.elapsed() < std::time::Duration::from_secs(120) {
+    let start = ui::rt::thread_cpu_time();
+    let wall = ui::time::Instant::now();
+    while wall.elapsed() < std::time::Duration::from_secs(120) {
         let changed = session.host.turn();
         session.window.frame();
         let shows = session.hosted().view().is_some_and(|view| {
@@ -992,10 +1132,12 @@ fn show_rows(session: &mut Session) -> u64 {
             })
         });
         if shows {
-            return start.elapsed().as_micros() as u64;
+            return since(start, wall.elapsed());
         }
         if !changed {
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            // Nothing on the frame to do: what the rows wait for is read beside the frames, and
+            // the host is woken when it is ready to be taken in.
+            session.woken.wait(std::time::Duration::from_millis(50));
         }
     }
     let ready = session.index_ready();

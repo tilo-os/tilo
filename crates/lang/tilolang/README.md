@@ -303,6 +303,17 @@ knows without reading the items before it. A board lane's drop says both
 what was dropped and where: `on drop(moved: Task, at: Int): place(moved, s, at)`. How moves,
 edits and removals made at the same time merge is convergence.md, "Storage and sync".
 
+**Counts of what is not all read.** A window answers rows from the index it opens over, which
+may still be reading the workspace: `items.len()` and `items.count(pred)` are then the part read
+so far. `items.counted()` is that count once the store has read all of the workspace, and
+`none` before it has, so a view shows a badge or a total as not yet known rather than as a
+number that grows under the person reading it:
+
+```
+let total = tasks.counted()
+if let n = total { "{pending.count(x -> x.done)}/{n}" } else { .none }
+```
+
 **Actions that call actions** invoke them by calling them, their own package's or another
 one's: each call runs at its door as a change of its own, and may wait for a person's approval.
 What the caller writes before a call is a change of its own too, committed before the call runs,
