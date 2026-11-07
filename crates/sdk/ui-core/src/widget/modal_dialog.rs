@@ -41,6 +41,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::Icon;
+use crate::interaction::InteractionEnvironment;
 use crate::platform::{DialogActionOrder, PlatformConventions};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -331,42 +332,9 @@ pub enum ModalHit {
     Scrim,
 }
 
-impl ModalLayout {
-    /// Resolve a point to what it hit, controls first. `None` only for a
-    /// point outside the window entirely.
-    pub fn hit(&self, p: Point) -> Option<ModalHit> {
-        if let Some(c) = self.close
-            && c.contains(p)
-        {
-            return Some(ModalHit::Close);
-        }
-        for (i, r) in self.actions.iter().enumerate() {
-            if r.area() > 0.0 && r.contains(p) {
-                return Some(ModalHit::Action(i));
-            }
-        }
-        if self.card.contains(p) {
-            return Some(ModalHit::Card);
-        }
-        if self.scrim.contains(p) {
-            return Some(ModalHit::Scrim);
-        }
-        None
-    }
-
-    /// True for the close control, and for the scrim when the spec allows
-    /// it. Everything else is swallowed.
-    pub fn dismisses(&self, p: Point) -> bool {
-        match self.hit(p) {
-            Some(ModalHit::Close) => true,
-            Some(ModalHit::Scrim) => self.dismiss_on_scrim,
-            _ => false,
-        }
-    }
-}
-
-/// Ink legible on the sheet, as `(primary, dim)`: the theme's own when it clears AA against the
-/// panel ground, else the contrast-guaranteed on-content ramp.
+/// Ink that is legible on the sheet, as `(primary, dim)`: the theme's own
+/// when it clears AA against the panel ground, else the contrast-guaranteed
+/// on-content ramp.
 pub fn ink(theme: &Theme) -> (Color, Color) {
     let ground = crate::chrome::panel_ground(theme);
     if crate::a11y::contrast_ratio(theme.text_primary, ground) >= MODAL_MIN_INK_CONTRAST {
@@ -949,6 +917,7 @@ struct LayoutKey {
     platform: PlatformConventions,
     content_h: f64,
     header_h: f64,
+    min_target: f64,
 }
 
 /// A modal dialog: a title, any content widget, and up to three footer
@@ -1055,6 +1024,9 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// On a compact window the sheet rises from the foot when what it holds
     /// fits ([`Self::with_foot_sheet`]).
     foot: Option<super::BottomSheet>,
+    /// How the person reaches the window: on a coarse pointer the sheet's own
+    /// controls take a finger's target, as every control does.
+    environment: InteractionEnvironment,
     /// Last, so a `ModalDialog<C>` coerces to `ModalDialog<dyn Widget>`, the
     /// one type the dialog's behaviour is compiled for.
     content: C,
@@ -1068,6 +1040,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             title: title.into(),
             icon: None,
             description: None,
+            environment: InteractionEnvironment::default(),
             content,
             primary_action: None,
             secondary_action: None,
@@ -1588,6 +1561,7 @@ impl ModalDialog<dyn Widget> {
             platform: self.platform,
             content_h: self.content_size.1,
             header_h: self.header_size.1,
+            min_target: target(theme, self.environment),
         }
     }
 
@@ -1604,13 +1578,13 @@ impl ModalDialog<dyn Widget> {
             .max_width(self.max_width)
             .closable(self.closable())
             .anchor(self.anchor);
-        let mut layout = layout(self.window, &spec, text_renderer, theme);
+        let mut layout = layout_for(self.window, &spec, text_renderer, theme, self.environment);
         drop(actions);
         if self.foot.is_some() {
             rise_from_foot(
                 &mut layout,
                 self.content_size.1,
-                f64::from(theme.tokens.metrics.min_pointer_target),
+                target(theme, self.environment),
             );
         }
         if layout.body_overflows && self.trim > 0.0 {
@@ -1952,6 +1926,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
 /// The dialog's behaviour, compiled once for every content type: a
 /// `ModalDialog<C>` forwards each method to its type-erased form.
 impl Widget for ModalDialog<dyn Widget> {
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        if self.environment != environment {
+            self.environment = environment;
+            self.laid_out_for = None;
+        }
+        for child in self.children_mut() {
+            child.set_interaction_environment(environment);
+        }
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         let reorders = self.platform.dialog_action_order() != conventions.dialog_action_order();
         self.platform = conventions;
@@ -2691,6 +2675,10 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         Some(self)
     }
 
+    fn set_interaction_environment(&mut self, environment: InteractionEnvironment) {
+        self.as_dyn_mut().set_interaction_environment(environment);
+    }
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.as_dyn_mut().set_platform_conventions(conventions);
     }
@@ -2913,8 +2901,8 @@ mod footer_key;
 mod geometry;
 use body::{shorten, whole_row_top};
 use footer_key::FooterKey;
-use geometry::onto_device_pixels;
-pub use geometry::{layout, rise_from_foot};
+pub use geometry::{layout, layout_for, rise_from_foot};
+use geometry::{onto_device_pixels, target};
 
 #[cfg(test)]
 #[path = "modal_dialog_tests.rs"]

@@ -2,12 +2,13 @@
 //! actions stand inside a window, worked out before anything but the title
 //! and the action labels is measured.
 
-use vello::kurbo::{Rect, Vec2};
+use vello::kurbo::{Point, Rect, Vec2};
 
 use super::{
-    ModalAction, ModalEmphasis, ModalLayout, ModalSpec, action_height, card_width, pad,
+    ModalAction, ModalEmphasis, ModalHit, ModalLayout, ModalSpec, action_height, card_width, pad,
     title_icon_side, title_lines, title_row_height, uses_full_window,
 };
+use crate::interaction::InteractionEnvironment;
 use crate::platform::DialogActionOrder;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -37,19 +38,47 @@ fn sheet_room(window: Rect, wanted_h: f64, theme: &Theme) -> Rect {
     Rect::new(window.x0, top, window.x1, bottom)
 }
 
-/// Compute the geometry for `spec` inside `window`.
+/// The side the sheet's own controls take: the theme's target, grown with the
+/// text, and never under what the person's pointer needs — a finger's 48 where
+/// a mouse's 32 will do.
+pub(super) fn target(theme: &Theme, environment: InteractionEnvironment) -> f64 {
+    f64::from(theme.tokens.metrics.min_pointer_target).max(f64::from(environment.minimum_target()))
+}
+
+/// Compute the geometry for `spec` inside `window` for a person with a
+/// pointing device.
 pub fn layout(
     window: Rect,
     spec: &ModalSpec<'_>,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> ModalLayout {
+    layout_for(
+        window,
+        spec,
+        text_renderer,
+        theme,
+        InteractionEnvironment::default(),
+    )
+}
+
+/// Compute the geometry for `spec` inside `window` for a person reaching it
+/// through `environment`: on a coarse pointer the sheet's own controls take a
+/// finger's target.
+pub fn layout_for(
+    window: Rect,
+    spec: &ModalSpec<'_>,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    environment: InteractionEnvironment,
+) -> ModalLayout {
     let spacing = &theme.tokens.spacing;
     let pad = pad(theme);
     let w = card_width(window, spec.max_width, theme);
     let has_title = !spec.title.is_empty() || spec.closable;
-    let row_h = title_row_height(theme);
-    let close_side = f64::from(theme.tokens.metrics.min_pointer_target);
+    let min_target = target(theme, environment);
+    let row_h = title_row_height(theme).max(min_target);
+    let close_side = min_target;
     // The close control's glyph lines up with the content's trailing edge,
     // so its hit target reaches a little into the padding.
     let close_overhang = (close_side - f64::from(theme.tokens.metrics.icon_md)) / 2.0;
@@ -79,7 +108,13 @@ pub fn layout(
     } else {
         0.0
     };
-    let footer = footer_geometry(spec, (w - pad * 2.0).max(0.0), text_renderer, theme);
+    let footer = footer_geometry(
+        spec,
+        (w - pad * 2.0).max(0.0),
+        text_renderer,
+        theme,
+        min_target,
+    );
     let footer_h = footer.height;
     let header_h = spec.header_height.max(0.0);
     let header_gap = if header_h > 0.0 {
@@ -149,7 +184,7 @@ pub fn layout(
         (card.y1 - pad - footer_h).max(body_top),
     ));
 
-    let actions = place_actions(spec, card, &footer, theme);
+    let actions = place_actions(spec, card, &footer, theme, min_target);
     let destructive = spec
         .actions
         .iter()
@@ -237,7 +272,9 @@ fn footer_geometry(
     available_width: f64,
     text_renderer: &mut TextRenderer,
     theme: &Theme,
+    min_target: f64,
 ) -> FooterGeometry {
+    let action_h = action_height(theme).max(min_target);
     let spacing = &theme.tokens.spacing;
     let label = ControlSize::Regular.label_style(theme);
     let label_pad = f64::from(spacing.s4);
@@ -258,9 +295,9 @@ fn footer_geometry(
     } else {
         f64::from(spacing.s6)
             + if stacked {
-                widths.len() as f64 * action_height(theme) + gaps * gap
+                widths.len() as f64 * action_h + gaps * gap
             } else {
-                action_height(theme)
+                action_h
             }
     };
     FooterGeometry {
@@ -280,6 +317,7 @@ fn place_actions(
     card: Rect,
     footer: &FooterGeometry,
     theme: &Theme,
+    min_target: f64,
 ) -> Vec<Rect> {
     let mut actions = vec![Rect::ZERO; spec.actions.len()];
     if spec.actions.is_empty() {
@@ -287,7 +325,7 @@ fn place_actions(
     }
     let spacing = &theme.tokens.spacing;
     let pad = pad(theme);
-    let button_h = action_height(theme);
+    let button_h = action_height(theme).max(min_target);
     let gap = f64::from(spacing.s2);
     let by = card.y1 - pad - button_h;
     let order = spec.platform.dialog_action_order();
@@ -339,4 +377,38 @@ fn place_actions(
         }
     }
     actions
+}
+
+impl ModalLayout {
+    /// Resolve a point to what it hit, controls first. `None` only for a
+    /// point outside the window entirely.
+    pub fn hit(&self, p: Point) -> Option<ModalHit> {
+        if let Some(c) = self.close
+            && c.contains(p)
+        {
+            return Some(ModalHit::Close);
+        }
+        for (i, r) in self.actions.iter().enumerate() {
+            if r.area() > 0.0 && r.contains(p) {
+                return Some(ModalHit::Action(i));
+            }
+        }
+        if self.card.contains(p) {
+            return Some(ModalHit::Card);
+        }
+        if self.scrim.contains(p) {
+            return Some(ModalHit::Scrim);
+        }
+        None
+    }
+
+    /// True for the close control, and for the scrim when the spec allows
+    /// it. Everything else is swallowed.
+    pub fn dismisses(&self, p: Point) -> bool {
+        match self.hit(p) {
+            Some(ModalHit::Close) => true,
+            Some(ModalHit::Scrim) => self.dismiss_on_scrim,
+            _ => false,
+        }
+    }
 }
