@@ -36,6 +36,11 @@ tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
 tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
 tilolang-did-and = und
 
+# Was sich geändert hat, seit die Person zuletzt hinsah, Stück für Stück, und der eine Schritt,
+der es alles als gesehen markiert.
+tilolang-since-you-looked = Seit Sie zuletzt hinsahen
+tilolang-mark-all-seen = Alle als gesehen markieren
+
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt
 tilolang-invocation-suggested = Wartet auf Bestätigung

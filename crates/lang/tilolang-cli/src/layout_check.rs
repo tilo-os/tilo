@@ -1477,6 +1477,49 @@ mod windows {
         }
     }
 
+    /// Every node of `kind` under `node`.
+    fn nodes_of<'a>(node: &'a tilo_ui_host::UiNode, kind: &str) -> Vec<&'a tilo_ui_host::UiNode> {
+        let mut out = Vec::new();
+        nodes(node, kind, &mut out);
+        out
+    }
+
+    /// The catch-up a window's mark opens: each item it changed, newest first, with who and
+    /// when, and the one move that marks them all seen.
+    fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
+        let content = window
+            .children
+            .iter()
+            .find(|child| {
+                child.kind == "slot"
+                    && child.props.get("name")
+                        == Some(&tilo_render_protocol::patch::Value::text("content"))
+            })
+            .and_then(|slot| slot.children.first())
+            .unwrap_or_else(|| panic!("the window's mark opens a catch-up: {window:?}"));
+        let labels: Vec<String> = nodes_of(content, "ui.Button")
+            .into_iter()
+            .filter_map(|button| match button.props.get("label") {
+                Some(tilo_render_protocol::patch::Value::Text(label)) => Some(label.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "Buy oat milk and eggs",
+                "Read the survey responses",
+                "Sort the paper mail",
+                "Mark all seen",
+            ],
+            "the catch-up names each item it changed, newest first, then the one move"
+        );
+        assert!(
+            !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
+            "each step says who made it and when: {content:?}"
+        );
+    }
+
     /// The change marks the rows of the window's lists draw, by the row they stand in.
     fn row_marks(
         rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
@@ -2313,6 +2356,7 @@ mod windows {
             ),
             "the window counts the three changes she has not seen: {window:?}"
         );
+        the_catch_up_names_each_item_it_changed(&window);
 
         let mut changed = stage::Staged::over(
             "so.tilo.lang.tasks",

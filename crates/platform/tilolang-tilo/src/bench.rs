@@ -761,9 +761,9 @@ fn execute(doc: &mut Doc, action: &DynAction, who: &str) -> Result<(), String> {
 }
 
 /// Create the root of `shape`, seeded with `n` items, in `doc`: the roots it links first.
-fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta) -> Result<(), String> {
+fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<(), String> {
     for (_, linked) in &shape.links {
-        seed(doc, linked, n, meta)?;
+        seed(doc, linked, n, meta, who)?;
     }
     let root = seeded_root(shape, n, meta)?;
     let action = DynAction {
@@ -777,13 +777,13 @@ fn seed(doc: &mut Doc, shape: &Shape, n: usize, meta: &Meta) -> Result<(), Strin
             record: tilo_resource::Model::to_json(&root),
         }],
     };
-    execute(doc, &action, "seed")
+    execute(doc, &action, who)
 }
 
-/// A workspace seeded with `n` items: the record, ready for a host.
-fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta) -> Result<Doc, String> {
+/// A workspace seeded with `n` items, all made by `who`: the record, ready for a host.
+fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta, who: &str) -> Result<Doc, String> {
     let mut doc = Doc::new();
-    seed(&mut doc, shape, n, meta)?;
+    seed(&mut doc, shape, n, meta, who)?;
     // A window opens a workspace it loads, from storage or a peer: the seeded record, saved and
     // loaded again.
     Doc::load(&doc.save()).map_err(|e| e.to_string())
@@ -797,6 +797,16 @@ fn seeded_workspace(shape: &Shape, n: usize, meta: &Meta) -> Result<Doc, String>
 /// # Errors
 /// The package's root has nothing to seed, or seeding fails.
 pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
+    seeded_record_by(packages, n, "seed")
+}
+
+/// As [`seeded_record`], its items made by `who`: a workspace as the person `who` left it, so
+/// that what another person changed of it afterwards is what they have not seen.
+///
+/// # Errors
+///
+/// As [`seeded_record`].
+pub fn seeded_record_by(packages: &[Compiled], n: usize, who: &str) -> Result<Doc, String> {
     for compiled in packages {
         crate::meta::MetaExt::register_schemas(&compiled.meta);
     }
@@ -809,7 +819,7 @@ pub fn seeded_record(packages: &[Compiled], n: usize) -> Result<Doc, String> {
         .map(|p| &p.meta)
         .filter(|m| m.app != main.meta.app)
         .collect();
-    seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta)
+    seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta, who)
 }
 
 fn root_id(shape: &Shape) -> String {
@@ -1643,7 +1653,7 @@ pub fn run(config: &BenchConfig, emit: &mut dyn FnMut(&Record)) -> Result<Vec<Re
         })
     };
     for n in counts {
-        let sized = sized(n, seeded_workspace(&shape, n, &meta)?)?;
+        let sized = sized(n, seeded_workspace(&shape, n, &meta, "seed")?)?;
         if let Some(isolation) = &config.memory {
             out.push(memory(&sized, isolation)?);
         }

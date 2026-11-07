@@ -789,7 +789,7 @@ impl Core {
 
     /// The platform's words for `key`, in the reader's language; `source` where no catalogue
     /// holds it.
-    fn word(&self, key: &str, source: &str) -> String {
+    pub(crate) fn word(&self, key: &str, source: &str) -> String {
         self.words.borrow().word(key, &[], source)
     }
 
@@ -1393,9 +1393,83 @@ impl Core {
             .push(crate::seen::SeenWrite::Resource {
                 person: person.to_owned(),
                 resource,
-                mark,
+                mark: Some(mark),
             });
         Ok(true)
+    }
+
+    /// `person` marked everything they had not seen of `resources` seen, in one move: the
+    /// *Mark all seen* of a catch-up. What each mark was before is kept, so that the move can
+    /// be taken back ([`Self::undo_seen`]); hands the host one write for each mark it moved.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of one of them.
+    pub(crate) fn mark_all_seen(
+        &self,
+        person: &str,
+        resources: &[String],
+    ) -> Result<usize, crate::store::StoreError> {
+        let mut before = Vec::with_capacity(resources.len());
+        let mut marked: usize = 0;
+        for resource in resources {
+            let Some(at) = ResourceRef::parse_id(resource, String::new()) else {
+                continue;
+            };
+            before.push((resource.clone(), self.seen_mark(person, resource)));
+            if self.mark_seen(person, &at)? {
+                marked = marked.saturating_add(1);
+            }
+        }
+        *self.seen_undo.borrow_mut() = Some(crate::seen::SeenUndo {
+            person: person.to_owned(),
+            before,
+        });
+        Ok(marked)
+    }
+
+    /// Give back what the last catch-up took away: every mark it moved, as it was. Whether
+    /// anything was given back; what the host is handed to keep says so too.
+    pub(crate) fn undo_seen(&self, person: &str) -> bool {
+        let Some(undo) = self.seen_undo.borrow_mut().take() else {
+            return false;
+        };
+        if undo.person != person {
+            return false;
+        }
+        for (resource, mark) in undo.before {
+            let key = crate::seen::seen_key(person, &resource);
+            let value = match &mark {
+                Some(mark) => Value::some(Value::Tuple(vec![
+                    Value::Text(mark.change.clone()),
+                    Value::Text(mark.at.clone()),
+                ])),
+                None => Value::none(),
+            };
+            self.view_states.borrow_mut().set(key, value);
+            self.seen_writes
+                .borrow_mut()
+                .push(crate::seen::SeenWrite::Resource {
+                    person: person.to_owned(),
+                    resource,
+                    mark,
+                });
+        }
+        true
+    }
+
+    /// The title `at` is called by, as a catch-up names the group it changes: its `title`,
+    /// `name` or `label` field, else its first text field, else what its newest change's
+    /// action is called.
+    pub(crate) fn item_title(
+        &self,
+        at: &ResourceRef,
+        version: Option<&crate::store::Version>,
+    ) -> String {
+        if let Some(title) = self.program_title(at) {
+            return title;
+        }
+        version.map_or_else(String::new, |v| self.action_label(&v.action))
     }
 
     /// The newest item's version among `at`'s collections, when it holds any: the time a read

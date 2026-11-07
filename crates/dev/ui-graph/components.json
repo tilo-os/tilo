@@ -663,6 +663,27 @@
           }
         },
         {
+          "name": "by_all",
+          "doc": "Everyone who made one of the changes the person has not seen, in the order they changed it (its newest change last), each once.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "said",
+          "doc": "What the newest change did, in the words history says it with (\"moved this to\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "noun",
+          "doc": "What one item of it is called, plural (\"tasks\"): the noun a window's count names.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "run",
           "doc": "The task run it was part of, as its task is titled.",
           "type": {
@@ -686,6 +707,20 @@
           "name": "window",
           "doc": "It marks a window, in its header: it says how many changes and by whom.",
           "type": "bool"
+        },
+        {
+          "name": "more",
+          "doc": "The window's document holds more resources than the mark counted: what it says is a lower bound, and says so.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed the mark. A mark of a row has none, and shows who changed it alone.",
+          "accepts": "view",
+          "many": true,
+          "default": true
         }
       ],
       "events": [

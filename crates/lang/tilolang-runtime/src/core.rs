@@ -151,6 +151,9 @@ pub struct Core {
     /// The seen marks the person set here, for the host to keep in their own record
     /// ([`crate::seen`]).
     pub seen_writes: RefCell<Vec<crate::seen::SeenWrite>>,
+    /// What the last catch-up took away, so that undoing it can give it back
+    /// ([`crate::seen::SeenUndo`]).
+    pub seen_undo: RefCell<Option<crate::seen::SeenUndo>>,
     /// What each unit costs while a profile is on, shared with the engine that measures fuel.
     pub(crate) costs: Rc<crate::cost::Recorder>,
     /// The row being rendered, while a view renders one: the rows of the list it is a row
@@ -277,6 +280,7 @@ impl Core {
             rust_views: crate::rust_views::Shared::default(),
             wanted_packages: RefCell::new(crate::foreign::WantedPackages::default()),
             seen_writes: RefCell::new(Vec::new()),
+            seen_undo: RefCell::new(None),
             costs,
             row_place: RefCell::new(None),
         });

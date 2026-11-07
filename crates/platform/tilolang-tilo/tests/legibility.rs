@@ -332,7 +332,7 @@ fn what_a_run_did_stays_unseen_until_the_person_reviews_edits_or_marks_it() {
         [SeenWrite::Resource {
             person: "ada".to_owned(),
             resource: landlord.id_string(),
-            mark: SeenMark::of(newest.last().unwrap()),
+            mark: Some(SeenMark::of(newest.last().unwrap())),
         }]
     );
     // Mark all seen on the run: every version it made, in both apps, in one step; kept for

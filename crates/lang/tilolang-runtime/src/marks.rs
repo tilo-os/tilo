@@ -38,6 +38,11 @@ const TEXT_INPUT: &str = "ui.TextInput";
 const NAV_ITEM: &str = "ui.NavItem";
 /// The kind of a node holding a component's named slot.
 const SLOT: &str = "slot";
+/// The content's actions slot of a window's shell, its header's own.
+const ACTIONS: &str = "actions";
+/// The overview's actions slot: the window's actions where it lists items beside what they
+/// open, which is the header in front when the window is narrow.
+const OVERVIEW_ACTIONS: &str = "overview_actions";
 /// The node kind of a list of any length, whose rows are its items'.
 const VIRTUAL_LIST: &str = "ui.VirtualList";
 /// The node kind of a list row.
@@ -260,10 +265,10 @@ impl Core {
             "by".to_owned(),
             Value::Principal(Principal(newest.who.clone())),
         );
-        // Everyone who made one of the changes, newest first, each once: a window's mark shows
-        // all of them, not only whoever happened to change it last.
+        // Everyone who made one of the changes, oldest first: the label reads "Bo and Scout",
+        // in the order they changed it.
         let mut by_all: Vec<Value> = Vec::new();
-        for who in unseen.iter().rev().map(|v| &v.who) {
+        for who in unseen.iter().map(|v| &v.who) {
             if !by_all
                 .iter()
                 .any(|seen| matches!(seen, Value::Principal(seen) if &seen.0 == who))
@@ -278,9 +283,9 @@ impl Core {
             "said".to_owned(),
             Value::Text(self.version_line(newest, at)),
         );
-        // What one item of it is called, plural, for a window's count: the type's own name. A
-        // window's mark stands for the document's own resource, whose type only the store
-        // names.
+        // What one item of it is called, plural, for a window's count: the type's own name, or
+        // of what it holds when it is a document (a window of tasks says "tasks"). A window's
+        // mark stands for the document's own resource, whose type only the store names.
         let info = self
             .type_of_ref(&at.ty)
             .ok()
@@ -291,7 +296,17 @@ impl Core {
                 Some(info)
             });
         if let Some(info) = info {
-            let noun = tilolang::meta::plural(&tilolang::meta::in_words(&info.name));
+            let item = info
+                .fields
+                .iter()
+                .find(|field| field.kind == crate::meta::FieldKind::Collection)
+                .map(|field| field.ty.element().unwrap_or(&field.ty))
+                .and_then(|item| match item {
+                    crate::meta::Ty::Record(key) => Some(key.name.as_str()),
+                    _ => None,
+                })
+                .unwrap_or(&info.name);
+            let noun = tilolang::meta::plural(&tilolang::meta::in_words(item));
             mark.props.insert("noun".to_owned(), Value::Text(noun));
         }
         if let Some(run) = &newest.task {
@@ -419,7 +434,11 @@ impl Core {
     }
 
     /// A window's header mark: how many changes of what it shows (its resource and everything
-    /// in its document) are unseen, and who made the newest.
+    /// in its document) are unseen, who made them, and the catch-up that says each in words.
+    ///
+    /// It counts a page of the document's resources, read from the index, and says when the
+    /// document holds more; only those whose newest change is unseen are read for their own
+    /// versions, their unseen ones being the steps the catch-up lists.
     fn mark_window(
         &self,
         node: &mut UiNode,
@@ -449,34 +468,74 @@ impl Core {
             Some(_) => resource == window,
             None => resource != at.doc,
         };
-        let mut unseen: Vec<Version> = Vec::new();
+        let mut groups: Vec<(ResourceRef, Vec<Version>)> = Vec::new();
         for (resource, newest) in within.into_iter().filter(|(r, _)| shown(r)) {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
-            // One per resource: its newest unseen change.
-            if let Some(newest) = crate::seen::unseen(
+            // Its newest change is the person's own, or one their mark names: nothing of it is
+            // unseen, and its log is not read.
+            if crate::seen::unseen(
                 std::slice::from_ref(&newest),
                 &viewer.0,
                 mark.as_ref(),
                 &runs,
             )
-            .pop()
+            .is_empty()
             {
-                // A change a record made from `resource` stands under both, as that record's
-                // own change and as a change to what it was made from: the window counts it
-                // once, where the record that made it stands.
-                if newest.resource == resource
-                    || !unseen.iter().any(|other| other.change == newest.change)
-                {
-                    unseen.push(newest);
+                continue;
+            }
+            let Some(mut rid) = ResourceRef::parse_id(&resource, String::new()) else {
+                continue;
+            };
+            if let Ok(ty) = self.store.borrow().type_of(&rid) {
+                rid.ty = ty;
+            }
+            acc.reads.push((resource.clone(), DOC_VERSIONS.to_owned()));
+            let Ok(versions) = self.store.borrow().versions(&rid) else {
+                continue;
+            };
+            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
+            if !unseen.is_empty() {
+                groups.push((rid, unseen));
+            }
+        }
+        // A change a record made from `resource` stands under both, as that record's own
+        // change and as a change to what it was made from: each counts once, where the record
+        // that made it stands.
+        let mut own: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for (rid, versions) in &groups {
+            let resource = rid.id_string();
+            for version in versions {
+                if version.resource == resource {
+                    own.insert(version.change.clone());
                 }
             }
         }
-        if unseen.is_empty() {
+        for (rid, versions) in &mut groups {
+            let resource = rid.id_string();
+            versions
+                .retain(|version| version.resource == resource || !own.contains(&version.change));
+        }
+        groups.retain(|(_, versions)| !versions.is_empty());
+        if groups.is_empty() {
             return Ok(());
         }
-        // Oldest first, the change's place in the document's log settling changes of one
-        // moment, so the mark names everyone newest first.
+        // The item changed most recently first, the catch-up's order; changes of one moment
+        // keep the log's order.
+        groups.sort_by(|a, b| {
+            let recency = |group: &(ResourceRef, Vec<Version>)| {
+                group
+                    .1
+                    .last()
+                    .map(|newest| (newest.at.clone(), change_index(newest)))
+            };
+            recency(b).cmp(&recency(a))
+        });
+        // Everything unseen, oldest first, for who made it and what the newest change did.
+        let mut unseen: Vec<Version> = groups
+            .iter()
+            .flat_map(|(_, versions)| versions.iter().cloned())
+            .collect();
         unseen.sort_by(|a, b| {
             a.at.cmp(&b.at)
                 .then_with(|| change_index(a).cmp(&change_index(b)))
@@ -490,16 +549,166 @@ impl Core {
             mark.props.insert("more".to_owned(), Value::Bool(true));
         }
         self.fill_mark(&mut mark, &at, &unseen, acc);
-        // First among the header's actions, beside the title.
-        match node.children.iter_mut().find(|child| {
-            child.kind == SLOT
-                && matches!(child.props.get("name"), Some(Value::Text(name)) if name == "actions")
-        }) {
+        // The count is what changed, one per item: what the person catches up on.
+        mark.props.insert(
+            "count".to_owned(),
+            Value::Int(i64::try_from(groups.len()).unwrap_or(i64::MAX)),
+        );
+        // Activating the chip opens the catch-up, so what the chip does is show its list, not
+        // the run of the newest step.
+        mark.events.remove("activate");
+        // The catch-up: what changed, item by item, each step in the words history says it in.
+        let content = self.catch_up(&mark.key.clone(), &groups, acc);
+        mark.children
+            .push(slot("content", &mark.key.clone(), content));
+        // First among the header's actions, beside the title: where the window lists items
+        // beside what they open, the list's bar, which is the one in front in a narrow window.
+        let listed = place(node, OVERVIEW_ACTIONS).is_some();
+        let name = if listed { OVERVIEW_ACTIONS } else { ACTIONS };
+        match place(node, name) {
             Some(actions) => actions.children.insert(0, mark),
-            None => node.children.push(slot("actions", &node.key, mark)),
+            None => node.children.push(slot(name, &node.key, mark)),
         }
         Ok(())
     }
+
+    /// The catch-up a window's mark opens (*Since you looked*): the changes it counts, grouped
+    /// by the item they changed, newest first, each step in the words history says it in, and
+    /// the one move that marks them all seen.
+    fn catch_up(&self, key: &str, groups: &[(ResourceRef, Vec<Version>)], acc: &mut Acc) -> UiNode {
+        let mut stack = UiNode::empty("stack", &format!("{key}~since"));
+        stack.props.insert("gap".to_owned(), Value::text("related"));
+        let mut title = UiNode::empty("ui.Text", &format!("{key}~since-title"));
+        title.props.insert(
+            "value".to_owned(),
+            Value::Text(self.word("tilolang-since-you-looked", "Since you looked")),
+        );
+        title
+            .props
+            .insert("role".to_owned(), Value::text("heading"));
+        stack.children.push(title);
+        for (group, (rid, versions)) in groups.iter().enumerate() {
+            let group_key = format!("{key}~since-{group}");
+            let mut held = UiNode::empty("stack", &group_key);
+            held.props.insert("gap".to_owned(), Value::text("tight"));
+            // The item it changed, by its title: pressing it opens the item, which marks it
+            // seen.
+            let mut item = UiNode::empty("ui.Button", &format!("{group_key}~item"));
+            item.props.insert(
+                "label".to_owned(),
+                Value::Text(self.item_title(rid, versions.last())),
+            );
+            item.props.insert("role".to_owned(), Value::text("plain"));
+            item.events.insert(
+                "press".to_owned(),
+                self.retained(
+                    Value::Action(ActionRef::new(
+                        crate::host_ui::OPEN_ACTION,
+                        vec![Value::resource(rid)],
+                    )),
+                    acc,
+                ),
+            );
+            held.children.push(item);
+            for (step, version) in versions.iter().enumerate() {
+                held.children.push(self.step_line(
+                    &format!("{group_key}~step-{step}"),
+                    rid,
+                    version,
+                ));
+            }
+            // A step of a task run offers the run, as the mark did: pressing it shows what the
+            // run did.
+            if let Some(run) = versions.last().and_then(|v| v.task.as_ref()) {
+                let mut review = UiNode::empty("ui.Button", &format!("{group_key}~run"));
+                review
+                    .props
+                    .insert("label".to_owned(), Value::text(run.title.clone()));
+                review.props.insert("role".to_owned(), Value::text("plain"));
+                review.events.insert(
+                    "press".to_owned(),
+                    self.retained(
+                        Value::Action(ActionRef::new(
+                            crate::host_ui::REVIEW_ACTION,
+                            vec![Value::Text(run.id.clone()), Value::resource(rid)],
+                        )),
+                        acc,
+                    ),
+                );
+                held.children.push(review);
+            }
+            stack.children.push(held);
+        }
+        // One move for all of it.
+        let mut footer = UiNode::empty("row", &format!("{key}~since-actions"));
+        footer
+            .props
+            .insert("distribute".to_owned(), Value::text("end"));
+        let mut all = UiNode::empty("ui.Button", &format!("{key}~mark-all"));
+        all.props.insert(
+            "label".to_owned(),
+            Value::Text(self.word("tilolang-mark-all-seen", "Mark all seen")),
+        );
+        let ids = groups
+            .iter()
+            .map(|(rid, _)| Value::text(rid.id_string()))
+            .collect();
+        all.events.insert(
+            "press".to_owned(),
+            self.retained(
+                Value::Action(ActionRef::new(
+                    crate::host_ui::MARK_SEEN_ACTION,
+                    vec![Value::List(ids)],
+                )),
+                acc,
+            ),
+        );
+        footer.children.push(all);
+        stack.children.push(footer);
+        stack
+    }
+
+    /// One step of a catch-up: the face of who made it, what they did in the words history
+    /// says it in, and when.
+    fn step_line(&self, key: &str, of: &ResourceRef, version: &Version) -> UiNode {
+        let mut line = UiNode::empty("row", key);
+        line.props.insert("gap".to_owned(), Value::text("tight"));
+        line.props.insert("align".to_owned(), Value::text("center"));
+        let mut face = UiNode::empty("ui.Avatar", &format!("{key}~face"));
+        face.props.insert(
+            "who".to_owned(),
+            Value::Principal(Principal(version.who.clone())),
+        );
+        line.children.push(face);
+        let mut said = UiNode::empty("ui.Text", &format!("{key}~said"));
+        said.props.insert(
+            "value".to_owned(),
+            Value::Text(self.version_line(version, of)),
+        );
+        said.props.insert("truncate".to_owned(), Value::Bool(true));
+        line.children.push(said);
+        let mut at = UiNode::empty("ui.Time", &format!("{key}~at"));
+        at.props.insert("at".to_owned(), Value::text(&version.at));
+        at.props.insert("role".to_owned(), Value::text("caption"));
+        at.props.insert("secondary".to_owned(), Value::Bool(true));
+        line.children.push(at);
+        line
+    }
+
+    /// `value` kept for the nodes of a view built now, as an action a control of it runs.
+    fn retained(&self, value: Value, acc: &mut Acc) -> crate::handles::Retained {
+        let retained = self.frames.borrow_mut().retain(value);
+        acc.retained.push(retained);
+        retained
+    }
+}
+
+/// The slot `name` under `node`, if it has one.
+fn place<'a>(node: &'a mut UiNode, name: &str) -> Option<&'a mut UiNode> {
+    node.children.iter_mut().find(|child| {
+        child.kind == SLOT
+            && matches!(child.props.get("name"), Some(Value::Text(held)) if held == name)
+    })
 }
 
 /// A slot `name` of the node `key` holding `child`.

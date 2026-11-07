@@ -348,6 +348,11 @@ pub struct LiveStats {
     pub boundaries: usize,
     /// Of those, rows of lists not rendered because they were not shown.
     pub unrendered: usize,
+    /// What the boundaries in the tree depend on: resources and fields, collections, spaces
+    /// and state, as their views read them. The cost of a change reaching them, whatever the
+    /// workspace holds: a header's mark reads the same whether the window lists ten items or
+    /// ten thousand.
+    pub reads: usize,
 }
 
 /// The tree, its boundaries and what they depend on.
@@ -469,11 +474,28 @@ impl Live {
     pub fn stats(&self) -> LiveStats {
         let boundaries = self.bounds.iter().flatten().count();
         let unrendered = self.bounds.iter().flatten().filter(|b| !b.rendered).count();
+        let reads = self
+            .bounds
+            .iter()
+            .flatten()
+            .map(|b| {
+                [
+                    b.reads.len(),
+                    b.colls.len(),
+                    b.loops.len(),
+                    b.space_reads.len(),
+                    b.state_reads.len(),
+                ]
+                .into_iter()
+                .fold(0usize, usize::saturating_add)
+            })
+            .fold(0usize, usize::saturating_add);
         LiveStats {
             renders: self.renders,
             root_runs: self.root_runs,
             boundaries,
             unrendered,
+            reads,
         }
     }
 

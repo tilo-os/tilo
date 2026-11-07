@@ -4,7 +4,7 @@
 //! once the run is seen.
 
 use automerge::AutoCommit;
-use tilolang_runtime::{UiNode, Value, ViewEvent, ViewInstance};
+use tilolang_runtime::{Principal, ResourceRef, UiNode, Value, ViewEvent, ViewInstance};
 
 use crate::fixtures::Replica;
 use crate::legibility::{AGENT, NOTES_APP, RUN, Tidied, a_run_in_notes_and_tasks, call};
@@ -362,5 +362,264 @@ fn a_view_that_places_the_mark_itself_gets_it_filled_and_the_host_places_none() 
     assert_eq!(
         placed[0].props.get("run"),
         Some(&Value::text("Stock the shelf"))
+    );
+}
+
+/// The window's mark of `view`: the header's, not a row's.
+fn window_mark(view: &mut ViewInstance) -> UiNode {
+    view.poll_patches().unwrap();
+    all(view.tree(), "ui.ChangeMark")
+        .into_iter()
+        .find(|mark| mark.props.get("window") == Some(&Value::Bool(true)))
+        .cloned()
+        .expect("the window's header is marked")
+}
+
+/// What a window's mark opens: the views of its catch-up.
+fn catch_up(mark: &UiNode) -> UiNode {
+    let slot = mark
+        .children
+        .iter()
+        .find(|child| {
+            child.kind == "slot" && child.props.get("name") == Some(&Value::text("content"))
+        })
+        .unwrap_or_else(|| panic!("the window's mark opens a catch-up: {mark:?}"));
+    slot.children
+        .first()
+        .cloned()
+        .expect("the catch-up has views")
+}
+
+/// The text a node says, at the font role `role`, anywhere under it.
+fn texts(node: &UiNode, role: &str) -> Vec<String> {
+    all(node, "ui.Text")
+        .into_iter()
+        .filter(|text| text.props.get("role") == Some(&Value::text(role)))
+        .filter_map(|text| match text.props.get("value") {
+            Some(Value::Text(value)) => Some(value.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The buttons anywhere under `node`, by the label they carry.
+fn buttons(node: &UiNode) -> Vec<UiNode> {
+    all(node, "ui.Button").into_iter().cloned().collect()
+}
+
+fn labelled(node: &UiNode, label: &str) -> Option<UiNode> {
+    buttons(node)
+        .into_iter()
+        .find(|button| button.props.get("label") == Some(&Value::text(label)))
+}
+
+const BO: &str = "bo";
+const SCOUT: &str = "agent:scout";
+
+/// Ada's week when she was away a day: she wrote four tasks, and while she was out Bo took the
+/// mail and her agent moved the survey to today and finished the milk.
+struct Away {
+    ada: Replica,
+    paper: ResourceRef,
+    survey: ResourceRef,
+}
+
+fn a_day_away() -> Away {
+    let (mut ada, tasks) = crate::tasks::workspace();
+    let make = |ada: &Replica, title: &str| -> ResourceRef {
+        match call(
+            ada,
+            "ada",
+            crate::legibility::TASKS_APP,
+            "new_task",
+            crate::tasks::create(&tasks, title),
+        ) {
+            Value::Ref(at) => (*at.target).clone(),
+            other => panic!("a task: {other:?}"),
+        }
+    };
+    let paper = make(&ada, "Sort the paper mail");
+    let _permit = make(&ada, "Ask the neighbours about the parking permit");
+    let survey = make(&ada, "Read the survey responses");
+    let milk = make(&ada, "Buy oat milk and eggs");
+    ada.commit();
+    // While she was out: Bo took the mail, their agent brought the survey's day forward and
+    // finished the milk.
+    call(
+        &ada,
+        BO,
+        crate::legibility::TASKS_APP,
+        "assign",
+        vec![
+            Value::resource(&paper),
+            Value::some(Value::Principal(Principal::new("ada"))),
+        ],
+    );
+    ada.commit_as(BO);
+    call(
+        &ada,
+        SCOUT,
+        crate::legibility::TASKS_APP,
+        "schedule",
+        vec![
+            Value::resource(&survey),
+            Value::some(Value::text("2026-10-29")),
+        ],
+    );
+    call(
+        &ada,
+        SCOUT,
+        crate::legibility::TASKS_APP,
+        "check",
+        vec![Value::resource(&milk)],
+    );
+    ada.commit_as(SCOUT);
+    Away { ada, paper, survey }
+}
+
+/// A day away, read at a glance: the header names everyone who changed anything and says how
+/// much, each marked row says in words what happened to it, and the catch-up lists every step
+/// with who made it and when.
+#[test]
+fn a_day_away_reads_at_a_glance_who_changed_what() {
+    let Away { ada, paper, survey } = a_day_away();
+    let mut tasks = ada.view(crate::legibility::TASKS_APP);
+    // Today, where the mail she was given and the survey her agent moved stand.
+    crate::tasks::go_to(&mut tasks, "Today");
+    let window = window_mark(&mut tasks);
+    let mut who = principals(&window);
+    who.sort();
+    assert_eq!(
+        who,
+        {
+            let mut expected = vec![BO.to_owned(), SCOUT.to_owned()];
+            expected.sort();
+            expected
+        },
+        "the header names Bo and Scout"
+    );
+    assert_eq!(
+        window.props.get("count"),
+        Some(&Value::Int(3)),
+        "three changes fill the header: {window:?}"
+    );
+
+    // Each marked row says what happened to it, in its own words.
+    let marks = row_marks(&mut tasks);
+    let paper = marked(&marks, &paper.id_string())
+        .unwrap_or_else(|| panic!("the mail Ada was given is marked: {marks:?}"));
+    let survey = marked(&marks, &survey.id_string())
+        .unwrap_or_else(|| panic!("the survey her agent moved is marked: {marks:?}"));
+    assert!(
+        said(paper).contains("assign"),
+        "the mail says it was assigned: {:?}",
+        said(paper)
+    );
+    assert!(
+        said(survey).contains("due"),
+        "the survey says its day moved: {:?}",
+        said(survey)
+    );
+    assert_ne!(said(paper), said(survey), "each row says its own change");
+
+    // What the header opens: every step, grouped by the item, newest first, each with who made
+    // it and when, and the one move that marks them all seen.
+    let content = catch_up(&window);
+    assert!(
+        texts(&content, "heading")
+            .iter()
+            .any(|line| line == "Since you looked"),
+        "the catch-up says what it is: {content:?}"
+    );
+    let groups: Vec<String> = buttons(&content)
+        .into_iter()
+        .filter_map(|button| match button.props.get("label") {
+            Some(Value::Text(label)) => Some(label.clone()),
+            _ => None,
+        })
+        .filter(|label| label != "Mark all seen")
+        .collect();
+    assert_eq!(
+        groups,
+        [
+            "Buy oat milk and eggs",
+            "Read the survey responses",
+            "Sort the paper mail"
+        ],
+        "the catch-up names each item it changed, newest first"
+    );
+    let seen_by: Vec<String> = all(&content, "ui.Avatar")
+        .into_iter()
+        .filter_map(|avatar| principal(avatar, "who"))
+        .collect();
+    assert!(seen_by.contains(&SCOUT.to_owned()), "{seen_by:?}");
+    assert!(seen_by.contains(&BO.to_owned()), "{seen_by:?}");
+    assert!(
+        !all(&content, "ui.Time").is_empty(),
+        "each step says when it happened: {content:?}"
+    );
+
+    // Opening it marks nothing: only the footer's one action does, and its undo gives the marks
+    // back.
+    assert!(
+        ada.host.runtime().take_seen().is_empty(),
+        "opening the catch-up marks nothing"
+    );
+    let footer = labelled(&content, "Mark all seen").expect("the catch-up's footer");
+    tasks.fire(&footer.key, "press").unwrap();
+    tasks.poll_patches().unwrap();
+    let wrote = ada.host.runtime().take_seen();
+    assert_eq!(wrote.len(), 3, "one action marks all three seen: {wrote:?}");
+    assert!(
+        row_marks(&mut tasks).iter().all(|(_, mark)| mark.is_none()),
+        "every mark goes at once"
+    );
+    assert!(
+        ada.host.runtime().undo_seen("ada"),
+        "the catch-up is undone"
+    );
+    tasks.poll_patches().unwrap();
+    assert!(
+        row_marks(&mut tasks).iter().any(|(_, mark)| mark.is_some()),
+        "undo brings the marks back"
+    );
+}
+
+/// The header's mark reads what changed, not the workspace: at ten thousand items, three changes
+/// cost what three changes cost at a thousand.
+#[test]
+fn the_headers_mark_reads_the_changes_not_the_items() {
+    fn away(n: usize) -> (ViewInstance, usize) {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let compiled = tilolang_tilo::bench::compile(&dir).expect("the tasks package compiles");
+        let doc = tilolang_tilo::bench::seeded_record_by(&compiled, n, "ada")
+            .expect("the workspace seeds");
+        let (mut ada, _) = Replica::new("ada", doc, crate::tasks::PACKAGES);
+        let root = ada.host.root_of(crate::legibility::TASKS_APP).unwrap();
+        let items = match ada.host.runtime().read(&root, "items").unwrap() {
+            Value::List(items) => items,
+            other => panic!("the tasks are a list: {other:?}"),
+        };
+        for item in items.iter().take(3) {
+            call(
+                &ada,
+                BO,
+                crate::legibility::TASKS_APP,
+                "check",
+                vec![item.clone()],
+            );
+        }
+        ada.commit_as(BO);
+        let view = ada.view(crate::legibility::TASKS_APP);
+        (view, items.len())
+    }
+    let (small, small_items) = away(1_000);
+    let (large, large_items) = away(10_000);
+    assert_eq!(small_items, 1_000);
+    assert_eq!(large_items, 10_000);
+    let (small, large) = (small.stats(), large.stats());
+    assert_eq!(
+        small.reads, large.reads,
+        "the header's reads at ten thousand items ({large:?}) are the reads at a thousand ({small:?})"
     );
 }
