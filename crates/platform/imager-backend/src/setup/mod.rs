@@ -20,8 +20,9 @@ pub mod deferred_handoff;
 pub mod discovery_fixture;
 pub mod flatpak_transfer;
 #[cfg(target_os = "linux")]
-pub mod home_capture;
+pub mod helper_arguments;
 #[cfg(target_os = "linux")]
+pub mod home_capture;
 pub mod home_capture_helper;
 #[cfg(target_os = "linux")]
 pub mod installed_copy;
@@ -93,7 +94,7 @@ pub mod source_handoff;
 pub mod source_tree;
 #[cfg(test)]
 #[cfg(target_os = "linux")]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(target_os = "linux")]
 pub mod user_transfer;
 
