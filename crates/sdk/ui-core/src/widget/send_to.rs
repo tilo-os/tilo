@@ -41,6 +41,15 @@ const GAP: f32 = 8.0;
 /// The rows of the search shown at once: more than a person reads while
 /// typing, and few enough that the box stays beside its menu.
 const MAX_ROWS: usize = 6;
+/// The rows the message field is tall while the words fit on one line: air
+/// enough to look like somewhere to write.
+const MESSAGE_ROWS: f64 = 2.0;
+/// The rows it grows to as the words wrap: past this the box would stand
+/// taller than what it is sent with, so its words scroll instead.
+const MAX_MESSAGE_ROWS: f64 = 4.0;
+/// The air above and below the message's lines, so its words never touch the
+/// field's edge.
+const MESSAGE_AIR: f64 = 3.0;
 
 /// Which field the keyboard is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -380,9 +389,36 @@ impl SendToBox {
             + gap
             + row // the subjects
             + gap
-            + row * 2.0 // the message
+            + self.message_height() // the message, as tall as it wraps
             + gap
             + row // Send
+    }
+
+    /// How tall the message stands: two rows while its words fit on one line,
+    /// and as much of them as wrap, up to four, so the box makes room for what
+    /// is written in it rather than scrolling sideways.
+    fn message_height(&self) -> f64 {
+        let theme = &self.theme;
+        let style = theme.text(TextRole::Body);
+        let least = self.row_height() * MESSAGE_ROWS;
+        let most = self.row_height() * MAX_MESSAGE_ROWS;
+        if self.text.trim().is_empty() {
+            return least;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a finite field width in CSS pixels fits the f32 shaping API"
+        )]
+        let width = (f64::from(WIDTH) * self.text_scale
+            - self.padding() * 2.0
+            - f64::from(theme.tokens.spacing.s2) * 2.0) as f32;
+        if !(width.is_finite() && width >= 1.0) {
+            return least;
+        }
+        let (_, height) = crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
+            renderer.measure_style(&self.text, Some(width), &style)
+        });
+        (f64::from(height) + MESSAGE_AIR * self.text_scale * 2.0).clamp(least, most)
     }
 
     fn row_height(&self) -> f64 {
@@ -541,8 +577,9 @@ impl SendToBox {
             y + row,
         );
         y += row + gap;
-        let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row * 2.0);
-        y += row * 2.0 + gap;
+        let message_height = self.message_height();
+        let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + message_height);
+        y += message_height + gap;
         let send_width = (row * 3.0).min(rect.width() - pad * 2.0);
         let send = Rect::new(rect.x1 - pad - send_width, y, rect.x1 - pad, y + row);
         Layout {
@@ -572,6 +609,16 @@ impl SendToBox {
             return;
         }
         self.request = crate::shared_selection::search_recipients(&self.search);
+    }
+
+    /// What the box is called: a report, when it was opened to the one place
+    /// reports go, and a message it sends anywhere else.
+    fn name(&self) -> String {
+        crate::i18n::I18nManager::lookup_plain(if self.addressed {
+            "send-to-report-name"
+        } else {
+            "send-to-name"
+        })
     }
 
     /// What the box paints has changed, so the window draws another frame.
@@ -988,7 +1035,7 @@ impl SendToBox {
 
         // The quiet line that names the box: whose message this is.
         let caption = theme.text(TextRole::Caption);
-        let header_label = crate::i18n::I18nManager::lookup_plain("send-to-name");
+        let header_label = self.name();
         let (_, header_height) = text_renderer.measure_style(&header_label, None, &caption);
         text_renderer.draw_style(
             scene,
@@ -1235,7 +1282,8 @@ impl SendToBox {
             crate::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
 
-        // The message: two rows of air and its first line.
+        // The message: air enough to write in, its words wrapped inside it and
+        // room made for them as they wrap.
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1243,9 +1291,12 @@ impl SendToBox {
             None,
             &RoundedRect::from_rect(self.layout.message, radius * 0.75),
         );
-        let message_placeholder =
-            crate::i18n::I18nManager::lookup_plain("send-to-message-placeholder");
-        self.text_composition.draw(
+        let message_placeholder = crate::i18n::I18nManager::lookup_plain(if self.addressed {
+            "send-to-report-placeholder"
+        } else {
+            "send-to-message-placeholder"
+        });
+        self.text_composition.draw_wrapped(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
                 text: &self.text,
@@ -1257,7 +1308,7 @@ impl SendToBox {
                 self.layout.message.x0 + inset,
                 self.layout.message.y0,
                 self.layout.message.x1 - inset,
-                self.layout.message.y0 + self.row_height(),
+                self.layout.message.y1,
             ),
             &style,
             QueryInk::of(&tokens.colors),
@@ -1400,7 +1451,7 @@ impl SendToBox {
         ));
         Some(
             AccessNode::new(Role::Dialog)
-                .with_name(crate::i18n::I18nManager::lookup_plain("send-to-name"))
+                .with_name(self.name())
                 .with_bounds(self.rect)
                 .with_children(children),
         )

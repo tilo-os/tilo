@@ -66,6 +66,15 @@ pub fn run(_: &[String]) {
         "Invoice from Ada, due Friday",
     )));
     addressed_to_an_agent.open(None, &[]);
+    let _ = addressed_to_an_agent.perform_semantic_action(
+        "send-to:message",
+        &tilo_ui::a11y::Action::SetValue(
+            "Ada, the invoice from Friday still carries the old address. Can you check what we \
+             have on file, and whether the March batch went out with the same one?"
+                .to_owned(),
+        ),
+    );
+    // Placed once the words are in: the box makes room for what they wrap to.
     addressed_to_an_agent.place(Rect::new(150.0, 200.0, 300.0, 380.0), None);
     addressed_to_an_agent.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 
@@ -78,13 +87,16 @@ pub fn run(_: &[String]) {
         "Invoice from Ada, due Friday",
     )));
     addressed_to_reports.open(None, std::slice::from_ref(&destination));
-    addressed_to_reports.place(Rect::new(700.0, 200.0, 850.0, 380.0), None);
     let _ = addressed_to_reports.perform_semantic_action(
         "send-to:message",
         &tilo_ui::a11y::Action::SetValue(
-            "The invoice button does nothing the second time I press it.".to_owned(),
+            "The invoice button does nothing the second time I press it, and the page then \
+             forgets which workspace I was in. It happened again when I reopened the same file \
+             a minute later."
+                .to_owned(),
         ),
     );
+    addressed_to_reports.place(Rect::new(700.0, 200.0, 850.0, 380.0), None);
     addressed_to_reports.paint(&mut scene, Affine::IDENTITY, &mut tr, &theme);
 
     renderer.render_png(&scene, c.surfaces.base, out);

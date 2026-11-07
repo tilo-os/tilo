@@ -431,3 +431,97 @@ fn a_box_opened_to_a_destination_keeps_it_and_searches_for_nobody() {
     assert_eq!(requests[0].about.len(), 1, "with what the window picked");
     assert!(send_to.take_sent());
 }
+
+/// The message wraps at the box's width and the box makes room for it: a
+/// sentence longer than the field is read whole, in lines, never run past the
+/// card sideways.
+#[test]
+fn the_message_wraps_and_the_box_makes_room_for_it() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 900.0);
+    let menu = Rect::new(40.0, 120.0, 212.0, 320.0);
+    let mut send_to = box_beside(menu, viewport);
+    let empty = send_to.rect().height();
+    let short = send_to.layout.message.height();
+    assert!(short > 0.0, "the field stands while it is empty");
+
+    let words = "The invoice button does nothing the second time I press it, and the page then \
+                 forgets which workspace I was in. It happened again when I reopened the same \
+                 file a minute later.";
+    assert!(send_to.perform_semantic_action(
+        "send-to:message",
+        &crate::a11y::Action::SetValue(words.to_owned()),
+    ));
+    send_to.place(menu, Some(viewport));
+    let grown = send_to.layout.message.height();
+    assert!(
+        grown > short,
+        "the words wrapped: the field is {grown} tall, it was {short}"
+    );
+    assert!(
+        send_to.rect().height() > empty,
+        "and the box made room for them"
+    );
+
+    // The field is as wide as the box leaves it, and the sentence is wider
+    // than that: it has to wrap. What it takes wrapped fits the field, so no
+    // line is cut off at the bottom either.
+    let theme = &send_to.theme;
+    let style = theme.text(TextRole::Body);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a finite widget width in CSS pixels fits the f32 shaping API"
+    )]
+    let width = (send_to.layout.message.width() - 2.0 * f64::from(theme.tokens.spacing.s2)) as f32;
+    let (natural, one_line) =
+        crate::text_render::with_layout_renderer(theme.text_scale, |renderer| {
+            (
+                renderer.measure_style(words, None, &style),
+                renderer.measure_style(words, Some(width), &style),
+            )
+        });
+    assert!(
+        f64::from(natural.0) > send_to.layout.message.width(),
+        "the sentence is wider than the field, so it must wrap"
+    );
+    assert!(
+        one_line.1 > natural.1 * 1.5,
+        "wrapped, it is more than one line: {} against {}",
+        one_line.1,
+        natural.1
+    );
+    assert!(
+        f64::from(one_line.1) <= grown + 0.5,
+        "the field holds every wrapped line: {} written in {grown}",
+        one_line.1
+    );
+}
+
+/// A box opened to the one place reports go says so: its header and the name
+/// assistive technology reads are the report's, not a message's.
+#[test]
+fn a_box_opened_to_the_report_destination_says_report_a_problem() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 900.0);
+    let _ = crate::shared_selection::take_send_to();
+    crate::shared_selection::set_send_host_available(true);
+    let destination = Recipient::found(RecipientKind::Feedback, "c_feedback", "Tilo feedback");
+    let mut send_to = SendToBox::new();
+    send_to.set_viewport(Some(viewport));
+    send_to.open(None, std::slice::from_ref(&destination));
+    send_to.place(Rect::new(40.0, 120.0, 212.0, 320.0), Some(viewport));
+
+    assert_eq!(
+        send_to.name(),
+        crate::i18n::I18nManager::lookup_plain("send-to-report-name"),
+        "a report is what the box is doing"
+    );
+    let node = send_to.accessibility().expect("an open box is read");
+    assert_eq!(node.name.as_deref(), Some(send_to.name().as_str()));
+
+    let _ = crate::shared_selection::take_send_to();
+    let message = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    assert_eq!(
+        message.name(),
+        crate::i18n::I18nManager::lookup_plain("send-to-name"),
+        "and a message it sends anywhere is a message"
+    );
+}
