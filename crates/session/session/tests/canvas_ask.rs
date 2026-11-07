@@ -83,35 +83,11 @@ fn workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// Chat's record of the workspace in front, as a window of it reads the record:
-/// read from the document on disk, the store every app of the workspace opens,
-/// never by holding a writer the session is still writing through. `chat.workspace`
-/// is Chat's own primary record, kept under the owner's package store.
+/// Chat's record of the workspace in front, as this session holds it open: the
+/// same record the pass derives turns from, so a test reads it without opening
+/// a second writer on the store the session writes through.
 fn chat(session: &Session) -> Option<Chat> {
-    let data = cli::data_home();
-    let workspace = workspace(session);
-    std::thread::spawn(move || read_chat(&data, &workspace))
-        .join()
-        .ok()
-        .flatten()
-}
-
-fn read_chat(data: &std::path::Path, workspace: &str) -> Option<Chat> {
-    let record = ui::record::RecordId::package_primary().storage_key();
-    let store = app_state::FsStore::new(data.to_path_buf());
-    let stored = durable_store::DurableStore::read(
-        &store,
-        &durable_store::StorageKey::record("so.tilo.chat", workspace, record),
-    )
-    .ok()
-    .flatten()?;
-    // A window appends as it changes, and this read may land on a tail it has
-    // not finished writing: what came before it is the record as the last
-    // finished write left it, which is what Chat loads.
-    let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
-    let state = tilo_app::tilo_resource::Reader::<Chat>::read(&doc).ok()?;
-    Some(state.state().as_ref().clone())
+    session.chat_of(&workspace(session))
 }
 
 /// The channels Chat's record holds, as `(id, participant keys)`.
@@ -156,39 +132,46 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
-    let before: Vec<String> = chat(&session)
+    let before: Vec<String> = chat(&mut session)
         .map(|chat| channels(&chat).into_iter().map(|(id, _)| id).collect())
         .unwrap_or_default();
 
     ask(&mut session, "what is on my task list?");
 
-    // A channel Chat holds that was not there before: the ask conversation.
-    let placed = wait_for(
+    // A place stands that was not there, showing a channel of Chat's record: the
+    // ask conversation. The arrangement is read from the session's own desk,
+    // which is never a store read, so this wait never touches the store the
+    // session is writing through.
+    let placed = until(
         &mut session,
         "the ask conversation on the canvas",
         |session| {
-            let told = chat(session)
-                .map(|chat| channels(&chat))
-                .unwrap_or_default();
-            let made: Vec<String> = told
-                .iter()
-                .map(|(id, _)| id.clone())
-                .filter(|id| !before.contains(id))
-                .collect();
-            arrangement(session).places.into_iter().find(|place| {
-                made.iter()
-                    .any(|id| place.record.ends_with(&format!("/{id}")))
-            })
+            arrangement(session)
+                .places
+                .into_iter()
+                .any(|place| place.record.contains("/channels/"))
         },
     );
+    let _ = placed;
+    let placed = arrangement(&session)
+        .places
+        .into_iter()
+        .find(|place| place.record.contains("/channels/"))
+        .expect("a place shows a channel");
     let channel = placed
         .record
         .rsplit('/')
         .next()
         .expect("the place shows a channel")
         .to_owned();
+    assert!(
+        !before.contains(&channel),
+        "the conversation was not there before the ask: {before:?}"
+    );
 
-    let (_, participants) = channels(&chat(&session).expect("Chat's record"))
+    // Chat's record holds it, with the agent a participant: the turn the broker
+    // delivers to that agent is the person's message in this channel.
+    let (_, participants) = channels(&chat(&mut session).expect("Chat's record"))
         .into_iter()
         .find(|(id, _)| *id == channel)
         .expect("the channel is Chat's");

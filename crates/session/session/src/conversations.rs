@@ -309,6 +309,17 @@ impl Conversations {
         self.runs.take_spent()
     }
 
+    /// Chat's record of `workspace`, as this session holds it open: the
+    /// conversations a person asked in and their messages, read through the
+    /// same open record the pass reads turns from — never a second writer on
+    /// the store. `None` where the workspace holds no Chat record here.
+    #[must_use]
+    pub fn chat(&self, workspace: &str) -> Option<chat::Chat> {
+        let open = self.open.borrow();
+        let opened = open.get(workspace)?;
+        Some(opened.chat.as_ref()?.get().as_ref().clone())
+    }
+
     /// What the canvas asks of the session, made as `person`'s in
     /// `workspace`: their ask conversation with the agent the workspace
     /// keeps, the agent making it (shell.md §8.1, "Asking from the canvas").

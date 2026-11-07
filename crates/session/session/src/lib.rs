@@ -62,7 +62,7 @@ mod continuations;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
-mod conversations;
+pub mod conversations;
 mod desk;
 mod desk_doc;
 mod desk_migration;
@@ -2414,6 +2414,23 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// The conversations this session's agents answer in, as the pass reads
+    /// them from Chat's record of each workspace: a test reads what a person's
+    /// ask wrote through the same open record the session holds, never by
+    /// opening a second writer on the same store.
+    #[must_use]
+    pub fn conversations(&self) -> &std::rc::Rc<conversations::Conversations> {
+        &self.shared.conversations
+    }
+
+    /// Chat's record of the workspace `workspace` as this session holds it: the
+    /// conversation a person asked in, and its messages. `None` where the
+    /// session holds no record of it yet.
+    #[must_use]
+    pub fn chat_of(&self, workspace: &str) -> Option<chat::Chat> {
+        self.shared.conversations.chat(workspace)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this
