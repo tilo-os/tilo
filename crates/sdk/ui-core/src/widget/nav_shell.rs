@@ -2419,29 +2419,17 @@ impl NavShell {
             let capable: Vec<bool> = header
                 .actions
                 .iter_mut()
-                .map(|action| {
-                    action
-                        .as_any()
-                        .and_then(|any| any.downcast_ref::<Button>())
-                        .is_some_and(Button::compacts_to_icon)
-                })
+                .map(|action| button_of(&**action).is_some_and(Button::compacts_to_icon))
                 .collect();
             let compact_now: Vec<bool> = header
                 .actions
                 .iter()
-                .map(|action| {
-                    action
-                        .as_any()
-                        .and_then(|any| any.downcast_ref::<Button>())
-                        .is_some_and(Button::is_compact_presentation)
-                })
+                .map(|action| button_of(&**action).is_some_and(Button::is_compact_presentation))
                 .collect();
-            let menu_from = header.actions.iter().position(|action| {
-                action
-                    .as_any()
-                    .and_then(|any| any.downcast_ref::<Button>())
-                    .is_some_and(Button::is_menu_only)
-            });
+            let menu_from = header
+                .actions
+                .iter()
+                .position(|action| button_of(&**action).is_some_and(Button::is_menu_only));
             if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
                 *slot = ColumnFit {
                     full: vec![None; capable.len()],
@@ -3059,8 +3047,7 @@ impl NavShell {
                     if let Some(checked) = node.as_ref().and_then(|node| node.state.checked) {
                         item = item.with_checked(checked);
                     }
-                    let Some(button) = action.as_any().and_then(|any| any.downcast_ref::<Button>())
-                    else {
+                    let Some(button) = button_of(&**action) else {
                         return (index, item);
                     };
                     if let Some(icon) = button.glyph() {
@@ -3484,10 +3471,7 @@ impl NavShell {
                 if slot.compact_now.get(i).copied() == Some(want) {
                     continue;
                 }
-                if let Some(button) = action
-                    .as_any_mut()
-                    .and_then(|any| any.downcast_mut::<Button>())
-                {
+                if let Some(button) = button_of_mut(&mut **action) {
                     button.set_compact_toolbar_presentation(want);
                     if let Some(now) = slot.compact_now.get_mut(i) {
                         *now = want;
@@ -4517,6 +4501,33 @@ impl Widget for NavShell {
         }
         capture
     }
+}
+
+/// The button a header action is: the action itself, or the one it shows as its face (a
+/// [`crate::widget::Button::with_popover`] button): the row fits it by its label, its icon or
+/// its faces, and its menu lists it by its glyph and its key.
+fn button_of(action: &dyn Widget) -> Option<&Button> {
+    if let Some(button) = action.as_any().and_then(|any| any.downcast_ref::<Button>()) {
+        return Some(button);
+    }
+    action
+        .children()
+        .into_iter()
+        .find_map(|child| child.as_any().and_then(|any| any.downcast_ref::<Button>()))
+}
+
+/// [`button_of`], to change how it shows.
+fn button_of_mut(action: &mut dyn Widget) -> Option<&mut Button> {
+    if action.as_any().is_some_and(|any| any.is::<Button>()) {
+        return action
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Button>());
+    }
+    action.children_mut().into_iter().find_map(|child| {
+        child
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Button>())
+    })
 }
 
 /// Whether `action` is the button that opens the app's search

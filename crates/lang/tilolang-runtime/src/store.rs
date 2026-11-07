@@ -1482,10 +1482,11 @@ pub trait Store {
         Ok(self.versions(at)?.pop())
     }
 
-    /// The newest version of each resource of the document `doc` (it and its items), in path
-    /// order, of at most `page` of them, and whether it holds more: what a window's mark counts
-    /// the unseen changes of. A store with an index answers it a page at a time, so a window of
-    /// a workspace of any size reads no more than its page.
+    /// The newest version of each resource of the document `doc` (it and its items), of at most
+    /// `page` of them, most recent first, and whether it holds more: what a window's mark counts
+    /// the unseen changes of, and the order a catch-up lists what changed. A store with an index
+    /// answers it a page at a time, so a window of a workspace of any size reads no more than
+    /// its page.
     ///
     /// # Errors
     ///
@@ -1651,8 +1652,8 @@ pub trait Store {
 }
 
 /// [`Store::newest_page`] as a store that keeps only the log answers it: the last version of
-/// each resource of the document `doc`, in path order, the first `page` of them, and whether
-/// there are more.
+/// each resource of the document `doc`, the first `page` of them, most recent first, and
+/// whether there are more.
 ///
 /// # Errors
 ///
@@ -1676,7 +1677,11 @@ pub fn newest_page_of_log(
                 None
             }
         })
-        .collect();
+        .collect::<Vec<_>>();
+    // Most recent first: a log records one second and no finer, so versions of the same second
+    // keep the order the document holds them in.
+    let mut out = out;
+    out.sort_by(|a, b| b.1.at.cmp(&a.1.at));
     Ok((out, more))
 }
 

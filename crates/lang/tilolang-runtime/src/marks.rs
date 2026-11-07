@@ -520,26 +520,15 @@ impl Core {
         if groups.is_empty() {
             return Ok(());
         }
-        // The item changed most recently first, the catch-up's order; changes of one moment
-        // keep the log's order.
-        groups.sort_by(|a, b| {
-            let recency = |group: &(ResourceRef, Vec<Version>)| {
-                group
-                    .1
-                    .last()
-                    .map(|newest| (newest.at.clone(), change_index(newest)))
-            };
-            recency(b).cmp(&recency(a))
-        });
-        // Everything unseen, oldest first, for who made it and what the newest change did.
-        let mut unseen: Vec<Version> = groups
+        // Everything unseen, oldest first, for who made it and what the newest change did: the
+        // page comes newest first and a group's steps in the log's order, so reading the groups
+        // the other way round is oldest first, and the one the log holds last is what the mark
+        // says was done.
+        let unseen: Vec<Version> = groups
             .iter()
+            .rev()
             .flat_map(|(_, versions)| versions.iter().cloned())
             .collect();
-        unseen.sort_by(|a, b| {
-            a.at.cmp(&b.at)
-                .then_with(|| change_index(a).cmp(&change_index(b)))
-        });
         let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
         mark.props.insert("of".to_owned(), Value::resource(&at));
         mark.props.insert("window".to_owned(), Value::Bool(true));
@@ -718,11 +707,6 @@ fn slot(name: &str, key: &str, child: UiNode) -> UiNode {
         .insert("name".to_owned(), Value::Text(name.to_owned()));
     slot.children.push(child);
     slot
-}
-
-/// Where a change stands in its document's log, as [`Version::change`] names it.
-fn change_index(version: &Version) -> usize {
-    version.change.parse().unwrap_or(0)
 }
 
 /// Whether the view placed a `ui.ChangeMark` of `resource` inside `node`.

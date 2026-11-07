@@ -100,9 +100,9 @@ impl View<'_> {
     }
 
     /// The newest version of each resource of the document `path` (it and its items, and the
-    /// items a collection of one of them had removed), in path order, at most `page` of them,
-    /// and whether the document holds more, the store's open writes included: what a window's
-    /// mark counts the unseen changes of.
+    /// items a collection of one of them had removed), at most `page` of them, most recent
+    /// first, and whether the document holds more, the store's open writes included: what a
+    /// window's mark counts the unseen changes of, and the order a catch-up lists them in.
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
@@ -114,19 +114,32 @@ impl View<'_> {
         let (mut out, mut more) = self.snapshot.newest_page(path, page)?;
         for (resource, stamp) in self.overlay.newest_within(path) {
             match out.iter_mut().find(|(held, _)| held == resource) {
-                Some(at) => at.1 = stamp.version.clone(),
+                Some(at) => at.1 = stamp.clone(),
                 None => {
                     if out.len() == page {
                         more = true;
                     } else {
-                        out.push((resource.to_owned(), stamp.version.clone()));
-                        out.sort_by(|a, b| a.0.cmp(&b.0));
+                        out.push((resource.to_owned(), stamp.clone()));
                     }
                 }
             }
         }
         out.retain(|(resource, _)| !self.overlay.removed(resource));
-        Ok((out, more))
+        // Most recent first: two versions recorded in the same second are ordered by the
+        // change's place in the log, which the stamp keeps.
+        out.sort_by(|a, b| b.1.order().cmp(&a.1.order()));
+        Ok((
+            out.into_iter()
+                .map(|(resource, stamp)| {
+                    let version = Version {
+                        resource: resource.clone(),
+                        ..stamp.version
+                    };
+                    (resource, version)
+                })
+                .collect(),
+            more,
+        ))
     }
 
     /// The type (`$type`) or order key (`$key`) of `resource`.

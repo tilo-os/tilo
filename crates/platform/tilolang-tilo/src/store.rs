@@ -1835,19 +1835,12 @@ impl Inner {
             }
             ends.insert(
                 resource,
-                idx::reflect::Ends {
-                    first: stamp.clone(),
-                    last: stamp.clone(),
-                    last_kind: made.kind,
-                    fields: made
-                        .fields
-                        .iter()
-                        .map(|field| (field.clone(), stamp.clone()))
-                        .collect(),
-                    moved: (made.kind == tilolang_runtime::store::VersionKind::Removed)
-                        .then(|| (stamp.clone(), made.kind)),
-                    restored: false,
-                },
+                idx::reflect::Ends::of(
+                    &stamp,
+                    &made.fields,
+                    made.kind,
+                    made.kind == tilolang_runtime::store::VersionKind::Removed,
+                ),
             );
         }
         // Kept with the action's last write, so they go when its writes go.

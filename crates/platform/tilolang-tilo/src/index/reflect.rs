@@ -83,9 +83,9 @@ pub struct Stamp {
     /// The change's hash, as hex.
     pub change: String,
     /// The counter of the change's first operation: a change made on top of another counts
-    /// past every operation of it, so of two versions recorded in the same second the later
-    /// change is the later version. [`PROVISIONAL`] for an action this device has not
-    /// committed yet.
+    /// past every operation of it, so the version the log holds later is the later one,
+    /// whatever a version says of when it happened. [`PROVISIONAL`] for an action this device
+    /// has not committed yet.
     pub op: u64,
 }
 
@@ -94,14 +94,27 @@ pub struct Stamp {
 pub const PROVISIONAL: u64 = u64::MAX;
 
 impl Stamp {
-    fn order(&self) -> (&str, u64, &str) {
-        (&self.version.at, self.op, &self.change)
+    pub(crate) fn order(&self) -> (u64, &str) {
+        // Where the change stands in the log, not what its version says it happened at: a
+        // version may say it happened in the past (a staged or imported change), and what came
+        // later is the one the log holds later. [`PROVISIONAL`] sorts after every committed
+        // change, as the one this device made last.
+        (self.op, &self.change)
     }
 
     /// Whether this version comes before `other`.
     #[must_use]
     pub fn before(&self, other: &Self) -> bool {
         self.order() < other.order()
+    }
+
+    /// This stamp as the version of the resource it is kept under, changed in `fields`: what it
+    /// did, as reading it back from the index says it without the log.
+    #[must_use]
+    pub fn of_fields(&self, fields: &[String]) -> Self {
+        let mut held = self.clone();
+        held.version.fields = fields.to_vec();
+        held
     }
 
     /// The stamp as the index holds it.
@@ -135,6 +148,13 @@ impl Stamp {
         {
             map.insert("count".to_owned(), serde_json::json!(self.version.count));
         }
+        // The fields it changed: what history says of it reads them, and a version read from
+        // the index says what the same version read from the log does.
+        if !self.version.fields.is_empty()
+            && let Some(map) = held.as_object_mut()
+        {
+            map.insert("fields".to_owned(), serde_json::json!(self.version.fields));
+        }
         FieldValue::Scalar(Scalar::Json(held))
     }
 
@@ -167,10 +187,23 @@ impl Stamp {
                 }
             },
         };
+        // An index written before versions named the fields they changed holds none.
+        let fields = json
+            .get("fields")
+            .and_then(Json::as_array)
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(Json::as_str)
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
         let change = text("change").unwrap_or_default();
         Some(Self {
             version: Version {
                 who: text("who")?,
+                fields,
                 at: text("at")?,
                 action: text("action")?,
                 task,
@@ -375,6 +408,24 @@ pub struct Ends {
 }
 
 impl Ends {
+    /// The ends of a resource whose log holds no version yet, taking `stamp` as its first and
+    /// last: what `fields` it changed, what it did (`kind`), and whether it placed it.
+    #[must_use]
+    pub(crate) fn of(stamp: &Stamp, fields: &[String], kind: VersionKind, moved: bool) -> Self {
+        let version = stamp.of_fields(fields);
+        Self {
+            first: version.clone(),
+            last: version,
+            last_kind: kind,
+            fields: fields
+                .iter()
+                .map(|field| (field.clone(), stamp.of_fields(std::slice::from_ref(field))))
+                .collect(),
+            moved: moved.then(|| (stamp.of_fields(fields), kind)),
+            restored: false,
+        }
+    }
+
     /// The newest version of it, as a mark of the resource reads it: what it did to the
     /// resource said of the version itself.
     #[must_use]
@@ -393,27 +444,29 @@ impl Ends {
     /// before it, the last is replaced by a later one, and each field's last change is the
     /// later of the two.
     fn take(&mut self, stamp: &Stamp, fields: &[String], kind: VersionKind, places: bool) {
-        if stamp.before(&self.first) {
-            self.first = stamp.clone();
+        let version = stamp.of_fields(fields);
+        if version.before(&self.first) {
+            self.first = version.clone();
         }
-        if self.last.before(stamp) {
-            self.last = stamp.clone();
+        if self.last.before(&version) {
+            self.last = version.clone();
             self.last_kind = kind;
         }
         if places
             && self
                 .moved
                 .as_ref()
-                .is_none_or(|(held, _)| held.before(stamp))
+                .is_none_or(|(held, _)| held.before(&version))
         {
-            self.moved = Some((stamp.clone(), kind));
+            self.moved = Some((version, kind));
         }
         for field in fields {
+            let one = stamp.of_fields(std::slice::from_ref(field));
             match self.fields.get_mut(field) {
-                Some(held) if held.before(stamp) => *held = stamp.clone(),
+                Some(held) if held.before(&one) => *held = one,
                 Some(_) => {}
                 None => {
-                    self.fields.insert(field.clone(), stamp.clone());
+                    self.fields.insert(field.clone(), one);
                 }
             }
         }
@@ -462,20 +515,7 @@ fn versions_of_changes<'c>(
             match out.get_mut(&resource) {
                 Some(end) => end.take(&stamp, &fields, kind, moved),
                 None => {
-                    out.insert(
-                        resource,
-                        Ends {
-                            first: stamp.clone(),
-                            last: stamp.clone(),
-                            last_kind: kind,
-                            fields: fields
-                                .iter()
-                                .map(|field| (field.clone(), stamp.clone()))
-                                .collect(),
-                            moved: moved.then(|| (stamp.clone(), kind)),
-                            restored: false,
-                        },
-                    );
+                    out.insert(resource, Ends::of(&stamp, &fields, kind, moved));
                 }
             }
         }

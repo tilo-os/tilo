@@ -898,10 +898,11 @@ impl Button {
         }
     }
 
-    /// Whether [`Self::set_compact_toolbar_presentation`] leaves a glyph:
-    /// a labelled button with an icon (or one already shown icon-only).
+    /// Whether [`Self::set_compact_toolbar_presentation`] leaves a glyph to show instead of
+    /// the label: a labelled button with an icon or with faces, or one already shown that way.
     pub(crate) fn compacts_to_icon(&self) -> bool {
-        self.icon.is_some() && (!self.label.is_empty() || self.compact_presentation.is_some())
+        (self.icon.is_some() || !self.faces.is_empty())
+            && (!self.label.is_empty() || self.compact_presentation.is_some())
     }
 
     /// Whether the button is shown icon-only by a responsive toolbar.

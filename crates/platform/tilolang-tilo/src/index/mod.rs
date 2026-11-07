@@ -807,7 +807,7 @@ impl Snapshot {
         &self,
         path: &str,
         page: usize,
-    ) -> Result<(Vec<(String, Version)>, bool), IndexError> {
+    ) -> Result<(Vec<(String, reflect::Stamp)>, bool), IndexError> {
         let read = (|| {
             let end = inside_end(path);
             let mut out = Vec::new();
@@ -824,13 +824,7 @@ impl Snapshot {
                 }
                 let stamp = reflect::Stamp::of_value(&codec::get_value(value.value())?)
                     .ok_or(IndexError::Corrupt)?;
-                out.push((
-                    resource.to_owned(),
-                    Version {
-                        resource: resource.to_owned(),
-                        ..stamp.version
-                    },
-                ));
+                out.push((resource.to_owned(), stamp));
             }
             Ok((out, more))
         })();
