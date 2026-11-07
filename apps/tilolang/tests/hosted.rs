@@ -130,6 +130,21 @@ impl PeerTransport for Broker {
     fn take_primary_route_result(&mut self) -> Option<Result<RouteSpec, String>> {
         self.joined.take().map(Ok)
     }
+
+    /// The record's chunks travel on routes of their own, each joined as the replica reaches
+    /// into it: the broker takes them all, and the changes they carry.
+    fn join_route(
+        &mut self,
+        _route: RouteSpec,
+        _kind: collaboration::record::RecordKind,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
+    fn send_to_route(&mut self, _route: RouteSpec, request: CollabRequest) -> Result<(), String> {
+        self.sent.borrow_mut().push(request);
+        Ok(())
+    }
 }
 
 /// The broker's end of a connection whose queue fills up: while `busy`, it takes no change of
@@ -736,6 +751,14 @@ impl Session {
         let hosted = self.host.instances().next().expect("the window's instance");
         let host = hosted.instance().host().expect("the instance's store");
         host.store().stats().builds
+    }
+
+    /// How many indexes the window's instance brought up to date from the heads they were
+    /// stamped with: a chunk caught up after the index was built, rather than built over.
+    fn catch_ups(&self) -> u64 {
+        let hosted = self.host.instances().next().expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.store().stats().catch_ups
     }
 
     /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's

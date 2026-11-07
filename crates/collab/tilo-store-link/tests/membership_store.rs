@@ -41,7 +41,7 @@ use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{self, MemberRole, TransportHint};
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::owner::{
-    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file,
+    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file, testing,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_relay_protocol::{DeviceMeshProfile, DeviceRole, ReplicationIntent, ServiceCapabilities};
@@ -274,9 +274,7 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
 
     // A makes the workspace on its own device and writes, sealed.
     let a = open_file(&directory.path().join("a.json")).unwrap();
-    let workspace_id = a
-        .create_workspace(WorkspaceId::new(), "Launch review", &a_cert, &a_key, now)
-        .unwrap();
+    let workspace_id = testing::founded(&a, "Launch review", &a_cert, &a_key, now).unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     let record = ApplicationRecord::host(APP, RECORD).unwrap();
     a.prepare_application_record(workspace_id, &a_cert, &a_key, &record, now)

@@ -426,10 +426,14 @@ impl Apps {
         )
     }
 
-    /// Put every app this session runs in the tier of what the person can
-    /// see: `on_screen` is the process of each window the desk shows.
-    pub fn tier_by_visibility(&self, on_screen: &[u32]) {
-        self.state.borrow().spawner.tier_by_visibility(on_screen);
+    /// Put every cgroup a launch of this session runs in in its tier:
+    /// `on_screen` is the process of each window the desk shows, `own` the
+    /// cgroup this session runs in (see [`tilo_app_launch::Spawner`]).
+    pub fn tier_by_visibility(&self, on_screen: &[u32], own: Option<&std::path::Path>) {
+        self.state
+            .borrow()
+            .spawner
+            .tier_by_visibility(on_screen, own);
     }
 
     /// The session is ending: every app it started that still runs is asked

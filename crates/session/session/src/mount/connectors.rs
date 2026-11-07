@@ -92,6 +92,7 @@ impl ConnectorHost {
     /// Start the connector `planned` ran, releasing the door `door` to it through the
     /// launcher's registration gate, and following it on a thread of its own.
     fn start(planned: &Planned, door: &OwnedFd) -> Result<Child, String> {
+        tilo_app_launch::name_surface(planned);
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)

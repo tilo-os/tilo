@@ -12,8 +12,9 @@ use tilo_automerge::ApplyIncoming as _;
 use tilo_desktop_model::commands::{DesktopCommand, TabLocation, apply_command};
 use tilo_desktop_model::desktop_doc;
 use tilo_desktop_model::{
-    ArrangementKind, CanvasPlace, DesktopTree, DropTarget, IdMinter, Strip, StripId, Tab,
-    TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId, WorkspaceSlot,
+    ArrangementKind, CanvasPlace, DesktopTree, DropTarget, FloatCorner, FloatPlace, IdMinter,
+    Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
+    WorkspaceSlot,
 };
 
 fn tab(id: u64) -> Tab {
@@ -569,6 +570,155 @@ fn the_canvas_is_recorded_so_history_can_take_it_back() {
         &mut no_records,
     );
     assert!(refused.is_err());
+}
+
+#[test]
+fn a_float_is_recorded_for_everyone_and_history_can_take_it_back() {
+    let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+    let (mut tree, mut doc) = seeded();
+    doc.commit();
+    let before = doc.get_heads();
+    let mut no_ids = || Err::<u64, String>("no ids".into());
+    let mut no_records = |_: &str, _: u64| Err::<(String, TileContent), String>("none".into());
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 11,
+            float: Some(float),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    desktop_doc::seed(&mut doc, &tree);
+    doc.commit();
+    let back = read_back(&doc);
+    assert_eq!(back.workspaces[0].arrangement.float_of(11), Some(float));
+    assert_eq!(back.workspaces[0].arrangement.float_of(10), None);
+    // The float is one change of the desk's own, so the history undoes it.
+    let undone = read_back(&doc.fork_at(&before).unwrap());
+    assert_eq!(undone.workspaces[0].arrangement.float_of(11), None);
+
+    // Two people float a window each at the same time: both keep theirs.
+    let mut mine = doc.fork();
+    let mut theirs = doc.fork();
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 10,
+            float: Some(float.at(8, 8)),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    desktop_doc::seed(&mut mine, &tree);
+    mine.commit();
+    let mut other = read_back(&doc);
+    apply_command(
+        &mut other.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 20,
+            float: Some(FloatPlace::new(FloatCorner::TopLeft, 12, 16, 500, 400)),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    desktop_doc::seed(&mut theirs, &other);
+    theirs.commit();
+    mine.apply_incoming(theirs.get_changes(&[])).unwrap();
+    let merged = read_back(&mine);
+    assert_eq!(
+        merged.workspaces[0].arrangement.float_of(10),
+        Some(float.at(8, 8))
+    );
+    assert_eq!(
+        merged.workspaces[0].arrangement.float_of(20),
+        Some(FloatPlace::new(FloatCorner::TopLeft, 12, 16, 500, 400))
+    );
+}
+
+#[test]
+fn a_float_goes_when_the_window_is_snapped_back_or_closed() {
+    let float = FloatPlace::new(FloatCorner::BottomRight, 40, 24, 640, 480);
+    let (mut tree, mut doc) = seeded();
+    let mut no_ids = || Err::<u64, String>("no ids".into());
+    let mut no_records = |_: &str, _: u64| Err::<(String, TileContent), String>("none".into());
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 11,
+            float: Some(float),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 11,
+            float: None,
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    assert_eq!(tree.workspaces[0].arrangement.float_of(11), None);
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 11,
+            float: Some(float),
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::CloseTab {
+            location: TabLocation {
+                strip: 1,
+                group: 11,
+                tab: 110,
+            },
+        },
+        &mut no_ids,
+        &mut no_records,
+    )
+    .unwrap();
+    assert_eq!(tree.workspaces[0].arrangement.float_of(11), None);
+    desktop_doc::seed(&mut doc, &tree);
+    assert_eq!(read_back(&doc).workspaces[0].arrangement.float_of(11), None);
+
+    // Only windows of the workspace float, at a size they can be shown at.
+    let refused = apply_command(
+        &mut tree.workspaces[0],
+        &DesktopCommand::FloatGroup {
+            group: 99,
+            float: Some(float),
+        },
+        &mut no_ids,
+        &mut no_records,
+    );
+    assert!(refused.is_err(), "a window not in the workspace");
+    for float in [
+        FloatPlace::new(FloatCorner::TopLeft, 0, 0, 0, 480),
+        FloatPlace::new(FloatCorner::TopLeft, -1, 0, 640, 480),
+    ] {
+        let refused = apply_command(
+            &mut tree.workspaces[0],
+            &DesktopCommand::FloatGroup {
+                group: 10,
+                float: Some(float),
+            },
+            &mut no_ids,
+            &mut no_records,
+        );
+        assert!(refused.is_err(), "{float:?} is no size to show a window at");
+    }
 }
 
 /// [`tree`] plus workspace 2 ("Lab"): strip 3 holds group 30 [300].

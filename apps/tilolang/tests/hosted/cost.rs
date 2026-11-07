@@ -207,25 +207,14 @@ struct Rest {
     rounds: u32,
 }
 
-/// The frame the window runs now: the frame of what the host just did (its patches wake the
-/// window and the frame reads them), or one it owes itself (a wake, a deadline, an animation). A
-/// window at rest runs none: asking it by hand (`Window::frame`) is asking it to lay out and draw
-/// again, which is work no person's interaction made. A frame only a clock asks for is not a
-/// step's cost either — these tests settle motion — so the window runs one where it has work
-/// queued ([`ui::headless::FrameSchedule::queued_work`]), not for widget dirtiness, which leaves
-/// default to dirty and keep until a later frame draws them.
+/// The frame the window runs now: the frame of what the host just did (the patches it published
+/// wake the window and the frame takes them in). A window at rest runs none, and nothing is asked
+/// of it by hand (`Window::frame`), which lays out and draws again work no person's interaction
+/// made. What a frame it runs is asked for by is the host's change, not widget dirtiness, which
+/// leaves default to dirty and keeps until a later frame draws them.
 fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     match &mut session.window {
-        Window::Harness(window) => {
-            if changed {
-                window.relayout();
-                return true;
-            }
-            if !window.frame_schedule().queued_work {
-                return false;
-            }
-            window.poll_frame().unwrap_or(true)
-        }
+        Window::Harness(window) => changed && window.poll_frame().unwrap_or(true),
         Window::Live(app) => {
             Window::live_frame(app);
             true
@@ -254,7 +243,11 @@ fn at_rest(session: &mut Session) -> Rest {
                 rest.full = rest.full.saturating_add(1);
             }
         }
-        if changed || framed {
+        // The step is over when the host has nothing left to show the window. What an instance
+        // reads off its frames — its publication sweeping the workspace's records, one a turn,
+        // waking the window as each moves what a view shows — is the workspace's work, sized by
+        // the workspace and not by what the person did, so it does not hold the window here.
+        if changed {
             quiet = 0;
         } else {
             quiet = quiet.saturating_add(1);
@@ -741,6 +734,11 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     let ready_us = since(start, wall.elapsed());
     let wall_us = wall.elapsed().as_micros() as u64;
     assert!(session.builds() > 0, "the first open builds the index");
+    assert_eq!(
+        session.catch_ups(),
+        0,
+        "the first open builds over every chunk of the record: none is caught up after it"
+    );
     show_rows(&mut session);
     assert!(
         !session.titles().is_empty(),
@@ -946,6 +944,7 @@ fn kept_index(
     let earlier = tilolang_tilo::host::Host::open(
         tilolang_tilo::host::Opening {
             record: chunks.first(),
+            chunks: Some(chunks),
             index_dir: Some(tilolang_tilo::index::record_dir(
                 &indexes,
                 &route.cluster_id.to_string(),
@@ -1095,9 +1094,11 @@ fn turns_until_rest(session: &mut Session) -> u32 {
 }
 
 /// What opening a window did to the workspace: whether it wrote anything, how many times the
-/// store took the record, and the turns the window took to come to rest.
-fn opening(n: usize) -> (usize, u64, u32, usize) {
+/// store took a chunk of the record against the chunks it holds, and the turns the window took
+/// to come to rest.
+fn opening(n: usize) -> (usize, u64, u32, usize, u64) {
     let chunks = seeded_tasks(n);
+    let held = chunks.numbers().count() as u64;
     // What the workspace holds before the window opens it: opening it must leave the record
     // with no more changes than the workspace already had, whether the window finds the root
     // it opens or makes it.
@@ -1120,7 +1121,7 @@ fn opening(n: usize) -> (usize, u64, u32, usize) {
     let stats = host.store().stats();
     let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
     let rows = session.titles().len();
-    (written, read, turns, rows)
+    (written, read, turns, rows, held)
 }
 
 /// The changes the window's record holds: what the window wrote into the workspace.
@@ -1140,17 +1141,17 @@ fn changes(session: &Session) -> usize {
 
 /// Opening a window of a workspace it has used before writes nothing: the root the window
 /// opens is the one the app made when it was first added, and a window that finds it reads it.
-/// The record is taken once, and the window comes to rest in as many turns whatever the
-/// workspace holds: a workspace ten times the size opens in the same turns, the same writes
-/// and the same one read.
+/// Each chunk of the record is taken once, and the window comes to rest in as many turns
+/// whatever the workspace holds: a workspace ten times the size opens in the same turns, the
+/// same writes, and one read of each chunk it holds.
 #[test]
 fn opening_a_window_writes_nothing() {
     let _motion = ui::motion::testing::settled();
-    let (small_writes, small_reads, small_turns, small_rows) = opening(1_000);
-    let (large_writes, large_reads, large_turns, large_rows) = opening(10_000);
+    let (small_writes, small_reads, small_turns, small_rows, small_chunks) = opening(1_000);
+    let (large_writes, large_reads, large_turns, large_rows, large_chunks) = opening(10_000);
     eprintln!(
-        "open: 1000 tasks wrote {small_writes} changes, read the record {small_reads} times, {small_turns} turns, {small_rows} rows; \
-         10000: {large_writes} changes, {large_reads} reads, {large_turns} turns, {large_rows} rows"
+        "open: 1000 tasks wrote {small_writes} changes, read the record's {small_chunks} chunks {small_reads} times, {small_turns} turns, {small_rows} rows; \
+         10000: {large_writes} changes, the {large_chunks} chunks {large_reads} times, {large_turns} turns, {large_rows} rows"
     );
     assert_eq!(
         small_writes, 0,
@@ -1159,8 +1160,8 @@ fn opening_a_window_writes_nothing() {
     assert_eq!(large_writes, 0, "opening a larger workspace writes nothing");
     assert_eq!(
         (small_reads, large_reads),
-        (1, 1),
-        "the store takes the record once, whatever it holds"
+        (small_chunks, large_chunks),
+        "the store takes each chunk of the record once, whatever it holds"
     );
     assert!(
         large_turns <= 32,

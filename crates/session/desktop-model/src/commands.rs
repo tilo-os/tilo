@@ -253,6 +253,14 @@ pub enum DesktopCommand {
     ReopenClosed {
         strip: Option<u64>,
     },
+    /// Float window group `group` above the workspace's windows at `float`,
+    /// or with `None` snap it back among them. Everyone in the workspace
+    /// sees it there; the group stays in its strip, so snapping back puts it
+    /// where it was. Appended last: existing encodings are unchanged.
+    FloatGroup {
+        group: u64,
+        float: Option<crate::arrangement::FloatPlace>,
+    },
 }
 
 impl DesktopCommand {
@@ -931,6 +939,7 @@ pub fn apply_command(
             };
         }
         DesktopCommand::PlaceGroup { group, place } => place_group(workspace, *group, *place)?,
+        DesktopCommand::FloatGroup { group, float } => float_group(workspace, *group, *float)?,
     }
     free_closed_places(workspace);
     let Workspace {
@@ -969,7 +978,7 @@ fn open_tab(
 }
 
 /// A window closed or moved out of the workspace leaves its canvas place
-/// free.
+/// free, and is no longer floating.
 fn free_closed_places(workspace: &mut Workspace) {
     let live: std::collections::HashSet<u64> = workspace
         .strips
@@ -1008,6 +1017,34 @@ fn place_group(
         return Err("a window on the canvas needs a size it can be shown at".into());
     }
     workspace.arrangement.places.insert(group, place);
+    Ok(())
+}
+
+/// Float `group` at `float`, or snap it back among its strip's windows.
+fn float_group(
+    workspace: &mut Workspace,
+    group: u64,
+    float: Option<crate::arrangement::FloatPlace>,
+) -> Result<(), String> {
+    if !workspace
+        .strips
+        .iter()
+        .flat_map(|strip| &strip.window_groups)
+        .any(|candidate| candidate.id == group)
+    {
+        return Err("that window is not in this workspace".into());
+    }
+    if let Some(float) = float
+        && (float.width == 0
+            || float.height == 0
+            || float.width > MAX_CANVAS_SIDE
+            || float.height > MAX_CANVAS_SIDE
+            || float.dx < 0
+            || float.dy < 0)
+    {
+        return Err("a floating window needs a size and an offset it can be shown at".into());
+    }
+    workspace.arrangement.set_float(group, float);
     Ok(())
 }
 

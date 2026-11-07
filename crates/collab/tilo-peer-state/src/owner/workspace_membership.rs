@@ -235,7 +235,11 @@ mod tests {
         let fixture = fixture();
         fixture
             .owner
-            .commit_workspace_membership_command(request(&fixture, agent_grant()), &fixture.key, fixture.now)
+            .commit_workspace_membership_command(
+                request(&fixture, agent_grant()),
+                &fixture.key,
+                fixture.now,
+            )
             .unwrap();
         let before = agent_caps(&fixture.owner, &fixture);
         assert!(!before.is_empty());

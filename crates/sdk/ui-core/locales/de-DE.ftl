@@ -781,6 +781,8 @@ menu-ask-typed = Senden: { $text }
 # The box beside a context menu: whom a message goes to, what it is about,
 # and its words.
 send-to-name = Senden an
+# The same box opened to the one place reports go.
+send-to-report-name = Problem melden
 send-to-to = An
 send-to-new-agent = Neuer Agent
 send-to-recipients-name = Empfänger
@@ -791,6 +793,7 @@ send-to-subjects-name = Betreffe
 send-to-add-subject = Betreff hinzufügen
 send-to-message-name = Nachricht
 send-to-message-placeholder = Nachricht schreiben
+send-to-report-placeholder = Was ist schiefgelaufen?
 send-to-send = Senden
 send-to-remove = Entfernen
 send-to-recipient-set = An { $name } gesendet

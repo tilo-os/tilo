@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_test_env::SpawnUnderEnvLock as _;
-use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
+use ui::floating_surface::{
+    FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, Recipient, RecipientKind,
+};
 
 use super::window_warmth::Window;
 use super::*;
@@ -64,15 +66,22 @@ fn press_send_key(session: &mut Session) {
 /// Whether the session asks the window to send within a few passes, whatever
 /// else it tells the window meanwhile.
 fn asked_to_send(app: &mut Window, session: &mut Session) -> bool {
+    asked_for_box(app, session).is_some()
+}
+
+/// Whom the session asked the window to open its box to within a few passes,
+/// whatever else it tells the window meanwhile: `None` when it asked for no
+/// box at all.
+fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<Vec<Recipient>> {
     for _ in 0..200 {
         session.step(Duration::from_millis(2)).expect("step");
         while let Some(message) = app.next() {
-            if matches!(message, FloatingSurfaceHostMessage::ShareSelection) {
-                return true;
+            if let FloatingSurfaceHostMessage::ShareSelection { to } = message {
+                return Some(to);
             }
         }
     }
-    false
+    None
 }
 
 /// The send key over a window that opens a box asks that window, and opens no
@@ -142,4 +151,76 @@ fn the_send_key_over_an_empty_desk_opens_chat() {
         "Chat stands where the box would have: {:?}",
         tab_apps(&session)
     );
+}
+
+/// The workspace and the conversation a report about Tilo itself goes to, as
+/// the config this test's computer is told names them.
+const FEEDBACK_WORKSPACE: &str = "w_tilo";
+const FEEDBACK_CHANNEL: &str = "c_feedback";
+
+/// A home told where a report about Tilo itself goes.
+fn told_where_reports_go() -> tilo_test_env::TestHome {
+    let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let config = home.home().join("community.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[feedback]\nworkspace = \"{FEEDBACK_WORKSPACE}\"\nchannel = \"{FEEDBACK_CHANNEL}\"\n"
+        ),
+    )
+    .expect("a config naming where reports go");
+    home.env().set("TILO_COMMUNITY_CONFIG", &config);
+    home
+}
+
+/// Press the report-a-problem chord over the window in front.
+fn press_report_key(session: &mut Session) {
+    key(session, keys::LEFT_META, true);
+    tap(session, keys::R);
+    key(session, keys::LEFT_META, false);
+}
+
+/// The report chord asks the window in front for its box, with the one place
+/// this computer sends reports on it: the person writes what went wrong over
+/// the window it is about, and nothing but the words is left to fill in.
+#[test]
+fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
+    let _home = told_where_reports_go();
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
+
+    press_report_key(&mut session);
+    let asked = asked_for_box(&mut app, &mut session).expect("the window in front is asked");
+    assert_eq!(asked.len(), 1, "a report goes to the one place it goes");
+    assert_eq!(asked[0].kind, RecipientKind::Feedback);
+    assert_eq!(asked[0].id, FEEDBACK_CHANNEL);
+    assert!(
+        window(session.compositor(), "so.tilo.chat").is_none(),
+        "Chat opens no window: the box stands in the window the person works in"
+    );
+
+    let _ = app_process.kill();
+    let _ = app_process.wait();
+}
+
+/// A computer told nowhere to send reports asks no window for a box: a report
+/// with nowhere to go is not written at all.
+#[test]
+fn a_computer_told_nowhere_asks_no_window_for_a_report() {
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _settled = ui::motion::testing::settled();
+    let (mut session, _launches, mut app, mut app_process) = session_with_a_window();
+
+    press_report_key(&mut session);
+    assert!(
+        asked_for_box(&mut app, &mut session).is_none(),
+        "no box is opened for a report that has nowhere to go"
+    );
+    assert!(
+        window(session.compositor(), "so.tilo.chat").is_none(),
+        "and nothing is opened in its place"
+    );
+
+    let _ = app_process.kill();
+    let _ = app_process.wait();
 }

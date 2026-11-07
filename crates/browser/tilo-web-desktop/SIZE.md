@@ -2,8 +2,9 @@
 
 `build.sh OUT --bundle desktop --profile release` compiles with Cargo's
 `wasm-release` profile (opt-level 3, fat LTO, one codegen unit, `panic =
-"abort"`, stripped, no debug info) and runs `wasm-opt -Os`. The development
-bundle is 325 MB.
+"abort"`, stripped, no debug info) and runs `wasm-opt` with the arguments in
+`tools/web/wasm-opt-flags`, the one list every web module of this repository
+is optimized with. The development bundle is 325 MB.
 
 ## Budget
 
@@ -41,6 +42,55 @@ locales behind bibliographies (3.2 MB, 0.4 MB under brotli: moving them
 would mean forking hayagriva, whose `archive` embeds them and which
 typst-library reads directly), hyphenation patterns; then the time-zone
 database and Vello's shaders.
+
+## Where the code goes
+
+The 40-app desktop's start module on 2026-11-07 — 28,637,262 B raw, 7,106,605
+B brotli -q 11, 8,777,187 B as the page's first load receives it — is
+26,518,549 B of function bodies in 33,849 functions. By the crate that owns
+each function:
+
+| crate | bytes | share |
+|---|---|---|
+| tilo_ui | 4,280,341 | 16.1% |
+| core | 2,968,204 | 11.2% |
+| serde_core | 1,449,409 | 5.5% |
+| alloc | 1,263,762 | 4.8% |
+| tilo_peer_state | 915,260 | 3.5% |
+| automerge | 912,562 | 3.4% |
+| serde_json | 878,620 | 3.3% |
+| tilo_browser_runtime | 779,124 | 2.9% |
+| tilo_desktop | 670,527 | 2.5% |
+| moq_net | 558,982 | 2.1% |
+| naga | 515,457 | 1.9% |
+| read_fonts | 512,636 | 1.9% |
+| tilo_desktop_model | 490,220 | 1.8% |
+| skrifa | 484,001 | 1.8% |
+
+What repeats across that code is generic instantiations, one copy per call
+site or per type:
+
+| family | functions | bytes |
+|---|---|---|
+| `serde_core::de` (per deserialized type) | 1,394 | 1,461,060 |
+| `ptr::drop_glue` (per owning crate and type) | 2,662 | 1,233,387 |
+| std's stable sorts (per element type and comparator) | 558 | 993,541 |
+| `BTreeMap`/`BTreeSet` internals (per key and value type) | 528 | 715,061 |
+| `core::fmt` (per formatted type) | 1,398 | 179,236 |
+
+Most of it is inherent: a `Deserialize` impl or a drop glue is written per type
+and nothing outside the standard library can share it, and the standard
+library's B-tree is generic over its key and value. Sorts are the exception —
+each call site compiled the whole driftsort quicksort, its small-sort helpers
+and its merge — and the toolkit's own sorts now go through
+`tilo_sort::CompactSort`'s one merge sort instead, which took about half a
+megabyte of the copies out. The layout solver was the other exception: every
+closure handed to `compute_layout_with_measure` compiled taffy's flexbox, grid
+and block solvers again, so toolkit code solves through `layout::solve_layout`
+alone. No crate in the module is compiled twice: each crate's hash appears
+once. What is left is per-type code the shell genuinely runs before its first
+frame, so the next cut is by feature family (moving a surface a visit does not
+need behind the lazy split points) rather than by deduplication.
 
 ## Profile, measured
 

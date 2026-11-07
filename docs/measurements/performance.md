@@ -100,6 +100,13 @@ one asked for is invalid.
 `--cpu-throttle 4` slows the page's CPU fourfold, a stand-in for older hardware
 on a fast machine; such a run is never this group's series.
 
+`--network 20mbit/40ms` gives every request the throughput and round-trip
+latency of a home line, so a load is the wait a first visit is rather than
+loopback's; the load's `browser.load.start_module_bytes` record is the runtime
+module's encoded size either way, which is what a page pays before it can
+present anything. Such a run is a different series too, so the nightly stays on
+loopback and names the module's size from the bytes it served.
+
 The `hosting` group measures the relay's cost per collaborator-hour
 (`relay_load`, workspaces of four): fan-out latency and the priced capacity of a relay VM.
 

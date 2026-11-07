@@ -384,6 +384,30 @@ pub fn signed_surfaces_from_env() -> Result<Vec<(String, String, Vec<u8>)>, Cata
     Ok(signed_surfaces(&Catalog::from_env()?))
 }
 
+/// The signed `surface.toml` of the installed package `app_id`
+/// ([`signed_surfaces`] for one app): the bytes its package's signature
+/// covers, and with them the person-record kinds it declares, as a host names
+/// the surface of the app it is about to run. `None` for an app this device has
+/// not installed or one whose package ships no surface.
+///
+/// # Errors
+///
+/// Returns the [`CatalogError`] of a registry that cannot be read.
+pub fn signed_surface_of(catalog: &Catalog, app_id: &str) -> Result<Option<Vec<u8>>, CatalogError> {
+    Ok(catalog
+        .find(app_id)?
+        .and_then(|row| package_store::integrity::signed_surface(&row)))
+}
+
+/// [`signed_surface_of`] over the stores the environment names.
+///
+/// # Errors
+///
+/// See [`Catalog::from_env`].
+pub fn signed_surface_of_from_env(app_id: &str) -> Result<Option<Vec<u8>>, CatalogError> {
+    signed_surface_of(&Catalog::from_env()?, app_id)
+}
+
 /// [`read`] over the stores the environment names.
 ///
 /// # Errors

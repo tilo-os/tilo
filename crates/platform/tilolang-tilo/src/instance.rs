@@ -236,6 +236,10 @@ pub struct Instance {
     /// What the window said it calls people, which `names` reads first.
     told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
+    /// The chunks of the record the frame before the host opened handed over: the store reads and
+    /// writes the resources the record's manifest places in them, and an index is built over them
+    /// all rather than over the record's own chunk alone ([`Host::open`]).
+    record_chunks: Option<crate::chunk::Chunks>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
     detail: Option<Shown>,
@@ -356,6 +360,7 @@ impl Instance {
             names: Rc::clone(&told) as Rc<dyn NameHost>,
             told,
             host: Rc::default(),
+            record_chunks: None,
             publication: None,
             root: None,
             detail: None,
@@ -781,6 +786,7 @@ impl Instance {
         };
         let opening = Opening {
             record: doc,
+            chunks: self.record_chunks.as_ref(),
             index_dir,
             device: self.device.as_deref(),
         };
@@ -1912,6 +1918,11 @@ impl Instance {
     /// manifest places in it, and reads the ones it was not sent when a read or a write reaches
     /// them ([`Host::sync_chunks`]); and the record's frame ([`Self::sync`]).
     pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
+        if self.host.borrow().is_none() {
+            // The host opens over the chunks this frame brings, and reads the rest of them as it
+            // reaches into them.
+            self.record_chunks = Some(chunks.clone());
+        }
         let mut moved = false;
         if let Some(host) = self.host.borrow().as_ref().cloned() {
             moved |= host.sync_chunks(chunks);

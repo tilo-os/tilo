@@ -21,6 +21,7 @@ def report(**workload: float) -> dict:
     samples = {
         "load_ms": [900.0], "open_ms": [120.0], "open_ready_ms": [400.0], "activate_ms": [20.0],
         "idle_per_s": [0.0], "transfer_bytes": [8_400_000.0], "request_count": [70.0],
+        "start_module_bytes": [6_900_000.0],
     }
     options = {"rounds": 1, "demoSeconds": 0, "typingKeys": 0, **workload}
     if options["demoSeconds"]:
@@ -34,7 +35,7 @@ def report(**workload: float) -> dict:
             "browser": {"product": "Chrome/test"},
             "viewport": {"width": 960, "height": 540, "deviceScaleFactor": 1},
             "adapter": {"vendor": "swiftshader"},
-            "workload": {**options, "apps": "notes", "inputHz": 120, "cpuThrottle": 1},
+            "workload": {**options, "apps": "notes", "inputHz": 120, "cpuThrottle": 1, "network": None},
             "samples": samples}
 
 
@@ -43,6 +44,13 @@ class BrowserQualification(unittest.TestCase):
         records = adapters.browser_qualification(report(demoSeconds=5, typingKeys=16), ENV)
         names = {item.kpi for item in records}
         self.assertEqual(names, {kpi for kpi, _ in adapters.BROWSER_KPIS.values()})
+
+    def test_a_slowed_run_is_not_the_nightly_series(self):
+        for slowed in ({"cpuThrottle": 4}, {"network": {"megabits": 20, "latencyMs": 40, "bytesPerSecond": 2_500_000}}):
+            run = report()
+            run["workload"].update(slowed)
+            with self.assertRaises(ValueError):
+                adapters.browser_qualification(run, ENV)
 
     def test_records_the_typed_key_and_its_frame(self):
         records = adapters.browser_qualification(report(typingKeys=16), ENV)

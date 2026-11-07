@@ -37,7 +37,7 @@ use tilo_sort::CompactSort as _;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 
-use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
+use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, WindowGroup};
 use crate::ownership::SharedDesktop;
@@ -59,6 +59,7 @@ const TAB: &str = "tab";
 const RECORD: &str = "record";
 const ARRANGEMENT: &str = "arrangement";
 const PLACE: &str = "place";
+const FLOAT: &str = "float";
 
 /// A document read now or as of some heads.
 struct At<'a, D: ReadDoc> {
@@ -195,6 +196,8 @@ struct Parts {
     windows: HashMap<u64, Vec<(f64, u64, Tab)>>,
     /// Where groups stand on their workspace's canvas.
     places: HashMap<GroupId, CanvasPlace>,
+    /// Which of those groups float, and where.
+    floats: HashMap<GroupId, FloatPlace>,
     /// Workspaces and strips written blind ([`At::placed_entries`]).
     blind: HashSet<u64>,
 }
@@ -254,6 +257,7 @@ impl Parts {
                         ArrangementKind::parse(&kind)
                     }),
                 places: BTreeMap::new(),
+                floats: BTreeMap::new(),
             };
             workspaces.push((at.number(&entry, ORDER).unwrap_or(0.0), id, workspace));
         }
@@ -282,6 +286,12 @@ impl Parts {
                 .and_then(|value| serde_json::from_value::<CanvasPlace>(value).ok())
             {
                 parts.places.insert(id, place);
+            }
+            if let Some(float) = at
+                .json(&entry, FLOAT)
+                .and_then(|value| serde_json::from_value::<FloatPlace>(value).ok())
+            {
+                parts.floats.insert(id, float);
             }
             parts
                 .groups
@@ -399,6 +409,9 @@ impl Parts {
             for group in groups {
                 if let Some(place) = self.places.get(&group) {
                     workspace.arrangement.places.insert(group, *place);
+                }
+                if let Some(float) = self.floats.get(&group) {
+                    workspace.arrangement.floats.insert(group, *float);
                 }
             }
         }
@@ -722,12 +735,19 @@ fn wanted(desktop: &SharedDesktop, held: &Levels<HeldEntry>) -> Levels<Entry> {
             let group_orders = orders(&ids, &held_orders(&held.groups, Some(strip.id.0)));
             for (group, order) in strip.window_groups.iter().zip(group_orders) {
                 let parent = Some((STRIP, strip.id.0));
-                let fields = workspace
+                let mut fields: Vec<(&'static str, Field)> = workspace
                     .arrangement
                     .place_of(group.id)
                     .and_then(|place| serde_json::to_value(place).ok())
                     .map(|place| vec![(PLACE, Field::Json(place))])
                     .unwrap_or_default();
+                if let Some(float) = workspace
+                    .arrangement
+                    .float_of(group.id)
+                    .and_then(|float| serde_json::to_value(float).ok())
+                {
+                    fields.push((FLOAT, Field::Json(float)));
+                }
                 want.groups.insert(
                     group.id,
                     Entry {
@@ -812,7 +832,7 @@ fn held(doc: &AutoCommit) -> Levels<HeldEntry> {
     Levels {
         workspaces: level(WORKSPACES, None, &[(WORKSPACE, Json), (ARRANGEMENT, Text)]),
         strips: level(STRIPS, Some(WORKSPACE), &[(NAME, Text), (AUTHOR, Text)]),
-        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json)]),
+        groups: level(GROUPS, Some(STRIP), &[(PLACE, Json), (FLOAT, Json)]),
         windows: level(
             WINDOWS,
             Some(GROUP),

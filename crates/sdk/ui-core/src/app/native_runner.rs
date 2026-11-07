@@ -1990,7 +1990,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::Appearance { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintKeyframe
                 | crate::floating_surface::FloatingSurfaceHostMessage::PaintStop
-                | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection
+                | crate::floating_surface::FloatingSurfaceHostMessage::ShareSelection { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PointAt { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::ActivateTestId { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::PressTarget { .. }

@@ -81,6 +81,15 @@ if [ "$mode" = static ]; then
     || bad 'tilo-fs-recipient is not in session.slice'
   grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/tilo-fs-cloud.service" \
     || bad 'tilo-fs-cloud sync is not background'
+  # Everything else nobody is waiting on: updates, catalogue and model
+  # downloads, cache collection, and the runtime prefetch. A person's launch
+  # runs in app.slice, which outweighs all of them.
+  for unit in tilo-app-update tilo-cache-gc tilo-models tilo-public-content-refresh \
+      tilo-runtime-resident; do
+    grep -Fqx 'Slice=background.slice' "$repo/os/usr/lib/systemd/user/$unit.service" \
+      || bad "$unit is not background work"
+  done
+  ok 'background work: updates, downloads and prefetch yield to the desktop'
   [ -f "$etc/zram-generator.conf" ] && ok 'zram policy shipped'
 else
   prop() { # prop MANAGER UNIT NAME EXPECTED
@@ -96,6 +105,8 @@ else
   prop --user app.slice ManagedOOMMemoryPressure auto
   prop --user session.slice CPUWeight 400
   prop --user tilo-app-host.service Slice session.slice
+  prop --user tilo-app-update.service Slice background.slice
+  prop --user tilo-models.service Slice background.slice
   prop --system fs.service ManagedOOMPreference avoid
   prop --system "user@$(id -u).service" CPUWeight 500
   # The io controller must be delegated, or per-app IOWeight is inert.
@@ -132,7 +143,7 @@ else
   for app in $apps; do
     prop --user "$slice/$app" OOMPolicy continue
     w=$(cat "$slice/$app/cpu.weight")
-    case "$w" in 800 | 50) ;;
+    case "$w" in 10000 | 800 | 50) ;;
       *) bad "$app has no tier (cpu.weight=$w)" ;; esac
     # A Tilo app is one OOM group; a host app is not delegated and keeps one
     # victim.

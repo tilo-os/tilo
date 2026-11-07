@@ -2483,7 +2483,7 @@ impl App {
             return false;
         };
         // A key nothing took over a selection begins a message about it.
-        crate::shared_selection::open_send_box(Some(selection), None, Some(text));
+        crate::shared_selection::open_send_box(Some(selection), None, Some(text), &[]);
         true
     }
 
