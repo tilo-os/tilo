@@ -321,7 +321,7 @@ impl Apps {
             .connection(app, origin, &workspace.id, &|origin| {
                 self.plan_connector(app, origin, workspace)
             })
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(DoorError::Failed)?;
         // The connection is the caller's to read: here nothing does, since the reader that
         // needed it attached through its own call. Dropped, it is the connector's alone.
         drop(connection);
@@ -363,7 +363,7 @@ impl Apps {
         };
         let planned = Planned::of(
             &Launch::Package {
-                app: installed.package_id.clone(),
+                app: installed.package_id,
                 open: None,
             },
             &context,

@@ -81,16 +81,17 @@ impl ConnectorHost {
         let (ours, door) = origin_connector::pair()
             .map_err(|error| format!("no door for {app}'s {origin} connector: {error}"))?;
         let planned = plan(origin)?;
-        let child = self.start(&planned, door)?;
+        let child = Self::start(&planned, &door)?;
         origin_connector::send_attachment(&ours, &theirs)
             .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
         running.insert(key, Running { door: ours, child });
+        drop(running);
         Ok(instance)
     }
 
     /// Start the connector `planned` ran, releasing the door `door` to it through the
     /// launcher's registration gate, and following it on a thread of its own.
-    fn start(&self, planned: &Planned, door: OwnedFd) -> Result<Child, String> {
+    fn start(planned: &Planned, door: &OwnedFd) -> Result<Child, String> {
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
@@ -130,7 +131,8 @@ impl ConnectorHost {
 
 impl Drop for ConnectorHost {
     fn drop(&mut self) {
-        for (_, mut running) in std::mem::take(&mut *self.running.lock_recover()) {
+        let started = std::mem::take(&mut *self.running.lock_recover());
+        for (_, mut running) in started {
             let _ = running.child.kill();
             let _ = running.child.wait();
         }
@@ -147,7 +149,7 @@ impl Drop for ConnectorHost {
 /// whether or not a window of the app is open, so what the service says meanwhile waits in it.
 /// A session that cannot start one says why and goes on: the app's records then stand as they
 /// are, and its views show what they last held.
-pub(crate) fn start_all(session: &mut crate::Session) {
+pub(crate) fn start_all(session: &crate::Session) {
     // An origin's own crate registers how the platform reaches its connector, so a session
     // reaches one without naming the crate that keeps the service.
     tilolang_mail::register();
