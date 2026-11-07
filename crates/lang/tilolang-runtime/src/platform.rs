@@ -540,9 +540,11 @@ impl Core {
     ) -> String {
         let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
         if v.count > 1 {
-            let kind = info.as_ref().map_or_else(String::new, |info| {
-                tilolang::meta::plural(&tilolang::meta::in_words(&info.name))
-            });
+            // The items' name in the reader's language, from the type's own catalogue: never an
+            // English plural inside a sentence of another language.
+            let kind = self
+                .item_nouns(&of.ty)
+                .map_or_else(String::new, |(_, many)| many);
             return self.words.borrow().word(
                 "tilolang-did-many",
                 &[
@@ -1743,6 +1745,34 @@ impl Core {
         self.words
             .borrow()
             .word(&key, &[("count".to_owned(), count.to_string())], source)
+    }
+
+    /// What one item the window of `ty` shows is called, singular and plural, in the reader's
+    /// language: the type's own noun, or of what it holds when it is a document (a window of
+    /// tasks says "tasks"). A window's mark stands for the document's own resource, whose type
+    /// only the store names, so `ty` may be either. `None` when neither type is known.
+    ///
+    /// The declared English words are only the source a catalogue without the language reads:
+    /// both numbers come from the type's one `<id>.noun` message, so a window never says an
+    /// English plural in a sentence of another language.
+    pub(crate) fn item_nouns(&self, ty: &str) -> Option<(String, String)> {
+        let (_, info) = self.type_of_ref(ty).ok()?;
+        let item = info
+            .fields
+            .iter()
+            .find(|field| field.kind == crate::meta::FieldKind::Collection)
+            .and_then(|field| crate::meta::element_record(&field.ty))
+            .and_then(|key| self.type_of_ref(&format!("{}#{}", key.app, key.name)).ok())
+            .map_or_else(
+                || (info.id.clone(), info.name.clone()),
+                |(_, item)| (item.id.clone(), item.name.clone()),
+            );
+        let (id, name) = item;
+        let words = tilolang::meta::in_words(&name);
+        Some((
+            self.noun(&id, 1, &words),
+            self.noun(&id, 2, &tilolang::meta::plural(&words)),
+        ))
     }
 
     /// The title of `target`: the first line its first text field holds, when it holds more

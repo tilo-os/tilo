@@ -107,8 +107,6 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Änderungen zeigen
 tilolang-history-hide = Änderungen ausblenden
 tilolang-history-undo-run = Ausführung rückgängig machen
-tilolang-history-made = Erstellt
-tilolang-history-removed = Entfernt
 
 # Wie ein wiederkehrendes Element wiederkehrt und wann daran erinnert wird. Die Anzahl wählt den
 # Plural („alle 2 Wochen“, „3 Tage nach Erledigung“).

@@ -121,8 +121,6 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Show changes
 tilolang-history-hide = Hide changes
 tilolang-history-undo-run = Undo run
-tilolang-history-made = Created
-tilolang-history-removed = Removed
 
 # How a repeating item comes round again, and when it is reminded of. The count picks the plural
 # ("every 2 weeks", "3 days after done"); the source words are the same, so a window with no

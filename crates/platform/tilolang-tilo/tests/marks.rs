@@ -140,8 +140,14 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
         vec![AGENT.to_owned()],
         "the header names everyone who changed it"
     );
-    assert!(
-        matches!(window.props.get("noun"), Some(Value::Text(noun)) if !noun.is_empty()),
+    assert_eq!(
+        window.props.get("noun_one"),
+        Some(&Value::text("note")),
+        "the header says one of them, so one change agrees in number: {window:?}"
+    );
+    assert_eq!(
+        window.props.get("noun"),
+        Some(&Value::text("notes")),
         "the header's count names what changed: {window:?}"
     );
     assert!(

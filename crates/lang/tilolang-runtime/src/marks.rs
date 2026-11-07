@@ -296,31 +296,19 @@ impl Core {
             "said".to_owned(),
             Value::Text(self.version_line(newest, at, &viewer.0)),
         );
-        // What one item of it is called, plural, for a window's count: the type's own name, or
-        // of what it holds when it is a document (a window of tasks says "tasks"). A window's
-        // mark stands for the document's own resource, whose type only the store names.
-        let info = self
-            .type_of_ref(&at.ty)
-            .ok()
-            .map(|(_, info)| info)
-            .or_else(|| {
-                let ty = self.store.borrow().type_of(at).ok()?;
-                let (_, info) = self.registry.borrow().type_info(&ty)?;
-                Some(info)
-            });
-        if let Some(info) = info {
-            let item = info
-                .fields
-                .iter()
-                .find(|field| field.kind == crate::meta::FieldKind::Collection)
-                .map(|field| field.ty.element().unwrap_or(&field.ty))
-                .and_then(|item| match item {
-                    crate::meta::Ty::Record(key) => Some(key.name.as_str()),
-                    _ => None,
-                })
-                .unwrap_or(&info.name);
-            let noun = tilolang::meta::plural(&tilolang::meta::in_words(item));
-            mark.props.insert("noun".to_owned(), Value::Text(noun));
+        // What one item of it is called, for a window's count: the type's own name in the
+        // window's language, or of what it holds when it is a document (a window of tasks says
+        // "tasks"). A window's mark stands for the document's own resource, whose type only the
+        // store names. Both numbers come from the type's one `<id>.noun` message, so the count
+        // and the noun agree.
+        let ty = if self.type_of_ref(&at.ty).is_ok() {
+            Some(at.ty.clone())
+        } else {
+            self.store.borrow().type_of(at).ok()
+        };
+        if let Some((one, many)) = ty.as_deref().and_then(|ty| self.item_nouns(ty)) {
+            mark.props.insert("noun_one".to_owned(), Value::Text(one));
+            mark.props.insert("noun".to_owned(), Value::Text(many));
         }
         if let Some(run) = &newest.task {
             mark.props

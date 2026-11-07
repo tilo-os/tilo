@@ -563,7 +563,10 @@ view history<R>(of: R) {
                     row(gap: .tight, align: .start) {
                         avatar(s.who)
                         stack(gap: .tight, fill: 1.0) {
-                            row(gap: .tight, align: .center) {
+                            // The row wraps rather than squeezing the name it opens with: an
+                            // undo's own word is as long as its language says, and a name cut
+                            // to nothing to make room for it says less than nothing.
+                            row(gap: .tight, align: .center, wrap: true) {
                                 if let v = s.versions.last() {
                                     ui.Text(v.actor, role: .label)
                                 }
@@ -606,7 +609,7 @@ view history<R>(of: R) {
                             }
                             for v in s.versions {
                                 stack(gap: .tight) {
-                                    row(gap: .related, align: .center) {
+                                    row(gap: .related, align: .center, wrap: true) {
                                         std.version_sentence(v)
                                         spacer()
                                         ui.Time(v.at, role: .caption, secondary: true)
@@ -683,11 +686,9 @@ template view version_said(v: host.Version) {
 /// What a version did to each field it changed: the field's name, what it held before and what
 /// it holds after, each as the field's type shows it; or that it made or removed the resource.
 template view version_changes(v: host.Version) {
-    if v.kind == "created" {
-        ui.Text(phrase("tilolang-history-made"), role: .caption, secondary: true)
-    } else if v.kind == "removed" {
-        ui.Text(phrase("tilolang-history-removed"), role: .caption, secondary: true)
-    } else if not v.changes.is_empty() {
+    // What the change did to the fields it holds. A change that made or removed the resource
+    // already says so above (`std.version_said`), so nothing stands twice under it.
+    if v.kind != "created" and v.kind != "removed" and not v.changes.is_empty() {
         grid(columns: 3, gap: .related) {
             for c in v.changes {
                 ui.Text(c.label, role: .caption, secondary: true)
