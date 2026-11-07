@@ -79,23 +79,16 @@ impl SlotRowHost for Lent<'_> {
         let Some(history) = self.frame.history.as_mut() else {
             return;
         };
-        let ran = crate::history_mode::door::history_control_binding(control)
-            .invoke(())
-            .map_err(|error| error.to_string())
-            .and_then(|intent| {
-                crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
-                    .map_err(|error| error.to_string())
-            });
-        if let Err(error) = ran {
+        if let Err(error) =
+            crate::history_mode::host::press_window_control(history.as_mut(), control)
+        {
             tracing::warn!(%error, "window slots: History did not run");
         }
         self.frame.invalidate_local();
     }
 
     fn deliver(&mut self, event: ToolbarEvent) {
-        let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
-        crate::window_toolbar::deliver(event);
-        if hands_keyboard {
+        if crate::window_toolbar::deliver_to_app(event) {
             self.frame.hand_keyboard_to_app();
         }
     }

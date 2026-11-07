@@ -1442,18 +1442,6 @@ pub fn revision() -> u64 {
     REVISION.with(Cell::get)
 }
 
-/// Whether `event` is a press on the app's own slots (a mode, an action,
-/// the sidebar toggle), after which the app takes the keyboard if nothing
-/// in its window holds it. Typing into the bar's location or search, and
-/// its History, keep the keyboard where it is.
-#[must_use]
-pub fn hands_keyboard_to_app(event: &ToolbarEvent) -> bool {
-    matches!(
-        event,
-        ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
-    )
-}
-
 /// The id of the notice's button `event` presses, if it presses one: such a
 /// press is the notice's poster's ([`take_notice_press`]), never among the
 /// app's slot events.
@@ -1540,6 +1528,19 @@ pub fn take_search_request() -> Option<SearchOpening> {
         return window.take_search_request();
     }
     SEARCH_REQUESTED.with(Cell::take)
+}
+
+/// Hand the app what the person did in the bar, answering whether it is a
+/// press on the app's own slots: the host hands the app the keyboard then,
+/// if nothing in its window holds it. The bar's location, search and
+/// History keep the keyboard where it is.
+pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
+    let hands_keyboard = matches!(
+        event,
+        ToolbarEvent::Action { .. } | ToolbarEvent::ToggleSidebar
+    );
+    deliver(event);
+    hands_keyboard
 }
 
 /// Hand the app what the person did in the bar (the runner, from the

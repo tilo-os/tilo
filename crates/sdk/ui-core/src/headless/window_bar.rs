@@ -65,9 +65,8 @@ impl FrameHarness {
     #[must_use]
     pub fn window_history_control(&self) -> Option<crate::widget::HistoryControl> {
         self.history
-            .as_ref()
-            .filter(|history| history.offers_control())
-            .map(|history| crate::widget::HistoryControl::of(history.is_open()))
+            .as_deref()
+            .and_then(crate::history_mode::host::window_control)
     }
 
     /// Press the window's History control as the bar hands the press over:
@@ -79,11 +78,7 @@ impl FrameHarness {
             .window_history_control()
             .ok_or("History is unavailable")?;
         let history = self.history.as_mut().ok_or("History is unavailable")?;
-        let intent = crate::history_mode::door::history_control_binding(control)
-            .invoke(())
-            .map_err(|error| error.to_string())?;
-        crate::history_mode::embedded::run_door_control(history.as_mut(), &intent)
-            .map_err(|error| error.to_string())?;
+        crate::history_mode::host::press_window_control(history.as_mut(), control)?;
         self.relayout();
         Ok(())
     }
@@ -265,9 +260,7 @@ impl FrameHarness {
     /// service does after that sync.
     pub fn press_window_slot(&mut self, event: crate::window_toolbar::ToolbarEvent) {
         self.invalidate_local();
-        let hands_keyboard = crate::window_toolbar::hands_keyboard_to_app(&event);
-        crate::window_toolbar::deliver(event);
-        if hands_keyboard {
+        if crate::window_toolbar::deliver_to_app(event) {
             self.hand_keyboard_to_app();
         }
         self.relayout();
@@ -419,7 +412,11 @@ impl FrameHarness {
     /// `width` wide, shows the notice up (none: no notice is up).
     #[must_use]
     pub fn window_bar_notice(&mut self, width: f64) -> Option<WindowBarNotice> {
-        let bar = self.painted_window_bar(width);
+        Self::shown_notice(&self.painted_window_bar(width))
+    }
+
+    /// How the bar `bar` shows the notice up: none while it shows none.
+    fn shown_notice(bar: &TabBar) -> Option<WindowBarNotice> {
         let bar_height = bar.bar_height();
         let row = bar.toolbar_row();
         let toolbar = row.toolbar()?;
@@ -481,8 +478,7 @@ impl FrameHarness {
     /// When no notice with that button is up, or the press runs nothing.
     pub fn click_window_notice_action(&mut self, width: f64, index: usize) -> Result<(), String> {
         let mut bar = self.painted_window_bar(width);
-        let at = self
-            .window_bar_notice(width)
+        let at = Self::shown_notice(&bar)
             .and_then(|notice| {
                 notice
                     .buttons
