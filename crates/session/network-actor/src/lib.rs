@@ -31,8 +31,6 @@ pub mod siblings;
 pub mod workspace_control;
 pub mod workspace_sync;
 
-/// Wakes the compositor loop; on the native backend, a calloop ping.
-pub type Wake = Arc<dyn Fn() + Send + Sync>;
 /// Compatibility/control topic used only when a message has no workspace identity.
 pub const DEFAULT_WS_TOPIC: u64 = 0;
 
@@ -101,11 +99,6 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// sends a QUIC keep-alive after 5 s without traffic, and a connection that
 /// hears nothing for this long ends ([`transport_config`]).
 const PEER_TIMEOUT: Duration = Duration::from_secs(15);
-/// A shell asking this device to say who it is again
-/// ([`NetCmd::AnnounceIdentity`]) is answered unless it announced itself on
-/// the workspace this recently: two devices never answer each other's
-/// answers.
-const IDENTITY_ANSWER_INTERVAL: Duration = Duration::from_secs(10);
 /// How often each workspace host session is asked for a fresh checkpoint
 /// ([`ActorState::run_host_checkpoint_tick`]); armed only while there is a
 /// host session to ask.
@@ -327,29 +320,8 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
-/// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
-#[derive(Clone)]
-pub struct LoopWake(pub Wake);
-impl std::fmt::Debug for LoopWake {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("LoopWake")
-    }
-}
-
 #[derive(Debug)]
 pub enum NetCmd {
-    /// Ask `ws`'s workspace hosts to replay the workspace's retained history, as
-    /// for a first subscription: a local app joined a record whose earlier
-    /// traffic this device dropped because nothing held it then.
-    Replay {
-        ws: WorkspaceId,
-    },
-    /// A device on `ws` sent something this device cannot place without
-    /// that device's identity: announce this device's own again on the
-    /// topic's host sessions (`IDENTITY_ANSWER_INTERVAL`).
-    AnnounceIdentity {
-        ws: WorkspaceId,
-    },
     /// Ask the host of the joined workspace on `ws` to replay what it retains:
     /// something an app message let go earlier waited for has arrived, and
     /// the message is decided again when it comes back.
@@ -372,37 +344,15 @@ pub enum NetCmd {
     /// This device's own workspace host opened: join the workspaces it hosts that
     /// wait for it.
     LocalHostReady,
-    /// Where this actor queues the channel traffic of workspaces' host sessions
-    /// for the collaboration broker's drain ([`native_ingress::ChannelQueue`]),
-    /// while one runs; without one it goes to the frame loop.
-    ChannelQueue(Option<Arc<native_ingress::ChannelQueue>>),
     NativePublish {
         ws: u64,
     },
-    /// Wake the compositor loop when legacy-window traffic arrives: an idle
-    /// headless loop otherwise sleeps until something else wakes it.
-    SetWake(LoopWake),
     /// What this device has received from its peers, by kind.
     WireTally(tokio::sync::oneshot::Sender<Arc<WireTally>>),
-    /// A message for the hosts of topic `ws` ([`NetCmd::JoinHostedTopic`])
-    /// only, held until a host session is up: what the person's hosts keep
-    /// for their devices that are away.
-    PublishToHosts {
-        ws: u64,
-        msg: NeighbourMsg,
-    },
     /// Take part in workspace `ws`: its events reach `on_event`, and its
     /// workspace hosts are dialled. A workspace's traffic travels over its host
     /// sessions alone.
     JoinWorkspace {
-        ws: WorkspaceId,
-        on_event: mpsc::Sender<NetEvent>,
-    },
-    /// [`NetCmd::JoinWorkspace`] for a topic only the person's hosts carry
-    /// ([`NetCmd::ConnectHost`]): what this device publishes there
-    /// ([`NetCmd::PublishToHosts`]) they keep for the person's devices that
-    /// are away, and replay to each when its session starts.
-    JoinHostedTopic {
         ws: WorkspaceId,
         on_event: mpsc::Sender<NetEvent>,
     },
@@ -487,10 +437,6 @@ pub enum NetCmd {
     ConnectHost {
         addr: EndpointAddr,
         expectation: Option<HomePeerExpectation>,
-    },
-    /// Stop using a host removed from the authenticated local registry.
-    DisconnectHost {
-        id: EndpointId,
     },
 }
 
@@ -846,25 +792,12 @@ enum HostEvent {
 }
 
 /// A topic only the person's hosts carry, which this device joined
-/// ([`NetCmd::JoinHostedTopic`]).
 #[derive(Default)]
 struct HostedTopic {
     /// Fingerprint of the identity material last announced on the topic, so
     /// a renewed certificate or a new revocation goes out the tick it lands
     /// and an unchanged one never does.
     identity_sent: Option<[u8; 32]>,
-    /// When this device last announced its identity on the topic
-    /// ([`IDENTITY_ANSWER_INTERVAL`]).
-    identity_announced: Option<Instant>,
-}
-
-impl HostedTopic {
-    /// Whether this device announced its identity here within
-    /// [`IDENTITY_ANSWER_INTERVAL`].
-    fn announced_identity_lately(&self) -> bool {
-        self.identity_announced
-            .is_some_and(|announced| announced.elapsed() < IDENTITY_ANSWER_INTERVAL)
-    }
 }
 
 struct HostRuntime {
@@ -1260,9 +1193,6 @@ struct ActorState {
     lookup: MemoryLookup,
     host_identity: Option<HostIdentity>,
     native_routes: native_ingress::Routes,
-    /// Where the channel traffic of workspaces' host sessions goes while the
-    /// collaboration broker's drain runs: straight to it.
-    channel_queue: Option<Arc<native_ingress::ChannelQueue>>,
     /// This device's workspace host, through which the native owner joins the
     /// workspaces hosted here.
     local_host: Option<crate::local_host::LocalHost>,
@@ -1323,7 +1253,6 @@ struct ActorState {
     sealed_records: sealed_outbox::RecordKeeper,
     /// Where those logs are, read when a workspace's route is set up.
     held_log: Option<held_log::HeldLog>,
-    wake: Option<Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
@@ -1514,13 +1443,8 @@ impl ActorState {
             }
             Some(NetCmd::NativeConnect(connect)) => self.native_connect(connect),
             Some(NetCmd::LocalHostReady) => self.retry_native_routes(),
-            Some(NetCmd::ChannelQueue(queue)) => self.channel_queue = queue,
             Some(NetCmd::NativePublish { ws }) => self.drive_native_publication(ws),
             Some(NetCmd::JoinWorkspace { ws, on_event }) => {
-                self.handle_join_workspace(ws, on_event);
-            }
-            Some(NetCmd::JoinHostedTopic { ws, on_event }) => {
-                self.topics.entry(ws).or_default();
                 self.handle_join_workspace(ws, on_event);
             }
             Some(NetCmd::WatchSiblings { on_event }) => self.watch_siblings(on_event).await,
@@ -1567,25 +1491,6 @@ impl ActorState {
                 for key in discoveries {
                     if let Some(task) = self.content_discovery_tasks.remove(&key) {
                         task.abort();
-                    }
-                }
-            }
-            Some(NetCmd::AnnounceIdentity { ws }) => {
-                if self
-                    .topics
-                    .get(&ws)
-                    .is_some_and(|topic| !topic.announced_identity_lately())
-                {
-                    self.announce_identity(ws);
-                }
-            }
-            Some(NetCmd::Replay { ws }) => {
-                for ((session_ws, _), runtime) in &self.host_sessions {
-                    if *session_ws == ws && runtime.native_scope.is_none() {
-                        runtime
-                            .replaying
-                            .store(true, std::sync::atomic::Ordering::Release);
-                        let _ = runtime.session.resubscribe();
                     }
                 }
             }
@@ -1654,14 +1559,6 @@ impl ActorState {
                     publish(&self.host_sessions, ws, &msg);
                 }
             }
-            Some(NetCmd::SetWake(LoopWake(wake))) => {
-                self.sealed_records.set_wake(wake.clone());
-                self.wake = Some(wake);
-            }
-            Some(NetCmd::PublishToHosts { ws, msg }) => {
-                self.hold_for_host(ws, &msg);
-                publish(&self.host_sessions, ws, &msg);
-            }
             Some(NetCmd::PublishWorkspaceControl { ws, msg, route }) => {
                 self.publish_workspace_control(ws, msg, route);
             }
@@ -1719,7 +1616,7 @@ impl ActorState {
                     // a replacement; treating a reconnect as removal creates
                     // a needless offline window (and can strand hydration if
                     // the new relay hint is temporarily unreachable).
-                    self.teardown_host(id, false);
+                    self.teardown_host(id);
                 }
                 self.lookup.add_endpoint_info(addr.clone());
                 self.hosts.insert(id, (addr.clone(), expectation));
@@ -1730,21 +1627,17 @@ impl ActorState {
                 self.agent_questions.start(&self.endpoint, addr, identity);
                 self.schedule_all_topic_sessions();
             }
-            Some(NetCmd::DisconnectHost { id }) => self.teardown_host(id, true),
             None => return false,
         }
         true
     }
 
-    /// Stop relay sessions and discovery tasks for one host.  `remove_content`
-    /// is reserved for an explicit enrolled-home-peer removal: an address
-    /// refresh must never revoke a still-valid Files hydration source.
-    fn teardown_host(&mut self, id: EndpointId, remove_content: bool) {
+    /// Stop relay sessions and discovery tasks for one host. An address
+    /// refresh must never revoke a still-valid Files hydration source, so
+    /// this keeps the host's content registrations.
+    fn teardown_host(&mut self, id: EndpointId) {
         self.agent_questions.stop(id);
-        let enrolled_home_peer = self
-            .hosts
-            .remove(&id)
-            .is_some_and(|(_, expectation)| expectation.is_some());
+        self.hosts.remove(&id);
         self.connecting_hosts.retain(|(_, host)| *host != id);
         let sessions: Vec<_> = self
             .host_sessions
@@ -1767,15 +1660,6 @@ impl ActorState {
             if let Some(task) = self.content_discovery_tasks.remove(&key) {
                 task.abort();
             }
-        }
-        if remove_content && enrolled_home_peer {
-            // Discovery registrations are tied to the relay service identity,
-            // not merely the direct Files endpoint.  Tear down that durable
-            // route too: otherwise a removed home peer can return after an
-            // fs-daemon restart from its persisted hydration catalog.
-            tokio::spawn(async move {
-                let _ = unregister_content_peers_for_relay(id).await;
-            });
         }
     }
 
@@ -2370,17 +2254,6 @@ impl ActorState {
         {
             crate::workspace_sync::synced(ws);
         }
-        // The workspace's host replayed what it retains: the sealed writes it
-        // replayed are queued for the broker ahead of this.
-        if self.native_routes.contains(ws)
-            && self
-                .host_sessions
-                .get(&(ws, peer))
-                .is_some_and(|runtime| runtime.native_scope.is_some())
-            && let Some(queue) = &self.channel_queue
-        {
-            queue.push(native_ingress::ChannelTraffic::Replayed(ws));
-        }
         self.request_native_refresh(ws);
         self.host_sessions
             .get(&(ws, peer))
@@ -2974,22 +2847,6 @@ impl ActorState {
         event: HostEvent,
     ) -> Option<NetEvent> {
         match event {
-            // A sealed write in a workspace whose records are sealed channels:
-            // no owner admits it, so it goes straight to the broker, which
-            // checks it before any app sees it.
-            HostEvent::NativeInput(input)
-                if self.native_routes.contains(ws)
-                    && matches!(
-                        input.message(),
-                        NeighbourMsg::AppDocument { envelope, .. } if envelope.encryption.is_some()
-                    )
-                    && self.channel_queue.is_some() =>
-            {
-                if let Some(queue) = &self.channel_queue {
-                    queue.push(native_ingress::ChannelTraffic::Sealed(input));
-                }
-                None
-            }
             HostEvent::NativeInput(input) => Some(NetEvent::NativeInput(input)),
             HostEvent::Ready => self.host_ready(ws, peer),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
@@ -3061,21 +2918,7 @@ impl ActorState {
         let Some(tx) = self.subscribers.get(&ws) else {
             return;
         };
-        let legacy = matches!(
-            &event,
-            NetEvent::Msg {
-                msg: NeighbourMsg::RemoteInput { .. }
-                    | NeighbourMsg::SurfaceKeyframeRequest { .. }
-                    | NeighbourMsg::SurfaceStreamStart { .. }
-                    | NeighbourMsg::SurfaceFrame { .. }
-                    | NeighbourMsg::SurfaceStreamEnd { .. },
-                ..
-            }
-        );
         let _ = tx.send(event).await;
-        if legacy && let Some(wake) = &self.wake {
-            wake();
-        }
     }
 
     /// A message a host session delivered: `None` when it repeats one this
@@ -3253,7 +3096,6 @@ impl ActorState {
             return;
         };
         topic.identity_sent = Some(message_fingerprint(&bytes));
-        topic.identity_announced = Some(Instant::now());
         for ((session_ws, _), runtime) in &self.host_sessions {
             if *session_ws == ws {
                 Self::announce_identity_to_host(ws, &hello, &runtime.session);
@@ -3661,7 +3503,6 @@ async fn run(
         lookup,
         host_identity,
         native_routes: native_ingress::Routes::default(),
-        channel_queue: None,
         local_host,
         lanes,
         internal_tx,
@@ -3689,7 +3530,6 @@ async fn run(
         sealed_outbox: HashMap::new(),
         sealed_records: sealed_outbox::RecordKeeper::new(held_log.clone()),
         held_log,
-        wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
         next_surface_fanout_generation: 0,
@@ -4342,67 +4182,6 @@ async fn register_content_peer(
             false
         }
     }
-}
-
-/// Ask the running filesystem daemon to forget all endpoint/ticket pairs
-/// authenticated by a removed enrolled relay. The daemon owns both its live
-/// Hydrator and the durable catalog, so the shell cannot leave one stale.
-async fn unregister_content_peers_for_relay(relay: EndpointId) -> bool {
-    #[cfg(any(test, feature = "test-support"))]
-    noted_content_peer_removals().lock_recover().push(relay);
-    if cfg!(any(test, feature = "test-support"))
-        && std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER").is_none()
-    {
-        return true;
-    }
-    let publisher = std::env::var_os("TILO_FS_CONTENT_PEER_PUBLISHER")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || std::path::PathBuf::from("/usr/bin/fs"),
-            std::path::PathBuf::from,
-        );
-    let cache_dir = std::env::var_os("TILO_FS_CONTENT_PEER_CACHE_DIR")
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || std::path::PathBuf::from("/var/cache/quick-fs"),
-            std::path::PathBuf::from,
-        );
-    match tokio::time::timeout(
-        Duration::from_secs(10),
-        tokio::process::Command::new(&publisher)
-            .arg("unregister-content-peer")
-            .arg("--cache-dir")
-            .arg(cache_dir)
-            .arg("--relay-service-id")
-            .arg(hex::encode(relay.as_bytes()))
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .status(),
-    )
-    .await
-    {
-        Ok(Ok(status)) if status.success() => true,
-        Ok(Ok(status)) => {
-            tracing::warn!(?status, relay = %relay, "filesystem content-peer removal failed");
-            false
-        }
-        Ok(Err(error)) => {
-            tracing::warn!(%error, relay = %relay, "could not start filesystem content-peer removal");
-            false
-        }
-        Err(_) => {
-            tracing::warn!(relay = %relay, "filesystem content-peer removal timed out");
-            false
-        }
-    }
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn noted_content_peer_removals() -> &'static Mutex<Vec<EndpointId>> {
-    static REMOVALS: std::sync::OnceLock<Mutex<Vec<EndpointId>>> = std::sync::OnceLock::new();
-    REMOVALS.get_or_init(|| Mutex::new(Vec::new()))
 }
 
 /// How long a workspace host session goes without hearing from the host

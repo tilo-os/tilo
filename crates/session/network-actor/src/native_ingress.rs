@@ -195,9 +195,6 @@ impl ActorState {
                 });
                 if changed {
                     self.drive_native_publication(ws);
-                    if let Some(wake) = &self.wake {
-                        wake();
-                    }
                 }
             }
             Ok(Err(error)) => {
@@ -323,11 +320,7 @@ impl ActorState {
                 .unadmitted_writes(route.connect.workspace())
                 .unwrap_or(0)
         };
-        if crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed))
-            && let Some(wake) = &self.wake
-        {
-            wake();
-        }
+        crate::workspace_sync::unsynced(ws, sealed.saturating_add(committed));
     }
 
     pub(super) fn drive_native_publication(&self, ws: u64) {
@@ -646,56 +639,5 @@ fn dial_refused(ws: u64, host: iroh::EndpointId, error: DialError) {
             tracing::debug!(%error, ws, "native host dial failed; retrying");
             crate::workspace_sync::unreachable(ws);
         }
-    }
-}
-
-/// What a workspace host's session carries for the collaboration broker and no
-/// owner admits, taken by this actor straight to the broker's drain in the
-/// order the host said it. It reaches the broker without the frame loop,
-/// which an app opening a record may be holding while it waits for it.
-pub enum ChannelTraffic {
-    /// A member's sealed write to a record of a workspace whose records are
-    /// sealed channels.
-    Sealed(Input),
-    /// The workspace's host on topic `ws` finished replaying what it retains:
-    /// every sealed write it replayed is queued ahead of this.
-    Replayed(super::WorkspaceId),
-}
-
-/// The queue [`ChannelTraffic`] waits in for the broker's drain.
-pub struct ChannelQueue {
-    traffic: std::sync::Mutex<std::collections::VecDeque<ChannelTraffic>>,
-    wake: crate::Wake,
-}
-
-impl ChannelQueue {
-    /// A queue whose drain `wake` rouses.
-    pub fn new(wake: crate::Wake) -> Arc<Self> {
-        Arc::new(Self {
-            traffic: std::sync::Mutex::default(),
-            wake,
-        })
-    }
-
-    /// Queue `traffic` and wake the drain.
-    pub fn push(&self, traffic: ChannelTraffic) {
-        if let Ok(mut queued) = self.traffic.lock() {
-            queued.push_back(traffic);
-        }
-        (self.wake)();
-    }
-
-    /// Everything queued, oldest first.
-    pub fn take(&self) -> std::collections::VecDeque<ChannelTraffic> {
-        self.traffic
-            .lock()
-            .map(|mut queued| std::mem::take(&mut *queued))
-            .unwrap_or_default()
-    }
-}
-
-impl std::fmt::Debug for ChannelQueue {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ChannelQueue").finish_non_exhaustive()
     }
 }
