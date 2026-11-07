@@ -19,10 +19,13 @@
 # Mail's sync and the YouTube client's search reach their services.
 #
 # Nothing touches the person's own desktop: the session gets a scratch HOME and XDG
-# tree, a private XDG_RUNTIME_DIR, no D-Bus and no X11. It prints where its agent
-# door and control socket are and how to drive it, then runs until it ends or this
-# script is stopped (Ctrl+C, SIGTERM, SIGHUP). Either way the session, everything
-# it started, its FUSE mount and the scratch directory go with it.
+# tree, a private XDG_RUNTIME_DIR, no D-Bus and no X11. It holds secrets in the
+# sealed file store a headless machine uses, in its own scratch directory, so
+# the workspaces it founds have channel keys and their shared desks are written
+# as on any device. It prints where its agent door and control socket are and
+# how to drive it, then runs until it ends or this script is stopped (Ctrl+C,
+# SIGTERM, SIGHUP). Either way the session, everything it started, its FUSE
+# mount, its secret store and the scratch directory go with it.
 #
 # Usage:
 #   dist/dev/shell-run.sh [--no-build] [--size WxH] [--no-apps] [--dev-rust-views]
@@ -127,6 +130,15 @@ log=$scratch/session.log
 store=$scratch/apps
 runtimes=$scratch/runtimes
 keys=$scratch/keys
+# This session's own secret store: a file-backed one, as a headless machine uses
+# (`TILO_SECRETS_DIR`, `crates/platform/tilo-secrets/src/files.rs`). The
+# session's private D-Bus answers no Secret Service, so without this it holds no
+# secret at all — and so no channel keys of any workspace, which leaves every
+# workspace's shared desk unwritten and unread here. A development session
+# exercises the real path: the store it makes is its own, mode 0700 inside the
+# scratch directory, and goes with the rest of it.
+secrets=$scratch/secrets
+mkdir -m 700 "$secrets"
 mkdir -m 700 "$store" "$runtimes" "$keys"
 
 session_pid=
@@ -252,6 +264,7 @@ start_session() {
         HOME="$home" XDG_CONFIG_HOME="$home/.config" XDG_DATA_HOME="$home/.local/share" \
         XDG_STATE_HOME="$home/.local/state" XDG_CACHE_HOME="$home/.cache" \
         XDG_RUNTIME_DIR="$runtime" TILO_IDENTITY_ROOT="$scratch/identity" \
+        TILO_SECRETS_DIR="$secrets" \
         TILO_APPS_DATA_DIR="$store" TILO_RUNTIME_BUNDLE_DIR="$runtimes" \
         TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE="$trust" \
         TILO_LAUNCHER_BIN="$bin/tilo-launcher" \
