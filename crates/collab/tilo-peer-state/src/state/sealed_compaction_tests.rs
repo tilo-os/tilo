@@ -643,7 +643,7 @@ fn a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named() {
     // the same writer without seeing the other's change.
     let actor = automerge::ActorId::from(vec![0x42]);
     first.0.set_actor(actor.clone());
-    conflicting.0.set_actor(actor.clone());
+    conflicting.0.set_actor(actor);
     let one = write(
         &f.host,
         &f.owner,

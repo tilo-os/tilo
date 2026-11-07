@@ -153,7 +153,7 @@ pub(super) fn merge_sealed(
             // write-by-write merge below.
             // ignored-failure: the merge below reports a refusal that is real.
             Err(refused) => {
-                tracing::debug!(error = %refused, "a sealed history does not merge in one pass");
+                tracing::debug!(error = ?refused, "a sealed history does not merge in one pass");
             }
         }
     }
@@ -267,21 +267,22 @@ fn already_held(record: &mut AutoCommit, mutation: &DocumentMutation) -> Option<
     let DocumentMutation::Incremental(bytes) = mutation else {
         return None;
     };
-    let changes = automerge::Automerge::parse_changes(&bytes).ok()?;
+    let changes = automerge::Automerge::parse_changes(bytes).ok()?;
     if changes.is_empty() {
         return None;
     }
-    let held_changes = record.get_changes(&[]);
-    let held: std::collections::HashSet<_> = held_changes
-        .iter()
-        .map(|change| (change.actor_id().to_bytes(), change.seq()))
-        .collect();
+    let held = record.get_changes(&[]);
     let mut found = None;
     for change in &changes {
-        if !held.contains(&(change.actor_id().to_bytes(), change.seq())) {
+        let is_held = held
+            .iter()
+            .any(|held| held.actor_id() == change.actor_id() && held.seq() == change.seq());
+        if !is_held {
             return None;
         }
-        found.get_or_insert((change.actor_id().to_hex_string(), change.seq()));
+        if found.is_none() {
+            found = Some((change.actor_id().to_hex_string(), change.seq()));
+        }
     }
     found
 }
@@ -335,11 +336,7 @@ pub(super) fn merge_writes(
             left.push((index, reason));
         }
         if next.len() == before {
-            let missing: Vec<String> = merged
-                .get_missing_deps(&[])
-                .iter()
-                .map(ToString::to_string)
-                .collect();
+            let missing = missing_dependencies(&merged, &next)?;
             for (index, _) in next {
                 let reason = UnmergedReason::MissingDependencies {
                     missing: missing.clone(),
@@ -357,6 +354,36 @@ pub(super) fn merge_writes(
     }
     left.sort_by_key(|(index, _)| *index);
     Ok((merged, left))
+}
+
+/// The changes the writes left waiting build on that neither the record nor the
+/// writes themselves carry, hex, in the order they are missed.
+fn missing_dependencies(
+    record: &AutoCommit,
+    waiting: &[(usize, DocumentMutation)],
+) -> Result<Vec<String>, String> {
+    let mut history = Vec::new();
+    for (_, mutation) in waiting {
+        match mutation {
+            DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => {
+                history.extend_from_slice(bytes);
+            }
+        }
+    }
+    // Their changes queue rather than merge, so the record says what they wait
+    // for; the scratch copy keeps the queue out of the record.
+    let mut scratch = record.clone();
+    tilo_automerge_isolate::apply(
+        &mut scratch,
+        &history,
+        tilo_automerge_isolate::Dependencies::RetainOrphans,
+    )
+    .map_err(err)?;
+    Ok(scratch
+        .get_missing_deps(&[])
+        .iter()
+        .map(ToString::to_string)
+        .collect())
 }
 
 /// [`merge_sealed`] for reading: every write that opens and merges is in the
@@ -377,37 +404,6 @@ pub(super) fn open_sealed(
         }
     }
     let (mut merged, left) = merge_writes((*document.doc).clone(), writes, LeftOut::Named)?;
-    if left
-        .iter()
-        .any(|(_, reason)| matches!(reason, UnmergedReason::AlreadyHeld { .. }))
-    {
-        // Which write wrote each change names the two writers that forked:
-        // the log keeps them for whoever has to find the writer.
-        let changes: Vec<String> = sealed
-            .iter()
-            .filter_map(|write| {
-                let DocumentMutation::Incremental(bytes) =
-                    DocumentMutation::decode(&open(write).ok()?).ok()?
-                else {
-                    return None;
-                };
-                let author = hex::encode(write.author.as_bytes().get(..8).unwrap_or_default());
-                let changes: Vec<String> = automerge::Automerge::parse_changes(&bytes)
-                    .ok()?
-                    .iter()
-                    .map(|change| {
-                        format!(
-                            "{}#{}",
-                            hex::encode(change.actor_id().to_bytes()),
-                            change.seq()
-                        )
-                    })
-                    .collect();
-                Some(format!("{author}#{}=[{}]", write.seq, changes.join(",")))
-            })
-            .collect();
-        tracing::debug!(writes = ?changes, "a sealed history writes a sequence twice");
-    }
     unmerged.extend(left);
     unmerged.sort_by_key(|(index, _)| *index);
     Ok(OpenedRecord {
@@ -417,10 +413,13 @@ pub(super) fn open_sealed(
         }),
         unmerged: unmerged
             .into_iter()
-            .map(|(index, reason)| UnmergedWrite {
-                author: *sealed[index].author.as_bytes(),
-                seq: sealed[index].seq,
-                reason,
+            .filter_map(|(index, reason)| {
+                let write = sealed.get(index)?;
+                Some(UnmergedWrite {
+                    author: *write.author.as_bytes(),
+                    seq: write.seq,
+                    reason,
+                })
             })
             .collect(),
     })
