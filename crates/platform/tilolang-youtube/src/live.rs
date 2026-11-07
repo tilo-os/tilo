@@ -118,11 +118,17 @@ fn fetch_over_http(url: &str) -> Option<Vec<u8>> {
     /// The most a picture YouTube serves costs. A thumbnail is tens of kilobytes; this is far
     /// above the largest still, and below anything that would fill the store's cache.
     const MAX_PICTURE_BYTES: u64 = 8 << 20;
-    let client = tilo_net::http::blocking_client()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .ok()?;
+    // One client for the process: its connection pool and TLS setup are the slow part, and an
+    // answer names tens of stills at once.
+    static CLIENT: OnceLock<Option<tilo_net::http::BlockingClient>> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        tilo_net::http::blocking_client()
+            .timeout(std::time::Duration::from_secs(15))
+            .build()
+            .ok()
+    });
     let response = client
+        .as_ref()?
         .get(url)
         // A browser's user agent: the image CDNs answer an unknown client with a 403.
         .header(
