@@ -58,6 +58,7 @@ Each check runs commands from this repository. Run them from the checkout on Lin
 | `clippy/<package>`                                      | `cargo clippy --locked --all-targets -p <package>... -- -D warnings`                                                                                                                                                                                                                                          |
 | `android`                                               | `bash tools/ci/install-android-ndk.sh`, then `tools/ci/clippy-android.sh`                                                                                                                                                                                                                                     |
 | `vendored`                                              | `tools/ci/test-vendored-crates.sh [vendor/<crate>...]`: each patched vendored crate's own `cargo test`, from a copy of the workspace lock (`VENDORED_TEST_CRATES` in `package_sets.py`)                                                                                                                       |
+| `web`                                                   | `tools/ci/check-wasm.sh --check` (the page builds)                                                                                                                                                                                                                                                            |
 | `wasm`, `web-examples`                                  | `tools/ci/check-wasm.sh $(python3 tools/ci/package_sets.py browser)`; `tools/ci/build-web-examples.sh example-<name>...` builds the web examples                                                                                                                                                              |
 | `policy`, `fmt`, `deny`, `hakari`, `machete`, `changes` | `tools/policy/run.sh`, `cargo fmt --check`, `cargo deny --workspace check`, `cargo hakari generate --diff && cargo hakari manage-deps --dry-run`, `bash tools/ci/check-unused-dependencies.sh`, and the diff-based gates `changes` lists against `origin/main`                                                |
 | `sdk-policy`                                            | `python3 tools/policy/check_app_capabilities.py`, `python3 tools/web/generate_web_desktop.py --check`; portability is `tilo-app check --lint --all` in `lint.yml`                                                                                                                                                        |
@@ -93,6 +94,10 @@ publications build from.
   (`github.event.before`) and then to the full workspace, so a cancelled run
   leaves no commit unmeasured. `main-window.yml` repeats the cancellation every
   fifteen minutes, so a supersede job that dies cannot let the queue grow back.
+  The `web` job is the exception: it checks the page builds for wasm32 on every
+  push, before and independent of that window, so a break only the web build
+  sees fails the head that introduced it. Its `wasm` job then adds the browser
+  crates and web-capable examples the window selects.
 - Release and artifact workflows (`release-*.yml`, `build-*.yml`) trigger on a
   push to `stable` or on a version tag, never on `main`. `ci-nightly.yml` runs
   the full suite on both native architectures as the coverage backstop, and the
