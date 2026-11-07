@@ -423,26 +423,6 @@ impl ActionParam {
             .as_str()
     }
 
-    /// Whether this parameter is chosen from labelled values
-    /// ([`Self::with_labelled_choices`]), even when there are none to offer
-    /// now: a surface offers the empty list, never a free-text field.
-    #[must_use]
-    pub fn has_labelled_choices(&self) -> bool {
-        self.schema
-            .as_ref()
-            .is_some_and(|schema| schema.get(CHOICE_LABELS_ANNOTATION).is_some())
-    }
-
-    /// Whether `choice` is a person ([`Self::choosing_people`]).
-    #[must_use]
-    pub fn choice_is_person(&self, choice: &str) -> bool {
-        self.schema
-            .as_ref()
-            .and_then(|schema| schema.get(PEOPLE_ANNOTATION))
-            .and_then(serde_json::Value::as_array)
-            .is_some_and(|people| people.iter().any(|person| person.as_str() == Some(choice)))
-    }
-
     fn annotate(mut self, key: &str, value: serde_json::Value) -> Self {
         let mut schema = match self.schema.take() {
             Some(schema) => match std::sync::Arc::unwrap_or_clone(schema) {

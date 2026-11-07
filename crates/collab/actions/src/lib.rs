@@ -140,7 +140,6 @@ pub mod interaction;
 pub mod key;
 pub mod noun;
 pub mod offload;
-pub mod optimistic;
 pub mod outcome;
 pub mod params;
 pub mod protocol;
@@ -199,7 +198,6 @@ pub use interaction::{
     MAX_LABEL_BYTES, SemanticInteraction,
 };
 pub use key::{ActionKey, CREATE_ACTION};
-pub use optimistic::{Acknowledgement, OptimisticError, OptimisticQueue, RebaseBatch};
 pub use outcome::{
     ActionFailure, ActionOutput, CONTENT_RESOURCE_KIND, EffectReceiptStatus, InvocationId,
     InvocationUpdate, content_hash, content_resource,

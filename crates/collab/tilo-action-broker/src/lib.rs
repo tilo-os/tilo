@@ -12,7 +12,6 @@ pub mod collab_history;
 pub mod collab_inbound;
 pub mod collab_outbound;
 pub mod collab_presence;
-pub mod collaboration_admin;
 mod evidence_signer;
 mod governance_pump;
 pub mod local_document_action;

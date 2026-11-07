@@ -7770,8 +7770,6 @@ impl AppBrokerState {
             // A new admitted session brings its own certificate expiry: the
             // policy turn re-checks, and from then on wakes at that expiry.
             tilo_identity_host::policy_change::announce();
-            let workspace = CrdtRoute::from_channel_key(channel_id).cluster_id;
-            self.publish_certified_people(&workspace);
         }
         rx
     }
@@ -7982,34 +7980,6 @@ impl AppBrokerState {
         people.into_values().collect()
     }
 
-    pub(crate) fn certified_people_for_shell(
-        &self,
-    ) -> Vec<(String, Vec<ui::collaboration::Collaborator>)> {
-        let workspaces = self
-            .channels
-            .lock()
-            .map(|channels| {
-                channels
-                    .iter()
-                    .filter(|(_, subscribers)| {
-                        subscribers
-                            .context
-                            .iter()
-                            .any(|subscriber| subscriber.native.is_some())
-                    })
-                    .map(|(channel, _)| CrdtRoute::from_channel_key(channel).cluster_id)
-                    .collect::<std::collections::BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        workspaces
-            .into_iter()
-            .map(|workspace| {
-                let people = self.certified_people_in_workspace(&workspace);
-                (workspace, people)
-            })
-            .collect()
-    }
-
     fn native_roster_for_subscriber(
         &self,
         route: &CrdtRoute,
@@ -8029,12 +7999,6 @@ impl AppBrokerState {
             admitted: current,
             roster,
         }))
-    }
-
-    fn publish_certified_people(&self, workspace: &str) {
-        if let Some(fanout) = self.fanout.upgrade() {
-            fanout.publish_certified_people(workspace);
-        }
     }
 
     /// The delegated agents of the workspace `channel` belongs to whose person's
@@ -8102,12 +8066,9 @@ impl AppBrokerState {
             let route = CrdtRoute::from_channel_key(&channel);
             let Ok(current) = self.revalidate_admission(&route, &admitted) else {
                 self.drop_context_subscriber(&channel, peer_id, &admitted)?;
-                self.publish_certified_people(&route.cluster_id);
                 continue;
             };
-            if self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)? {
-                self.publish_certified_people(&route.cluster_id);
-            }
+            self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)?;
         }
         Ok(())
     }
@@ -13927,14 +13888,6 @@ pub mod tests {
         assert_eq!(AppBrokerState::participant_id(&admitted), person);
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
-        let observed = Arc::new(Mutex::new(Vec::<(
-            String,
-            Vec<ui::collaboration::Collaborator>,
-        )>::new()));
-        let observed_sink = Arc::clone(&observed);
-        let _people = fanout.subscribe_certified_people(Arc::new(move |workspace, people| {
-            observed_sink.lock().unwrap().push((workspace, people));
-        }));
         let (state, _bridge_rx) = AppBrokerState::new_configured(
             &fanout,
             Arc::new(Mutex::new(BrokerChannels::default())),
@@ -14065,17 +14018,6 @@ pub mod tests {
         assert_eq!(collaborators[0].name, forged.name);
         assert!(collaborators[0].is_agent);
         assert!(!collaborators[0].is_self);
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .all(|row| row.id != forged.id),
-            "ordinary Context cannot enter the certified People observer"
-        );
         assert!(membership.write().workspaces[0].revoke_grant(&collision));
         assert!(membership.write().workspaces[0].dismiss(other_person));
         state.refresh_workspace_context_services().unwrap();
@@ -14086,17 +14028,6 @@ pub mod tests {
             collaborators
                 .iter()
                 .all(|row| row.id != format!("agent:{person}"))
-        );
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .all(|row| row.id != format!("agent:{person}")),
-            "membership replacement retires the certified agent from shell projection"
         );
         assert!(collaborators.iter().all(|row| row.id != other_person));
         assert!(
@@ -14130,17 +14061,6 @@ pub mod tests {
                 .iter()
                 .any(|row| row.id == "agent:reed" && row.is_agent)
         );
-        assert!(
-            observed
-                .lock()
-                .unwrap()
-                .last()
-                .unwrap()
-                .1
-                .iter()
-                .any(|row| row.id == "agent:reed" && row.is_agent),
-            "certified kind comes from the owner row, not an id convention"
-        );
 
         let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
         assert!(matches!(
@@ -14168,10 +14088,6 @@ pub mod tests {
         .await;
         membership.write().workspaces[0].policy.owner = None;
         state.refresh_workspace_context_services().unwrap();
-        assert!(
-            observed.lock().unwrap().last().unwrap().1.is_empty(),
-            "losing the certified source withdraws the complete shell roster"
-        );
         assert!(
             !matches!(pending.await, Ok(Some(_))),
             "revocation must terminate an already waiting native read"

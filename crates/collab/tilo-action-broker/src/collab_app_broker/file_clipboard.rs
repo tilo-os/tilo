@@ -129,10 +129,6 @@ impl JoinedChannel {
         }) {
             return Err("original invocation does not authorize this clipboard command".into());
         }
-        let history_compensation = original
-            .as_ref()
-            .and_then(|pending| pending.original.as_ref())
-            .is_some_and(|data| data.clipboard_compensation());
         let route = self.route();
         let workspace = route.cluster_id.clone();
         let window = route.channel_key();
@@ -217,7 +213,6 @@ impl JoinedChannel {
             duplicate,
             workspace,
             owner,
-            history_compensation,
             attributed_agent,
             check,
         })

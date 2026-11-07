@@ -14,9 +14,6 @@ impl PrivatePolicyBasis {
     pub fn revision(&self) -> &str {
         &self.revision
     }
-    pub fn next_expiry_after(&self, unix_seconds: u64) -> Option<u64> {
-        self.expiries.iter().copied().find(|at| *at > unix_seconds)
-    }
 }
 
 pub use crate::legacy_policy::{canonical_owner, governance_revision};

@@ -304,24 +304,6 @@ impl BrokerChannels {
         writes
     }
 
-    /// Whether this device holds any sealed write of `artifact`
-    /// ([`Self::sealed_writes`]), without reading them all.
-    pub fn holds_sealed_writes(&mut self, artifact: ArtifactId) -> bool {
-        let retained = super::collab_history::CollabHistoryStore::retains;
-        if self
-            .states
-            .get(&artifact)
-            .is_some_and(|state| state.op_log.iter().any(retained))
-        {
-            return true;
-        }
-        self.history.as_mut().is_some_and(|history| {
-            history
-                .page_before(artifact, u64::MAX, 1)
-                .is_ok_and(|(page, _)| page.iter().any(retained))
-        })
-    }
-
     /// The records of trees ([`ui::record::RecordId::tree`]: a chain's
     /// parts, a container's children) of the app `subscriber` names in its
     /// workspace that this device holds: ops of them were admitted here this
