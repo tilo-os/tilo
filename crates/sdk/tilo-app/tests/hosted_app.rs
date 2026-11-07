@@ -144,6 +144,31 @@ fn an_edit_in_the_view_commits_through_the_session_as_the_person() {
 }
 
 #[test]
+fn a_press_on_a_control_commits_through_the_session() {
+    let host = ChannelHost::holding("Marques Brownlee", &[]);
+    let mut app =
+        TestApp::<HostedChannel>::hosted("test.hosted-channel", HostAnswers(Rc::clone(&host)))
+            .expect("the app opens over the session's host");
+    app.frame();
+    // A real press: the pointer moves onto the Subscribe control, presses and
+    // releases, the widget emits its invocation and the root drains its
+    // queue. Nothing here calls the dispatcher directly.
+    app.harness()
+        .click_named("subscribe")
+        .expect("the Subscribe control is on screen");
+    assert_eq!(
+        host.asked.borrow().as_slice(),
+        &[("subscribe".to_owned(), true)],
+        "the press reached the session's door as the person's gesture"
+    );
+    assert_eq!(
+        host.channel.borrow().videos,
+        ["subs"],
+        "the session committed the edit to the record it keeps"
+    );
+}
+
+#[test]
 fn the_app_process_opens_no_document() {
     // The app over a connection holds no record: everything it shows and
     // everything it changes is the session's, read and written over its one
