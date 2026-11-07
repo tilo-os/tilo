@@ -86,6 +86,9 @@ impl BlockEditor {
                 &user,
                 &[(Rect::new(p0.x, p0.y, p1.x, p1.y), alpha)],
             );
+            // The characters are the mark: the activity rail leaves this
+            // invocation out rather than naming it a second time.
+            ctx.presence.note_shown(interaction.invocation);
             let name = ctx.presence.interaction_status_label(&interaction);
             ctx.presence.draw_peer_caret_labeled_in(
                 ctx.scene,

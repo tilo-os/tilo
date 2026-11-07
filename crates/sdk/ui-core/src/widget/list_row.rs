@@ -3244,6 +3244,23 @@ impl Widget for ListRow {
             child.action_target = Some(format!("{id}/action/{index}"));
             child.bounds = Some(rect.into());
         }
+        // The check box is a control of its own at `<row>/check`: a reader, a
+        // script and an agent reach it there, and an action on this item rests
+        // its mark on the box rather than on the row's middle.
+        if let Some(Leading::Checkbox { checked, .. }) = &self.leading
+            && let Some(rect) = self.leading_hit()
+        {
+            node.children.push(
+                AccessNode::new(Role::Checkbox)
+                    .with_action_target(format!("{id}/check"))
+                    .with_bounds(rect.into())
+                    .with_state(
+                        AccessState::new()
+                            .checked(*checked)
+                            .disabled(self.activation.state.disabled),
+                    ),
+            );
+        }
         Some(node)
     }
 
@@ -3258,6 +3275,9 @@ impl Widget for ListRow {
         let id = self.activation.id().to_owned();
         if target == id {
             return self.perform_action(action, &[], state, path);
+        }
+        if target.strip_prefix(id.as_str()) == Some("/check") {
+            return matches!(action, crate::a11y::Action::Activate) && self.toggle_checkbox();
         }
         let Some(index) = target
             .strip_prefix(id.as_str())

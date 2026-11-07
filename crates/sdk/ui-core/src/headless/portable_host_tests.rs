@@ -1089,7 +1089,7 @@ fn written_interaction(start: u64, end: u64) -> tilo_actions::SemanticInteractio
         phase: tilo_actions::InteractionPhase::Applying,
         action: tilo_actions::InteractionAction {
             id: "insert".into(),
-            label: "Insert".into(),
+            label: "Write".into(),
             app: None,
         },
         resource: tilo_actions::ActionResource {
@@ -1160,11 +1160,22 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
 
     let mut agent_frame = note_frame(text);
     let event = written_interaction(start, end);
+    // A second in: the pointer has travelled to the text it wrote.
+    let at = crate::time::now()
+        .checked_sub(crate::time::Duration::from_secs(1))
+        .expect("the clock is later than a second ago");
+    let mut label = String::new();
     agent_frame.update_presence(|presence| {
         presence
-            .apply_interaction_at(event.clone(), crate::time::now())
-            .expect("a well-formed interaction applies")
+            .names
+            .insert(crate::permissions::UserId("scribe".into()), "Ada".into());
+        let applied = presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies");
+        label = presence.interaction_status_label(&event);
+        applied
     });
+    assert_eq!(label, "Ada · writing");
     assert!(
         agent_frame.semantic_locus(&event).is_none(),
         "a text anchor is drawn in the document, not on a control"
@@ -1177,6 +1188,8 @@ fn an_agents_written_text_glows_on_exactly_those_characters() {
         std::fs::create_dir_all(&dir).unwrap();
         typed_frame.render_png(&dir.join("note-person-typing.png"));
         agent_frame.render_png(&dir.join("note-agent-caret-and-glow.png"));
+        agent_frame.set_theme(crate::theme::Theme::light());
+        agent_frame.render_png(&dir.join("note-agent-caret-and-glow-light.png"));
     }
     // The note's own half of the window: the presence rail on the right is
     // the same layer's, but it is not the text the agent wrote.

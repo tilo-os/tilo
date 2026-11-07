@@ -592,7 +592,11 @@ participant-numbered = { $name } ({ $number })
 participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
-interaction-action-status = { $action } ({ $phase }) - { $name }
+# What an actor is doing: its name, then the action in the present tense.
+interaction-working = working
+interaction-action-doing = { $name } · { $doing }
+# The same, with the phase said where only a person can settle it.
+interaction-action-status = { $name } · { $doing }, { $phase }
 interaction-inspecting = Inspecting
 interaction-applying = Applying
 interaction-waiting = Waiting

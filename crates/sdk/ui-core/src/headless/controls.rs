@@ -835,8 +835,16 @@ mod locus_tests {
     #[test]
     fn agent_item_marker_render_evidence() {
         let root = Column::new()
-            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
-            .push(Box::new(ListRow::new("b", "Second task").item("issue-b")));
+            .push(Box::new(
+                ListRow::new("a", "First task")
+                    .item("issue-a")
+                    .checkbox(false, |_| {}),
+            ))
+            .push(Box::new(
+                ListRow::new("b", "Second task")
+                    .item("issue-b")
+                    .checkbox(false, |_| {}),
+            ));
         let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
         frame.relayout();
         let out = crate::headless::agent_marker_shots();
@@ -845,14 +853,28 @@ mod locus_tests {
         let mut event = interaction("so.tilo.tasks/issues");
         event.actor.id = "scribe".into();
         event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.action.id = "check-off".into();
+        event.action.label = "Check off".into();
         event.anchor = tilo_actions::InteractionAnchor::ListItems {
             ids: vec!["issue-b".into()],
         };
+        // A second in: the pointer has travelled to the check box, as the
+        // capture shows it at rest on the control rather than mid-glide.
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_secs(1))
+            .expect("the clock is later than a second ago");
+        let mut label = String::new();
         frame.update_presence(|presence| {
             presence
-                .apply_interaction_at(event.clone(), crate::time::now())
-                .expect("a well-formed interaction applies")
+                .names
+                .insert(crate::permissions::UserId("scribe".into()), "Ada".into());
+            let applied = presence
+                .apply_interaction_at(event.clone(), at)
+                .expect("a well-formed interaction applies");
+            label = presence.interaction_status_label(&event);
+            applied
         });
+        assert_eq!(label, "Ada · checking off");
         assert!(frame.poll_frame().unwrap());
         frame.render_png(&out.join("tasks-agent-checks-second.png"));
         assert!(
@@ -860,6 +882,82 @@ mod locus_tests {
                 .unwrap()
                 .len()
                 > 0
+        );
+        frame.set_theme(crate::theme::Theme::light());
+        frame.render_png(&out.join("tasks-agent-checks-second-light.png"));
+    }
+
+    /// An agent acting on a task rests its pointer on the row's check box —
+    /// the control a person presses — and its whole mark stays inside the row.
+    #[test]
+    fn an_agents_marker_rests_on_the_control_the_row_offers() {
+        let root = Column::new()
+            .push(Box::new(
+                ListRow::new("a", "First task")
+                    .item("issue-a")
+                    .checkbox(false, |_| {}),
+            ))
+            .push(Box::new(
+                ListRow::new("b", "Second task")
+                    .item("issue-b")
+                    .checkbox(false, |_| {}),
+            ));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
+        frame.relayout();
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.actor.id = "scribe".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.action.id = "check-off".into();
+        event.action.label = "Check off".into();
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        let locus = frame.semantic_locus(&event).expect("the item's row");
+        let (tree, bindings) = frame.retained_action_geometry().expect("a laid out frame");
+        let check = tree
+            .iter()
+            .filter(|node| node.role == crate::a11y::Role::Checkbox)
+            .filter_map(|node| node.bounds)
+            .find(|bounds| bounds.y0 >= locus.y0 && bounds.y1 <= locus.y1)
+            .expect("the row offers a check box");
+        let at = crate::time::now()
+            .checked_sub(crate::time::Duration::from_secs(1))
+            .expect("the clock is later than a second ago");
+        let mut presence = crate::presence::PresenceCtx::empty();
+        presence
+            .apply_interaction_at(event.clone(), at)
+            .expect("a well-formed interaction applies");
+        let theme = crate::theme::Theme::dark();
+        let viewport = vello::kurbo::Rect::new(0.0, 0.0, 480.0, 240.0);
+        let mut scene = vello::Scene::new();
+        let mut text = crate::text_render::TextRenderer::new();
+        let markers = crate::action_locus::draw_action_presence(
+            &mut crate::paint::PaintCtx::new(
+                &mut scene,
+                vello::kurbo::Affine::IDENTITY,
+                &mut text,
+                &theme,
+            ),
+            &mut presence,
+            &tree,
+            &bindings,
+            viewport,
+            "native-primary",
+            crate::time::now(),
+        );
+        let marker = markers.first().expect("the agent's mark is painted");
+        let [x0, y0, x1, y1] = marker.marker;
+        assert!(
+            check.x0 <= x0 && x0 <= check.x1 && check.y0 <= y0 && y0 <= check.y1,
+            "the pointer tip rests on the check box: {x0},{y0} vs {check:?}"
+        );
+        assert!(
+            viewport.x0 <= x0 && x1 <= viewport.x1 && viewport.y0 <= y0 && y1 <= viewport.y1,
+            "the whole mark stays inside the window: {marker:?} vs {viewport:?}"
+        );
+        assert!(
+            locus.x0 <= x0 && x0 <= locus.x1 && locus.y0 <= y0 && y0 <= locus.y1,
+            "the tip is on the row it acts on: {x0},{y0} vs {locus:?}"
         );
     }
 
