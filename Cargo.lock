@@ -17414,9 +17414,11 @@ dependencies = [
  "tilo-paths",
  "tilo-resource",
  "tilo-service",
+ "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
  "tracing",
+ "tracing-subscriber",
  "uuid",
  "workspace-hack",
 ]

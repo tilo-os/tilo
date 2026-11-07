@@ -632,6 +632,18 @@ impl Apps {
                 continue;
             }
             tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
+            // What the app itself said before it ended, at warn beside the
+            // end: a launch that never opened is otherwise a warning with no
+            // reason in it, and the app's own account is the only one there is.
+            for said in &event.said.stderr {
+                tracing::warn!(
+                    target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+                    app = %event.app,
+                    stream = "stderr",
+                    "{}",
+                    tilo_app_launch::output::line(&event.app, "stderr", said)
+                );
+            }
             // Reopen asks for the app the way it was asked for this time: a
             // host app by its desktop id, a Tilo app by its package id.
             let asked = self.state.borrow_mut().running.remove(&event.id);
@@ -1544,6 +1556,7 @@ mod tests {
             app: "so.tilo.agent".to_owned(),
             title: "Agent".to_owned(),
             end: End::exited(1),
+            said: Default::default(),
         });
         apps.follow();
         assert!(
@@ -1587,6 +1600,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
+            said: Default::default(),
         });
         apps.follow();
         desktop.with_widgets(|widgets| {

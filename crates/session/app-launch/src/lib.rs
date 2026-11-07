@@ -43,6 +43,7 @@ pub mod env;
 pub mod instance;
 pub mod launch;
 mod memory;
+pub mod output;
 pub mod plan;
 pub mod routing;
 pub mod spawner;

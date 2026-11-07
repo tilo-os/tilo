@@ -96,13 +96,29 @@ impl ConnectorHost {
             .args(&planned.args)
             .env_clear()
             .envs(&planned.env)
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            // The connector's own account of a service that refused it: the
+            // session's log keeps it, the same as a window's app's.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let gate = launcher::registration_gate::install(&mut command)
             .map_err(|error| format!("{} has no launch gate: {error}", planned.app))?;
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
         drop(command);
+        // The connector is a launch of the app's own, and says what went wrong
+        // on its standard streams: the session's log keeps them.
+        let output = std::sync::Arc::new(tilo_app_launch::output::AppOutput::new(
+            planned.app.clone(),
+            None,
+        ));
+        if let Some(stdout) = child.stdout.take() {
+            output.relay_stdout(stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            output.relay_stderr(stderr);
+        }
         // The connector's door reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
         gate.release_with_window_door(door.as_fd())
