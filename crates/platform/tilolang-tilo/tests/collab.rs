@@ -7,6 +7,7 @@ use automerge::AutoCommit;
 use serde_json::json;
 use tilo_actions::{ActionRegistry, Did};
 use tilolang_tilo::action::register_actions;
+use tilolang_tilo::chunk::Chunks;
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -107,7 +108,8 @@ fn a_peer_without_the_wasm_module_replays_the_recorded_actions() {
         tilo_actions::replay(&mut peer, envelope, &registry).unwrap();
     }
     let root = tilolang_tilo::action::resource_ids(&peer, APP);
-    let record = tilolang_tilo::action::read_resource(&peer, APP, &root[0]).unwrap();
+    let record =
+        tilolang_tilo::action::read_resource(&Chunks::of(peer.clone()), APP, &root[0]).unwrap();
     assert_eq!(count(&record, &meta), 2);
     assert_eq!(peer.get_heads(), ada.doc.get_heads(), "the same changes");
 }

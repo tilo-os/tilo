@@ -18,7 +18,7 @@ use super::columns::{
 };
 use super::lists::Entry;
 use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
-use super::{CYCLES, IN, IndexError, KEY, LEFT, TYPE, Writer, removed_field};
+use super::{CHUNK, CYCLES, IN, IndexError, KEY, LEFT, TYPE, Writer, removed_field};
 use crate::chunk::{ChunkNo, Chunks};
 use crate::items::{Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
@@ -488,6 +488,9 @@ pub struct Derive<'d> {
     /// version that removed them: what a row of what left it is written from once the changes
     /// are derived, when the item is in no collection.
     left: Vec<(String, FieldKey, Stamp, Option<String>)>,
+    /// The chunk each item's map is stored in, by its path in the index: a collection derives
+    /// where the items of its runs are, and each item's fields are read there.
+    chunks_of: BTreeMap<String, ChunkNo>,
 }
 
 /// The collection an item is in, and its order key: where its columns' entries go.
@@ -725,6 +728,7 @@ impl<'d> Derive<'d> {
             bulk: None,
             moved: BTreeMap::new(),
             wholes: BTreeSet::new(),
+            chunks_of: BTreeMap::new(),
             notified: BTreeMap::new(),
             left: Vec::new(),
         }
@@ -733,6 +737,19 @@ impl<'d> Derive<'d> {
     /// The document the resource `id` is stored in, when the store holds its chunk.
     fn source(&self, id: &str) -> Option<&'d Doc> {
         self.chunks.doc(id)
+    }
+
+    /// The chunk the map at `path` is stored in: the item's own, or the record's.
+    fn chunk_of(&self, path: &str) -> ChunkNo {
+        self.chunks_of
+            .get(path)
+            .copied()
+            .unwrap_or_else(|| self.chunks.chunk(doc_of(path)))
+    }
+
+    /// The document the map at `path` is stored in, when the store holds its chunk.
+    fn source_of(&self, path: &str) -> Option<&'d Doc> {
+        self.chunks.mirror(self.chunk_of(path))
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them.
@@ -1058,7 +1075,8 @@ impl<'d> Derive<'d> {
         match (obj, schema) {
             (Some(obj), Some(schema)) => {
                 sink.doc(doc, Some(ty), chunk)?;
-                let items = Items::scan(source, &obj, schema);
+                // A collection's items are spread over the chunks of its runs.
+                let items = Items::across(self.chunks, app, doc, schema);
                 self.reads.listings = self.reads.listings.saturating_add(1);
                 self.reads.entries = self
                     .reads
@@ -1114,11 +1132,14 @@ impl<'d> Derive<'d> {
         obj: Option<&ObjId>,
         schema: &'static TypeSchema,
     ) -> Result<&'static TypeSchema, IndexError> {
-        let source = self.source(doc_of(path));
+        let source = self.source_of(path);
+        let chunk = self.chunk_of(path);
         let ty = obj
             .and_then(|obj| source.and_then(|source| type_at(source, obj)))
             .unwrap_or_else(|| schema.id.clone());
         sink.put_text(path, TYPE, &ty)?;
+        // Where a read or a write of the resource goes: the chunk that holds its map.
+        sink.put_text(path, CHUNK, &chunk.to_string())?;
         // An item of a collection of several types is its stored type's.
         let schema = lookup(&ty).unwrap_or(schema);
         for field in &schema.fields {
@@ -1348,6 +1369,7 @@ impl<'d> Derive<'d> {
             let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
                 continue;
             };
+            self.chunks_of.insert(child.clone(), found.chunk);
             let values = self.tree(
                 sink,
                 &child,
@@ -1394,12 +1416,12 @@ impl<'d> Derive<'d> {
     /// there.
     fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
         let doc = doc_of(path);
-        let source = self.source(doc)?;
         let (root, schema) = self.record_of(doc)?;
         let Some(item) = id_of(path) else {
             return Some((Some(root), schema));
         };
-        let found = crate::items::find(source, (doc, &root, schema), self.nested, item)?;
+        let (app, _) = self.docs.get(doc)?;
+        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, item)?;
         Some((found.obj, found.ty.as_deref().and_then(lookup)?))
     }
 
@@ -1507,10 +1529,10 @@ impl<'d> Derive<'d> {
         if sink.text(doc, CYCLES)?.is_some() {
             return self.whole(sink, app, doc);
         }
-        let Some((root, schema)) = self.record_of(doc) else {
+        let Some((_, schema)) = self.record_of(doc) else {
             return Ok(());
         };
-        let Some(source) = self.source(doc) else {
+        let Some((held_app, _)) = self.docs.get(doc).cloned() else {
             return Ok(());
         };
         let mut pending: Vec<(String, bool)> =
@@ -1526,7 +1548,14 @@ impl<'d> Derive<'d> {
                     continue;
                 }
                 self.reads.located = self.reads.located.saturating_add(1);
-                let found = crate::items::find(source, (doc, &root, schema), self.nested, &id);
+                let found = crate::items::find_across(
+                    self.chunks,
+                    &held_app,
+                    doc,
+                    schema,
+                    self.nested,
+                    &id,
+                );
                 let item_schema = found
                     .as_ref()
                     .and_then(|found| found.ty.as_deref())
@@ -1553,6 +1582,10 @@ impl<'d> Derive<'d> {
                     _ => None,
                 };
                 progressed = true;
+                // The chunk that holds its map now: where its fields are read and written.
+                let chunk = found
+                    .as_ref()
+                    .map_or_else(|| self.chunk_of(&path), |found| found.chunk);
                 let before = placed_in(sink, &path)?;
                 match (before, target) {
                     (None, None) => {}
@@ -1584,7 +1617,7 @@ impl<'d> Derive<'d> {
                         {
                             sink.replace(&member_list(&path, &field.id), Vec::new())?;
                         }
-                        self.arrive(sink, (&path, own), &place)?;
+                        self.arrive(sink, (&path, own), &place, chunk)?;
                         restore_removed(sink, &path, &held)?;
                         self.done.insert(path);
                     }
@@ -1597,7 +1630,7 @@ impl<'d> Derive<'d> {
                             continue;
                         };
                         self.leave(sink, &path, &before)?;
-                        self.arrive(sink, (&path, own), &place)?;
+                        self.arrive(sink, (&path, own), &place, chunk)?;
                     }
                 }
             }
@@ -1690,13 +1723,17 @@ impl<'d> Derive<'d> {
         sink: &mut impl Sink,
         (path, schema): (&str, &'static TypeSchema),
         place: &Place,
+        chunk: ChunkNo,
     ) -> Result<(), IndexError> {
         let Some(id) = id_of(path) else {
             return Ok(());
         };
         let holder = place_holder(doc_of(path), place);
+        self.chunks_of.insert(path.to_owned(), chunk);
         sink.put_text(path, KEY, &place.key)?;
         sink.put_text(path, IN, &in_of(&holder, &place.field))?;
+        // An item moved into a run of another chunk is read and written there now.
+        sink.put_text(path, CHUNK, &chunk.to_string())?;
         returned(sink, path)?;
         sink.insert(
             &member_list(&holder, &place.field),
@@ -1883,7 +1920,7 @@ impl<'d> Derive<'d> {
             // A collection is its items' placements, which are derived as they are written.
             return Ok(());
         }
-        let now = self.value(self.source(doc_of(path)), obj.as_ref(), spec);
+        let now = self.value(self.source_of(path), obj.as_ref(), spec);
         let before = sink.field(path, field)?;
         if before.as_ref() == Some(&now) {
             return Ok(());

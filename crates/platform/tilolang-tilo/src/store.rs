@@ -220,7 +220,9 @@ type Moves = (Vec<(FieldKey, String)>, Vec<(DocId, String, bool)>);
 /// What a mutation writes, planned against the store as it is: the edit, the item it makes,
 /// what it changes, and the items it places.
 struct Planned {
-    edit: DynEdit,
+    /// What it writes, in order: the run's manifest entry first, then the edit of the chunk it
+    /// places the item in.
+    edits: Vec<DynEdit>,
     item: Option<String>,
     touched: Vec<FieldKey>,
     items: Vec<(FieldKey, String)>,
@@ -235,6 +237,8 @@ struct ItemAt {
     key: String,
     nesting: Vec<(String, String)>,
     ty: TypeId,
+    /// The chunk its map is stored in.
+    chunk: ChunkNo,
 }
 
 /// A trigger's run, as the store records it in the change it commits: the resource it runs
@@ -1092,6 +1096,7 @@ impl TiloStore {
             obj: Some(root.clone()),
             schema,
             item: None,
+            chunk: inner.chunks.chunk(doc),
         };
         named.iter().any(|field| {
             if field.kind == crate::schema::MergeKind::Collection {
@@ -1140,7 +1145,7 @@ impl TiloStore {
             migration: migration.to_owned(),
         };
         let seed = inner.fresh("migrated:").into_bytes();
-        inner.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+        inner.write(&app, vec![edit.clone()], seed, Vec::new(), Moves::default())?;
         let action = DynAction {
             app: app.clone(),
             kind: format!("tl.{app}.{}", schema.name),
@@ -1195,14 +1200,14 @@ impl TiloStore {
             value: Scalar::Bool(true),
         };
         let Planned {
-            edit,
+            edits,
             touched,
             items,
             placed,
             ..
         } = inner.plan(&at, &mutation)?;
         let seed = inner.fresh("seen:").into_bytes();
-        inner.write(&app, edit.clone(), seed, touched, (items, placed))?;
+        inner.write(&app, edits.clone(), seed, touched, (items, placed))?;
         let action = DynAction {
             app: app.clone(),
             kind: format!("tl.{app}.{}", schema.name),
@@ -1222,7 +1227,7 @@ impl TiloStore {
                 invoker: person.to_owned(),
                 ..Authorship::default()
             },
-            edits: vec![edit],
+            edits,
         };
         inner.enqueue(action);
         Ok(())
@@ -1251,8 +1256,7 @@ impl TiloStore {
             .index
             .get(doc)
             .ok_or_else(|| not_found(format!("resource {doc}")))?;
-        let mirror = inner.held_doc(doc)?;
-        read_resource(mirror, app, doc).map_err(backend)
+        read_resource(&inner.chunks, app, doc).map_err(backend)
     }
 
     /// The store as it is now, to read on another thread: one for every reader until the
@@ -1364,9 +1368,10 @@ impl TiloStore {
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.held_doc(&at.doc)?;
-        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested)?;
+        let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
+        let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         match located.obj {
-            Some(obj) => <DynRecord as tilo_resource::Fields>::read_fields(mirror, &obj),
+            Some(obj) => <DynRecord as tilo_resource::Fields>::read_fields(source, &obj),
             // An item stored as its order key alone: every field reads as its default.
             None => DynRecord::empty(located.schema),
         }
@@ -1399,7 +1404,9 @@ impl TiloStore {
             return view.first_text(&at.id_string(), schema).ok().flatten();
         }
         let mirror = inner.chunks.doc(&at.doc)?;
-        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested).ok()?;
+        let located =
+            locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested).ok()?;
+        let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         let (items, resolved) = inner.resolved(at).ok()?;
         let record = crate::reads::RecordItems {
             doc: &at.doc,
@@ -1407,7 +1414,7 @@ impl TiloStore {
             resolved: &resolved,
         };
         crate::reads::first_text(
-            mirror,
+            source,
             &located.obj?,
             located.schema,
             (&at.id_string(), &record),
@@ -1482,7 +1489,7 @@ impl TiloStore {
             .insert(id.to_owned(), (record.app.clone(), record.ty.clone()));
         let written = inner.write(
             &record.app,
-            edit.clone(),
+            vec![edit.clone()],
             id.as_bytes().to_vec(),
             touched,
             (Vec::new(), Vec::new()),
@@ -1545,7 +1552,7 @@ impl TiloStore {
             .insert(id.to_owned(), (record.app.clone(), record.ty.clone()));
         let written = inner.write(
             &record.app,
-            edit.clone(),
+            vec![edit.clone()],
             id.as_bytes().to_vec(),
             touched.clone(),
             (Vec::new(), Vec::new()),
@@ -1878,7 +1885,7 @@ impl Inner {
         state.app = Some(app.clone());
         state.kind = Some(format!("tl.{app}.{}", schema.name));
         let seed = format!("{}:{}", txn.0, self.counter).into_bytes();
-        self.write(&app, edit.clone(), seed, Vec::new(), Moves::default())?;
+        self.write(&app, vec![edit.clone()], seed, Vec::new(), Moves::default())?;
         state.edits.push(edit);
         Ok(true)
     }
@@ -1889,42 +1896,25 @@ impl Inner {
     fn write(
         &mut self,
         app: &str,
-        edit: DynEdit,
+        edits: Vec<DynEdit>,
         seed: Vec<u8>,
         touched: Vec<FieldKey>,
         (items, placed): Moves,
     ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
-        let derived = unsaved::writes_derived(self, edit.resource(), &touched, &items);
-        // The chunk the record's manifest places the edit's resource in: one write reaches one
-        // document.
-        let id = edit.resource().to_owned();
-        let chunk = self.chunks.chunk(&id);
-        let applied = {
-            let mirror = self
-                .chunks
-                .doc_mut(&id)
-                .ok_or_else(|| StoreError::Backend("the workspace record is not loaded".into()))?;
-            apply_edits(mirror, app, std::slice::from_ref(&edit), &seed)
-        };
-        let mut write = LocalWrite {
-            app: app.to_owned(),
-            chunk,
-            edit,
-            seed,
-            touched,
-            items,
-            placed,
-            versions: None,
-            derived,
-        };
-        let before = (!write.items.is_empty()).then(|| Arc::clone(&self.overlay));
-        // Derived either way: a failed edit may have written part of itself.
-        self.derive_write(&mut write);
-        self.touch(&write);
+        let before = (!items.is_empty()).then(|| Arc::clone(&self.overlay));
+        for edit in edits {
+            self.write_one(
+                app,
+                edit,
+                seed.clone(),
+                touched.clone(),
+                (items.clone(), placed.clone()),
+            )?;
+        }
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
             let mut moved = ItemTouches::new();
-            for (key, id) in &write.items {
+            for (key, id) in &items {
                 moved.entry(key.clone()).or_default().insert(id.clone());
             }
             let old = View {
@@ -1945,9 +1935,61 @@ impl Inner {
                 }
             }
         }
+        Ok(listings)
+    }
+
+    /// One of the edits of a write, into the chunk it is addressed to: the run's manifest into
+    /// the record itself, and an item into the chunk the run it joins is in, so one write reaches
+    /// one document.
+    fn write_one(
+        &mut self,
+        app: &str,
+        edit: DynEdit,
+        seed: Vec<u8>,
+        touched: Vec<FieldKey>,
+        (items, placed): Moves,
+    ) -> Result<(), StoreError> {
+        let derived = unsaved::writes_derived(self, edit.resource(), &touched, &items);
+        let chunk = edit
+            .chunk()
+            .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
+        if chunk == chunk::FIRST && !self.chunks.has_record() {
+            return Err(StoreError::Backend(
+                "the workspace record is not loaded".into(),
+            ));
+        }
+        // A run's manifest is written before what it places reads it: the next edit of the same
+        // action sees the run the last one recorded.
+        let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
+        let applied = apply_edits(
+            self.chunks.open(chunk),
+            app,
+            std::slice::from_ref(&edit),
+            &seed,
+        );
+        if manifest {
+            self.chunks.reread_placement();
+        }
+        let mut write = LocalWrite {
+            app: app.to_owned(),
+            chunk,
+            edit,
+            seed,
+            touched,
+            items,
+            placed,
+            versions: None,
+            derived,
+        };
+        // Derived either way: a failed edit may have written part of itself. What the manifest
+        // change places is derived with the edit that places it.
+        if !manifest {
+            self.derive_write(&mut write);
+        }
+        self.touch(&write);
         applied.map_err(|error| invalid(error.to_string()))?;
         self.local.push(write);
-        Ok(listings)
+        Ok(())
     }
 
     /// Drop the open transaction of the chunk `chunk`'s mirror, if it has one.
@@ -1989,7 +2031,8 @@ impl Inner {
         field: &str,
     ) -> Result<FieldValue, StoreError> {
         let mirror = self.held_doc(&at.doc)?;
-        let located = locate_ref(mirror, (app, ty), at, &self.nested)?;
+        let located = locate_ref(mirror, Some(&self.chunks), (app, ty), at, &self.nested)?;
+        let source = self.chunks.mirror(located.chunk).unwrap_or(mirror);
         let spec = located
             .schema
             .field(field)
@@ -2004,7 +2047,7 @@ impl Inner {
             listings: 0,
             entries: 0,
         });
-        read_field(mirror, &located, spec)
+        read_field(source, &located, spec)
     }
 
     /// Count what was read of the record.
@@ -2103,7 +2146,7 @@ impl Inner {
                 // The package's index is being built: its lists show nothing until it is,
                 // as the platform's loading state; the record says the resource is there.
                 let mirror = self.held_doc(&at.doc)?;
-                locate_ref(mirror, (&app, &ty), at, &self.nested)?;
+                locate_ref(mirror, Some(&self.chunks), (&app, &ty), at, &self.nested)?;
                 Listing::default()
             }
             None => Listing::default(),
@@ -2212,11 +2255,12 @@ impl Store for TiloStore {
                 .ok_or_else(|| not_found(format!("resource {}", at.id_string())));
         }
         let mirror = inner.held_doc(&at.doc)?;
-        let located = locate_ref(mirror, (&app, &ty), at, &inner.nested)?;
+        let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
+        let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         Ok(located
             .obj
             .as_ref()
-            .and_then(|obj| type_at(mirror, obj))
+            .and_then(|obj| type_at(source, obj))
             .unwrap_or_else(|| located.schema.id.clone()))
     }
 
@@ -2290,7 +2334,7 @@ impl Store for TiloStore {
         }
         let (app, ty) = inner.locate(at)?;
         let Planned {
-            edit: dyn_edit,
+            edits: dyn_edits,
             item,
             touched,
             items,
@@ -2299,7 +2343,7 @@ impl Store for TiloStore {
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));
-        let listings = inner.write(&app, dyn_edit.clone(), seed, touched, (items, placed))?;
+        let listings = inner.write(&app, dyn_edits.clone(), seed, touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
             .txns
@@ -2329,7 +2373,7 @@ impl Store for TiloStore {
         } else {
             state.saved = state.saved.saturating_add(1);
         }
-        state.edits.push(dyn_edit);
+        state.edits.extend(dyn_edits);
         for change in listings.into_values().flatten() {
             record_splices(&mut state.listings, &change.key, change.splices);
         }
@@ -2669,16 +2713,18 @@ impl Store for TiloStore {
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.held_doc(&at.doc)?;
+        // The change is the item's: it is in the chunk that holds the item's map.
+        let located = locate_ref(mirror, Some(&inner.chunks), (&app, &ty), at, &inner.nested)?;
+        let source = inner.chunks.mirror(located.chunk).unwrap_or(mirror);
         let hash: ChangeHash = change
             .parse()
             .map_err(|_| not_found(format!("change {change}")))?;
-        let committed = mirror.committed_document();
+        let committed = source.committed_document();
         let made = committed
             .get_change_by_hash(&hash)
             .ok_or_else(|| not_found(format!("change {change}")))?;
         let before = committed.fork_at(made.deps()).map_err(backend)?;
         let before = Doc::load(&before.save()).map_err(backend)?;
-        let located = locate_ref(&before, (&app, &ty), at, &inner.nested)?;
         let spec = located
             .schema
             .field(&field.id)

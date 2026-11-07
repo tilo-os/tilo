@@ -196,11 +196,17 @@ impl Placement {
 
     /// The chunk the newest item of the collection `field` of `holder` goes to, and whether that
     /// starts a new run: the collection's last run while it holds fewer than `limits.items`, else
-    /// the next chunk. A collection with no run yet is in chunk [`FIRST`], where its resource is.
+    /// the next chunk. A collection with no run yet is in `holder_chunk`, where its resource is.
     #[must_use]
-    pub fn for_new(&self, holder: &str, field: &str, limits: Limits) -> (ChunkNo, bool) {
+    pub fn for_new(
+        &self,
+        holder: &str,
+        field: &str,
+        holder_chunk: ChunkNo,
+        limits: Limits,
+    ) -> (ChunkNo, bool) {
         let Some((chunk, run)) = self.runs(holder, field).pop() else {
-            return (FIRST, false);
+            return (holder_chunk, false);
         };
         if run.len < limits.items {
             (chunk, false)
@@ -274,6 +280,28 @@ impl Chunks {
         } else {
             self.more.get_mut(&chunk).map(Arc::make_mut)
         }
+    }
+
+    /// The chunk `chunk`, to write into: made when the store was not sent it yet, as a write
+    /// into a run that starts there is made before that chunk arrives.
+    pub fn open(&mut self, chunk: ChunkNo) -> &mut Doc {
+        if chunk == FIRST {
+            Arc::make_mut(self.first.get_or_insert_with(|| Arc::new(Doc::new())))
+        } else {
+            Arc::make_mut(
+                self.more
+                    .entry(chunk)
+                    .or_insert_with(|| Arc::new(Doc::new())),
+            )
+        }
+    }
+
+    /// The set holding `doc` as the record, chunk [`FIRST`], and nothing above it.
+    #[must_use]
+    pub fn of(doc: Doc) -> Self {
+        let mut chunks = Self::default();
+        chunks.insert(FIRST, doc);
+        chunks
     }
 
     /// Hold `doc` as chunk `chunk`, in place of what was held of it.
@@ -514,7 +542,7 @@ mod tests {
         assert_eq!(placement.next(), 1);
         assert!(placement.runs("tracker", "issues").is_empty());
         assert_eq!(
-            placement.for_new("tracker", "issues", Limits::default()),
+            placement.for_new("tracker", "issues", FIRST, Limits::default()),
             (FIRST, false)
         );
     }
@@ -549,10 +577,13 @@ mod tests {
         assert_eq!(runs, vec![(FIRST, "a2"), (2, "a4"), (3, "a5")]);
         assert_eq!(placement.run_of("tracker", "issues", "a4"), Some(2));
         // The last run still has room.
-        assert_eq!(placement.for_new("tracker", "issues", limits), (3, false));
+        assert_eq!(
+            placement.for_new("tracker", "issues", FIRST, limits),
+            (3, false)
+        );
         run(&mut doc, "tracker", "issues", 3, "a6", 2).expect("write");
         assert_eq!(
-            Placement::read(&doc).for_new("tracker", "issues", limits),
+            Placement::read(&doc).for_new("tracker", "issues", FIRST, limits),
             (4, true)
         );
     }

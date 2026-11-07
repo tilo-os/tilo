@@ -12,7 +12,8 @@ use super::{
     DynEdit, DynRecord, Inner, ItemAt, Planned, backend, idx, invalid, lookup, not_found,
     sanitize_key,
 };
-use crate::items::Items;
+use crate::chunk::{ChunkNo, Limits};
+use crate::items::{Found, Items};
 use crate::store::{AppId, DocReads};
 
 impl Inner {
@@ -28,14 +29,14 @@ impl Inner {
             } => {
                 let entry = key.as_deref().map_or_else(|| self.fresh("o"), sanitize_key);
                 Ok(Planned {
-                    edit: DynEdit::OutboxPush {
+                    edits: vec![DynEdit::OutboxPush {
                         id: doc,
                         entry,
                         capability: capability.clone(),
                         payload: payload.clone(),
                         owner: self.device.clone(),
                         held_until: held_until.clone(),
-                    },
+                    }],
                     item: None,
                     touched: Vec::new(),
                     items: Vec::new(),
@@ -60,18 +61,30 @@ impl Inner {
                     place: Place {
                         parent: at.item.clone(),
                         field: field.clone(),
-                        key,
+                        key: key.clone(),
                     },
                     was: None,
                 };
                 let coll = FieldKey::new(at, field.clone());
-                Ok(Planned {
-                    edit: DynEdit::Insert {
+                // The item goes to the chunk of the collection's newest run, which the same
+                // action records in the record's manifest.
+                let (chunk, run) = self.run_for(at, field, &key)?;
+                let mut edits = Vec::new();
+                if let Some(run) = run {
+                    edits.push(run.in_chunk(crate::chunk::FIRST));
+                }
+                edits.push(DynEdit::routed_at(
+                    &self.chunks,
+                    DynEdit::Insert {
                         id: doc.clone(),
                         item: id.clone(),
                         record,
                         at: placement.encode(),
                     },
+                    chunk,
+                ));
+                Ok(Planned {
+                    edits,
                     item: Some(id.clone()),
                     touched: vec![coll.clone()],
                     items: vec![(coll, id.clone())],
@@ -82,11 +95,16 @@ impl Inner {
             Mutation::CollRemove { item, .. } => self.plan_remove(&doc, item),
             _ => {
                 let prefix = self.prefix_of(at)?;
+                let chunk = self.at_chunk(at)?;
                 Ok(Planned {
-                    edit: DynEdit::Edit {
-                        id: doc,
-                        edit: edit_of(&prefix, m)?,
-                    },
+                    edits: vec![DynEdit::routed_at(
+                        &self.chunks,
+                        DynEdit::Edit {
+                            id: doc,
+                            edit: edit_of(&prefix, m)?,
+                        },
+                        chunk,
+                    )],
                     item: None,
                     touched: vec![FieldKey::new(at, written_field(m))],
                     items: Vec::new(),
@@ -122,7 +140,7 @@ impl Inner {
             place: Place {
                 parent: at.item.clone(),
                 field: field.to_owned(),
-                key,
+                key: key.clone(),
             },
             was: Some(was),
         };
@@ -135,15 +153,51 @@ impl Inner {
         if to.resource != from.holder {
             holders.push(to.resource.clone());
         }
+        let (chunk, run) = self.run_for(at, field, &key)?;
+        let edits = if chunk == from.chunk {
+            vec![DynEdit::routed_at(
+                &self.chunks,
+                DynEdit::Place {
+                    id: at.doc.clone(),
+                    item: item.to_owned(),
+                    at: placement.encode(),
+                    nested: from.nesting,
+                    ty: from.ty,
+                    holders,
+                },
+                chunk,
+            )]
+        } else {
+            // The item's map is made in the chunk of the collection it joins, with what it
+            // holds, and the copy in the chunk it leaves goes: one action, one item.
+            let found = self.found_item(&at.doc, item)?;
+            let record = crate::items::item_json(&self.chunks, &found).map_err(backend)?;
+            let mut edits = Vec::new();
+            if let Some(run) = run {
+                edits.push(run.in_chunk(crate::chunk::FIRST));
+            }
+            edits.push(DynEdit::routed_at(
+                &self.chunks,
+                DynEdit::RemoveItem {
+                    id: at.doc.clone(),
+                    item: item.to_owned(),
+                },
+                from.chunk,
+            ));
+            edits.push(DynEdit::routed_at(
+                &self.chunks,
+                DynEdit::Insert {
+                    id: at.doc.clone(),
+                    item: item.to_owned(),
+                    record,
+                    at: placement.encode(),
+                },
+                chunk,
+            ));
+            edits
+        };
         Ok(Planned {
-            edit: DynEdit::Place {
-                id: at.doc.clone(),
-                item: item.to_owned(),
-                at: placement.encode(),
-                nested: from.nesting,
-                ty: from.ty,
-                holders,
-            },
+            edits,
             item: None,
             touched: vec![to.clone(), left.clone()],
             items: vec![(to, item.to_owned()), (left, item.to_owned())],
@@ -159,14 +213,18 @@ impl Inner {
             field: from.field.clone(),
         };
         Ok(Planned {
-            edit: DynEdit::Place {
-                id: doc.to_owned(),
-                item: item.to_owned(),
-                at: Placement::Removed.encode(),
-                nested: from.nesting,
-                ty: from.ty,
-                holders: vec![from.holder],
-            },
+            edits: vec![DynEdit::routed_at(
+                &self.chunks,
+                DynEdit::Place {
+                    id: doc.to_owned(),
+                    item: item.to_owned(),
+                    at: Placement::Removed.encode(),
+                    nested: from.nesting,
+                    ty: from.ty,
+                    holders: vec![from.holder],
+                },
+                from.chunk,
+            )],
             item: None,
             touched: vec![
                 left.clone(),
@@ -201,14 +259,7 @@ impl Inner {
         let Some(item) = &at.item else {
             return Ok(Vec::new());
         };
-        let (_, root, schema) = self.record_root(at)?;
-        let found = crate::items::find(
-            self.held_doc(&at.doc)?,
-            (&at.doc, &root, schema),
-            &self.nested,
-            item,
-        )
-        .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let found = self.found_item(&at.doc, item)?;
         if found.nesting.is_empty() {
             return Ok(vec![Segment::Item(Id::from_raw(item.clone()))]);
         }
@@ -227,14 +278,7 @@ impl Inner {
     /// Where the item `item` of the record `doc` is now, and how it is stored.
     fn item_at(&self, doc: &str, item: &str) -> Result<ItemAt, StoreError> {
         let at = ResourceRef::root(doc, String::new()).item(item, String::new());
-        let (_, root, schema) = self.record_root(&at)?;
-        let found = crate::items::find(
-            self.held_doc(doc)?,
-            (doc, &root, schema),
-            &self.nested,
-            item,
-        )
-        .ok_or_else(|| not_found(format!("item `{item}`")))?;
+        let found = self.found_item(doc, item)?;
         let (holder, field) = self
             .container(&at)?
             .map(|(holder, field)| (holder.id_string(), field))
@@ -246,6 +290,7 @@ impl Inner {
             key,
             nesting: found.nesting,
             ty: found.ty.unwrap_or_default(),
+            chunk: found.chunk,
         })
     }
 
@@ -272,8 +317,8 @@ impl Inner {
         &self,
         at: &ResourceRef,
     ) -> Result<(Items, tilolang_runtime::place::Resolved), StoreError> {
-        let (_, root, schema) = self.record_root(at)?;
-        let items = Items::scan(self.held_doc(&at.doc)?, &root, schema);
+        let (app, _, schema) = self.record_root(at)?;
+        let items = Items::across(&self.chunks, &app, &at.doc, schema);
         self.count(DocReads {
             located: 1,
             fields: 0,
@@ -375,6 +420,102 @@ impl Inner {
             ResourceRef::root(at.doc.clone(), ty)
         };
         Ok(Some((holder, place.field.clone())))
+    }
+}
+
+impl Inner {
+    /// The chunk the item `item` of the record `doc` is stored in, and its map there.
+    fn found_item(&self, doc: &str, item: &str) -> Result<Found, StoreError> {
+        let at = ResourceRef::root(doc, String::new()).item(item, String::new());
+        let (app, _, schema) = self.record_root(&at)?;
+        crate::items::find_across(&self.chunks, &app, doc, schema, &self.nested, item)
+            .ok_or_else(|| not_found(format!("item `{item}`")))
+    }
+
+    /// The chunk the resource at `at` is read and written in: of an item, the chunk its map is
+    /// stored in (from the index, or the item's own chunk when the index does not name it), else
+    /// the chunk the record's manifest places the resource in.
+    fn at_chunk(&self, at: &ResourceRef) -> Result<ChunkNo, StoreError> {
+        let (app, _) = self.locate(at)?;
+        let Some(item) = &at.item else {
+            return Ok(self.chunks.chunk(&at.doc));
+        };
+        if let Some(view) = self.view(&app)
+            && let Some(held) = view
+                .text(&crate::index::derive::item_path(&at.doc, item), idx::CHUNK)
+                .map_err(backend)?
+        {
+            let chunk = held
+                .parse::<ChunkNo>()
+                // ignored-failure: a row written before chunks names none; the record is asked where the item is
+                .ok();
+            if let Some(chunk) = chunk {
+                return Ok(chunk);
+            }
+        }
+        Ok(self.found_item(&at.doc, item)?.chunk)
+    }
+
+    /// How many items the collection `field` of `at` holds now.
+    fn list_count(&self, at: &ResourceRef, field: &str) -> Result<u64, StoreError> {
+        let (app, _) = self.locate(at)?;
+        if let Some(view) = self.view(&app) {
+            let list = view.list(&at.id_string(), field).map_err(backend)?;
+            return Ok(u64::try_from(list.len()).unwrap_or(u64::MAX));
+        }
+        let (_, resolved) = self.resolved(at)?;
+        let count = resolved
+            .children
+            .get(&(at.item.clone(), field.to_owned()))
+            .map_or(0, Vec::len);
+        Ok(u64::try_from(count).unwrap_or(u64::MAX))
+    }
+
+    /// Where the item placed at the order key `key` of the collection `field` of `at` goes: the
+    /// chunk of the collection's newest run, with the edit that records the run in the record's
+    /// manifest. A full run starts the next chunk, so an item's place never changes with size.
+    fn run_for(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        key: &str,
+    ) -> Result<(ChunkNo, Option<DynEdit>), StoreError> {
+        let doc = at.doc.clone();
+        let holder = at
+            .item
+            .as_ref()
+            .map_or_else(|| doc.clone(), |parent| format!("{doc}/{parent}"));
+        let placement = self.chunks.placement();
+        let runs = placement.runs(&holder, field);
+        let (chunk, starts) = placement.for_new(
+            &holder,
+            field,
+            self.chunks.chunk(&holder),
+            Limits::default(),
+        );
+        let (last, len) = match (starts, runs.last()) {
+            (true, _) => (key.to_owned(), 1),
+            (false, Some((held, run))) if *held == chunk => (
+                run.last.clone().max(key.to_owned()),
+                run.len.saturating_add(1),
+            ),
+            // A collection whose items were placed before its runs were recorded: the run it
+            // starts with holds what the collection holds.
+            (false, _) => (
+                key.to_owned(),
+                self.list_count(at, field)?.saturating_add(1),
+            ),
+        };
+        Ok((
+            chunk,
+            Some(DynEdit::RunChunk {
+                holder,
+                field: field.to_owned(),
+                chunk,
+                last,
+                len,
+            }),
+        ))
     }
 }
 

@@ -61,17 +61,24 @@ impl Inner {
         let Some(root) = crate::reads::resource_obj(mirror, app, doc) else {
             return false;
         };
-        // The record, and every item of it whose own type keeps a field as rich text.
-        let mut targets: Vec<(ResourceRef, automerge::ObjId, Vec<String>)> = Vec::new();
+        // The record, and every item of it whose own type keeps a field as rich text: each with
+        // the chunk its map is stored in.
+        let mut targets: Vec<(
+            ResourceRef,
+            crate::chunk::ChunkNo,
+            automerge::ObjId,
+            Vec<String>,
+        )> = Vec::new();
         let own = rich_fields(schema);
         if !own.is_empty() {
             targets.push((
                 ResourceRef::root(doc.to_owned(), schema.id.clone()),
+                self.chunks.chunk(doc),
                 root.clone(),
                 own,
             ));
         }
-        let items = Items::scan(mirror, &root, schema);
+        let items = Items::across(&self.chunks, app, doc, schema);
         for (id, found) in &items.found {
             let Some(obj) = found.obj.clone() else {
                 continue;
@@ -86,27 +93,29 @@ impl Inner {
             targets.push((
                 ResourceRef::root(doc.to_owned(), schema.id.clone())
                     .item(id, item_schema.id.clone()),
+                found.chunk,
                 obj,
                 rich,
             ));
         }
         // What each record and item of it holds as plain text, read before any of it is written.
-        let plans: Vec<(ResourceRef, Vec<(String, String)>)> = targets
+        let plans: Vec<(ResourceRef, crate::chunk::ChunkNo, Vec<(String, String)>)> = targets
             .into_iter()
-            .map(|(at, obj, fields)| {
+            .map(|(at, chunk, obj, fields)| {
+                let source = self.chunks.mirror(chunk).unwrap_or(mirror);
                 let plain = fields
                     .into_iter()
                     .filter_map(|field| {
-                        let plain = plain_text_at(Some(mirror), &obj, &field)?;
+                        let plain = plain_text_at(Some(source), &obj, &field)?;
                         Some((field, plain))
                     })
                     .collect();
-                (at, plain)
+                (at, chunk, plain)
             })
             .collect();
         let mut edits: Vec<DynEdit> = Vec::new();
         let mut args = serde_json::Map::new();
-        for (at, plain) in plans {
+        for (at, chunk, plain) in plans {
             let Ok(prefix) = self.prefix_of(&at) else {
                 continue;
             };
@@ -114,13 +123,23 @@ impl Inner {
                 let mut path = prefix.clone();
                 path.push(tilo_resource::Segment::Field(field.clone()));
                 let seed = format!("upgrade:{doc}:{field}").into_bytes();
-                let edit = DynEdit::Edit {
-                    id: doc.to_owned(),
-                    edit: tilo_resource::Edit::new(path, plain_text_edit(&plain)),
-                };
+                let edit = DynEdit::routed_at(
+                    &&self.chunks,
+                    DynEdit::Edit {
+                        id: doc.to_owned(),
+                        edit: tilo_resource::Edit::new(path, plain_text_edit(&plain)),
+                    },
+                    chunk,
+                );
                 let key = tilolang_runtime::store::FieldKey::new(&at, field.clone());
                 if self
-                    .write(app, edit.clone(), seed, vec![key], (Vec::new(), Vec::new()))
+                    .write(
+                        app,
+                        vec![edit.clone()],
+                        seed,
+                        vec![key],
+                        (Vec::new(), Vec::new()),
+                    )
                     .is_err()
                 {
                     continue;

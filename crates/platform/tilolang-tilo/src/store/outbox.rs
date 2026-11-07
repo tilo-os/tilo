@@ -24,7 +24,7 @@ impl TiloStore {
             .ok_or_else(|| not_found(format!("resource {}", entry.doc)))?;
         inner.write(
             &app,
-            edit.clone(),
+            vec![edit.clone()],
             seed,
             Vec::new(),
             (Vec::new(), Vec::new()),
