@@ -214,21 +214,6 @@ impl ClockEstimate {
             error_us: self.error_us(local_us),
         })
     }
-
-    #[must_use]
-    pub fn peer_to_local(&self, peer_us: u64) -> Option<ClockMapping> {
-        // peer = local + offset + skew * (local - reference), solved for local.
-        let peer_since = i64::try_from(peer_us)
-            .ok()?
-            .checked_sub(self.reference_local_us)?;
-        let since = (f64_of_i64(peer_since) - self.offset_at_reference_us) / (1.0 + self.skew);
-        let local = self.reference_local_us.checked_add(round_us(since)?)?;
-        let local = u64::try_from(local).ok()?;
-        Some(ClockMapping {
-            timestamp_us: local,
-            error_us: self.error_us(local),
-        })
-    }
 }
 
 /// A peer's clock model as the mapping a synchronized playout renders
@@ -726,12 +711,6 @@ impl FabricClockCore {
         }
     }
 
-    /// Drop probes and estimates for peers the fabric no longer knows.
-    pub fn retain_peers(&mut self, mut keep: impl FnMut(&DeviceId) -> bool) {
-        self.pending.retain(|peer, _| keep(peer));
-        self.clocks.retain(|peer, _| keep(peer));
-    }
-
     fn prune(&mut self, now: Instant) {
         self.pending.retain(|_, outstanding| {
             outstanding.retain(|probe| {
@@ -960,9 +939,7 @@ mod tests {
         let peer = estimate.local_to_peer(now).expect("peer");
         let truth = net.peer_clock(now as f64);
         assert!((peer.timestamp_us as f64 - truth).abs() < 500.0);
-        let back = estimate.peer_to_local(peer.timestamp_us).expect("local");
-        assert!(back.timestamp_us.abs_diff(now) <= 1);
-        assert!(back.error_us >= 1 && peer.error_us >= 1);
+        assert!(peer.error_us >= 1);
         let later = now + 30_000_000;
         assert!(estimate.error_us(later) > estimate.error_us(now));
     }

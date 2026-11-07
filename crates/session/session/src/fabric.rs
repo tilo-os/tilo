@@ -568,11 +568,11 @@ impl crate::Session {
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. }
-            | PersonalFabricAction::DeviceHealthProbe { .. }
-            | PersonalFabricAction::DeviceHealthReport { .. }
+            | PersonalFabricAction::RetiredDeviceHealthProbe
+            | PersonalFabricAction::RetiredDeviceHealthReport
+            | PersonalFabricAction::RetiredTethering
             | PersonalFabricAction::FabricClockProbe { .. }
             | PersonalFabricAction::FabricClockReport { .. }
-            | PersonalFabricAction::Tethering { .. }
             | PersonalFabricAction::WakeDevice { .. }
             | PersonalFabricAction::WakeReport { .. }
             | PersonalFabricAction::WakeProbe { .. }
