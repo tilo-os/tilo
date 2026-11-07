@@ -924,28 +924,34 @@ pub(crate) fn host(
     // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();
     let walking = switcher.clone();
-    host.with_window_pictures(Rc::new(move || {
-        let mut shown = pictures.pictures();
-        shown.extend(walking.pictures().into_iter().map(|picture| {
-            let (x, y, width, height) = (
-                picture.rect.x0,
-                picture.rect.y0,
-                picture.rect.width(),
-                picture.rect.height(),
-            );
-            tilo_compositor::WindowPicture {
-                window: picture.window,
-                rect: (x, y, width, height),
-                opacity: 1.0,
-                // A picture stays in its well: paging the cards never spills a
-                // window over the panel's edge.
-                clip: Some((x, y, width, height)),
-            }
-        }));
-        shown
-    }))
-    .covering_outputs()
-    .with_keyboard(keyboard)
+    let host = host
+        .with_window_pictures(Rc::new(move || {
+            let mut shown = pictures.pictures();
+            shown.extend(walking.pictures().into_iter().map(|picture| {
+                let (x, y, width, height) = (
+                    picture.rect.x0,
+                    picture.rect.y0,
+                    picture.rect.width(),
+                    picture.rect.height(),
+                );
+                tilo_compositor::WindowPicture {
+                    window: picture.window,
+                    rect: (x, y, width, height),
+                    opacity: 1.0,
+                    // A picture stays in its well: paging the cards never spills a
+                    // window over the panel's edge.
+                    clip: Some((x, y, width, height)),
+                }
+            }));
+            shown
+        }))
+        .covering_outputs()
+        .with_keyboard(keyboard);
+    // The stack takes a surface down — a press outside it, another one
+    // opening — and the widget drawing it has to take up a pass to close it:
+    // nothing else tells a host the chrome stands over.
+    overlays.wake_with(host.asking());
+    host
 }
 
 impl crate::Shared {

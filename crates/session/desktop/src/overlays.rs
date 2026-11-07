@@ -504,6 +504,11 @@ struct SlotState {
     /// Whether a press outside last closed it: it does not open again for
     /// that press, which is still being delivered.
     dismissed: bool,
+    /// Whether the stack took it down and the widget drawing it has yet to
+    /// follow: while it has not, the widget's own open state is the one being
+    /// left behind, not a new opening to put back up. The widget's
+    /// [`Overlays::close`] is how it follows.
+    awaiting_close: bool,
 }
 
 /// The displays surfaces are placed on: every output's rect, and the one the
@@ -612,6 +617,21 @@ impl Overlays {
         Self::default()
     }
 
+    /// Ask for the next pass of whatever draws what the stack holds, set by
+    /// the host that draws it: a surface the stack takes down is one the
+    /// widget showing it has to take up a pass to close, and nothing else
+    /// tells it the press went down.
+    pub fn wake_with(&self, wake: Rc<std::cell::Cell<bool>>) {
+        *self.0.borrow_mut().wake.borrow_mut() = Some(wake);
+    }
+
+    /// The stack changed under what draws it: let it take up a pass.
+    fn woke(&self) {
+        if let Some(wake) = self.0.borrow().wake.borrow().as_ref() {
+            wake.set(true);
+        }
+    }
+
     /// The displays surfaces are placed on: every output, and the one the
     /// person works on.
     pub fn set_displays(&self, outputs: &[Rect], focused: Option<Rect>) {
@@ -643,28 +663,45 @@ impl Overlays {
     /// opened, so the others go down with it. Their widgets follow the stack
     /// ([`Self::is_open`]), which is how the chrome learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
-        let mut stack = self.0.borrow_mut();
-        if slot.stands_beside() {
-            for other in Slot::ALL {
-                if other != slot
-                    && other.stands_beside()
-                    && let Some(state) = stack.slots.get_mut(&other)
-                {
-                    state.open = false;
+        {
+            let mut stack = self.0.borrow_mut();
+            if slot.stands_beside() {
+                for other in Slot::ALL {
+                    if other != slot
+                        && other.stands_beside()
+                        && let Some(state) = stack.slots.get_mut(&other)
+                        && state.open
+                    {
+                        state.open = false;
+                        state.awaiting_close = true;
+                    }
                 }
             }
+            let state = stack.slots.entry(slot).or_default();
+            state.open = true;
+            state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
+            state.dismissed = false;
+            state.awaiting_close = false;
         }
-        let state = stack.slots.entry(slot).or_default();
-        state.open = true;
-        state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
-        state.dismissed = false;
+        self.woke();
     }
 
-    /// Take `slot` down.
+    /// Take `slot` down, as the widget drawing it does once the stack has:
+    /// what the stack took down is settled by this, and a slot that is
+    /// already down moved nothing.
     pub fn close(&self, slot: Slot) {
-        if let Some(state) = self.0.borrow_mut().slots.get_mut(&slot) {
+        {
+            let mut stack = self.0.borrow_mut();
+            let Some(state) = stack.slots.get_mut(&slot) else {
+                return;
+            };
+            let followed = std::mem::take(&mut state.awaiting_close);
+            if !state.open && !followed {
+                return;
+            }
             state.open = false;
         }
+        self.woke();
     }
 
     /// Say where the widget drawing `slot` paints it, while it is up.
@@ -685,10 +722,14 @@ impl Overlays {
     /// A press outside `slot` closed it: it stays down for that press, which
     /// is still being delivered.
     pub fn dismiss(&self, slot: Slot) {
-        let mut stack = self.0.borrow_mut();
-        let state = stack.slots.entry(slot).or_default();
-        state.open = false;
-        state.dismissed = true;
+        {
+            let mut stack = self.0.borrow_mut();
+            let state = stack.slots.entry(slot).or_default();
+            state.open = false;
+            state.dismissed = true;
+            state.awaiting_close = true;
+        }
+        self.woke();
     }
 
     /// The button that press came from is up: the press is over. What it
@@ -720,6 +761,18 @@ impl Overlays {
             .slots
             .get(&slot)
             .is_some_and(|state| state.dismissed)
+    }
+
+    /// Whether `slot` was taken down by the stack and the widget drawing it
+    /// has yet to follow: its open state is the one being left behind, not a
+    /// new opening to put back up.
+    #[must_use]
+    pub fn awaiting_close(&self, slot: Slot) -> bool {
+        self.0
+            .borrow()
+            .slots
+            .get(&slot)
+            .is_some_and(|state| state.awaiting_close)
     }
 
     /// Whether `slot` is up.
@@ -804,6 +857,9 @@ struct Stack {
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
+    /// What draws the surfaces the stack holds, asked for its next pass
+    /// whenever the stack changes under it ([`Overlays::wake_with`]).
+    wake: std::cell::RefCell<Option<Rc<std::cell::Cell<bool>>>>,
 }
 
 impl Stack {
@@ -1083,6 +1139,39 @@ mod tests {
             None,
             "its view closes it, the session has no rect to judge"
         );
+    }
+
+    #[test]
+    fn a_change_in_the_stack_asks_what_draws_it_for_a_pass() {
+        let overlays = overlays();
+        let asked = Rc::new(std::cell::Cell::new(false));
+        overlays.wake_with(Rc::clone(&asked));
+        assert!(!asked.replace(false), "nothing asked yet");
+
+        overlays.open(Slot::WorkspaceMenu, None);
+        assert!(asked.replace(false), "the menu came up");
+        overlays.dismiss(Slot::WorkspaceMenu);
+        assert!(
+            asked.replace(false),
+            "a press outside took it down: the widget has to close it"
+        );
+        // The widget closing it follows the stack, which hears that: what the
+        // widget shows next is a surface of its own again, not the state the
+        // stack took down.
+        overlays.close(Slot::WorkspaceMenu);
+        assert!(
+            !overlays.awaiting_close(Slot::WorkspaceMenu),
+            "the widget followed the stack"
+        );
+        assert!(asked.replace(false), "the widget followed it");
+        assert!(
+            !asked.replace(false),
+            "and nothing is left to draw after that"
+        );
+        overlays.open(Slot::QuickSettings, None);
+        assert!(asked.replace(false), "another surface came up");
+        overlays.close(Slot::QuickSettings);
+        assert!(asked.replace(false), "and went down");
     }
 
     #[test]
