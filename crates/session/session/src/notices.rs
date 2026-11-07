@@ -626,12 +626,16 @@ pub(crate) fn update_state_notice() -> Notice {
 /// The notice that a collaborator's device speaks another peer protocol
 /// version, so the two cannot work together until one of them updates: this
 /// device fetches the newest system when theirs is the newer one, and
-/// otherwise theirs is the one to update. Raised once per device and version
-/// by the clock that finishes the update ([`crate::update_finish`]).
-pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch) -> Notice {
-    let device = mismatch.device.as_str();
-    let (title, body) = if mismatch.theirs_is_newer() {
-        (
+/// otherwise theirs is the one to update. `device` is the person's name for
+/// it, when the fabric holds the endpoint it was heard at. Raised once per
+/// device and version by the clock that finishes the update
+/// ([`crate::update_finish`]).
+pub(crate) fn version_mismatch_notice(
+    mismatch: &crate::network::VersionMismatch,
+    device: Option<&str>,
+) -> Notice {
+    let (title, body) = match (mismatch.theirs_is_newer(), device) {
+        (true, Some(device)) => (
             t_args(
                 "version-mismatch-updating-title",
                 &[("device", device.into())],
@@ -640,9 +644,8 @@ pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch
                 "version-mismatch-updating-body",
                 &[("device", device.into())],
             ),
-        )
-    } else {
-        (
+        ),
+        (false, Some(device)) => (
             t_args(
                 "version-mismatch-needs-update-title",
                 &[("device", device.into())],
@@ -651,7 +654,18 @@ pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch
                 "version-mismatch-needs-update-body",
                 &[("device", device.into())],
             ),
-        )
+        ),
+        // The device was never met on the person's fabric, so its endpoint is
+        // all this device knows of it: said plainly rather than as a hex
+        // string nobody reads.
+        (true, None) => (
+            t("version-mismatch-unknown-updating-title"),
+            t("version-mismatch-unknown-updating-body"),
+        ),
+        (false, None) => (
+            t("version-mismatch-unknown-needs-update-title"),
+            t("version-mismatch-unknown-needs-update-body"),
+        ),
     };
     Notice {
         app: t("system-update-app-name"),
@@ -1497,5 +1511,50 @@ mod tests {
             .invoke(&resource, "invoke", &arguments)
             .expect("the action is offered");
         assert_eq!(*tapped.lock().unwrap(), [(id, RESTART_ACTION.to_owned())]);
+    }
+
+    /// A collaborator's device at another protocol version reaches the person
+    /// as a calm notice naming the device and what to do about it; one this
+    /// device only knows by its endpoint is said plainly rather than spelled
+    /// out. It waits until it is read.
+    #[test]
+    fn a_device_on_another_version_is_named_and_told_what_to_do() {
+        let ours: u32 = 30;
+        let newer = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: ours.wrapping_add(1),
+            ours,
+        };
+        let notice = version_mismatch_notice(&newer, Some("Framework 16"));
+        assert!(notice.title.contains("Framework 16"), "{}", notice.title);
+        assert!(notice.body.contains("Framework 16"), "{}", notice.body);
+        assert!(notice.body.contains("newest system"), "{}", notice.body);
+        assert!(notice.machine_wide, "the whole machine's news");
+        assert!(notice.expires_after.is_none(), "it waits until it is read");
+
+        let older = crate::network::VersionMismatch {
+            theirs: ours.wrapping_sub(1),
+            ..newer.clone()
+        };
+        let notice = version_mismatch_notice(&older, Some("Framework 16"));
+        assert!(notice.title.contains("Framework 16"), "{}", notice.title);
+        assert!(
+            notice.body.contains("Update Tilo there"),
+            "the one behind is the one that updates: {}",
+            notice.body
+        );
+
+        for mismatch in [&newer, &older] {
+            let unknown = version_mismatch_notice(mismatch, None);
+            assert!(
+                unknown.title.to_lowercase().contains("another device"),
+                "a device the fabric cannot name is still named plainly: {}",
+                unknown.title
+            );
+            assert!(
+                !unknown.title.contains("zpeerexample") && !unknown.body.contains("zpeerexample"),
+                "its endpoint is not the person's language"
+            );
+        }
     }
 }

@@ -292,6 +292,10 @@ impl FabricLink for SessionFabric {
         self.runtime.lock_recover().local_identity()
     }
 
+    fn device_behind(&self, endpoint: iroh::EndpointId) -> Option<DeviceId> {
+        self.runtime.lock_recover().device_behind(endpoint)
+    }
+
     fn send_personal_fabric_action(
         &self,
         target: &DeviceId,

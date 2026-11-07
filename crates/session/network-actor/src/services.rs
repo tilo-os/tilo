@@ -25,9 +25,10 @@ pub trait Approvers: Send + Sync {
     fn stop(&mut self, host: EndpointId);
 }
 
-/// A peer or host on `endpoint` (named `device_label`, when known) speaks
-/// peer protocol version `theirs`.
-pub type PeerVersion = Arc<dyn Fn(String, String, u32) + Send + Sync>;
+/// A peer or host reached at `endpoint` speaks peer protocol version
+/// `theirs`: the transport knows no more of who they are, and the session
+/// names them from its own fabric.
+pub type PeerVersion = Arc<dyn Fn(String, u32) + Send + Sync>;
 
 /// Another of the person's devices asks for its unlock half at early boot.
 pub type DeviceUnlock = Arc<dyn Fn(Connection) + Send + Sync>;
@@ -55,9 +56,9 @@ pub fn install(services: Services) -> bool {
     SERVICES.set(services).is_ok()
 }
 
-pub fn peer_version(endpoint: String, device_label: String, theirs: u32) {
+pub fn peer_version(endpoint: String, theirs: u32) {
     if let Some(services) = SERVICES.get() {
-        (services.peer_version)(endpoint, device_label, theirs);
+        (services.peer_version)(endpoint, theirs);
     }
 }
 

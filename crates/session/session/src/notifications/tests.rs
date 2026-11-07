@@ -1315,3 +1315,33 @@ fn an_expired_projection_is_never_shown() {
         .remote_project(&laptop(), "Laptop", &stale);
     assert!(rig.desktop.log().active().is_empty());
 }
+
+/// A collaborator's device at another protocol version reaches the desk as an
+/// ordinary banner naming it: the person reads what to update, not an
+/// operator's log line.
+#[test]
+fn a_device_on_another_version_is_named_on_the_desk() {
+    let rig = rig();
+    let mismatch = crate::network::VersionMismatch {
+        endpoint: "zpeerexample".into(),
+        theirs: 91,
+        ours: 90,
+    };
+    rig.bridge
+        .borrow_mut()
+        .tell(crate::notices::version_mismatch_notice(
+            &mismatch,
+            Some("Framework 16"),
+        ));
+    rig.step();
+    let feed = rig.feed();
+    assert_eq!(feed.banners.len(), 1, "it is a banner over the desk");
+    let banner = &feed.banners[0].notification;
+    assert!(banner.title.contains("Framework 16"), "{}", banner.title);
+    assert!(banner.body.contains("newest system"), "{}", banner.body);
+    assert_eq!(
+        rig.desktop.log().active().len(),
+        1,
+        "and it waits in the centre"
+    );
+}

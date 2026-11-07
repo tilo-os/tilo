@@ -345,10 +345,14 @@ impl Session {
         let mut wanted = false;
         for mismatch in mismatched {
             wanted |= mismatch.theirs_is_newer();
+            let device = crate::network::device_at(self.shared.fabric.as_ref(), &mismatch.endpoint);
             self.shared
                 .notifications
                 .borrow()
-                .tell(crate::notices::version_mismatch_notice(&mismatch));
+                .tell(crate::notices::version_mismatch_notice(
+                    &mismatch,
+                    device.as_deref(),
+                ));
         }
         let now = Instant::now();
         let presence = Presence {
