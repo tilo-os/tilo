@@ -721,6 +721,200 @@ try {
   await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
   console.log('ok: hanging up ended the call for both');
   await dump(b.tab, '7-b-hung-up');
+  // The desk as a laptop drives it: the launcher's search opens every app the
+  // Lounge offers, two fingers sideways pan the strip over an app that does
+  // not scroll that way and scroll the app over one that does, a pinch is no
+  // pan, and the window menu, a right-click menu, Report a problem and the
+  // search chord are the desk's own. Nothing any of it does reaches the
+  // browser: no page scroll, zoom or history.
+  const nav = tab => tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.() ?? null)').then(JSON.parse);
+  const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
+  const namesOf = async tab => {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await sleep(300);
+    return (await snapshot(tab)).names;
+  };
+  const choose = async (tab, pattern) => {
+    const name = (await namesOf(tab)).find(candidate => pattern.test(candidate));
+    if (!name) return null;
+    return await press(tab, name) ? name : null;
+  };
+  const picture = async tab => (await tab.screenshot())?.toString('base64') ?? '';
+  const wheel = (tab, x, y, {deltaX = 0, deltaY = 0, modifiers = 0} = {}) =>
+    tab.send('Input.dispatchMouseEvent',
+      {type: 'mouseWheel', x, y, deltaX, deltaY, ...(modifiers ? {modifiers} : {})});
+  const sidewaysSwipe = async (tab, x, y, forward = true, during = null) => {
+    const steps = [6, 12, 18, 24, 18, 12, 6];
+    for (const [index, step] of steps.entries()) {
+      const deltaX = forward ? step : -step;
+      await wheel(tab, x, y, {deltaX});
+      // What the desk shows while the fingers are still on it, not only
+      // where the gesture left it.
+      if (during && index === 2) await during();
+      await sleep(20);
+    }
+    await sleep(500);
+  };
+  const rightClick = async (tab, x, y) => {
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
+    for (const type of ['mousePressed', 'mouseReleased']) {
+      await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'right', clickCount: 1});
+    }
+    await sleep(800);
+  };
+  const centreOf = async tab => {
+    const corner = JSON.parse(await canvasTopLeft(tab));
+    return {x: corner.x + Math.round(corner.width / 2), y: corner.y + Math.round(corner.height / 2), corner};
+  };
+  const history = await a.tab.evaluate('history.length');
+
+  // Every app the Lounge offers opens from the launcher's search.
+  const applications = (await nav(a.tab))?.applications ?? [];
+  if (!applications.length) failed('the Lounge offers no app');
+  const opened = [];
+  for (const application of applications) {
+    const rows = await search(a.tab, a.command, application.label.toLowerCase(), application.label);
+    await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
+      `the window of ${application.label}`, 120_000);
+    await sleep(400);
+    const shot = await a.tab.screenshot();
+    if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
+    opened.push(application.id);
+  }
+  report.applications = {offered: applications.map(application => application.id), opened};
+  console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search`);
+
+  // Two fingers sideways over Notes, which does not scroll that way: the
+  // strip pans by the gesture and the windows stay as they were.
+  const centre = await centreOf(a.tab);
+  await search(a.tab, a.command, 'notes', 'Notes');
+  await sleep(1500);
+  const windowsBefore = (await snapshot(a.tab)).windows;
+  const panBefore = await panOf(a.tab);
+  if (!panBefore) failed('the strip does not overflow, so nothing can pan');
+  // The way the strip still has room: a gesture at its end pans nothing.
+  const forward = panBefore.offset < panBefore.max / 2;
+  const frameBefore = await picture(a.tab);
+  await sidewaysSwipe(a.tab, centre.x, centre.y, forward, async () => {
+    const midScroll = await a.tab.screenshot();
+    if (midScroll) writeFileSync(`${out}/strip-mid-scroll.png`, midScroll);
+  });
+  const panAfter = await panOf(a.tab);
+  const moved = panAfter.offset - panBefore.offset;
+  report.sideways = {forward, before: panBefore, after: panAfter};
+  if (Math.abs(moved) < 1) {
+    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
+  }
+  if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
+  if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
+  console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
+
+  // The same gesture over Sheets, whose grid scrolls sideways itself: the app
+  // takes it and the strip stays where it was.
+  await search(a.tab, a.command, 'sheets', 'Sheets');
+  await sleep(2000);
+  const keptPan = await panOf(a.tab);
+  const sheetBefore = await picture(a.tab);
+  await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
+  const sheetPan = await panOf(a.tab);
+  report.sheets = {before: keptPan, after: sheetPan};
+  if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
+    failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`);
+  }
+  if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers');
+  console.log('ok: the same gesture scrolls Sheets and leaves the strip');
+
+  // A pinch, which a browser sends as Ctrl+wheel, is the window's zoom and
+  // never a pan, with or without a sideways part.
+  const beforePinch = await panOf(a.tab);
+  for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
+  await sleep(400);
+  for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
+  await sleep(500);
+  const afterPinch = await panOf(a.tab);
+  report.pinch = {before: beforePinch, after: afterPinch};
+  if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
+    failed(`a pinch moved the strip: ${JSON.stringify(report.pinch)}`);
+  }
+  console.log('ok: a pinch zooms and never pans the strip');
+
+  // The window menu, from a secondary click in the window's own bar: what the
+  // desktop can do to that window, and choosing a row does it.
+  const barRow = JSON.parse(await find(a.tab, 'Maximize')) ?? JSON.parse(await find(a.tab, 'Close'));
+  const bar = {x: centre.corner.x + 400, y: centre.corner.y + 40};
+  if (barRow) {
+    const [x0, y0, x1, y1] = Array.isArray(barRow.bounds)
+      ? barRow.bounds
+      : [barRow.bounds.x0 ?? barRow.bounds.x, barRow.bounds.y0 ?? barRow.bounds.y,
+         barRow.bounds.x1 ?? barRow.bounds.x + barRow.bounds.width,
+         barRow.bounds.y1 ?? barRow.bounds.y + barRow.bounds.height];
+    bar.x = centre.corner.x + (x0 + x1) / 2;
+    bar.y = centre.corner.y + (y0 + y1) / 2;
+  }
+  const wasMaximized = (await nav(a.tab))?.maximized;
+  await rightClick(a.tab, bar.x, bar.y);
+  const menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
+  if (!menuRow) failed('a secondary click in the window bar opens no window menu');
+  await sleep(600);
+  const nowMaximized = (await nav(a.tab))?.maximized;
+  if (nowMaximized === wasMaximized) failed(`the window menu's row changed nothing: ${JSON.stringify({menuRow, wasMaximized})}`);
+  report.windowMenu = {row: menuRow, wasMaximized, nowMaximized};
+  console.log(`ok: the window menu opens from the window bar (${menuRow})`);
+
+  // A right-click in the chat's composer is the text's menu.
+  await search(a.tab, a.command, 'chat', 'Chat');
+  await sleep(1200);
+  const composer = JSON.parse(await find(a.tab, 'Message composer'));
+  if (!composer) failed('the chat has no composer to right-click');
+  const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
+    ? composer.bounds
+    : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
+       composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
+       composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
+  await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
+  const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/) ?? null;
+  if (!textRow) failed('a right-click in a text field offers no text menu');
+  report.contextMenu = textRow;
+  console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
+  await key(a.tab, 'Escape');
+
+  // Report a problem: the bar's own avatar, then the card's row.
+  await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+  const reportRow = await choose(a.tab, /^Report a problem/);
+  if (!reportRow) failed('the profile card offers no Report a problem');
+  // Picking what to report takes every event: nothing under the pointer
+  // reacts to it, and the strip the desk shows stays where it was.
+  await sleep(600);
+  const pickingPan = await panOf(a.tab);
+  await sidewaysSwipe(a.tab, centre.x, centre.y, true);
+  if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
+    failed('a sideways wheel panned the strip under the report picker');
+  }
+  report.reportProblem = reportRow;
+  console.log(`ok: Report a problem opens its picker (${reportRow})`);
+  await key(a.tab, 'Escape');
+
+  // The launcher's chord opens the search, and Escape closes it opening
+  // nothing: the keys a browser leaves to the page.
+  await click(a.tab, 640, 700);
+  await key(a.tab, 'k', a.command);
+  await until(a.tab, '!!globalThis.tiloMount?.state()?.searchOpen', 'the search chord', 30_000);
+  await key(a.tab, 'Escape');
+  await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
+  console.log('ok: the search chord opens the search and Escape closes it');
+
+  // None of it reached the browser.
+  const browser = {
+    scrollY: await a.tab.evaluate('window.scrollY'),
+    scrollX: await a.tab.evaluate('window.scrollX'),
+    scale: await a.tab.evaluate('globalThis.visualViewport?.scale ?? 1'),
+    history: await a.tab.evaluate('history.length'),
+  };
+  report.browser = {...browser, historyAtArrival: history};
+  if (browser.scrollY !== 0 || browser.scrollX !== 0) failed(`the page scrolled: ${JSON.stringify(browser)}`);
+  if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
+  if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
+  console.log('ok: no wheel, key or click reached the browser');
 
   // A person the workspace lets invite, from the page itself: the workspace
   // declares them one while their page stands open (the roles file the

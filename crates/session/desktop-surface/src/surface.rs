@@ -2571,7 +2571,12 @@ impl Widget for DesktopSurface {
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let now = ui::time::now();
             self.end_idle_swipe(now);
-            if let Some(travel) = self.strip_travel(*delta, ctx.scale_factor)
+            // A wheel held with the zoom modifier zooms the window under the
+            // pointer: a browser sends a trackpad's pinch as one, and a mouse
+            // wheel with the command modifier natively. It never moves the
+            // strip, however much sideways motion the pinch carries.
+            if !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
+                && let Some(travel) = self.strip_travel(*delta, ctx.scale_factor)
                 && self.route_strip_swipe(travel, now)
             {
                 *ctx.handled = true;
@@ -2627,7 +2632,9 @@ impl Widget for DesktopSurface {
             self.reveal = Some((strip, group));
             self.relayout = true;
         }
-        if let WindowEvent::MouseWheel { delta, .. } = event {
+        if let WindowEvent::MouseWheel { delta, .. } = event
+            && !ui::content_zoom::is_zoom_scroll(event, ctx.modifiers)
+        {
             // The window under the pointer and its app had the event; a
             // node above the strip that took it is no strip pan either.
             let travel = self.strip_travel(*delta, ctx.scale_factor);
