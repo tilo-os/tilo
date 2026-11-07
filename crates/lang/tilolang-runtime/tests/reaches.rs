@@ -119,6 +119,11 @@ view dock_run(a: Arrangement) {
 view dock_tile(item: DockItem) {
     text(item.title)
 }
+
+/// Changes the item it is given: an action's record parameter is a resource.
+action unpin(item: DockItem) {
+    item.pinned = false
+}
 "#;
 
     struct Desk {
@@ -340,5 +345,22 @@ view dock_tile(item: DockItem) {
             "the screen draws the frames: {patches:?}"
         );
         assert_eq!(texts(&view), ["the frames"]);
+    }
+
+    /// A record a view builds names no resource, so an action, whose changes must land in one,
+    /// refuses it rather than change a copy that is dropped.
+    #[test]
+    fn an_action_refuses_a_record_a_view_built() {
+        let desk = Desk::new();
+        let built = Value::Rec(tilolang_runtime::RecordInit {
+            ty: desk.app.compiled.ids.get("DockItem").unwrap().to_owned(),
+            fields: std::collections::BTreeMap::new(),
+        });
+        let unpin = desk.app.action("unpin");
+        let refused = desk.rt.invoke_action(&me(), (unpin.as_str(), vec![built]));
+        assert!(
+            refused.is_err(),
+            "an action took a record no resource holds: {refused:?}"
+        );
     }
 }
