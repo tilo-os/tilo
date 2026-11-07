@@ -939,3 +939,94 @@ fn field_mutation(
         }
     })
 }
+
+#[cfg(test)]
+mod orphan_tests {
+    use super::*;
+
+    /// A boundary whose `fragment` the tree does not hold writes nowhere.
+    ///
+    /// This is the state a swapped branch of a view leaves behind: the boundary made for a view
+    /// call is still a boundary, still marked to run by a change it read, and its cached trail of
+    /// child indices names a `fragment` that has left the tree. Here the trail is the empty one —
+    /// the trail that names the root — so a write through it puts one call's content where the
+    /// whole view's belongs, and the diff that follows drops every other child of the screen.
+    #[test]
+    fn a_boundary_the_tree_does_not_hold_writes_nowhere() {
+        let app = tilolang::compile_package(SOURCE, &tilolang::IdsLock::new(), &[])
+            .unwrap_or_else(|d| panic!("{d:#?}"));
+        let rt = crate::Runtime::new(crate::AmStore::new(), crate::SimpleAuthority::new())
+            .expect("a runtime");
+        rt.load_compiled(&app).expect("the app loads");
+        let board = rt.create("Board").expect("a board");
+        let mut view = rt
+            .open_view(
+                &crate::Principal::new("me"),
+                &view_id(&app, "board"),
+                vec![Value::resource(&board)],
+            )
+            .expect("the view opens");
+
+        let whole = view.tree().count();
+        assert!(whole >= 3, "the view draws its children: {whole}");
+
+        // A boundary a swapped-out branch left behind: a call whose `fragment` has left the
+        // tree, with the empty trail of a call never placed.
+        let target = rt
+            .core
+            .view_target(&view_id(&app, "chosen"))
+            .expect("the chosen view");
+        let id = view
+            .live
+            .plant_orphan("", target, vec![Value::resource(&board)], Vec::new());
+        view.poll_patches()
+            .expect("a boundary that left is not a failure");
+
+        assert_eq!(
+            view.tree().count(),
+            whole,
+            "the tree keeps every child it drew: {:?}",
+            view.live.child_keys()
+        );
+        assert!(
+            view.live.bound(id).is_none(),
+            "the boundary that left is forgotten"
+        );
+    }
+
+    fn view_id(app: &tilolang::Compiled, name: &str) -> String {
+        app.meta
+            .views
+            .iter()
+            .find(|v| v.name == name)
+            .unwrap_or_else(|| panic!("no view {name}"))
+            .id
+            .clone()
+    }
+
+    const SOURCE: &str = r#"app so.tilo.banner "Banner"
+
+type Board {
+    way: Text
+    said: Text
+}
+
+root Board
+
+default view board for Board
+
+view chosen(b: Board) {
+    section("Chosen") {
+        text("chosen says {b.said}")
+    }
+}
+
+view board(b: Board) {
+    stack {
+        text("a banner")
+        chosen(b)
+        text("a footer")
+    }
+}
+"#;
+}

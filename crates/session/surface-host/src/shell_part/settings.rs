@@ -71,6 +71,16 @@ impl ShellPart {
         Ok(())
     }
 
+    /// Apply everything the runtime committed since the part last took it — a test's own
+    /// invocations, which no setting ran — to the record this part's views read, as a press in
+    /// the shell's views has the part apply what it committed.
+    #[cfg(test)]
+    pub fn apply_committed_for_test(&mut self) {
+        if let Some(host) = self.instance.host() {
+            self.apply_committed(&host, 0);
+        }
+    }
+
     /// Apply what the runtime committed from `first` on to the record this part's views read,
     /// and bring the instance up to date with it.
     fn apply_committed(&mut self, host: &tilolang_tilo::host::Host, first: u64) {

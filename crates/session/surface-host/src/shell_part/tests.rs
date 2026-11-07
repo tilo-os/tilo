@@ -287,8 +287,8 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
     );
     assert_eq!(
         opening.map(|ask| ask.arguments.get("surface").cloned()),
-        Some(Some("quick-settings".to_owned())),
-        "the bell opens the quick settings"
+        Some(Some("centre".to_owned())),
+        "the bell opens the notification centre"
     );
 }
 
@@ -500,9 +500,9 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
     assert!(!link.has_asks());
 }
 
-/// A press on an app the person pinned to the dock calls the app's own `open`
-/// (`session.open(app)`): the session's door gets it on the app's resource, as the session
-/// publishes it.
+/// A press on an app the person pinned to the dock asks the session to open that app
+/// (`session.open_app(app)`), named by its app id: the session's door gets it on the desk's
+/// chrome, and the app's place on the desk comes to the front.
 #[test]
 fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     let _settled = ui::motion::testing::settled();
@@ -542,7 +542,9 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
             ),
         )
         .expect("Sheets is pinned");
-    // The next reading of the desk's draws the dock again, over the record as it is now.
+    // The runtime committed the pin: the part applies it to the record its views read, as a
+    // press in the shell's settings does, and the next turn draws the dock over it.
+    part.apply_committed_for_test();
     link.publish(DeskReading {
         clock: "4:29 PM".to_owned(),
         ..reading()
@@ -560,9 +562,9 @@ fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
     assert_eq!(
         asked,
         vec![Ask {
-            resource: "app.so.tilo.sheets".to_owned(),
-            action: "open".to_owned(),
-            arguments: BTreeMap::new(),
+            resource: "desktop:chrome".to_owned(),
+            action: "open-app".to_owned(),
+            arguments: BTreeMap::from([("app".to_owned(), "so.tilo.sheets".to_owned())]),
             from: None,
         }],
         "{:?}",
@@ -1360,5 +1362,68 @@ fn a_part_on_a_scaled_output_paints_at_that_scale() {
         wide_width,
         plain_width * 2,
         "a 2 display's part paints the pixels it shows, not half of them: {plain_width} then {wide_width}"
+    );
+}
+
+/// The desk's preset reaches the screen: a change of the shell's own record made from outside
+/// the shell's views — `apply(windows_desktop)`, as the settings page's card and the REPL run it —
+/// runs the boundaries that read it and patches the window, so the desk the person sees is the
+/// one the record names.
+///
+/// The shape that failed it: a shell part over a desk with one local window, its arrangement
+/// published, then the settings' apply. The record changed and the view's own `is_stale` said so,
+/// but nothing it ran changed a tree, and the screen stayed on the strips (`stale=true`,
+/// `patches=0`) — the record change never marked the boundary that read it.
+#[test]
+fn the_desks_preset_reaches_the_screen() {
+    let mut desk = reading();
+    desk.windows = vec![WindowReading {
+        key: "11".to_owned(),
+        title: "Release planning".to_owned(),
+        origin_app: "Notes".to_owned(),
+        app_key: "so.tilo.notes".to_owned(),
+        icon: "notebook".to_owned(),
+        strip: "Main".to_owned(),
+        workspace: "Desk".to_owned(),
+        recency: 1,
+        focused: true,
+        local: true,
+        ..WindowReading::default()
+    }];
+    let (mut part, link) = super::tests_support::part_as(desk, None);
+    link.publish_arrangement(one_window_arrangement());
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        labels.iter().any(|l| l == "Showing Strips"),
+        "the desk shows the strips: {labels:?}"
+    );
+
+    part.run_setting("apply", vec![serde_json::json!("windows_desktop")])
+        .unwrap_or_else(|why| panic!("apply: {why}"));
+    for _ in 0..6 {
+        part.prepare_frame();
+    }
+
+    let labels = crate::Published::accessible_labels(&mut part);
+    assert!(
+        !labels.iter().any(|l| l.starts_with("Showing ")),
+        "the traditional desktop's bar carries the window's commands, not the preset switch: \
+         {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "Dock"),
+        "the desktop's dock rides its foot: {labels:?}"
+    );
+    let view = part
+        .instance
+        .view(tilo_render_protocol::patch::Lane::Root)
+        .unwrap();
+    let stats = view.borrow().stats();
+    assert!(
+        stats.renders > stats.boundaries as u64,
+        "the preset ran the boundaries that read the record: {stats:?}"
     );
 }

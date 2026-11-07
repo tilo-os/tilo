@@ -171,11 +171,19 @@ impl Core {
         want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
     }
 
-    fn check_param(&self, ty: &Ty, v: &Value) -> Result<(), String> {
+    fn check_param(&self, ty: &Ty, v: &Value, into_action: bool) -> Result<(), String> {
         let ok = match (ty, v) {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
+            // A record built in a view (`DockItem(...)`) is a value of its type where it is read:
+            // a view's or a function's parameter, as the shell's dock hands its running items to
+            // its tiles. It names no resource, so it never reaches an action: what an action
+            // changes in its record parameter must land in a resource, not in a copy that is
+            // dropped (`marshal` refuses it there).
+            (Ty::Record(key), Value::Rec(rec)) if !into_action => {
+                self.registry.borrow().type_for(key).as_deref() == Some(rec.ty.as_str())
+            }
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields, and so
             // is a filter, held as the `host.Filter` its catalogue entry is.
@@ -205,13 +213,17 @@ impl Core {
         }
     }
 
-    /// Turn arguments into wasm values in the current frame.
+    /// Turn arguments into wasm values in the current frame. An action's export (`a_<id>`, the
+    /// ABI's name for an action) takes resources for its record parameters, never a record a
+    /// view built.
     fn marshal(
         &self,
         pkg: &Package,
+        export: &str,
         params: &[ParamMeta],
         args: &[Value],
     ) -> Result<Vec<Wasm>, String> {
+        let into_action = export.starts_with("a_");
         if params.len() != args.len() {
             return Err(format!(
                 "expected {} arguments, got {}",
@@ -243,7 +255,7 @@ impl Core {
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
                     Repr::Handle => {
-                        self.check_param(&ty, v)
+                        self.check_param(&ty, v, into_action)
                             .map_err(|e| format!("argument `{}`: {e}", p.name))?;
                         self.frames.borrow_mut().alloc(v.clone()).map(Wasm::I32)
                     }
@@ -279,7 +291,7 @@ impl Core {
         result: Option<&str>,
     ) -> Result<Value, RuntimeError> {
         let wasm_args = self
-            .marshal(pkg, params, args)
+            .marshal(pkg, export, params, args)
             .map_err(RuntimeError::BadArgs)?;
         let host: std::rc::Rc<dyn Host> = self.rc().map_err(RuntimeError::Package)?;
         // What the call costs is charged to the unit that makes it, from here to its end: a

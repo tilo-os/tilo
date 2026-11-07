@@ -152,6 +152,40 @@ pub trait Service {
     fn follow(&mut self) -> Result<bool, String> {
         Ok(false)
     }
+
+    /// The outside origins this service keeps its records in step with
+    /// (`docs/architecture/apps.md` §1, §8): for each, the app whose package declares it and
+    /// the origin's name (`imap`, `youtube`). The session starts one connector process per app
+    /// and origin, in the sandbox the app's signed manifest declares for it, and hands the
+    /// service the connection back with [`Self::connect`].
+    fn connectors(&self) -> Vec<Connector> {
+        Vec::new()
+    }
+
+    /// Reach the connector of `origin`, at the far end of `connection`: what the service asks
+    /// the outside service, and what it answers, travel there. The session calls it once per
+    /// [`Connector`] the service names, when it has started the connector.
+    ///
+    /// # Errors
+    /// The connection cannot be used.
+    fn connect(&mut self, _origin: &str, _connection: std::os::fd::OwnedFd) -> Result<(), String> {
+        Ok(())
+    }
+
+    /// Have `wake` called whenever an origin this service keeps in step answers, so the
+    /// session's loop polls it and the answer lands in its records.
+    fn wake_origins(&mut self, _wake: Wake) {}
+}
+
+/// An outside origin a service keeps its records in step with: the app whose package declares
+/// it, and the origin's name.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Connector {
+    /// The app, by its package id (`so.tilo.lang.tube`): the launch whose manifest names the
+    /// origin, and whose sandbox the connector runs in.
+    pub app: String,
+    /// The origin's name, as the manifest and the app's capabilities name it (`youtube`).
+    pub origin: String,
 }
 
 /// A package the session runs itself, handed to [`Service::share`]: which it is, its compiled
@@ -244,6 +278,31 @@ pub struct Services {
 }
 
 impl Services {
+    /// Every outside origin the services keep their records in step with, by app and origin:
+    /// what the session starts connectors for.
+    #[must_use]
+    pub fn connectors(&self) -> Vec<Connector> {
+        let mut connectors: Vec<Connector> = Vec::new();
+        for service in &self.started {
+            for connector in service.connectors() {
+                if !connectors.contains(&connector) {
+                    connectors.push(connector);
+                }
+            }
+        }
+        connectors
+    }
+
+    /// Have `wake` called whenever an origin a service keeps in step has an answer, so the
+    /// session's loop polls the service and the answer lands in its records.
+    pub fn wake_origins(&mut self, wake: &Wake) {
+        for service in &mut self.started {
+            if !service.connectors().is_empty() {
+                service.wake_origins(std::sync::Arc::clone(wake));
+            }
+        }
+    }
+
     /// Host `service` too.
     pub fn add(&mut self, service: Box<dyn Service>) {
         self.started.push(service);
@@ -538,6 +597,25 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
+    }
+
+    fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
+        // The service that names `origin` takes it; a session with two is asked for the first.
+        let mut connection = Some(connection);
+        for service in &mut self.started {
+            if !service
+                .connectors()
+                .iter()
+                .any(|connector| connector.origin == origin)
+            {
+                continue;
+            }
+            let Some(given) = connection.take() else {
+                break;
+            };
+            service.connect(origin, given)?;
+        }
+        Ok(())
     }
 }
 

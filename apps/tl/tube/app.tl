@@ -695,11 +695,11 @@ view video_page(v: Video) {
             button(like(v)) as like
             button(watch_later(v)) as later
         }
-        // The player takes the room the page leaves it, so the picture is the largest thing on
-        // the page and the controls under it stay in view. It keeps a height of its own on a
-        // phone. Until the service answered with where the bytes play from, the poster and Play
-        // stand in the same box.
-        layers(fill, min: 11rem) {
+        // The player is the picture: 16:9, as wide as the page gives it, so the video's own
+        // shape is what the page shows and what follows it scrolls under the box. Until the
+        // service answered with where the bytes play from, the poster and Play stand in the
+        // same box.
+        layers(fill, aspect: 16.0 / 9.0) {
             if v.stream == "" {
                 if v.thumbnail != "" {
                     ui.Image(v.thumbnail, alt: v.title, fit: .cover, fill)

@@ -104,6 +104,7 @@ fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
         ],
         can_rename: true,
         can_add_strip: true,
+        can_delete: false,
     }
 }
 

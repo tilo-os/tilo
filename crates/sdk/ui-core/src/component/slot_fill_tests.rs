@@ -149,3 +149,23 @@ fn a_view_that_asks_for_nothing_hugs_its_content() {
         "a view that says nothing is as tall as its content: {height}"
     );
 }
+
+/// The same view saying `aspect: 16/9` and `fill` is 16:9 wide in the card's body: the fit
+/// reaches a described component's slot as a `stack`'s does, aspect included, and the ratio
+/// decides the height from the width the body gives it.
+#[test]
+fn a_body_slot_child_that_fills_at_an_aspect_keeps_its_ratio() {
+    let view = Box::new(Fitted::new(subject(), Fit::fill(1.0).aspect(16.0 / 9.0))) as Element;
+    let mut node = Node::new("card").holding("body", view);
+    let props = CardProps::from_source(&mut node).expect("the card reads its body");
+    let card = Card::from_props("card", props);
+    let harness = FrameHarness::for_root(crate::State::new(), card, (600, 800), Theme::light());
+    let rect = crate::widget::find_test_id(harness.root_widget(), SUBJECT)
+        .expect("the view in the body is laid out")
+        .get_rect();
+    let (width, height) = (rect.width(), rect.height());
+    assert!(
+        (width - height * 16.0 / 9.0).abs() < 1.0,
+        "the view in the card's body is {width}x{height}, not 16:9"
+    );
+}

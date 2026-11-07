@@ -715,6 +715,9 @@ d-utk4ewgf = Pin to the dock
 d-5yz5iwzs = Remove from the dock
     .doc = Takes an item off the dock.
 
+d-aitkuflo = Open item
+    .doc = What a press on a dock item does, by the app the item stands for: a window of that app on this desk comes to the front, so the desk says which window the person is in and the top bar's commands are its own; the window is the one the item was drawn for, so a press never opens a second copy.
+
 d-j4ax4otm = Seed notices
     .doc = The desk's notices a scenario starts from: what apps and an agent said today.
 
@@ -812,6 +815,8 @@ d-6a3axsap = Surface
 d-ojscef66 = Dock
 
 d-lwre5gd7 = Dock run
+
+d-fr6w4hgp = Dock running tiles
 
 d-lwt7iwsj = Dock tile
 

@@ -323,10 +323,7 @@ struct Shared {
     triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// What the session's own resources read of this device: whether the
-    /// screens are locked, the touchpad is on, the night light is on and how
-    /// far the magnifier zooms. The loop keeps it every pass, and the
-    /// controls' service publishes it.
+    /// What the session's own resources read of this device.
     controls: Rc<RefCell<controls::ControlsReading>>,
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
@@ -335,11 +332,9 @@ struct Shared {
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the desk read it.
     readings: status::Shared,
-    /// The system services, reached for their readings; their actions go
-    /// through the door like every other.
+    /// The system services, reached for their readings.
     services: Rc<RefCell<Services>>,
-    /// The services the session serves its apps and devices itself, kept for
-    /// as long as it runs (`mount::doors::TABLE` says which).
+    /// The services the session serves its apps itself.
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
@@ -374,9 +369,8 @@ struct Shared {
     handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
-    /// What plays, as the desk's music widget shows it: written from the
-    /// machine's reading every pass, the same one the bar and the lock screen
-    /// show.
+    wake_handle: tilo_service::Wake,
+    /// What plays, as the desk's music widget shows it.
     music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, the questions the session asks
     /// for apps and services, and the one deleting a workspace asks, by
@@ -727,6 +721,7 @@ pub struct Session {
     /// The controllers in the room, and how they drive the desktop; `None`
     /// when this session reads none.
     controllers: Option<controllers::Controllers>,
+    connectors: mount::connectors::ConnectorHost,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
@@ -1752,6 +1747,7 @@ impl Session {
             bluetooth: bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: mount::wake::Wake::new(&options.wake_seams),
+            wake_handle: options.wake.handle(),
             music,
             power,
             workspace_settings,
@@ -2019,9 +2015,11 @@ impl Session {
                 .take()
                 .map(controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
+            connectors: mount::connectors::ConnectorHost::new(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
+        mount::connectors::start_all(&mut session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

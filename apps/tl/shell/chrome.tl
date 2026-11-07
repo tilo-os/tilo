@@ -455,9 +455,26 @@ action move_item(s: Shell, item: DockItem, before: DockItem) (icon: .arrow_up_do
 }
 
 /// Puts a dock item at the place `at`, counted from the leading edge: what a drag that names
-/// a place gives.
+/// a place gives. An item the person's record does not hold yet — an app running on the dock
+/// that they never pinned, which the dock drew from the desk — is pinned where it lands, so
+/// moving an app they already run keeps it on the dock after it closes.
 action place_item(s: Shell, item: DockItem, at: Int) (icon: .arrow_up_down, label: "Move") {
-    s.dock_items.move(item, to: at)
+    if s.dock_items.any(i -> i.key == item.key) {
+        let held = s.dock_items.find(i -> i.key == item.key)
+        if let known = held { s.dock_items.move(known, to: at) }
+    } else {
+        let made = DockItem(
+            key: item.key,
+            title: item.title,
+            icon: item.icon,
+            pinned: true,
+            running: item.running,
+            badge: item.badge,
+            attention: item.attention,
+        )
+        s.dock_items.insert(made)
+        s.dock_items.move(made, to: at)
+    }
 }
 
 /// Pins a resource or an app to the dock, before `next` (or at the end when no neighbour is
