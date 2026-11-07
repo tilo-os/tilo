@@ -1101,9 +1101,11 @@ fn turns_until_rest(session: &mut Session) -> u32 {
 }
 
 /// What opening a window did to the workspace: whether it wrote anything, how many times the
-/// store took the record, and the turns the window took to come to rest.
-fn opening(n: usize) -> (usize, u64, u32, usize) {
+/// store took a chunk of the record against the chunks it holds, and the turns the window took
+/// to come to rest.
+fn opening(n: usize) -> (usize, u64, u32, usize, u64) {
     let chunks = seeded_tasks(n);
+    let held = chunks.numbers().count() as u64;
     // What the workspace holds before the window opens it: opening it must leave the record
     // with no more changes than the workspace already had, whether the window finds the root
     // it opens or makes it.
@@ -1126,7 +1128,7 @@ fn opening(n: usize) -> (usize, u64, u32, usize) {
     let stats = host.store().stats();
     let read = (stats.attaches + stats.incremental_syncs) + stats.full_syncs;
     let rows = session.titles().len();
-    (written, read, turns, rows)
+    (written, read, turns, rows, held)
 }
 
 /// The changes the window's record holds: what the window wrote into the workspace.
@@ -1146,17 +1148,17 @@ fn changes(session: &Session) -> usize {
 
 /// Opening a window of a workspace it has used before writes nothing: the root the window
 /// opens is the one the app made when it was first added, and a window that finds it reads it.
-/// The record is taken once, and the window comes to rest in as many turns whatever the
-/// workspace holds: a workspace ten times the size opens in the same turns, the same writes
-/// and the same one read.
+/// Each chunk of the record is taken once, and the window comes to rest in as many turns
+/// whatever the workspace holds: a workspace ten times the size opens in the same turns, the
+/// same writes, and one read of each chunk it holds.
 #[test]
 fn opening_a_window_writes_nothing() {
     let _motion = ui::motion::testing::settled();
-    let (small_writes, small_reads, small_turns, small_rows) = opening(1_000);
-    let (large_writes, large_reads, large_turns, large_rows) = opening(10_000);
+    let (small_writes, small_reads, small_turns, small_rows, small_chunks) = opening(1_000);
+    let (large_writes, large_reads, large_turns, large_rows, large_chunks) = opening(10_000);
     eprintln!(
-        "open: 1000 tasks wrote {small_writes} changes, read the record {small_reads} times, {small_turns} turns, {small_rows} rows; \
-         10000: {large_writes} changes, {large_reads} reads, {large_turns} turns, {large_rows} rows"
+        "open: 1000 tasks wrote {small_writes} changes, read the record's {small_chunks} chunks {small_reads} times, {small_turns} turns, {small_rows} rows; \
+         10000: {large_writes} changes, the {large_chunks} chunks {large_reads} times, {large_turns} turns, {large_rows} rows"
     );
     assert_eq!(
         small_writes, 0,
@@ -1165,8 +1167,8 @@ fn opening_a_window_writes_nothing() {
     assert_eq!(large_writes, 0, "opening a larger workspace writes nothing");
     assert_eq!(
         (small_reads, large_reads),
-        (1, 1),
-        "the store takes the record once, whatever it holds"
+        (small_chunks, large_chunks),
+        "the store takes each chunk of the record once, whatever it holds"
     );
     assert!(
         large_turns <= 32,
