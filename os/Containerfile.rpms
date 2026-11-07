@@ -32,7 +32,9 @@ RUN configure-fedora-mirrors
 
 # Repository tooling must never change the RPM database used for resolution.
 FROM configured-base AS metadata-tools
-RUN dnf install -y createrepo_c dnf5-plugins \
+# Fetches from the internet, so it runs in the build job's own network, as the
+# resolve stage does.
+RUN --network=host dnf install -y createrepo_c dnf5-plugins \
  && dnf clean packages
 
 # Fedora's virtio-win project currently publishes this RPM unsigned. Treating
