@@ -36,10 +36,6 @@ struct Cli {
     /// Explicit typed collaboration socket for headless diagnostics.
     /// Normal launched sessions inherit `TILO_SVC_COLLAB_FD` instead.
     endpoint: Option<PathBuf>,
-    /// Receive the runs of issues assigned to it, the agent's only mode; every
-    /// launcher passes it. A task uses only the agent's admitted, permission-
-    /// filtered action catalogue and cannot infer work from workspace traffic.
-    task_runs: bool,
     /// Decide by keyword only, without asking a model. The run is then
     /// reproducible and needs no network — and says so in its log.
     no_model: bool,
@@ -66,10 +62,6 @@ struct Cli {
     /// holds the endpoint and the credential; a launched agent cannot read
     /// Settings, so without this it plans by keyword only.
     provider: Option<String>,
-    /// The id of the task agent the desktop made this process for, whose
-    /// credentials (task key and task delegation) it left in the app
-    /// directory. The agent joins as that id and ends with its task.
-    task_identity: Option<String>,
 }
 
 /// What `tilo-agent --help` prints.
@@ -86,12 +78,10 @@ Options:
       --name <NAME>               The display name instructions address [default: Claude]
       --agent-id <ID>             Stable admitted agent id [default: the name]
       --endpoint <PATH>           Broker socket for headless diagnostics
-      --task-runs                 Receive the runs of assigned issues
       --no-model                  Decide by keyword only, without asking a model
       --model-timeout-ms <MS>     How long a model may take to choose
       --companion <APP>           An application started beside this agent (repeatable)
       --provider <JSON>           The model selection the desktop hands over
-      --task-identity <ID>        Join as the task agent the desktop made, ending with its task
   -h, --help                      Print this help
 ";
 
@@ -116,12 +106,10 @@ impl Cli {
             name: "Claude".to_owned(),
             agent_id: None,
             endpoint: None,
-            task_runs: false,
             no_model: false,
             model_timeout_ms: None,
             companions: Vec::new(),
             provider: None,
-            task_identity: None,
         };
         let mut args = args.into_iter();
         while let Some(arg) = args.next() {
@@ -140,10 +128,9 @@ impl Cli {
             };
             match option.as_str() {
                 "-h" | "--help" => return Err(CliExit::Help),
-                "--task-runs" => flag(&mut cli.task_runs)?,
                 "--no-model" => flag(&mut cli.no_model)?,
                 "--workspace" | "--record" | "--app" | "--name" | "--agent-id" | "--endpoint"
-                | "--model-timeout-ms" | "--companion" | "--provider" | "--task-identity" => {
+                | "--model-timeout-ms" | "--companion" | "--provider" => {
                     let value = match inline {
                         Some(value) => value,
                         None => args
@@ -167,7 +154,6 @@ impl Cli {
                             })?);
                         }
                         "--companion" => cli.companions.push(value),
-                        "--task-identity" => cli.task_identity = Some(value),
                         _ => cli.provider = Some(value),
                     }
                 }
@@ -243,30 +229,15 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| default_model_timeout_ms(managed, cli.provider.is_some()));
     if managed {
         anyhow::ensure!(
-            cli.task_runs && !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
-            "managed agent requires task mode and inherited services"
+            !cli.no_model && cli.endpoint.is_none() && cli.record.is_none(),
+            "a managed agent answers with a model, over the inherited services"
         );
         cli.app = "so.tilo.agent".into();
     }
     // What this run's invitation actually was: write on the app it was
     // asked to join, and nothing else. Widening this is a deployment
     // decision, not something a headless participant grants itself.
-    let agent_id = cli
-        .task_identity
-        .clone()
-        .or_else(|| cli.agent_id.clone())
-        .unwrap_or_else(|| cli.name.clone());
-    // A task agent joins with the task key and delegation its desktop left
-    // for it, never with the person's own identity.
-    let task_identity = cli
-        .task_identity
-        .as_deref()
-        .map(|id| {
-            tilo_agent::task_identity::credentials_dir()
-                .and_then(|dir| tilo_agent::task_identity::load(&dir, id, cli.workspace))
-        })
-        .transpose()?;
-    let task_agent = task_identity.is_some();
+    let agent_id = cli.agent_id.clone().unwrap_or_else(|| cli.name.clone());
     let permissions = {
         ui::permissions::PermissionContext::agent_granted_at(
             &agent_id,
@@ -288,8 +259,6 @@ fn main() -> anyhow::Result<()> {
         agent_id,
         provider,
         endpoint: cli.endpoint,
-        endpoint_identity: task_identity,
-        task_agent,
         app_id: cli.app,
         cluster: cli.workspace,
         record: cli.record,
@@ -300,7 +269,7 @@ fn main() -> anyhow::Result<()> {
         content: device_content(),
         companions: cli.companions,
     };
-    Session::connect(cfg)?.run_task_runs()
+    Session::connect(cfg)?.run()
 }
 
 /// The device content store the launcher handed this agent: where the
@@ -321,28 +290,6 @@ mod tests {
         Cli::parse_from(args.iter().map(|arg| (*arg).to_owned()))
     }
 
-    #[test]
-    fn a_task_agent_is_named_by_its_task_identity() {
-        let workspace = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-        let cli = parse(&[
-            "--workspace",
-            workspace,
-            "--task-runs",
-            "--task-identity",
-            "task-0a0b0c0d0e0f",
-        ])
-        .unwrap();
-        assert_eq!(cli.task_identity.as_deref(), Some("task-0a0b0c0d0e0f"));
-        assert_eq!(
-            parse(&["--workspace", workspace, "--task-identity"]),
-            Err(CliExit::Usage("--task-identity needs a value".into()))
-        );
-        assert_eq!(
-            parse(&["--workspace", workspace]).unwrap().task_identity,
-            None
-        );
-    }
-
     /// The launcher's own command line reads as before, with the defaults the
     /// flags had.
     #[test]
@@ -355,13 +302,11 @@ mod tests {
             "so.tilo.agent",
             "--name",
             "agent-1",
-            "--task-runs",
         ])
         .unwrap();
         assert_eq!(cli.workspace, workspace.parse::<uuid::Uuid>().unwrap());
         assert_eq!(cli.app, "so.tilo.agent");
         assert_eq!(cli.name, "agent-1");
-        assert!(cli.task_runs);
         assert!(!cli.no_model);
         assert_eq!(cli.agent_id, None);
         assert_eq!(cli.model_timeout_ms, None);
@@ -369,7 +314,6 @@ mod tests {
         let defaults = parse(&["--workspace", workspace]).unwrap();
         assert_eq!(defaults.app, "so.tilo.word-processor");
         assert_eq!(defaults.name, "Claude");
-        assert!(!defaults.task_runs);
     }
 
     /// Values after `=`, repeated companions and every option the flags took.
@@ -408,7 +352,6 @@ mod tests {
     #[test]
     fn a_wrong_command_line_is_a_usage_error() {
         let workspace = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
-        assert!(matches!(parse(&["--task-runs"]), Err(CliExit::Usage(_))));
         assert!(matches!(parse(&["--workspace"]), Err(CliExit::Usage(_))));
         assert!(matches!(
             parse(&["--workspace", "not-a-uuid"]),
@@ -420,10 +363,6 @@ mod tests {
         ));
         assert!(matches!(
             parse(&["--workspace", workspace, "--frobnicate"]),
-            Err(CliExit::Usage(_))
-        ));
-        assert!(matches!(
-            parse(&["--workspace", workspace, "--task-runs=yes"]),
             Err(CliExit::Usage(_))
         ));
         assert_eq!(parse(&["--help"]), Err(CliExit::Help));
