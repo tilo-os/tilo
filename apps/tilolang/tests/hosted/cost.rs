@@ -741,6 +741,11 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
     let ready_us = since(start, wall.elapsed());
     let wall_us = wall.elapsed().as_micros() as u64;
     assert!(session.builds() > 0, "the first open builds the index");
+    assert_eq!(
+        session.catch_ups(),
+        0,
+        "the first open builds over every chunk of the record: none is caught up after it"
+    );
     show_rows(&mut session);
     assert!(
         !session.titles().is_empty(),
@@ -946,6 +951,7 @@ fn kept_index(
     let earlier = tilolang_tilo::host::Host::open(
         tilolang_tilo::host::Opening {
             record: chunks.first(),
+            chunks: Some(chunks),
             index_dir: Some(tilolang_tilo::index::record_dir(
                 &indexes,
                 &route.cluster_id.to_string(),
