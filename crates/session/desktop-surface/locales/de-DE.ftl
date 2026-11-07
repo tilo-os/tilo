@@ -577,6 +577,10 @@ notification-reply = Antworten
 notification-center-dismiss = Verwerfen
 notification-center-hand-to = An { $agent } übergeben
 notification-center-hand-to-description = Übergibt diese Benachrichtigung als Aufgabe an den Agenten des Arbeitsbereichs.
+notification-center-group-count = { $count ->
+        [one] { $count } Benachrichtigung
+       *[other] { $count } Benachrichtigungen
+    }
 notification-lock-count = { $count ->
     [one] 1 Benachrichtigung
    *[other] { $count } Benachrichtigungen

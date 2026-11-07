@@ -745,16 +745,10 @@ impl CenterLayout {
         )
     }
 
-    /// A row's icon buttons: dismiss in the trailing corner, centred on the
-    /// first line it takes the place of while shown (the source/time line,
-    /// or the title of a row without one), and hand-to-agent one related
-    /// step inboard of it.
-    pub fn row_controls(
-        &self,
-        row: Rect,
-        shape: &RowShape,
-        with_agent: bool,
-    ) -> (Rect, Option<Rect>) {
+    /// A row's dismiss button, in the trailing corner, centred on the first
+    /// line it takes the place of (the source/time line, or the title of a
+    /// row without one).
+    pub fn row_controls(&self, row: Rect, shape: &RowShape) -> Rect {
         let size = self.actions.height.min(row.height());
         let line = if shape.has_source() {
             self.caption_lh
@@ -764,12 +758,7 @@ impl CenterLayout {
         let middle = row.y0 + qs::CONTROL_PAD + line / 2.0;
         let y0 = (middle - size / 2.0).max(row.y0);
         let x1 = row.x1 - qs::RELATED_GAP;
-        let dismiss = Rect::new(x1 - size, y0, x1, y0 + size);
-        let agent = with_agent.then(|| {
-            let x1 = dismiss.x0 - qs::RELATED_GAP;
-            Rect::new(x1 - size, y0, x1, y0 + size)
-        });
-        (dismiss, agent)
+        Rect::new(x1 - size, y0, x1, y0 + size)
     }
 
     /// The notification's own choices under a row's text, laid out as on
@@ -825,7 +814,6 @@ fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::wid
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowControl {
     Dismiss,
-    HandToAgent,
     Action(usize),
 }
 
@@ -1186,14 +1174,6 @@ impl NotificationCenter {
         self.select_row(host, layout, next);
     }
 
-    /// The agent the notification behind `row` may be handed to.
-    fn row_agent(host: &dyn NotificationHost, row: &HistoryRow) -> Option<String> {
-        match row {
-            HistoryRow::Item { index, .. } => host.agent_for(host.log().history().get(*index)?),
-            HistoryRow::Group { .. } => None,
-        }
-    }
-
     fn row_actions(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<(String, String)> {
         match row {
             HistoryRow::Item { index, .. } => {
@@ -1252,19 +1232,16 @@ impl NotificationCenter {
     ) -> Option<(usize, Option<RowControl>)> {
         let (rows, shapes, start, shown) = self.window(host, layout);
         let bands = shapes.get(start..).unwrap_or_default();
-        for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
+        for offset in (start..rows.len()).take(shown) {
             let position = offset.saturating_sub(start);
             let rect = layout.row_in(position, bands);
             if !rect.contains(p) {
                 continue;
             }
-            let with_agent = Self::row_agent(host, row).is_some();
             let shape = bands.get(position).copied().unwrap_or_default();
-            let (dismiss, agent) = layout.row_controls(rect, &shape, with_agent);
+            let dismiss = layout.row_controls(rect, &shape);
             let control = if dismiss.contains(p) {
                 Some(RowControl::Dismiss)
-            } else if agent.is_some_and(|agent| agent.contains(p)) {
-                Some(RowControl::HandToAgent)
             } else {
                 layout
                     .row_actions(rect, &shape)
@@ -1308,14 +1285,6 @@ impl NotificationCenter {
                 {
                     host.invoke_action(notification.id, key);
                     self.reselect_after_removal(host, layout, index);
-                }
-            }
-            (HistoryRow::Item { index: at, .. }, Some(RowControl::HandToAgent)) => {
-                let notification = host.log().history().get(at).cloned();
-                if let Some(notification) = notification
-                    && host.agent_for(&notification).is_some()
-                {
-                    host.hand_to_agent(&notification);
                 }
             }
             (HistoryRow::Item { index: at, .. }, None) => {
@@ -1474,9 +1443,6 @@ impl NotificationCenter {
     /// the row's accessibility children.
     fn row_focus_order(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<Option<RowControl>> {
         let mut order = vec![None, Some(RowControl::Dismiss)];
-        if Self::row_agent(host, row).is_some() {
-            order.push(Some(RowControl::HandToAgent));
-        }
         let actions = Self::row_actions(host, row).len();
         order.extend((0..actions).map(|at| Some(RowControl::Action(at))));
         order
@@ -1655,17 +1621,13 @@ impl NotificationCenter {
         if !host.log().history().is_empty() {
             out.push((format!("{prefix}notifications_clear"), layout.clear()));
         }
-        for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
+        for offset in (start..rows.len()).take(shown) {
             let position = offset.saturating_sub(start);
             let rect = layout.row_in(position, bands);
-            let agent = Self::row_agent(host, row);
             let shape = bands.get(position).copied().unwrap_or_default();
-            let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
+            let dismiss = layout.row_controls(rect, &shape);
             out.push((format!("{prefix}notification_row[{offset}]"), rect));
             out.push((format!("{prefix}notification_dismiss[{offset}]"), dismiss));
-            if let Some(agent_rect) = agent_rect {
-                out.push((format!("{prefix}notification_agent[{offset}]"), agent_rect));
-            }
             for (at, action) in layout.row_actions(rect, &shape).iter().enumerate() {
                 out.push((
                     format!("{prefix}notification_action[{offset}][{at}]"),
@@ -1914,11 +1876,8 @@ impl NotificationCenter {
                         expanded,
                         ..
                     } => {
-                        let (dismiss, _) = layout.row_controls(
-                            rect,
-                            &bands.get(position).copied().unwrap_or_default(),
-                            false,
-                        );
+                        let dismiss = layout
+                            .row_controls(rect, &bands.get(position).copied().unwrap_or_default());
                         AccessNode::new(Role::ListItem)
                             .with_semantic_key(format!("notification-group:{key}"))
                             .with_name(label.clone())
@@ -1980,8 +1939,7 @@ impl NotificationCenter {
         now: Instant,
     ) -> AccessNode {
         let row_focused = is_selected && self.row_control.is_none();
-        let agent = host.agent_for(notification);
-        let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
+        let dismiss = layout.row_controls(rect, &shape);
         let control_focused = |control| is_selected && self.row_control == Some(control);
         let mut controls = vec![
             AccessNode::new(Role::Button)
@@ -1993,22 +1951,6 @@ impl NotificationCenter {
                         .focused(control_focused(RowControl::Dismiss)),
                 ),
         ];
-        if let (Some(agent), Some(agent_rect)) = (agent, agent_rect) {
-            controls.push(
-                AccessNode::new(Role::Button)
-                    .with_name(t_args(
-                        "notification-center-hand-to",
-                        &[("agent", agent.as_str().into())],
-                    ))
-                    .with_description(t("notification-center-hand-to-description"))
-                    .with_bounds(agent_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(control_focused(RowControl::HandToAgent)),
-                    ),
-            );
-        }
         let actions = row_actions_of(host, notification);
         for (at, ((_, label), bounds)) in actions
             .iter()
@@ -2250,7 +2192,7 @@ impl NotificationCenter {
                             transform,
                             text_renderer,
                             theme,
-                            layout.row_controls(row, &shape, false),
+                            layout.row_controls(row, &shape),
                             (focused_control, cursor),
                         );
                     }
@@ -2266,9 +2208,8 @@ impl NotificationCenter {
                     notification
                 }
             };
-            let agent = host.agent_for(notification);
-            let controls = layout.row_controls(row, &shape, agent.is_some());
-            let leading_control = controls.1.unwrap_or(controls.0);
+            let controls = layout.row_controls(row, &shape);
+            let leading_control = controls;
             // A row is a resting Control surface (HIG §9.5): the lift floor
             // with its derived edge, never a ramp-slot wash. A group's
             // member has no surface of its own: it sits in its header's
@@ -2553,7 +2494,7 @@ impl NotificationCenter {
         newest
             .mark()
             .paint(scene, transform, mark, colors.text_primary);
-        let (dismiss, _) = layout.row_controls(row, shape, false);
+        let dismiss = layout.row_controls(row, shape);
         let x = mark.x1 + qs::RELATED_GAP;
         let title_y = row.y0 + qs::CONTROL_PAD;
         let age = relative_time(newest, now);
@@ -2628,7 +2569,7 @@ impl NotificationCenter {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        (dismiss, agent): (Rect, Option<Rect>),
+        dismiss: Rect,
         (focused, cursor): (Option<RowControl>, Option<Point>),
     ) {
         let mut paint = |rect: Rect, icon: ui::icons::Icon, control, name: &str| {
@@ -2650,14 +2591,6 @@ impl NotificationCenter {
             RowControl::Dismiss,
             &t("notification-center-dismiss"),
         );
-        if let Some(agent) = agent {
-            paint(
-                agent,
-                ui::icons::Icon::Send,
-                RowControl::HandToAgent,
-                &t("notification-center-hand-to-description"),
-            );
-        }
     }
 
     /// A row's icon button, shown while its row is pointed at or focused:

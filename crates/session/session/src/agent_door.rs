@@ -1287,9 +1287,6 @@ impl Offered {
 pub(crate) struct SessionDoors {
     asks: std::sync::Mutex<Vec<DoorAsk>>,
     wake: Wake,
-    /// The runs' program hosts and their person connections: what a line typed in a run's
-    /// conversation runs on (shell.md §8.1), behind the same door.
-    runs: crate::run_programs::Shared,
     /// Who sits here: the person a program typed in a conversation runs as.
     person: String,
 }
@@ -1314,19 +1311,12 @@ impl SessionDoors {
         &self.person
     }
 
-    /// The runs' program hosts, which a task's host is kept in beside a conversation's.
-    pub(crate) fn runs(&self) -> crate::run_programs::Shared {
-        std::sync::Arc::clone(&self.runs)
-    }
-
     /// The seam `wake` wakes the loop on, shared by every connection that
-    /// asks the session's own doors, and the runs' program hosts (`runs`)
-    /// whose person is `person`.
-    pub(crate) fn new(wake: Wake, runs: crate::run_programs::Shared, person: &str) -> Self {
+    /// asks the session's own doors, for the person sitting here.
+    pub(crate) fn new(wake: Wake, person: &str) -> Self {
         Self {
             asks: std::sync::Mutex::new(Vec::new()),
             wake,
-            runs,
             person: person.to_owned(),
         }
     }
@@ -1911,8 +1901,6 @@ fn catalogue(
 pub(crate) struct TaskHosts {
     /// The person the connection was admitted for: `me` in its programs.
     person: std::sync::Mutex<Option<String>>,
-    /// Where each run's host connections are kept, for the person's lines in its conversation.
-    runs: crate::run_programs::Shared,
     /// What a connection asks the session's own doors, for the records the packages it runs
     /// itself keep: its task host names the modules they are read by, before it starts, on the
     /// loop's pass.
@@ -1922,14 +1910,9 @@ pub(crate) struct TaskHosts {
 impl TaskHosts {
     /// The hosts of the task connections `person` asks about, whose programs run as `person`,
     /// reading the session's own records through `session`.
-    pub(crate) fn new(
-        person: &str,
-        runs: crate::run_programs::Shared,
-        session: Arc<SessionDoors>,
-    ) -> Self {
+    pub(crate) fn new(person: &str, session: Arc<SessionDoors>) -> Self {
         Self {
             person: std::sync::Mutex::new(Some(person.to_owned())),
-            runs,
             session,
         }
     }
@@ -1938,9 +1921,9 @@ impl TaskHosts {
 impl tilo_runtime::mcp::TaskHosts for TaskHosts {
     fn start(&self, workspace: &str, task: &str) -> io::Result<std::os::fd::OwnedFd> {
         let (door_end, host_end) = UnixStream::pair()?;
-        // The person's own connection into the same session, for the lines they type in the
-        // run's conversation: it runs there, where the `let`s the agent's programs bound are.
-        let (person_ours, person_host) = UnixStream::pair()?;
+        // The person's own connection into the same session: the lines they type run there,
+        // where the `let`s the agent's programs bound are.
+        let (_person_ours, person_host) = UnixStream::pair()?;
         // The apps the task's programs are compiled against: every package the session runs
         // itself (the shell), whose records a program reads by the app, every native app this
         // device has, from its signed surface, and the platform's own (the device and its
@@ -1957,8 +1940,6 @@ impl tilo_runtime::mcp::TaskHosts for TaskHosts {
             apps_len: encoded.len() as u64,
             records_under: std::collections::BTreeMap::new(),
         };
-        self.runs
-            .keep(task, door_end.try_clone()?, person_ours.try_clone()?);
         std::thread::Builder::new()
             .name("tilo-task-host".into())
             .spawn(move || {
@@ -2041,11 +2022,7 @@ fn serve_connection(
         return;
     };
     let facts = facts_of(pid, launches);
-    let tasks = Arc::new(TaskHosts::new(
-        &session.person,
-        std::sync::Arc::clone(&session.runs),
-        Arc::clone(session),
-    ));
+    let tasks = Arc::new(TaskHosts::new(&session.person, Arc::clone(session)));
     let admitted = Arc::clone(&tasks);
     let seat = seats.joining();
     let seat_stream = match stream.try_clone() {

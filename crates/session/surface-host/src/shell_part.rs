@@ -75,14 +75,6 @@ const SHELL_FILES: &[(&str, &str)] = &[
         "chrome.tl",
         include_str!("../../../../apps/tl/shell/chrome.tl"),
     ),
-    (
-        "composer.tl",
-        include_str!("../../../../apps/tl/shell/composer.tl"),
-    ),
-    (
-        "conversation.tl",
-        include_str!("../../../../apps/tl/shell/conversation.tl"),
-    ),
     ("desk.tl", include_str!("../../../../apps/tl/shell/desk.tl")),
     (
         "docks.tl",
@@ -249,14 +241,6 @@ pub struct WorkspaceReading {
     pub current: bool,
 }
 
-/// A task running for the person, as the desk's reading names it.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TaskReading {
-    pub key: String,
-    pub title: String,
-    pub state: String,
-}
-
 /// Someone else here, as the desk's reading names them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PersonReading {
@@ -365,9 +349,7 @@ pub struct NoticeActionReading {
 }
 
 mod host;
-mod runs;
 mod settings;
-pub use runs::{EntryRefReading, RunEntryReading, RunReading};
 
 /// A timer or stopwatch running in Clocks, as the bar's clock reads it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -411,7 +393,6 @@ pub struct DeskReading {
     pub workspace: String,
     pub strip: String,
     pub workspaces: Vec<WorkspaceReading>,
-    pub tasks: Vec<TaskReading>,
     /// The surface the desk shows over its windows: `none`, `desk`, `overview`, `switcher`,
     /// `launcher`, `centre`, `workspaces` or `composer`.
     #[serde(default)]
@@ -471,15 +452,6 @@ pub struct DeskReading {
     /// The running applications' tray items, in the order they registered.
     #[serde(default)]
     pub tray: Vec<TrayReading>,
-    /// The runs of what the person asked the session's agents, oldest first.
-    #[serde(default)]
-    pub runs: Vec<RunReading>,
-    /// Each run's conversation, entry by entry, oldest first.
-    #[serde(default)]
-    pub run_entries: Vec<RunEntryReading>,
-    /// What each program of a run's conversation printed and changed.
-    #[serde(default)]
-    pub entry_refs: Vec<EntryRefReading>,
 }
 
 /// A workspace the person's desk shows, as their arrangement names it.
@@ -842,7 +814,6 @@ pub struct SessionOrigin {
     link: Rc<SessionLink>,
     written: Option<DeskReading>,
     workspaces: BTreeMap<String, Kept<WorkspaceReading>>,
-    tasks: BTreeMap<String, Kept<TaskReading>>,
     people: BTreeMap<String, Kept<PersonReading>>,
     windows: BTreeMap<String, Kept<WindowReading>>,
     agents: BTreeMap<String, Kept<AgentReading>>,
@@ -854,9 +825,6 @@ pub struct SessionOrigin {
     arrangement_strips: BTreeMap<String, Kept<ArrangementStripReading>>,
     arrangement_places: BTreeMap<String, Kept<ArrangementPlaceReading>>,
     tray: BTreeMap<String, Kept<TrayReading>>,
-    runs: BTreeMap<String, Kept<RunReading>>,
-    run_entries: BTreeMap<String, Kept<RunEntryReading>>,
-    entry_refs: BTreeMap<String, Kept<EntryRefReading>>,
     /// The packages of other apps loaded into the shell's runtime, by app id: each the module
     /// the session handed for it.
     loaded: BTreeMap<String, std::sync::Arc<[u8]>>,
@@ -870,7 +838,6 @@ impl SessionOrigin {
             link,
             written: None,
             workspaces: BTreeMap::new(),
-            tasks: BTreeMap::new(),
             people: BTreeMap::new(),
             windows: BTreeMap::new(),
             agents: BTreeMap::new(),
@@ -882,9 +849,6 @@ impl SessionOrigin {
             arrangement_strips: BTreeMap::new(),
             arrangement_places: BTreeMap::new(),
             tray: BTreeMap::new(),
-            runs: BTreeMap::new(),
-            run_entries: BTreeMap::new(),
-            entry_refs: BTreeMap::new(),
         }
     }
 
@@ -1067,23 +1031,6 @@ impl SessionOrigin {
                 },
             ));
         }
-        if let (Ok(ty), Some(collection)) = (kind("task"), field(desk, "tasks")) {
-            writes.extend(sync_items(
-                &mut self.tasks,
-                &reading.tasks,
-                root,
-                &collection,
-                ty,
-                |t| t.key.clone(),
-                |t| {
-                    vec![
-                        ("key", text(&t.key)),
-                        ("title", text(&t.title)),
-                        ("state", text(&t.state)),
-                    ]
-                },
-            ));
-        }
         if let (Ok(ty), Some(collection)) = (kind("person"), field(desk, "people")) {
             writes.extend(sync_items(
                 &mut self.people,
@@ -1205,73 +1152,6 @@ impl SessionOrigin {
                         ("notice", text(&a.notice)),
                         ("key", text(&a.key)),
                         ("label", text(&a.label)),
-                    ]
-                },
-            ));
-        }
-        // The runs of the session's agents and their conversations: each entry and each
-        // reference names what it is of by key, as a notice's actions name their notice.
-        if let (Ok(ty), Some(collection)) = (kind("run"), field(desk, "runs")) {
-            writes.extend(sync_items(
-                &mut self.runs,
-                &reading.runs,
-                root,
-                &collection,
-                ty,
-                |r| r.key.clone(),
-                |r| {
-                    vec![
-                        ("key", text(&r.key)),
-                        ("title", text(&r.title)),
-                        ("agent", text(&r.agent)),
-                        ("phase", text(&r.phase)),
-                        ("active", Value::Bool(r.active)),
-                        ("live", text(&r.live)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("run_entry"), field(desk, "run_entries")) {
-            writes.extend(sync_items(
-                &mut self.run_entries,
-                &reading.run_entries,
-                root,
-                &collection,
-                ty,
-                |e| e.key.clone(),
-                |e| {
-                    vec![
-                        ("key", text(&e.key)),
-                        ("run", text(&e.run)),
-                        ("seq", Value::Int(e.seq)),
-                        ("author", text(&e.author)),
-                        ("by_agent", Value::Bool(e.by_agent)),
-                        ("step", Value::Bool(e.step)),
-                        ("text", text(&e.text)),
-                        ("outcome", text(&e.outcome)),
-                        ("answer", text(&e.answer)),
-                    ]
-                },
-            ));
-        }
-        if let (Ok(ty), Some(collection)) = (kind("entry_ref"), field(desk, "entry_refs")) {
-            writes.extend(sync_items(
-                &mut self.entry_refs,
-                &reading.entry_refs,
-                root,
-                &collection,
-                ty,
-                |r| r.key.clone(),
-                |r| {
-                    vec![
-                        ("key", text(&r.key)),
-                        ("entry", text(&r.entry)),
-                        ("changed", Value::Bool(r.changed)),
-                        ("resource", text(&r.resource)),
-                        ("app_id", text(&r.app_id)),
-                        ("type_kind", text(&r.type_kind)),
-                        ("label", text(&r.label)),
-                        ("change", text(&r.change)),
                     ]
                 },
             ));
@@ -1605,16 +1485,6 @@ impl SessionOrigin {
                 && let Some(was) = reading.workspaces.iter().find(|w| w.key == key)
             {
                 self.workspaces.insert(
-                    key,
-                    Kept {
-                        at,
-                        was: was.clone(),
-                    },
-                );
-            } else if is("task")
-                && let Some(was) = reading.tasks.iter().find(|t| t.key == key)
-            {
-                self.tasks.insert(
                     key,
                     Kept {
                         at,

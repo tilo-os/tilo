@@ -112,15 +112,6 @@ pub trait NotificationHost {
     /// Restore the most recent Clear all while it is still reversible.
     fn undo_clear(&self);
 
-    /// The agent `notification` may be handed to, when one is live in the
-    /// workspace it came from. `None` hides the action.
-    fn agent_for(&self, _notification: &Notification) -> Option<String> {
-        None
-    }
-
-    /// Hand `notification` to [`Self::agent_for`]'s agent as a task.
-    fn hand_to_agent(&self, _notification: &Notification) {}
-
     /// Viewer-local centre state (selection, folding, scrolling) changed and
     /// the host should repaint.
     fn changed(&self) {}

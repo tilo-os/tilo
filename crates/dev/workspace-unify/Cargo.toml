@@ -1116,7 +1116,6 @@ doc = false
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
 "tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
-"tilo-agent-runs" = { path = "../../../crates/session/agent-runs", default-features = false, features = [] }
 "tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support", "webview-adblock"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
@@ -1197,6 +1196,7 @@ doc = false
 "tilo-face" = { path = "../../../crates/platform/tilo-face", default-features = false, features = [] }
 "tilo-feedback" = { path = "../../../crates/collab/feedback", default-features = false, features = [] }
 "tilo-feedback-review" = { path = "../../../crates/collab/feedback-review", default-features = false, features = [] }
+"tilo-feedback-transport" = { path = "../../../crates/collab/feedback-transport", default-features = false, features = [] }
 "tilo-file-provider" = { path = "../../../crates/runtime/tilo-file-provider", default-features = false, features = [] }
 "tilo-files" = { path = "../../../crates/platform/tilo-files", default-features = false, features = ["json", "test-support", "watch"] }
 "tilo-firstboot-files" = { path = "../../../crates/system/firstboot-files", default-features = false, features = [] }
@@ -1234,8 +1234,10 @@ doc = false
 "tilo-messaging-protocol" = { path = "../../../crates/system/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../../crates/session/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
+"tilo-model-abi" = { path = "../../../crates/sdk/tilo-model-abi", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["default", "runtime-client"] }
 "tilo-model-gateway" = { path = "../../../crates/agent/model-gateway", default-features = false, features = ["default", "host-backend", "local-models", "runtime-client", "server"] }
+"tilo-model-guest" = { path = "../../../crates/sdk/tilo-model-guest", default-features = false, features = [] }
 "tilo-model-host" = { path = "../../../crates/sdk/tilo-model-host", default-features = false, features = [] }
 "tilo-moderation" = { path = "../../../crates/collab/moderation", default-features = false, features = ["host"] }
 "tilo-native-media" = { path = "../../../crates/session/native-media", default-features = false, features = [] }
@@ -1342,6 +1344,7 @@ doc = false
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
 "tilo-video-render" = { path = "../../../crates/media/video-render", default-features = false, features = ["default", "helper"] }
+"tilo-view" = { path = "../../../crates/platform/tilo-view", default-features = false, features = [] }
 "tilo-vision" = { path = "../../../crates/media/vision", default-features = false, features = [] }
 "tilo-vm" = { path = "../../../crates/dev/tilo-vm", default-features = false, features = [] }
 "tilo-vm-protocol" = { path = "../../../crates/dev/tilo-vm-protocol", default-features = false, features = [] }
@@ -1356,6 +1359,7 @@ doc = false
 "tilo-window-share" = { path = "../../../crates/session/window-share", default-features = false, features = ["default", "dmabuf"] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "bytemuck", "memmap2", "percent-encoding", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner", "x11", "x11-dl", "x11rb"] }
 "tilo-winit-x11" = { path = "../../../crates/sdk/winit-x11", default-features = false, features = [] }
+"tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = ["test-support"] }
@@ -1367,6 +1371,7 @@ doc = false
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
 "tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = ["record"] }
+"tilolang-youtube" = { path = "../../../crates/platform/tilolang-youtube", default-features = false, features = ["default", "live"] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-human-readable", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "tinker" = { path = "../../../crates/system/tinker", default-features = false, features = [] }
@@ -1469,7 +1474,7 @@ doc = false
 "utf8-ranges-1_0_5" = { package = "utf8-ranges", version = "^1.0.5", default-features = false, features = [] }
 "utf8_iter-1_0_4" = { package = "utf8_iter", version = "^1.0.4", default-features = false, features = [] }
 "utf8parse-0_2_2" = { package = "utf8parse", version = "^0.2.2", default-features = false, features = ["default"] }
-"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5"] }
 "vecmath-1_0_0" = { package = "vecmath", version = "^1.0.0", default-features = false, features = [] }
 "vello_common-0_0_8" = { package = "vello_common", version = "^0.0.8", default-features = false, features = ["png", "std"] }
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
@@ -2469,8 +2474,10 @@ doc = false
 "tilo-vello-0_9_0" = { package = "tilo-vello", path = "../../../vendor/vello", default-features = false, features = ["default", "wgpu", "wgpu_default"] }
 "tilo-vello-encoding-0_9_0" = { package = "tilo-vello-encoding", path = "../../../vendor/vello_encoding", default-features = false, features = ["bump_estimate"] }
 "tilo-vello-shaders-0_9_0" = { package = "tilo-vello-shaders", path = "../../../vendor/vello_shaders", default-features = false, features = ["cpu", "default", "wgsl"] }
+"tilo-view-macros" = { path = "../../../crates/sdk/view-macros", default-features = false, features = [] }
 "tilo-wake" = { path = "../../../crates/platform/tilo-wake", default-features = false, features = [] }
 "tilo-winit-0_30_13" = { package = "tilo-winit", path = "../../../vendor/winit", default-features = false, features = ["ahash", "memmap2", "rwh_06", "sctk", "sctk-adwaita", "wayland", "wayland-backend", "wayland-client", "wayland-csd-adwaita-notitle", "wayland-dlopen", "wayland-protocols", "wayland-protocols-plasma", "wayland-scanner"] }
+"tilo-workspace-agent" = { path = "../../../crates/platform/tilo-workspace-agent", default-features = false, features = [] }
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = [] }
@@ -2551,7 +2558,7 @@ doc = false
 "utf8-ranges-1_0_5" = { package = "utf8-ranges", version = "^1.0.5", default-features = false, features = [] }
 "utf8_iter-1_0_4" = { package = "utf8_iter", version = "^1.0.4", default-features = false, features = [] }
 "utf8parse-0_2_2" = { package = "utf8parse", version = "^0.2.2", default-features = false, features = ["default"] }
-"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "std", "v4"] }
+"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5"] }
 "vcpkg-0_2_15" = { package = "vcpkg", version = "^0.2.15", default-features = false, features = [] }
 "vello_common-0_0_8" = { package = "vello_common", version = "^0.0.8", default-features = false, features = ["png", "std"] }
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }

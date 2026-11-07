@@ -62,7 +62,6 @@ mod continuations;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
-pub mod conversation;
 mod conversations;
 mod desk;
 mod desk_doc;
@@ -137,7 +136,6 @@ mod records;
 pub mod recovery;
 mod rotation;
 pub mod run;
-mod run_programs;
 mod seams;
 mod search;
 mod search_ask;
@@ -223,8 +221,6 @@ pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use setup::BeforeDesk;
-/// The resource the session's runs of what people ask its agents are read on.
-pub use tilo_agent_runs::wire::RESOURCE as AGENT_RUNS_RESOURCE;
 pub use tilo_service::{Service, Services};
 
 use crate::mount::panels::mount_activities;
@@ -344,9 +340,6 @@ struct Shared {
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
-    /// The runs of what people ask this session's agents to do, fed every
-    /// pass who sits here and what the workspace in front admits.
-    agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// The turns this session's agents answer: a person's message in a
     /// conversation the agent takes part in, read every pass from Chat's
     /// record of each workspace.
@@ -355,12 +348,6 @@ struct Shared {
     /// them: who keeps an agent is that record's word, and what the broker
     /// admits an agent's session on.
     agents: agents::Agents,
-    /// Each run's program host, reached by the agent's calls and by the
-    /// person's lines in its conversation alike (shell.md §8.1).
-    run_programs: run_programs::Shared,
-    /// The runs' conversations (shell.md §8.1): a line typed in one is a
-    /// program run as the person, or a sentence to the run.
-    conversation: std::sync::Arc<conversation::Conversation>,
     /// The agents the person admitted at its agent door, as the desk and the bar show them.
     seats: std::sync::Arc<agent_door::Seats>,
     /// It runs in a window of a desktop it did not start (see
@@ -941,17 +928,6 @@ impl Session {
             }
             desk_doc::Kept::None => {}
         }
-        // The runs people ask this session's agents for, and each run's program host: the
-        // conversation over them (shell.md §8.1) is the shell's, and its lines reach here.
-        let the_runs = options.agent_runs.take().unwrap_or_else(|| {
-            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
-        });
-        let the_programs = std::sync::Arc::new(run_programs::Programs::new());
-        let conversation = std::sync::Arc::new(conversation::Conversation::new(
-            std::sync::Arc::clone(&the_runs),
-            std::sync::Arc::clone(&the_programs),
-            &options.person,
-        ));
         // What each window shows, as the broker knows it: the desk offers the
         // windows a person may share from, and the sharing doors read it.
         let notes = options.launches.notes();
@@ -986,14 +962,11 @@ impl Session {
                     .unwrap_or_default()
             })
         };
-        doors.add(Rc::new(RefCell::new(
-            arrangement::ArrangementDoor::new(
-                Rc::clone(&arrangement),
-                Rc::new(move || underway.get()),
-                find.clone(),
-            )
-            .with_conversation(std::sync::Arc::clone(&conversation)),
-        )));
+        doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
+            Rc::clone(&arrangement),
+            Rc::new(move || underway.get()),
+            find.clone(),
+        ))));
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
         // the pictures this device kept for them until the setting changes.
@@ -1276,17 +1249,10 @@ impl Session {
         // The desk as the session publishes it, which the shell reads through the door.
         let chrome_door = shell::chrome_door(options.shell, &chrome, surfaces.clone());
         doors.add(Rc::clone(&chrome_door));
-        // The runs people ask of this session's agents: the session keeps
-        // its own, or plays the run channel a test handed it. Its broker
-        // delivers them, it is one of the session's services, and the desk
-        // shows each run's conversation.
-        let agent_runs = std::sync::Arc::clone(&the_runs);
-        let run_programs = std::sync::Arc::clone(&the_programs);
-        // The seam the agent door's connections ask this session's own doors on, and where a
-        // task's programs are kept: made before the plane starts, which serves the programs.
+        // The seam the agent door's connections ask this session's own doors on: made before
+        // the plane starts, which serves the programs.
         let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
             options.wake.handle(),
-            std::sync::Arc::clone(&run_programs),
             &options.person,
         ));
         let task_programs = Some(std::sync::Arc::new(task_programs::TaskPrograms::new(
@@ -1295,7 +1261,6 @@ impl Session {
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
-            runs: std::sync::Arc::clone(&agent_runs),
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
             person: options.person.clone(),
@@ -1675,11 +1640,6 @@ impl Session {
         if let Some(shell) = &shell {
             shell.share_records(&services);
         }
-        services
-            .borrow_mut()
-            .add(Box::new(tilo_agent_runs::Served::new(
-                std::sync::Arc::clone(&agent_runs),
-            )));
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
         mount::shell::Shell::mount(&services, &handle, overlays.clone(), Rc::clone(&shortcuts));
@@ -1758,9 +1718,6 @@ impl Session {
             services,
             table,
             window_shares,
-            agent_runs,
-            run_programs,
-            conversation,
             seats,
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),

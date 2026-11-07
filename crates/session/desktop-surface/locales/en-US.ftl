@@ -560,6 +560,10 @@ notification-reply = Reply
 notification-center-dismiss = Dismiss
 notification-center-hand-to = Hand to { $agent }
 notification-center-hand-to-description = Give this notification to the workspace agent as a task.
+notification-center-group-count = { $count ->
+        [one] { $count } notification
+       *[other] { $count } notifications
+    }
 notification-lock-count = { $count ->
     [one] 1 notification
    *[other] { $count } notifications
