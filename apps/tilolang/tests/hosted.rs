@@ -77,19 +77,26 @@ impl Woken {
     }
 
     fn mark(&self) {
-        let mut woken = self.woken.lock().unwrap_or_else(|held| held.into_inner());
-        *woken = true;
+        *self
+            .woken
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         self.signal.notify_all();
     }
 
     /// Wait until the host is woken, at most `timeout`: the frames have nothing to take in
     /// until then.
     fn wait(&self, timeout: std::time::Duration) {
-        let woken = self.woken.lock().unwrap_or_else(|held| held.into_inner());
         let (mut woken, _) = self
             .signal
-            .wait_timeout_while(woken, timeout, |woken| !*woken)
-            .unwrap_or_else(|held| held.into_inner());
+            .wait_timeout_while(
+                self.woken
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                timeout,
+                |woken| !*woken,
+            )
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         // Taken in, and the next work's wake reads again.
         *woken = false;
     }
