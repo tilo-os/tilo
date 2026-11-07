@@ -209,26 +209,33 @@ const paletteRows = async tab => {
 // on. Reading only for the row's presence raced that answer and sent Enter to
 // a row left over from the query before.
 const search = async (tab, command, query, row) => {
-  await click(tab, 640, 700);
-  await key(tab, 'k', command);
+  // The desk keeps the search up until what it opened has arrived, and the
+  // chord toggles it: it is opened only when it is down.
+  if (!await tab.evaluate('!!globalThis.tiloMount?.state()?.searchOpen')) {
+    await click(tab, 640, 700);
+    await key(tab, 'k', command);
+  }
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 60_000);
   await type(tab, query);
   const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
   let last = null;
+  let chosen = null;
   const deadline = Date.now() + 60_000;
   for (;;) {
     const rows = await paletteRows(tab);
     if (first(rows) === row && last && JSON.stringify(rows) === JSON.stringify(last)) {
       await key(tab, 'Enter');
-      return rows;
+      chosen = rows;
+      break;
     }
     last = rows;
     if (Date.now() > deadline) {
       await dump(tab, `timeout-rows-for-${query}`);
       failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(rows)}`);
     }
-    await sleep(300);
   }
+  await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 120_000);
+  return chosen;
 };
 // A canvas-drawn desktop takes the pointer; the search chord is Ctrl+K away
 // from the keyboard (Meta on a Mac, as the desktop reads it).
