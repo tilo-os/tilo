@@ -11,8 +11,10 @@
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use automerge::AutoCommit;
 use collaboration::{CollabEvent, CollabRequest, CollaborationManager, PeerTransport, RouteSpec};
@@ -20,15 +22,17 @@ use serde_json::json;
 use tilo_actions::ActionInvoker;
 use tilo_render_protocol::patch::local::{End, pair};
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
-use tilolang_runtime::meta::Meta;
+use tilolang_runtime::meta::{FieldKind, Meta};
 use tilolang_runtime::place::{Place, Placement};
+use tilolang_runtime::store::{FieldSpec, Pred, Store as _};
+use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
-use tilolang_tilo::host::{Host, RootView};
+use tilolang_tilo::host::{Host, Opening, RootView};
 use tilolang_tilo::instance::record::InstanceRecord;
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
 use tilolang_tilo::items::Items;
-use tilolang_tilo::record::DynRecord;
+use tilolang_tilo::record::{DynRecord, DynValue};
 use tilolang_tilo::runtime::{MemorySink, NameHost, Principal};
 use tilolang_tilo::schema::{TypeSchema, lookup};
 
@@ -912,4 +916,228 @@ fn a_part_the_workspace_refuses_takes_back_the_chunks_it_wrote_before_it() {
         !String::from_utf8_lossy(&written).contains("written"),
         "the chunk the refused part's action wrote first holds none of it"
     );
+}
+
+/// A directory that goes with the test: where a store keeps an index a later open finds.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(name: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("tilolang-chunks-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A host opened over the record `docs` holds, its indexes kept in `dir`, with the board loaded
+/// from the package lock `ids`. Every chunk not `sent` comes from its chunk loader, which records
+/// the numbers it was asked for.
+fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCell<Vec<ChunkNo>>>) {
+    let record = docs.doc(chunk::FIRST).clone();
+    let host = Host::open(
+        Opening {
+            record: Some(&record),
+            index_dir: Some(dir.to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
+    let chunks = docs.chunks();
+    let recorder = Rc::clone(&asked);
+    host.set_chunk_loader(Box::new(move |number| {
+        recorder.borrow_mut().push(number);
+        chunks.mirror(number).cloned()
+    }));
+    host.load_builtin(BOARD, ids).unwrap();
+    if sent {
+        docs.sync(&host);
+    } else {
+        host.sync_from(&record);
+    }
+    host.wait_index();
+    assert!(host.index_ready(), "the board's index is ready");
+    (host, asked)
+}
+
+/// The chunks `host` holds, in order.
+fn holding(host: &Host) -> Vec<ChunkNo> {
+    host.store()
+        .held_chunks()
+        .into_iter()
+        .map(|(number, _, _)| number)
+        .collect()
+}
+
+/// The card `id` of the board `root`, as a window reads it, and the chunk its map is in: the
+/// cards are written in order, a chunk of [`chunk::ITEMS`] each from the record's own chunk on.
+fn card_at(meta: &Meta, root: &str, board: &str, id: &str, at: usize) -> (ResourceRef, ChunkNo) {
+    let per = usize::try_from(chunk::ITEMS).unwrap();
+    let number = ChunkNo::try_from(at / per).unwrap();
+    (
+        ResourceRef::root(root, board).item(id, card_type(meta)),
+        number,
+    )
+}
+
+/// The cards the board `root` lists, in order, as the index answers them.
+fn listed(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
+    let field = FieldSpec {
+        id: field_id(meta, "Board", "left"),
+        kind: FieldKind::Collection,
+    };
+    let at = ResourceRef::root(root, board_schema(meta).id);
+    host.store()
+        .listing(&at, &field)
+        .unwrap()
+        .ids()
+        .iter()
+        .map(|id| id.as_str().to_owned())
+        .collect()
+}
+
+#[test]
+fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_shows() {
+    let (_host, mut docs, meta, root, ids) = board();
+    let inserted = bulk(&mut docs, &meta, &root, 10_000);
+    let dir = TempDir::new("index-first");
+
+    // A load that was sent every chunk, keeping its index where the next open finds it.
+    let (whole, asked_whole) = opened(&mut docs, dir.path(), &ids, true);
+    let chunks = holding(&whole).len();
+    assert!(
+        chunks > 4,
+        "the cards are spread over their chunks: {chunks}"
+    );
+    let kept = whole.store().index_contents(BOARD_APP).unwrap();
+    assert!(asked_whole.borrow().is_empty(), "nothing had to be loaded");
+    whole.persist_index();
+    drop(whole);
+
+    // Opened over the manifest and that index: the lists and queries answer as a full load
+    // does, and no chunk is read for them.
+    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    assert_eq!(holding(&lazy), [chunk::FIRST]);
+    assert_eq!(
+        lazy.store().stats().builds,
+        0,
+        "the index was kept, not built"
+    );
+    assert_eq!(
+        listed(&lazy, &meta, &root),
+        inserted,
+        "every card, in order"
+    );
+    let found = lazy
+        .store()
+        .select(&card_type(&meta), &Pred::Const(true), None)
+        .unwrap();
+    assert_eq!(found.len(), 10_000, "the index counts them all");
+    assert!(
+        asked.borrow().is_empty(),
+        "the index answered without a chunk: {:?}",
+        asked.borrow()
+    );
+    assert_eq!(
+        lazy.store().index_contents(BOARD_APP).unwrap(),
+        kept,
+        "what it holds is what a full load derived"
+    );
+
+    // A row a window shows reads its own chunk, and only that one.
+    let board = board_schema(&meta).id;
+    let (card, number) = card_at(&meta, &root, &board, &inserted[5_000], 5_000);
+    assert!(lazy.store().record_at(&card).is_ok());
+    assert_eq!(*asked.borrow(), [number], "one chunk, the row's own");
+    let (card, number) = card_at(&meta, &root, &board, &inserted[9_999], 9_999);
+    assert!(lazy.store().record_at(&card).is_ok());
+    assert_eq!(
+        *asked.borrow(),
+        [2, number],
+        "one more chunk, the row's own"
+    );
+
+    // A write addressed to a chunk the store was not sent loads it, and only it.
+    let (edited, edited_chunk) = card_at(&meta, &root, &board, &inserted[7_000], 7_000);
+    assert!(!asked.borrow().contains(&edited_chunk));
+    let retitle = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "retitle")
+        .unwrap()
+        .id
+        .clone();
+    lazy.runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (
+                retitle.as_str(),
+                vec![Value::resource(&edited), Value::Text("changed".into())],
+            ),
+        )
+        .unwrap();
+    let after = asked.borrow().clone();
+    assert_eq!(after.len(), 3, "the write loaded its own chunk: {after:?}");
+    assert_eq!(after[2], edited_chunk);
+    let text = field_id(&meta, "Card", "text");
+    assert_eq!(
+        lazy.store().record_at(&edited).unwrap().get(&text).cloned(),
+        Some(DynValue::Text("changed".into()))
+    );
+}
+
+#[test]
+fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_a_hundred_thousand_cards() {
+    let per = chunk::ITEMS;
+    for cards in [1_000_usize, 10_000, 100_000] {
+        let (_host, mut docs, meta, root, ids) = board();
+        bulk(&mut docs, &meta, &root, cards);
+        let filled = u64::try_from(cards).unwrap().div_ceil(per);
+        assert_eq!(
+            docs.chunks().numbers().count(),
+            usize::try_from(filled).unwrap(),
+            "the first run is written in the record's own chunk, the rest above it"
+        );
+        let dir = TempDir::new(&format!("open-{cards}"));
+        let open = Instant::now();
+        let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+        let open = open.elapsed();
+        let held = holding(&lazy);
+        println!("{cards} cards over {filled} chunks: opened in {open:?}, holding {held:?}");
+        assert_eq!(
+            held,
+            [chunk::FIRST],
+            "the window opened over the record alone"
+        );
+        assert!(asked.borrow().is_empty(), "{cards}: no chunk was read");
+        assert_eq!(
+            lazy.store().stats().attaches,
+            1,
+            "{cards}: the record, once"
+        );
+        // What a window shows is the record and the chunks its rows are in, which it reads as
+        // they scroll: an open that read every chunk took minutes at this size.
+        assert!(
+            open < Duration::from_secs(10),
+            "{cards} cards opened in {open:?}"
+        );
+        assert!(
+            lazy.store().record(&root).is_ok(),
+            "{cards}: the board reads"
+        );
+    }
 }

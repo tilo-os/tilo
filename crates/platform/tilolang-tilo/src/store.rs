@@ -300,6 +300,8 @@ mod sync;
 use scoped::{Changing, Held};
 
 mod index_build;
+mod loading;
+use loading::{planned_unheld, unloaded};
 mod reading;
 use index_build::AppIndex;
 use reading::{
@@ -319,6 +321,11 @@ use versions::{NO_VERSIONS, note_versions};
 /// Gives the store the workspace record when it opened without it: for a write, or a field no index
 /// holds. `None` when the record cannot be had.
 pub type Loader = Box<dyn FnMut() -> Option<Doc>>;
+
+/// Gives the store the chunk [`ChunkNo`] when it was not sent it: when something reads into it (a
+/// row a window shows, or a lookup the index routes to it) or a write is addressed to it. `None`
+/// when the chunk cannot be had.
+pub type ChunkLoader = Box<dyn FnMut(ChunkNo) -> Option<Doc>>;
 
 struct Inner {
     /// The documents the store holds: the workspace record (chunk [`chunk::FIRST`]) and the
@@ -343,6 +350,9 @@ struct Inner {
     /// Where the indexes are kept: `None` keeps them in memory, built when a package loads.
     index_dir: Option<PathBuf>,
     loader: Option<Loader>,
+    /// Where a chunk the store was not sent comes from when something reads into it or a write
+    /// is addressed to it ([`TiloStore::set_chunk_loader`]).
+    chunk_loader: Option<ChunkLoader>,
     /// Called when an index built off the frame is ready to be taken in.
     wake: Option<Waker>,
     /// What the store read of the record so far: derivation, and reads no index answered.
@@ -657,6 +667,7 @@ impl TiloStore {
                 overlay: Arc::default(),
                 index_dir,
                 loader: None,
+                chunk_loader: None,
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),
@@ -1226,7 +1237,7 @@ impl TiloStore {
     /// # Errors
     /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record(&self, doc: &str) -> Result<DynRecord, StoreError> {
-        self.load_record()?;
+        self.load_doc(doc)?;
         let inner = self.held();
         let (app, _) = inner
             .index
@@ -1306,41 +1317,13 @@ impl TiloStore {
         Changing::of(&self.schemas(), &self.inner)
     }
 
-    /// Have the workspace record, if the store opened without it: from the loader.
-    fn load_record(&self) -> Result<(), StoreError> {
-        let loader = {
-            let mut inner = self.changing();
-            if inner.chunks.has_record() {
-                return Ok(());
-            }
-            inner.loader.take()
-        };
-        let Some(mut loader) = loader else {
-            return Err(StoreError::Backend(
-                "the workspace record is not loaded".into(),
-            ));
-        };
-        let record = loader();
-        let mut inner = self.mutate();
-        inner.loader = Some(loader);
-        let Some(record) = record else {
-            return Err(StoreError::Backend(
-                "the workspace record cannot be loaded".into(),
-            ));
-        };
-        inner.attach_document(chunk::FIRST, &record);
-        drop(inner);
-        self.changing().notify_all();
-        Ok(())
-    }
-
     /// The record of the resource at `at` (a document or an item in one), as the runtime
     /// sees it now: an item is read without reading its siblings.
     ///
     /// # Errors
     /// The resource does not exist, its type is not registered, or the record cannot be had.
     pub fn record_at(&self, at: &ResourceRef) -> Result<DynRecord, StoreError> {
-        self.load_record()?;
+        self.load_at(at)?;
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         let mirror = inner.held_doc(&at.doc)?;
@@ -1373,6 +1356,8 @@ impl TiloStore {
 
     /// [`Self::first_text`] as stored.
     fn first_stored(&self, at: &ResourceRef) -> Option<(FieldValue, String)> {
+        // A row the index answers needs no chunk; one it does not is read with its chunk.
+        let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at).ok()?;
         if let Some(view) = inner.view(&app) {
@@ -1444,7 +1429,7 @@ impl TiloStore {
     /// # Errors
     /// The type is not registered, the resource already exists, or the record cannot be had.
     pub fn create_with_id(&self, record: &NewRecord, id: &str) -> Result<ResourceRef, StoreError> {
-        self.load_record()?;
+        self.load_doc(id)?;
         let mut inner = self.mutate();
         if inner.index.contains_key(id) {
             return Err(invalid(format!("resource {id} exists")));
@@ -1504,7 +1489,7 @@ impl TiloStore {
         record: &NewRecord,
         id: &str,
     ) -> Result<ResourceRef, StoreError> {
-        self.load_record()?;
+        self.load_doc(id)?;
         let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
@@ -1875,6 +1860,13 @@ impl Inner {
                 "the workspace record is not loaded".into(),
             ));
         }
+        // A chunk the manifest names and the store was not sent holds resources this write
+        // cannot see ([`unloaded`]).
+        if unloaded(self, chunk) {
+            return Err(StoreError::Backend(format!(
+                "the chunk holding what is in chunk {chunk} is not loaded"
+            )));
+        }
         // A run's manifest is written before what it places reads it: the next edit of the same
         // action sees the run the last one recorded.
         let manifest = matches!(edit.bare(), DynEdit::RunChunk { .. });
@@ -2230,6 +2222,7 @@ impl Store for TiloStore {
     }
 
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
+        let _ = self.load_at(at);
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
         if let Some(view) = inner.view(&app) {
@@ -2312,18 +2305,34 @@ impl Store for TiloStore {
     }
 
     fn apply(&mut self, txn: Txn, at: &ResourceRef, m: &Mutation) -> Result<Applied, StoreError> {
+        // A write into a chunk the store was not sent loads it first: planning reads the
+        // resource's map, and writing where its chunk is not held would start the chunk empty
+        // and lose what it holds.
+        self.load_at(at)?;
         let mut inner = self.mutate();
         if !inner.txns.contains_key(&txn.0) {
             return Err(invalid("no such transaction"));
         }
         let (app, ty) = inner.locate(at)?;
+        let planned = inner.plan(at, m)?;
+        let needed = planned_unheld(&inner, &planned);
+        let planned = if needed.is_empty() {
+            planned
+        } else {
+            drop(inner);
+            for chunk in needed {
+                self.load_chunk(chunk)?;
+            }
+            inner = self.mutate();
+            inner.plan(at, m)?
+        };
         let Planned {
             edits: dyn_edits,
             item,
             touched,
             items,
             placed,
-        } = inner.plan(at, m)?;
+        } = planned;
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));

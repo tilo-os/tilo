@@ -965,6 +965,12 @@ impl Host {
         self.inner.store.set_loader(loader);
     }
 
+    /// How the host gets a chunk the store was not sent: when a window shows a row in it, a
+    /// lookup routes to it, or a write is addressed to it.
+    pub fn set_chunk_loader(&self, loader: crate::store::ChunkLoader) {
+        self.inner.store.set_chunk_loader(loader);
+    }
+
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
     /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
