@@ -1,9 +1,7 @@
-//! `BlockEditor`: a stack of [`RichTextLine`]-backed blocks (paragraph,
-//! heading, lists, code, divider) with split-on-Enter, merge-on-Backspace,
-//! arrow-key navigation, and markdown-shortcut promotion (`# ` -> H1, etc).
-//!
-//! No demotion once a block is a heading. Promotion only fires on an
-//! *empty* paragraph, matching the slash-menu convention.
+//! `BlockEditor`: a stack of [`RichTextLine`]-backed blocks (paragraph, heading, lists, code,
+//! divider) with split-on-Enter, merge-on-Backspace, arrow-key navigation and markdown-shortcut
+//! promotion (`# ` -> H1, etc). No demotion once a block is a heading, and promotion only fires on
+//! an *empty* paragraph, matching the slash-menu convention.
 
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
@@ -1515,15 +1513,12 @@ impl BlockEditor {
         self
     }
 
-    /// The handle gutter of a block document: the lane its drag handles
-    /// hang in, outside the text column, as wide as a handle and the gap to
-    /// the text. Zero when the editor shows no handles.
-    ///
-    /// A page that holds the editor keeps its one content gutter outside
-    /// this lane: it places the editor's rect on its gutter and lines its
-    /// title and metadata up with the text ([`Self::text_inset`] in from the
-    /// rect), so a hovered handle stands a full gutter clear of the sidebar
-    /// or window edge beside the page.
+    /// The handle gutter of a block document: the lane its drag handles hang in, outside the text
+    /// column, as wide as a handle and the gap to the text. Zero when the editor shows no handles.
+    /// A page that holds the editor keeps its one content gutter outside this lane: it places the
+    /// editor's rect on its gutter and lines its title and metadata up with the text
+    /// ([`Self::text_inset`] in from the rect), so a hovered handle stands a full gutter clear of
+    /// the sidebar or window edge.
     pub fn handle_gutter(&self, theme: &Theme) -> f64 {
         if self.block_handles && !self.read_only {
             let handle = HandleMetrics::from_tokens(&theme.tokens.spacing, &theme.tokens.metrics);
@@ -2668,13 +2663,11 @@ impl BlockEditor {
         self.dirty = true;
     }
 
-    /// Carry out the slash menu's chosen row. Typed after `/`, the query is
-    /// spliced out with the slash; then a `/` that opened at the start of
-    /// its block turns that block into the chosen kind, its text kept,
-    /// while one typed after text splits the block there and starts a new
-    /// block of that kind, so "Groceries /todo" never loses the groceries.
-    /// From the block handle's menu (no `/`), the block turns. Idempotent:
-    /// if the focused block changed since the menu opened, the command
+    /// Carry out the slash menu's chosen row. Typed after `/`, the query is spliced out with the
+    /// slash; a `/` opened at the start of its block turns that block into the chosen kind, its
+    /// text kept, while one typed after text splits the block there and starts a new block of that
+    /// kind, so "Groceries /todo" never loses the groceries. From the block handle's menu (no `/`),
+    /// the block turns. Idempotent: if the focused block changed since the menu opened, the command
     /// applies to it and leaves its text alone.
     fn commit_slash_selection(&mut self, command: SlashCommand) {
         let Some(focused_idx) = self.focused else {
@@ -3097,14 +3090,12 @@ impl BlockEditor {
         }
     }
 
-    /// Reserved target in the handle gutter just left of an editable block,
-    /// so it never narrows text or steals list/checkbox clicks. Geometry
-    /// from [`HandleMetrics`]: a `width` column ending `gap` before the
-    /// block's leading edge, `height` tall at 1× and growing with the text
-    /// scale like the line beside it. The rect is also the hit target, so it
-    /// grows to the pointer minimum where the block itself is that tall —
-    /// never taller than the block, or two single-line paragraphs would
-    /// share one handle.
+    /// Reserved target in the handle gutter just left of an editable block, so it never narrows
+    /// text or steals list and checkbox clicks. Geometry from [`HandleMetrics`]: a `width` column
+    /// ending `gap` before the block's leading edge, `height` tall at 1× and growing with the text
+    /// scale like the line beside it. The rect is also the hit target, so it grows to the pointer
+    /// minimum where the block is that tall — never taller than the block, or two single-line
+    /// paragraphs would share one handle.
     fn block_drag_handle_rect(&self, index: usize) -> Option<Rect> {
         if !self.block_handles || self.read_only {
             return None;
@@ -3345,12 +3336,10 @@ impl BlockEditor {
         })
     }
 
-    /// Every block's row of the accessibility tree, in order. A row whose
-    /// block has no table, image or embedded note is the very row of the
-    /// last frame while everything it is built from is the same
-    /// ([`AccessRowInputs`]); only the others are built. Debug builds build
-    /// the kept rows too and prove them equal, as the App proves a tree it
-    /// did not walk.
+    /// Every block's row of the accessibility tree, in order. A row whose block has no table, image
+    /// or embedded note is the very row of the last frame while everything it is built from is the
+    /// same ([`AccessRowInputs`]); only the others are built. Debug builds build the kept rows too
+    /// and prove them equal.
     fn access_rows(
         &self,
         control: Option<&RowControl<'_>>,
@@ -5362,13 +5351,11 @@ pub(crate) fn prefix_gutter_for(kind: &BlockKind) -> f64 {
 
 pub(crate) const CHECKBOX_SIZE_PX: f64 = 16.0;
 
-/// Geometry of the block drag handle, resolved from `theme.tokens` in
-/// `build_layout` (the `Metrics::BASE` / `Spacing::BASE` values until then).
-///
-/// The handle lives in the editor's handle gutter, left of the text column,
-/// so its **width** and the gap to the text are `ui_scale` metrics that make
-/// up that gutter; its **height** and the dot cluster
-/// follow the accessibility text scale like the line beside it.
+/// Geometry of the block drag handle, resolved from `theme.tokens` in `build_layout` (the
+/// `Metrics::BASE` / `Spacing::BASE` values until then). The handle lives in the editor's handle
+/// gutter, left of the text column, so its **width** and the gap to the text are `ui_scale` metrics
+/// that make up that gutter; its **height** and the dot cluster follow the accessibility text scale
+/// like the line beside it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct HandleMetrics {
     /// Handle column width (`spacing.s4`, 16 px at 1×).
@@ -7346,12 +7333,11 @@ impl BlockEditor {
         }
     }
 
-    /// A caret-moving key the focused block's TextInput takes while a
-    /// document selection stands (Shift+Left, Shift+End, Ctrl+Right): the
-    /// selection's anchor, and whether the key extends it. The TextInput
-    /// moves its own caret; [`Self::follow_caret_from_document_selection`]
-    /// then makes the document selection follow, so it never goes stale and
-    /// takes the copy or the typing that follows.
+    /// A caret-moving key the focused block's TextInput takes while a document selection stands
+    /// (Shift+Left, Shift+End, Ctrl+Right): the selection's anchor, and whether the key extends it.
+    /// The TextInput moves its own caret; [`Self::follow_caret_from_document_selection`] then makes
+    /// the document selection follow, so it never goes stale and takes the copy or the typing that
+    /// follows.
     fn document_selection_follows(
         &self,
         event: &WindowEvent,
@@ -8461,17 +8447,13 @@ impl BlockEditor {
                     && formula_descriptor(&b.kind).is_none()
                     && !matches!(b.kind, BlockKind::Table { visual: true }),
             );
-            // A document paragraph already receives spacing from the block
-            // stack. TextInput's normal multiline field padding would add
-            // another 8 px above and below every line, making consecutive
-            // prose read like separate form fields. Keep that padding for
-            // richer controls and use the text line-height for compact prose.
-            // A list item is prose too: its rows sit as close as a
-            // paragraph's, and its marker follows its first row. A quote
-            // line is prose, so a quote split across blocks reads as one run.
-            // A code row is a row of its fence, whose painted ground holds
-            // the space around it: field padding would double-space the fence
-            // whether the document's prose is compact or not.
+            // A document paragraph already receives spacing from the block stack, and TextInput's
+            // normal multiline field padding would add another 8 px above and below every line,
+            // making consecutive prose read like separate form fields: keep that padding for richer
+            // controls and use the text line-height for compact prose. A list item is prose too,
+            // its rows as close as a paragraph's with its marker following its first row; so is a
+            // quote line. A code row is a row of its fence, whose painted ground holds the space
+            // around it, so field padding would double-space the fence either way.
             b.line.set_compact_wrapped(
                 matches!(b.kind, BlockKind::CodeBlock { .. })
                     || (self.compact_paragraph_spacing
@@ -8625,13 +8607,10 @@ impl BlockEditor {
         size
     }
 
-    /// Stack every block at `width`, the way a flex column would: each
-    /// block's top is the running total plus its margin, and the total grows
-    /// by margin plus height. A line whose content and layout inputs are
-    /// unchanged reuses its cached height, so the cost of an edit does not
-    /// grow with the document. Without a text renderer (a host that solved
-    /// the tree without measuring), a line keeps the height it last measured,
-    /// and one never measured counts as empty.
+    /// Stack every block at `width`, as a flex column would: each block's top is the running total
+    /// plus its margin, and the total grows by margin plus height. A line whose content and layout
+    /// inputs are unchanged reuses its cached height, so the cost of an edit does not grow with the
+    /// document; without a text renderer, a line keeps the height it last measured.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
         let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
@@ -8712,12 +8691,11 @@ impl BlockEditor {
         });
         let x0 = origin.x + f64::from(content_layout.location.x);
         let width = f64::from(content_layout.size.width);
-        // Round the whole stack's edges, not each block's top and height on
-        // their own: `absolute_top + top + height` and
-        // `absolute_top + (top + height)` differ in the last f32 bit, so two
-        // contiguous blocks could round their shared edge apart by a pixel and
-        // split what paints as one block. A block with no margin above it
-        // takes the edge the block before it ended on.
+        // Round the whole stack's edges, not each block's top and height on their own:
+        // `absolute_top + top + height` and `absolute_top + (top + height)` differ in the last f32
+        // bit, so two contiguous blocks could round their shared edge apart by a pixel and split
+        // what paints as one block. A block with no margin above it takes the edge the block before
+        // it ended on.
         let mut rects = Vec::with_capacity(self.stack.tops.len());
         let mut shared_top: Option<f32> = None;
         for (index, (&top, &height)) in self.stack.tops.iter().zip(&self.stack.heights).enumerate()
@@ -9368,12 +9346,11 @@ impl Widget for BlockEditor {
         let find_spans = self.window_find_spans();
         let active_drag = self.block_drag.filter(|drag| drag.active);
         let dragged_group = active_drag.map(|drag| self.movable_group(drag.source));
-        // Paint only what the host's viewport can show. The focused block and
-        // a dragged group always paint: their geometry feeds the caret, IME
-        // and the drag preview even while they are scrolled out of view.
-        // One screen of margin on either side keeps the neighbours a keystroke
-        // can move the caret into freshly painted, and decorations reaching
-        // past a block's own rectangle whole.
+        // Paint only what the host's viewport can show. The focused block and a dragged group
+        // always paint: their geometry feeds the caret, IME and the drag preview even while
+        // scrolled out of view. One screen of margin either side keeps the neighbours a keystroke
+        // can move the caret into freshly painted, and decorations reaching past a block's own
+        // rectangle whole.
         let paint_window = presence
             .viewport
             .get()

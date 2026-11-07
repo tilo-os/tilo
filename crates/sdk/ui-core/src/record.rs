@@ -1,24 +1,16 @@
-//! Records — the unit of state, collaboration and storage. A record has a
-//! type, a stable identity, and a home workspace. A file's identity is its file
-//! record — the durable id the filesystem gives the file, which a rename or
-//! move keeps — and its path is only where it currently sits (see
-//! [`RecordId::identify_file`]). Records reference other records
-//! rather than nesting (annotations reference the document they mark up),
-//! so "share the book without my notes" is expressible.
-//!
-//! A record id is scoped by the workspace that hydrates it. Workspaces hold
-//! references ([`index::reference`]), but an identical id in another
-//! workspace gets a distinct local document and collaboration route; explicit
-//! export/import is required to move content across that authority boundary.
-//!
-//! One document per record is forced, not chosen: an Automerge change graph
-//! names its dependencies by hash, so a filtered stream leaves the receiver
-//! holding orphaned changes — it cannot be served in part.
-//!
-//! [`RecordSet`] owns the open records and hands the active one to the
-//! toolkit; [`tick`] parks the outgoing document and checks the named one
-//! in each frame. Not all app state is a record — a theme or account stays
-//! in the package-level document (the workspace index) instead.
+//! Records — the unit of state, collaboration and storage. A record has a type, a stable identity
+//! and a home workspace. A file's identity is its file record — the durable id the filesystem gives
+//! it, which a rename or move keeps — and its path is only where it sits
+//! ([`RecordId::identify_file`]). Records reference other records rather than nesting (annotations
+//! reference the document they mark up), so "share the book without my notes" is expressible. A
+//! record id is scoped by the workspace that hydrates it: workspaces hold references
+//! ([`index::reference`]), but an identical id in another workspace gets a distinct local document
+//! and collaboration route, and moving content across that boundary takes an explicit
+//! export/import. One document per record is forced, not chosen: an Automerge change graph names
+//! its dependencies by hash, so a filtered stream leaves the receiver holding orphaned changes.
+//! [`RecordSet`] owns the open records and hands the active one to the toolkit; [`tick`] parks the
+//! outgoing document and checks the named one in each frame. Not all app state is a record: a theme
+//! or account stays in the package-level document (the workspace index) instead.
 
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
@@ -88,12 +80,10 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     }
 }
 
-/// The workspace a record document is stamped with, read from the one place
-/// every reader goes: the key every record is written under, or the key one
-/// build wrote it under while the field was named `workspace`. A document
-/// holding both reads under the key every record is written with; a value
-/// that is not a name is a document that cannot say which workspace it
-/// belongs to, and it is refused rather than guessed at.
+/// The workspace a record document is stamped with, read from the one place every reader goes: the
+/// key every record is written under, or the key one build wrote it under while the field was named
+/// `workspace`. A document holding both reads under the one every record uses; a value that is not
+/// a name cannot say which workspace it belongs to, and is refused.
 fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
     match string_at(doc, meta, WORKSPACE) {
         StringAt::Missing => string_at(doc, meta, WORKSPACE_ALIAS),
@@ -314,12 +304,10 @@ fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bo
     true
 }
 
-/// Adopt the stored document of the first former identity of `want` that
-/// exists, belongs to `want`'s kind and workspace, and whose custody this
-/// successor can claim. `key` names a record's storage in the workspace; `load`
-/// decodes the document stored there. The former document is only read,
-/// never changed: the adopted copy is restamped and returned for the caller
-/// to persist under the new id.
+/// Adopt the stored document of the first former identity of `want` that exists, belongs to
+/// `want`'s kind and workspace, and whose custody this successor can claim. `key` names a record's
+/// storage in the workspace; `load` decodes what is stored there. The former document is only read:
+/// the adopted copy is restamped and returned for the caller to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
     want: &RecordCheckout,
@@ -528,13 +516,10 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
 // The record index: which records a workspace holds.
 // ---------------------------------------------------------------------------
 
-/// A workspace's index of the records it holds. Ownership of the index
-/// document is the caller's business — the session keeps one per workspace
-/// (`shell::room_records`).
-///
-/// **The reference is what grants access.** A member can reach only the
-/// records the workspace references. Removing a reference stops future
-/// changes flowing; it cannot un-share bytes a peer already synced.
+/// A workspace's index of the records it holds. Ownership of the index document is the caller's
+/// business — the session keeps one per workspace (`shell::room_records`). **The reference is what
+/// grants access**: a member reaches only the records the workspace references, and removing a
+/// reference stops future changes flowing but cannot un-share bytes a peer already synced.
 pub mod index;
 
 /// One record this process has open but is not currently showing.
@@ -562,12 +547,10 @@ pub struct RecordSet {
     /// The workspace these records are opened in, which is the cluster its
     /// route names. Stamped as a record's home when it is first created here.
     home: String,
-    /// The person's own cluster, for records kept in their own scope
-    /// ([`person::PERSONAL_SCOPE`]): their route names it, so one record of
-    /// an app is one record on every device the person uses, and the record
-    /// store that carries it is theirs rather than a workspace's. `None` for
-    /// records kept in a workspace, and for a person's records on a device
-    /// whose identity derives no cluster.
+    /// The person's own cluster, for records kept in their own scope ([`person::PERSONAL_SCOPE`]):
+    /// their route names it, so one record of an app is one record on every device the person uses,
+    /// and the store carrying it is theirs rather than a workspace's. `None` for workspace records,
+    /// and for a person's records on a device whose identity derives no cluster.
     person: Option<uuid::Uuid>,
     /// The workspace this person's records were kept in before their own
     /// store existed ([`collab_types::retired_person_workspace`]): a record
@@ -634,17 +617,13 @@ struct Reserved {
 }
 
 impl RecordSet {
-    /// The launch-environment set: per-record documents under this package's
-    /// state directory. The host's package id always wins over `manifest_id`
-    /// (as the workspace index is) — resolving it differently here would
-    /// split a package's records from its workspace index.
-    ///
-    /// The process environment names the package and workspace, and the native
-    /// store ([`app_state::DocStore::native_store`]) holds the documents; see
-    /// [`Self::open_in`]. Hosts with an explicit profile open records through
-    /// [`RecordOwners`] instead.
-    ///
-    /// The host's workspace (else cluster) id scopes the records.
+    /// The launch-environment set: per-record documents under this package's state directory. The
+    /// host's package id always wins over `manifest_id` (as the workspace index is), since
+    /// resolving it differently would split a package's records from its workspace index. The
+    /// process environment names the package and workspace, and the native store
+    /// ([`app_state::DocStore::native_store`]) holds the documents ([`Self::open_in`]); hosts with
+    /// an explicit profile open records through [`RecordOwners`] instead. The host's workspace
+    /// (else cluster) id scopes them.
     pub fn open(manifest_id: impl Into<String>) -> Self {
         let environment = crate::host::environment();
         let identity = &environment.identity;
@@ -1338,12 +1317,10 @@ impl RecordSet {
         ))
     }
 
-    /// Whether `id` is a record of the workspace rather than of one window:
-    /// the workspace's own document, and the records its people share
-    /// ([`collab_types::WORKSPACE_RECORDS`], such as a person's own state of
-    /// an app). Every window and host of the workspace writes such a record
-    /// — the app's windows, the session's own parts — so each joins it as a
-    /// shared writer. Any other record has one owner.
+    /// Whether `id` is a record of the workspace rather than of one window: the workspace's own
+    /// document, and the records its people share ([`collab_types::WORKSPACE_RECORDS`]). Every
+    /// window and host of the workspace writes such a record, so each joins it as a shared writer;
+    /// any other record has one owner.
     fn shared_in_workspace(&self, id: &RecordId) -> bool {
         id.is_package_primary()
             || collab_types::workspace_record(&self.package_id, id.as_str()).is_some()
@@ -1453,12 +1430,10 @@ impl RecordSet {
         {
             return Err(RecordOpenError::MissingRecord);
         }
-        // The workspace's own documents — its index, and the records its people
-        // share — are held by every window and host of the workspace, each in
-        // its own process, and a relaunch overlaps the instance still exiting:
-        // they join the document's shared writers (appends interleave and every
-        // load merges them) instead of refusing the second opener. Other
-        // records have one owner.
+        // The workspace's own documents — its index and the records its people share — are held by
+        // every window and host of the workspace, each in its own process, and a relaunch overlaps
+        // the instance still exiting: they join the document's shared writers (appends interleave
+        // and every load merges) instead of refusing the second opener.
         let owner = if self.shared_in_workspace(&want.id) {
             app_state::DocOwner::acquire_shared(Rc::clone(&backend), key)?
         } else {
@@ -1557,12 +1532,9 @@ impl RecordSet {
         Some((doc, &mut parked.history))
     }
 
-    /// Offer every open record's document to its own writer. The
-    /// multi-record twin of [`Self::tick`], for a host with no single live
-    /// document to hand in.
-    ///
-    /// # Errors
-    /// A record's cache reports that it could not take the document.
+    /// Offer every open record's document to its own writer: the multi-record twin of
+    /// [`Self::tick`], for a host with no single live document to hand in. # Errors A record's
+    /// cache reports that it could not take the document.
     pub fn tick_open(&mut self) -> Result<(), String> {
         if self.portable.is_some() {
             return self.flush_portable(None, false);
@@ -1821,18 +1793,12 @@ impl RecordOwners {
         self.open_scoped(package_id, scope, false, None)
     }
 
-    /// The owner of `package_id`'s records of the person `person` (the
-    /// lowercase hex of their identity root), kept in their own scope
-    /// ([`person::PERSONAL_SCOPE`]).
-    ///
-    /// Those records carry one route per `(app, record)` in the person's own
-    /// cluster, so every device of theirs that opens the record opens the
-    /// same document, and the person's store is what carries it between
-    /// them. A `person` that derives no cluster keeps them on this device,
-    /// as it does without a root identity.
-    ///
-    /// # Errors
-    /// Rejects an invalid package or scope.
+    /// The owner of `package_id`'s records of the person `person` (the lowercase hex of their
+    /// identity root), kept in their own scope ([`person::PERSONAL_SCOPE`]). Those records carry
+    /// one route per `(app, record)` in the person's own cluster, so every device of theirs that
+    /// opens the record opens the same document, and the person's store carries it between them; a
+    /// `person` that derives no cluster keeps them on this device. # Errors Rejects an invalid
+    /// package or scope.
     pub fn open_personal(
         &mut self,
         package_id: &str,
@@ -1989,16 +1955,13 @@ pub struct RecordRefusal {
     pub reason: String,
 }
 
-/// What windows said they did to a record ("Added Buy milk"), held until
-/// the workspace it is shared in keeps the change, so success is never said
-/// of a change the workspace then refuses ([`RecordStore::hold_notice`]).
-///
-/// A record no host replicates is decided by nobody else: what is said of
-/// it is said at once. A replicated one holds each notice with the heads it
-/// was said at; the next publication carries them, and once the workspace
-/// answered every commit of the record ([`RecordStore::workspace_settled`]) the
-/// notices are said. A refusal withdraws the changes, and a notice whose
-/// heads went with them is dropped: the refusal is said instead.
+/// What windows said they did to a record ("Added Buy milk"), held until the workspace it is shared
+/// in keeps the change, so success is never said of a change the workspace then refuses
+/// ([`RecordStore::hold_notice`]). A record no host replicates is decided by nobody else, so what
+/// is said of it is said at once; a replicated one holds each notice with the heads it was said at,
+/// the next publication carries them, and once the workspace answered every commit
+/// ([`RecordStore::workspace_settled`]) the notices are said. A refusal withdraws the changes, and
+/// a notice whose heads went with them is dropped: the refusal is said instead.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceNotices {
     /// A host replicates the record to a host that decides its changes.
@@ -2364,16 +2327,13 @@ pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
     Some(genesis_actor_of(&checkout.id, &checkout.kind, &home))
 }
 
-/// Make `doc` the record `checkout` of `workspace` as it is created: its
-/// identity and the app's `initialize`d content, in one change that is byte
-/// for byte the same on every peer that creates it. The change is made by an
-/// actor derived from the record's identity, at time zero, so it hashes the
-/// same everywhere: two members of a workspace that each create a record another
-/// member is creating too (a derived default, the same file) make the same
-/// change and converge on one record rather than two competing roots.
-/// `doc` is a fresh document of this device; what it holds so far (the
-/// store's schema stamp) is made part of the genesis, and its own actor
-/// writes everything after it.
+/// Make `doc` the record `checkout` of `workspace` as it is created: its identity and the app's
+/// `initialize`d content, in one change byte for byte the same on every peer that creates it. An
+/// actor derived from the record's identity makes it at time zero, so it hashes the same
+/// everywhere: two members that each create a record the other is creating too (a derived default,
+/// the same file) make the same change and converge on one record rather than two competing roots.
+/// `doc` is a fresh document of this device; what it holds so far (the store's schema stamp) is
+/// part of the genesis, and its own actor writes everything after it.
 fn genesis(
     doc: &mut AutoCommit,
     checkout: &RecordCheckout,
