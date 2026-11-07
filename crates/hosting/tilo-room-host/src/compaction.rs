@@ -28,8 +28,7 @@
 //! The host's snapshot is retained, never fanned out: connected devices
 //! already hold its content. Its certificate is retained beside it, so a
 //! replay carries it first (certificate lineages lead a replay) and a native
-//! shell accepts the host-signed state. Workspaces whose replay a native shell
-//! selects (a bound `shell_binding`) are left to that selection.
+//! shell accepts the host-signed state.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -419,9 +418,6 @@ impl Compactor {
         min_tail: usize,
     ) -> Result<(), String> {
         let store = workspace.lock().await.store.clone();
-        if store.shell_binding().is_some() {
-            return Ok(());
-        }
         let resealing = self.resealing();
         let keyed = resealing
             .then(|| lock(&self.0.keyed).get(&(workspace_id, channel)).cloned())
@@ -626,9 +622,6 @@ impl Compactor {
         let Ok(_job) = self.0.jobs.acquire().await else {
             return Ok(());
         };
-        if workspace.lock().await.store.shell_binding().is_some() {
-            return Ok(());
-        }
         self.fold_with_keys(
             workspace,
             workspace_id,

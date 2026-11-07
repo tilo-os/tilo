@@ -1,50 +1,27 @@
-//! Headless offscreen render harness: renders a Vello `Scene` into a GPU
-//! texture with no window, reads the bytes back, optionally writes a PNG.
+//! Headless offscreen render harness: renders a Vello `Scene` into a GPU texture with no window,
+//! reads the bytes back and optionally writes a PNG.
 //!
-//! `copy_texture_to_buffer` needs the buffer's row pitch aligned to
-//! `COPY_BYTES_PER_ROW_ALIGNMENT` (256 today), so a non-aligned width is
-//! padded and the padding stripped on readback.
+//! `copy_texture_to_buffer` needs the row pitch aligned to `COPY_BYTES_PER_ROW_ALIGNMENT` (256), so
+//! a non-aligned width is padded and the padding stripped on readback.
 //!
-//! Two renders of the *same* `Scene` are not guaranteed bit-identical:
-//! vello assigns path-segment order via `atomicAdd` (GPU scheduling), and
-//! float addition isn't associative, so coverage on a quantisation
-//! boundary can land ±1 in a channel. Measured here: ≤4/57 600 pixels,
-//! always ±1, ink-count unchanged. A race between concurrent renders in one
-//! process is not the only way to see it, and neither is a difference in the
-//! scene: the calculator's plot at 768x1024 with `--text-scale 1.5` wrote two
-//! PNGs from 24 runs of one binary — 20 one way, 4 the other — differing in
-//! one pixel, (509, 330), by one unit, on the antialiased edge of a curve,
-//! while all 24 encoded the same scene (219 paths, 2 651 segments, equal
-//! `path_data` and `draw_data`). The difference is the order those segments
-//! summed in, not the frame the app asked for. Its 3D surface at 1366x768 is
-//! the same tie at scale: 6 435 paths, 28 962 segments, one encoding, two
-//! frames one pixel apart at (727, 221). `VELLO_CANONICAL_SEGMENT_ORDER=1`
-//! sums every tile's segments in a fixed order and takes the tie away: one
-//! hash in 12/12, 20/20 and 12/12 runs at those sizes, for about 0.08 s on a
-//! 0.58 s capture. vello selects it (its `Renderer::enable_canonical_segment_order`)
-//! only where the renderer also reads its budget back, which a capture does.
-//! Until a capture asks for it, a gate over these frames may not demand byte
-//! equality. The order also follows the encoding: two scenes that differ only
-//! in a path far away render a pixel one unit apart. Measured
-//! in the block editor's retained-paint test: moving a 2 px caret in the
-//! heading (x 76.5 to 91.2, y 8 to 40.5) changed one paragraph pixel 170 px
-//! away, (246, 77), from blue 51 to 52, with every glyph, draw and transform
-//! of the paragraph unchanged and the renders of either scene equal within
-//! that ±1.
-//! Retained paint, which keeps undamaged pixels from the earlier scene,
-//! therefore matches a full render only within ±1. Compare with
-//! [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality. The
-//! stored pixels use straight alpha: RGB in fully transparent pixels is
-//! invisible, while if either pixel has nonzero alpha, every channel keeps the
-//! ±1 comparison tolerance. Exact untouched-pixel assertions remain separate
-//! checks for byte preservation.
+//! Two renders of the *same* scene are not byte-identical: vello orders path segments via
+//! `atomicAdd`, and float addition is not associative, so coverage on a quantisation boundary can
+//! land one unit either way. Measured: ≤4 pixels of 57 600, always ±1, ink count unchanged, from
+//! the same encoded scene — the summation order, not the frame the app asked for.
+//! `VELLO_CANONICAL_SEGMENT_ORDER=1` (what vello's `Renderer::enable_canonical_segment_order`
+//! selects for a capture) sums in a fixed order and removes it, and the order also follows the
+//! encoding, so two scenes differing only in a distant path can still differ by one unit. A gate
+//! over these frames must therefore compare with
+//! [`OffscreenRenderer::pixels_differing_beyond_aa`], never byte equality; retained paint, which
+//! keeps undamaged pixels, matches a full render only within the same ±1. Stored pixels use
+//! straight alpha: RGB in fully transparent pixels is invisible, while a pixel with nonzero alpha
+//! keeps the ±1 tolerance in every channel. Exact untouched-pixel assertions stay separate
+//! byte-preservation checks.
 //!
-//! Never cache one in a `thread_local!`: dropping wgpu resources touches
-//! wgpu's own thread-local, and TLS destructors run in reverse
-//! registration order, so a cache registered before the first wgpu call is
-//! torn down after wgpu's — `SIGABRT`, killing the process. Use a
-//! process-wide `static` instead (never drops); this type is `Send` to
-//! allow that.
+//! Never cache one in a `thread_local!`: dropping wgpu resources touches wgpu's own thread-local,
+//! and TLS destructors run in reverse registration order, so a cache registered before the first
+//! wgpu call is torn down after wgpu's — `SIGABRT`, killing the process. Use a process-wide
+//! `static` instead (never drops); this type is `Send` to allow that.
 
 /// How a picture is drawn where no GPU adapter is: on the CPU in the native
 /// toolkit (`offscreen/cpu.rs`), not at all on a browser page, which has no

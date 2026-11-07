@@ -8,10 +8,9 @@ use crate::workspace_access::WorkspaceOperation;
 
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, LiveFanout, LiveFrame, PeerError,
-    PreparedRecipients, PublicationFrames, PublicationScope, ReplayCatchup, ReplayPendingTarget,
-    ReplayPendingWork, SelectedPublication, SessionLease, SharedWorkspace, StateCommit,
-    StateSource, Step, StoreError, WorkLimit, captured_live_current, live_budget,
-    retention_publication_kind, test_point, trace_native_publication,
+    PreparedRecipients, ReplayCatchup, ReplayPendingTarget, ReplayPendingWork, SharedWorkspace,
+    StateCommit, StateSource, Step, StoreError, WorkLimit, live_budget, test_point,
+    trace_native_publication,
 };
 
 pub(super) async fn enqueue_state(
@@ -441,7 +440,6 @@ pub(super) async fn enqueue_state_inner(
         crate::persistence::Lane::Member
     };
     let publisher = StatePublisher {
-        workers: owner.workers(),
         workspace: workspace.clone(),
         source,
         host,
@@ -586,19 +584,6 @@ async fn prepare_admission(
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();
-    let session_lives = sessions
-        .iter()
-        .filter_map(|(device, tx)| {
-            runtime
-                .state_sessions
-                .get(device)
-                .map(|session| SessionLease {
-                    device: *device,
-                    outbound: tx.clone(),
-                    live: session.live.clone(),
-                })
-        })
-        .collect();
     let replay_targets = sessions
         .iter()
         .filter_map(|(device, _)| {
@@ -629,7 +614,6 @@ async fn prepare_admission(
     Ok(AdmissionRecipients {
         recipients,
         prepared: PreparedRecipients {
-            session_lives,
             sessions,
             replay_targets,
             logical_offline_bytes,
@@ -789,36 +773,21 @@ impl StateTurn {
         let Some(build) = self.retained_build.as_mut() else {
             return Ok(ControlFlow::Continue(()));
         };
-        let result = match crate::timing::windowed("owner.commit.retain_step", || {
+        let result = crate::timing::windowed("owner.commit.retain_step", || {
             build.step(WorkLimit::default())
-        }) {
-            Ok(result) => result,
-            Err(error) => {
-                let Some(activation) = build.publication_on_error() else {
-                    return Err(error);
-                };
-                // Keep the captured sessions and uncertain/committed cut
-                // across the worker error so completion fences them.
-                let Some(selected) = SelectedPublication::from_publication(activation) else {
-                    return Err(error);
-                };
-                current.selected = Some(selected);
-                current.activation_error = Some(error);
-                return Ok(ControlFlow::Break(Step::Done(
-                    self.commit.take().invariant("commit missing")?,
-                )));
-            }
-        };
+        })?;
         let Step::Done(outcome) = result else {
             return Ok(ControlFlow::Break(Step::More));
         };
         let written = outcome.written;
-        let publication = retention_publication_kind(&outcome.publication);
-        if let Some(work) = select_retained_publication(current, outcome.publication)? {
-            self.replay_pending_work = Some(work);
+        if !current.replay_targets.is_empty() {
+            self.replay_pending_work = Some(ReplayPendingWork::original(
+                current.envelope.clone(),
+                current.replay_targets.clone(),
+            ));
         }
         if crate::persistence::diagnostics() {
-            trace_retention_complete(build, publication);
+            trace_retention_complete(build);
         }
         if !build.holds_scratch() {
             // A plain delta made no scratch, so the owner has
@@ -832,26 +801,21 @@ impl StateTurn {
     }
 
     /// Hold the commit for sessions catching up by replay, one output budget
-    /// per quantum. A failure is the activation's, for completion to fence.
+    /// per quantum.
     fn step_replay_pending(
         &mut self,
         state: &mut crate::persistence::State,
     ) -> Result<Step<()>, crate::store::StoreError> {
         let current = self.commit.as_mut().invariant("commit missing")?;
         if let Some(work) = self.replay_pending_work.as_mut() {
-            match crate::timing::windowed("owner.commit.held_step", || {
-                work.step(state, crate::persistence::output_budget())
-            }) {
+            match crate::timing::windowed("owner.commit.held_step", || work.step(state)) {
                 Ok(Step::More) => return Ok(Step::More),
                 Ok(Step::Done(written)) => {
                     self.metrics.add_bytes_queued(written);
                     current.persisted_bytes = current.persisted_bytes.saturating_add(written);
                     self.replay_pending_work = None;
                 }
-                Err(error) => {
-                    current.activation_error = Some(error);
-                    self.replay_pending_work = None;
-                }
+                Err(error) => return Err(error),
             }
         }
         Ok(Step::Done(()))
@@ -894,72 +858,25 @@ fn admitted_commit(envelope: Envelope, prepared: PreparedRecipients, publish: bo
         pending: HashMap::new(),
         persisted_bytes: 0,
         sessions: prepared.sessions,
-        session_lives: prepared.session_lives,
         logical_offline_bytes: prepared.logical_offline_bytes,
         publish,
-        selected: None,
-        recovery_scope: false,
-        activation_error: None,
         replay_targets: prepared.replay_targets,
         accepted_deltas: 1,
     }
 }
 
-/// Record on `current` what its finished retained write publishes; returns
-/// the replay hold its catching-up sessions need, if any.
-fn select_retained_publication(
-    current: &mut StateCommit,
-    publication: crate::store::shell_selection::Publication,
-) -> Result<Option<ReplayPendingWork>, crate::store::StoreError> {
-    match publication {
-        crate::store::shell_selection::Publication::Suppress => {
-            current.publish = false;
-            current.replay_targets.clear();
-        }
-        publication @ (crate::store::shell_selection::Publication::Activate(_)
-        | crate::store::shell_selection::Publication::ReplayRequired(_)) => {
-            let Some(selected) = SelectedPublication::from_publication(publication) else {
-                return Err(crate::persistence::error(
-                    "selected publication changed kind",
-                ));
-            };
-            current.selected = Some(selected.clone());
-            if !current.replay_targets.is_empty() {
-                match ReplayPendingWork::selected(&selected, current.replay_targets.clone()) {
-                    Ok(work) => return Ok(Some(work)),
-                    Err(error) => current.activation_error = Some(error),
-                }
-            }
-        }
-        crate::store::shell_selection::Publication::Original => {
-            if !current.replay_targets.is_empty() {
-                return Ok(Some(ReplayPendingWork::original(
-                    current.envelope.clone(),
-                    current.replay_targets.clone(),
-                )));
-            }
-        }
-    }
-    Ok(None)
-}
-
-fn trace_retention_complete(build: &crate::store::retained::RetainBuild, publication: &str) {
-    let selection = build.selection_stats();
+fn trace_retention_complete(build: &crate::store::retained::RetainBuild) {
+    let stats = build.retention_stats();
     tracing::info!(
         phase = "retention_complete",
-        verified_publication = publication,
-        selected_obsolete = build.selected_obsolete(),
-        retention_preparation_reads = build.retention_stats().preparation_reads,
-        retention_peak_metadata_entries = build.retention_stats().peak_metadata_entries,
-        selection_preparation_reads = selection.map_or(0, |stats| stats.preparation_reads),
-        selection_peak_metadata_entries = selection.map_or(0, |stats| stats.peak_metadata_entries),
+        retention_preparation_reads = stats.preparation_reads,
+        retention_peak_metadata_entries = stats.peak_metadata_entries,
     );
 }
 
 /// An admitted delta's completion: once its owner turn made it durable,
 /// publish it to the workspace's live sessions.
 struct StatePublisher {
-    workers: Arc<tokio::sync::Semaphore>,
     workspace: SharedWorkspace,
     source: Option<StateSource>,
     /// The host's own change: the workspace's or a channel's governance.
@@ -1023,9 +940,7 @@ impl StatePublisher {
         mut commit: StateCommit,
     ) -> Result<StateCommit, crate::store::StoreError> {
         trace_native_publication(
-            if commit.activation_error.is_some() {
-                "activation_error"
-            } else if commit.publish {
+            if commit.publish {
                 "durable"
             } else {
                 "suppressed"
@@ -1060,127 +975,81 @@ impl StatePublisher {
                 logical_offline_bytes = commit.logical_offline_bytes
             );
         }
-        let scope = PublicationScope::of(&commit);
         let replay_targets = commit.replay_targets.clone();
         let mut delivered = 0u64;
-        let publication_result = self.deliver(&mut commit, scope, &mut delivered).await;
+        let publication_result = self.deliver(&mut commit, &mut delivered).await;
         self.metrics.add_deltas_fanned_out(delivered);
         if let Err(error) = publication_result {
-            if scope.activating || !replay_targets.is_empty() {
-                // A partial activation cannot leave a ready subscriber
-                // waiting forever for its missing exact half. Fence only
-                // the original session; reconnect uses durable full basis.
-                self.fence(&commit, scope, &replay_targets).await;
+            if !replay_targets.is_empty() {
+                self.fence(&replay_targets).await;
             }
             return Err(error);
         }
         Ok(commit)
     }
 
-    /// Publish each frame of `commit` to its captured sessions, counting
-    /// every delivery in `delivered`.
+    /// Publish `commit` to its captured sessions, counting every delivery in
+    /// `delivered`.
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the workspace guard is used until the end of each frame, through LiveFanout::deliver; the lint counts only method calls on the guard"
+        reason = "the workspace guard is used until the end, through LiveFanout::deliver; the lint counts only method calls on the guard"
     )]
     async fn deliver(
         &self,
         commit: &mut StateCommit,
-        scope: PublicationScope,
         delivered: &mut u64,
     ) -> Result<(), crate::store::StoreError> {
-        if let Some(error) = commit.activation_error.take() {
-            return Err(error);
+        let envelope = commit.envelope.clone();
+        let budget = live_budget(&envelope);
+        test_point!(
+            check(workspace self.workspace, "live-delivery-budget")
+            else budget = Err(crate::persistence::error("injected live delivery budget failure"))
+        );
+        // Every hydration/worker wait precedes a fresh current-source,
+        // recipient membership and exact subscriber-channel fence.
+        let mut runtime = crate::workspace_io::fresh_membership(&self.workspace).await?;
+        let fanned = FanoutStamp::of(&runtime);
+        if self
+            .source
+            .as_ref()
+            .is_some_and(|source| !source.authorized(&runtime))
+        {
+            return Ok(());
         }
-        let mut frames = PublicationFrames::open(
-            commit.selected.take(),
-            &commit.envelope,
-            self.workers.clone(),
-        )
-        .await?;
-        while let Some(envelope) = frames.next().await? {
-            let budget = live_budget(&envelope);
-            test_point!(
-                if matches!(envelope, super::LiveEnvelope::Original(_))
-                    => check(workspace self.workspace, "live-delivery-budget")
-                    else budget = Err(crate::persistence::error(
-                        "injected live delivery budget failure",
-                    ))
-            );
-            // Every hydration/worker wait precedes a fresh current-source,
-            // recipient membership and exact subscriber-channel fence.
-            let mut runtime = crate::workspace_io::fresh_membership(&self.workspace).await?;
-            let fanned = FanoutStamp::of(&runtime);
-            if self
-                .source
-                .as_ref()
-                .is_some_and(|source| !source.authorized(&runtime))
-            {
-                if scope.activating {
-                    return Err(crate::persistence::error(
-                        "activation source authorization changed",
-                    ));
-                }
-                break;
-            }
-            let frame = LiveFrame::new(
-                &runtime,
-                &envelope,
-                &budget,
-                fanned,
-                self.source.as_ref(),
-                self.host,
-            );
-            LiveFanout {
-                frame: &frame,
-                source: self.source.as_ref(),
-                scope,
-                session_lives: &commit.session_lives,
-                trace_recipients: true,
-            }
-            .deliver(
-                &mut runtime,
-                &commit.sessions,
-                &mut commit.pending,
-                delivered,
-            )?;
-            test_point!(signal(runtime.store.root(), "live-publication-complete"));
+        let frame = LiveFrame::new(
+            &runtime,
+            &envelope,
+            &budget,
+            fanned,
+            self.source.as_ref(),
+            self.host,
+        );
+        LiveFanout {
+            frame: &frame,
+            source: self.source.as_ref(),
+            trace_recipients: true,
         }
+        .deliver(
+            &mut runtime,
+            &commit.sessions,
+            &mut commit.pending,
+            delivered,
+        )?;
+        test_point!(signal(runtime.store.root(), "live-publication-complete"));
         Ok(())
     }
 
     /// Fence the sessions a failed publication may have left without the
     /// rest of their basis.
-    async fn fence(
-        &self,
-        commit: &StateCommit,
-        scope: PublicationScope,
-        replay_targets: &[ReplayPendingTarget],
-    ) {
+    async fn fence(&self, replay_targets: &[ReplayPendingTarget]) {
         let mut runtime = self.workspace.lock().await;
-        if scope.activating {
-            for (recipient, original) in &commit.sessions {
-                if scope.recovering
-                    && !captured_live_current(&commit.session_lives, &runtime, recipient, original)
-                {
-                    continue;
-                }
-                if let Some(sub) = runtime.subscribers.get(recipient)
-                    && sub.tx.same_channel(original)
-                {
-                    let _ = sub.disconnect.try_send(());
-                    runtime.remove_subscriber_session(recipient, original);
-                }
-            }
-        } else {
-            for target in replay_targets {
-                if target.current(&runtime)
-                    && let Some(sub) = runtime.subscribers.get(&target.device)
-                {
-                    let outbound = sub.tx.clone();
-                    let _ = sub.disconnect.try_send(());
-                    runtime.remove_subscriber_session(&target.device, &outbound);
-                }
+        for target in replay_targets {
+            if target.current(&runtime)
+                && let Some(sub) = runtime.subscribers.get(&target.device)
+            {
+                let outbound = sub.tx.clone();
+                let _ = sub.disconnect.try_send(());
+                runtime.remove_subscriber_session(&target.device, &outbound);
             }
         }
     }

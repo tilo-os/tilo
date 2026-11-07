@@ -2,10 +2,7 @@
 //! together, and the pending-replay work a retained batch leaves for
 //! catching-up sessions.
 
-use super::{
-    Arc, Envelope, EnvelopeV2, Invariant, ReplayCatchup, SelectedPublication, Step, inbound_bytes,
-    test_point,
-};
+use super::{Arc, Envelope, EnvelopeV2, Invariant, ReplayCatchup, Step, inbound_bytes, test_point};
 
 pub(super) const RETENTION_PREFIX_FRAME_CAP: usize = 32;
 pub(super) const RETENTION_PREFIX_BYTE_CAP: usize = 64 * 1024 * 1024;
@@ -171,17 +168,6 @@ pub(super) fn buffered_retention_prefix_with_limits<'a>(
     Some(shape)
 }
 
-pub(super) fn retention_publication_kind(
-    publication: &crate::store::shell_selection::Publication,
-) -> &'static str {
-    match publication {
-        crate::store::shell_selection::Publication::Suppress => "suppress",
-        crate::store::shell_selection::Publication::Activate(_) => "activate",
-        crate::store::shell_selection::Publication::ReplayRequired(_) => "recovery",
-        crate::store::shell_selection::Publication::Original => "original",
-    }
-}
-
 #[derive(Clone)]
 pub(super) struct ReplayPendingTarget {
     pub(super) device: [u8; 32],
@@ -207,18 +193,13 @@ impl ReplayPendingTarget {
     }
 }
 
-enum ReplayPendingPublication {
-    Original(Option<Arc<Envelope>>),
-    Selected(crate::store::replay::PublicationCursor),
-}
 struct ReplayPendingFrame {
     bytes: Vec<u8>,
-    _selected: Option<crate::store::replay::ReplayBatch>,
     sequence: Option<u64>,
     next_target: usize,
 }
 pub(super) struct ReplayPendingWork {
-    publication: ReplayPendingPublication,
+    envelope: Option<Arc<Envelope>>,
     targets: Vec<ReplayPendingTarget>,
     frame: Option<ReplayPendingFrame>,
     written: u64,
@@ -227,55 +208,29 @@ pub(super) struct ReplayPendingWork {
 impl ReplayPendingWork {
     pub(super) fn original(envelope: Arc<Envelope>, targets: Vec<ReplayPendingTarget>) -> Self {
         Self {
-            publication: ReplayPendingPublication::Original(Some(envelope)),
+            envelope: Some(envelope),
             targets,
             frame: None,
             written: 0,
         }
     }
-    pub(super) fn selected(
-        publication: &SelectedPublication,
-        targets: Vec<ReplayPendingTarget>,
-    ) -> Result<Self, crate::store::StoreError> {
-        Ok(Self {
-            publication: ReplayPendingPublication::Selected(publication.open()?),
-            targets,
-            frame: None,
-            written: 0,
-        })
-    }
     pub(super) fn step(
         &mut self,
         state: &mut crate::persistence::State,
-        budget: &crate::store::replay::ReplayBudget,
     ) -> Result<Step<u64>, crate::store::StoreError> {
         for _ in 0..crate::store::bounded::RUN_ENTRIES {
             if self.frame.is_none() {
-                let (bytes, selected) = match &mut self.publication {
-                    ReplayPendingPublication::Original(envelope) => envelope
-                        .take()
-                        .map(|envelope| crate::transport::encode(&envelope))
-                        .transpose()
-                        .map(|bytes| (bytes, None))
-                        .map_err(|error| crate::persistence::error(error.to_string()))?,
-                    ReplayPendingPublication::Selected(cursor) => match cursor.step(budget)? {
-                        Step::More => continue,
-                        Step::Done(Some(batch)) => {
-                            let bytes = crate::transport::encode(
-                                batch.front().invariant("one activation frame")?,
-                            )
-                            .map_err(|error| crate::persistence::error(error.to_string()))?;
-                            (Some(bytes), Some(batch))
-                        }
-                        Step::Done(None) => (None, None),
-                    },
-                };
+                let bytes = self
+                    .envelope
+                    .take()
+                    .map(|envelope| crate::transport::encode(&envelope))
+                    .transpose()
+                    .map_err(|error| crate::persistence::error(error.to_string()))?;
                 let Some(bytes) = bytes else {
                     return Ok(Step::Done(self.written));
                 };
                 self.frame = Some(ReplayPendingFrame {
                     bytes,
-                    _selected: selected,
                     sequence: None,
                     next_target: 0,
                 });

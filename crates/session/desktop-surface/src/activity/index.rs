@@ -550,18 +550,6 @@ impl WorkspaceHistoryIndex {
         self.refresh_inner(tree, records, query, None, None)
     }
 
-    /// Build a feed which also reads referenced, persisted records without
-    /// opening them in the app's live [`RecordStore`].
-    pub fn refresh_with_local_records(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        records: &RecordStore,
-        local: &dyn PersistedRecordHistory,
-        query: WorkspaceHistoryQuery,
-    ) -> bool {
-        self.refresh_inner(tree, records, query, None, Some(local))
-    }
-
     /// Join a caller's workspace-scoped tree rows with all records reachable from
     /// that workspace.  The supplied rows remain the exact objects used by the workspace
     /// pane, so naming and workspace labels cannot drift between surfaces.

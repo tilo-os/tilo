@@ -206,11 +206,6 @@ impl StateSource {
     }
 }
 
-#[derive(Clone)]
-pub(super) enum LiveEnvelope {
-    Original(Arc<Envelope>),
-    Selected(Arc<crate::store::replay::ReplayBatch>),
-}
 // Return only channels subject to the ordinary once-per-request live gate.
 // This is delivery policy, not authority: callers must first revalidate the
 // current authenticated source and retain all recipient/session fences.
@@ -218,12 +213,9 @@ pub(super) enum LiveEnvelope {
 /// ([`crate::payloads::ShellPayloads::audience`]); `None` for everyone.
 pub(super) fn live_audience(
     runtime: &crate::workspace::WorkspaceRuntime,
-    envelope: &LiveEnvelope,
+    envelope: &Arc<Envelope>,
 ) -> Option<std::collections::BTreeSet<[u8; 32]>> {
-    let LiveEnvelope::Original(original) = envelope else {
-        return None;
-    };
-    let Envelope::Delta { delta, .. } = &**original else {
+    let Envelope::Delta { delta, .. } = &**envelope else {
         return None;
     };
     let (crate::coedit::CoeditPayload::Checkpoint { body, .. }, _) =
@@ -236,13 +228,10 @@ pub(super) fn live_audience(
 
 pub(super) fn gated_checkpoint_channel(
     payloads: &dyn crate::payloads::ShellPayloads,
-    envelope: &LiveEnvelope,
+    envelope: &Arc<Envelope>,
     source: Option<&StateSource>,
 ) -> Option<[u8; 32]> {
-    let LiveEnvelope::Original(original) = envelope else {
-        return None;
-    };
-    let Envelope::Delta { delta, .. } = &**original else {
+    let Envelope::Delta { delta, .. } = &**envelope else {
         return None;
     };
     let (payload, outer_trailing) =
@@ -272,21 +261,8 @@ pub(super) fn gated_checkpoint_channel(
     Some(channel)
 }
 
-impl std::ops::Deref for LiveEnvelope {
-    type Target = Envelope;
-    #[expect(
-        clippy::expect_used,
-        reason = "a Selected envelope is only built from a non-empty activation batch"
-    )]
-    fn deref(&self) -> &Envelope {
-        match self {
-            Self::Original(envelope) => envelope,
-            Self::Selected(batch) => batch.front().expect("one activation frame"),
-        }
-    }
-}
 pub(crate) struct StateDelivery {
-    pub(super) envelope: LiveEnvelope,
+    pub(super) envelope: Arc<Envelope>,
     pub(super) cleanup: Option<std::path::PathBuf>,
     pub(super) source: Option<StateSource>,
     pub(super) _budget: Option<Arc<tokio::sync::OwnedSemaphorePermit>>,
@@ -386,76 +362,18 @@ impl StateDelivery {
     }
 }
 
-#[derive(Clone)]
-pub(super) enum SelectedPublication {
-    Activation(std::path::PathBuf),
-    Recovery(std::path::PathBuf),
-}
-impl SelectedPublication {
-    /// The selected publication a store outcome names, if it names one.
-    pub(super) fn from_publication(
-        publication: crate::store::shell_selection::Publication,
-    ) -> Option<Self> {
-        match publication {
-            crate::store::shell_selection::Publication::Activate(path) => {
-                Some(Self::Activation(path))
-            }
-            crate::store::shell_selection::Publication::ReplayRequired(path) => {
-                Some(Self::Recovery(path))
-            }
-            crate::store::shell_selection::Publication::Original
-            | crate::store::shell_selection::Publication::Suppress => None,
-        }
-    }
-    pub(super) fn open(
-        &self,
-    ) -> Result<crate::store::replay::PublicationCursor, crate::store::StoreError> {
-        match self {
-            Self::Activation(path) => crate::store::replay::PublicationCursor::open(path),
-            Self::Recovery(path) => crate::store::replay::PublicationCursor::open_recovery(path),
-        }
-    }
-}
-#[derive(Clone)]
-pub(super) struct SessionLease {
-    pub(super) device: [u8; 32],
-    pub(super) outbound: mpsc::Sender<Envelope>,
-    pub(super) live: Arc<std::sync::atomic::AtomicBool>,
-}
-pub(super) type SessionLives = Vec<SessionLease>;
-pub(super) fn captured_live_current(
-    lives: &SessionLives,
-    runtime: &crate::workspace::WorkspaceRuntime,
-    device: &[u8; 32],
-    outbound: &mpsc::Sender<Envelope>,
-) -> bool {
-    lives.iter().any(|lease| {
-        lease.device == *device
-            && lease.outbound.same_channel(outbound)
-            && lease.live.load(std::sync::atomic::Ordering::SeqCst)
-            && runtime
-                .state_sessions
-                .get(device)
-                .is_some_and(|session| Arc::ptr_eq(&lease.live, &session.live))
-    })
-}
 pub(super) struct StateCommit {
     pub(super) envelope: Arc<Envelope>,
     pub(super) pending: HashMap<[u8; 32], std::path::PathBuf>,
     pub(super) persisted_bytes: u64,
     pub(super) sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
-    pub(super) session_lives: SessionLives,
     pub(super) logical_offline_bytes: u64,
     pub(super) publish: bool,
-    pub(super) selected: Option<SelectedPublication>,
-    pub(super) recovery_scope: bool,
-    pub(super) activation_error: Option<crate::store::StoreError>,
     pub(super) replay_targets: Vec<ReplayPendingTarget>,
     pub(super) accepted_deltas: u64,
 }
 
 pub(super) struct PreparedRecipients {
-    pub(super) session_lives: SessionLives,
     pub(super) sessions: Vec<([u8; 32], mpsc::Sender<Envelope>)>,
     pub(super) replay_targets: Vec<ReplayPendingTarget>,
     pub(super) logical_offline_bytes: u64,

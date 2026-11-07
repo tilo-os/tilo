@@ -1,7 +1,7 @@
 //! Content above a bar docked at the foot of its column, as a described component.
 
 use crate::component::{Component, Described, SlotViews};
-use crate::widget::arrange::{Fit, Page, Slot, Stack};
+use crate::widget::arrange::{Fit, Length, MEASURE_REM, Page, Slot, Stack};
 use crate::widget::{Decorator, Element, Widget};
 
 /// Content that fills its column above a bar that stays at the column's foot: a
@@ -16,6 +16,10 @@ pub struct DockedProps {
     /// The bar at the foot, as tall as it needs.
     #[component(slot)]
     pub foot: Option<Element>,
+    /// The bar stands in the page column the content is read at: the readable measure, its
+    /// left edge and its width, so a reply answers the messages above it in their own column
+    /// rather than across a wide window.
+    pub page_column: bool,
 }
 
 /// [`DockedProps`] built: a stack filling its column, the content taking the room the foot
@@ -36,19 +40,25 @@ impl Described for Docked {
     type Props = DockedProps;
 
     fn from_props(_key: &str, props: DockedProps) -> Self {
-        let DockedProps { content, foot } = props;
+        let DockedProps {
+            content,
+            foot,
+            page_column,
+        } = props;
         let empty =
             || Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)) as Element;
+        let page = Page::full().foot();
+        let page = if page_column {
+            page.measure(Length::Rem(MEASURE_REM))
+        } else {
+            page
+        };
         let stack = Stack::stack()
             .fill_width()
             .fill_height()
             .push_slot(slot(content.unwrap_or_else(empty), Fit::fill(1.0)))
             .push_slot(slot(
-                Box::new(
-                    Page::full()
-                        .foot()
-                        .push_slot(Slot::new(foot.unwrap_or_else(empty))),
-                ),
+                Box::new(page.push_slot(Slot::new(foot.unwrap_or_else(empty)))),
                 Fit::hug(),
             ));
         Self { stack, editing: 0 }

@@ -133,6 +133,10 @@ pub struct TimeProps {
     pub role: TextRole,
     /// It stands beside the content it is about, in secondary ink: when a change was made.
     pub secondary: bool,
+    /// The moment has already happened, as a message received or an entry logged: a moment the
+    /// reader's clock has not reached yet (the clock of the device that wrote it runs ahead)
+    /// reads `just now`, never ahead.
+    pub past: bool,
 }
 
 /// [`TimeProps`]' widget: a [`Text`] that reads its moment against the wall clock.
@@ -141,6 +145,7 @@ pub struct RelativeTime {
     at: i64,
     role: TextRole,
     secondary: bool,
+    past: bool,
     /// When what it says next reads differently, in seconds since 1970.
     changes_at: Cell<Option<i64>>,
 }
@@ -154,6 +159,7 @@ impl RelativeTime {
             at,
             role: TextRole::Body,
             secondary: false,
+            past: false,
             changes_at: Cell::new(None),
         };
         time.read_clock(crate::time::unix_now_i64());
@@ -170,11 +176,19 @@ impl RelativeTime {
     /// Whether what it says changed.
     fn read_clock(&mut self, now: i64) -> bool {
         let before = self.text.resolved_label();
-        let shown = relative_text(self.at, now);
-        self.changes_at.set(next_change(self.at, now));
+        let at = self.moment(now);
+        let shown = relative_text(at, now);
+        self.changes_at.set(next_change(at, now));
         let changed = before != shown;
         self.text.show_content(shown);
         changed
+    }
+
+    /// The moment it shows at `now`: a moment that has happened stands at `now` while the
+    /// reader's clock has not reached it, so a sender's clock ahead of theirs reads as mail
+    /// that has just arrived rather than mail from the future.
+    fn moment(&self, now: i64) -> i64 {
+        if self.past { self.at.min(now) } else { self.at }
     }
 
     /// Read the clock again when what it says is due to change; otherwise nothing.
@@ -232,6 +246,7 @@ impl Described for RelativeTime {
             at,
             role,
             secondary,
+            past,
         } = props;
         let mut text = Text::new("").with_role(role).with_id(key);
         if secondary {
@@ -242,15 +257,16 @@ impl Described for RelativeTime {
             at: at.0,
             role,
             secondary,
+            past,
             changes_at: Cell::new(None),
         };
         time.read_clock(crate::time::unix_now_i64());
         time
     }
 
-    /// Another moment reads in place; another role or ink builds it again.
+    /// Another moment reads in place; another role, ink or kind of moment builds it again.
     fn set_props(&mut self, props: TimeProps) -> bool {
-        if props.role != self.role || props.secondary != self.secondary {
+        if props.role != self.role || props.secondary != self.secondary || props.past != self.past {
             return false;
         }
         if props.at.0 != self.at {
@@ -289,6 +305,17 @@ mod tests {
             "t",
             TimeProps {
                 at: Moment(at),
+                ..TimeProps::default()
+            },
+        )
+    }
+
+    fn widget_past(at: i64) -> RelativeTime {
+        RelativeTime::from_props(
+            "t",
+            TimeProps {
+                at: Moment(at),
+                past: true,
                 ..TimeProps::default()
             },
         )
@@ -357,6 +384,22 @@ mod tests {
         assert_eq!(relative_text(at, at - 180), "in 3 min");
         assert_eq!(next_change(at, at - 180), Some(at - 120));
         assert_eq!(relative_text(at, at), "just now");
+    }
+
+    #[test]
+    fn a_moment_that_has_happened_never_reads_ahead_of_the_reader() {
+        let at = local_secs(30, (10, 0, 0));
+        // The device that wrote it runs five minutes ahead of the one reading it.
+        let mut time = with_wall(wall(at), || widget_past(at + 300));
+        assert_eq!(time.label(), "just now");
+        // It still wakes when `just now` ends, and keeps saying it until the reader's clock
+        // reaches the moment, which then reads as the time it happened.
+        assert_eq!(with_wall(wall(at), || wait(&time)), Some(45));
+        let reached = with_wall(wall(at + 400), || {
+            time.follow_clock();
+            time.label()
+        });
+        assert_eq!(reached, "1 min ago");
     }
 
     #[test]

@@ -1,14 +1,8 @@
-//! `DataTable` primitive — sortable, resizable, virtualized tabular view.
-//!
-//! Sort is non-destructive: rows stay in insertion order and an index `view`
-//! carries the display order, so [`DataTable::sort_by_with`] can re-apply the
-//! remembered comparator whenever local rows change. [`DataTable::from_model`]
-//! instead delegates order and paging to [`TableModel`]. Its sparse viewport
-//! keeps memory proportional to measured/visible rows even when the logical
-//! model has hundreds of millions of entries. Keyed, variable-height row
-//! virtualization ([`DataTableCore::set_viewport`]/[`DataTableCore::visible_row_range`])
-//! windows paint, hit testing, fetching, scrolling, and accessibility to the
-//! same visible rows.
+//! `DataTable` primitive — sortable, resizable, virtualized tabular view. Sort is non-destructive:
+//! rows stay in insertion order and an index `view` carries the display order, so
+//! [`DataTable::sort_by_with`] re-applies the remembered comparator whenever local rows change,
+//! while [`DataTable::from_model`] delegates order and paging to [`TableModel`]. Its sparse
+//! viewport keeps memory proportional to what is shown.
 
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};
@@ -1315,12 +1309,10 @@ impl DataTableCore {
         self
     }
 
-    /// The table stands in a page its host scrolls as a whole (a painted
-    /// page with a hero above the table and more below it). The host keeps
-    /// the table's rect on the part of it in view and tells it which rows
-    /// that is with [`Self::set_host_window`]; the table mounts and paints
-    /// only those, keeps its header at the top of that part, draws no scroll
-    /// bar of its own and leaves the wheel to the host.
+    /// The table stands in a page its host scrolls as a whole (a painted page with a hero above and
+    /// more below). The host keeps the table's rect on the part in view and tells it which rows
+    /// that is with [`Self::set_host_window`]; the table mounts and paints only those, keeps its
+    /// header at the top of that part, draws no scroll bar and leaves the wheel to the host.
     #[must_use]
     pub fn host_scrolled(mut self) -> Self {
         self.host_scrolled = true;
@@ -1759,12 +1751,10 @@ impl DataTableCore {
         self
     }
 
-    /// Run `f(row, ctrl, shift)` when a row is clicked: the table, as
-    /// control `id`, publishes the click as its view action `click`, so a
-    /// person's click, a screen reader, a script and an agent click through
-    /// the same action. Every row callback names the row by its index in the
-    /// rows the host set (`Self::set_rows`), however the table has sorted
-    /// them.
+    /// Run `f(row, ctrl, shift)` when a row is clicked: the table, as control `id`, publishes the
+    /// click as its view action `click`, so a person's click, a screen reader, a script and an
+    /// agent click through the same action. Every row callback names the row by its index in the
+    /// rows the host set ([`Self::set_rows`]), however the table sorted them.
     #[must_use]
     #[expect(
         clippy::expect_used,
@@ -2644,12 +2634,10 @@ impl DataTableCore {
         !self.host_scrolled && self.viewport.viewport() > 0.0 && self.v_metrics().overflows()
     }
 
-    /// The band the columns share, by the one content edge (HIG §9.3): the
-    /// first column's text starts on the table's leading edge and the last
-    /// column's ends on its trailing edge, each cell padded by the bleed, so
-    /// the band, and the lift and stripe that fill it, stand the bleed past
-    /// the table on both sides. While the scroll bar shows, the band stops
-    /// at the bar's gutter, so the bar never covers a column.
+    /// The band the columns share, by the one content edge (HIG §9.3): the first column's text
+    /// starts on the table's leading edge and the last column's ends on its trailing edge, each
+    /// cell padded by the bleed, so the band, and the lift and stripe that fill it, stand the bleed
+    /// past the table on both sides. While the scroll bar shows, the band stops at its gutter.
     fn columns_band(&self) -> Rect {
         let x0 = self.rect.x0 - self.bleed;
         let x1 = if self.internal_scroll() {
@@ -3041,12 +3029,10 @@ impl DataTableCore {
         }
     }
 
-    /// Row backgrounds (selection fill / zebra stripe) and per-column cell
-    /// content, windowed to [`Self::visible_row_range`] plus overscan: each
-    /// row (and the add row) a part of the scrolled body, drawn where it
-    /// stands in the rows as if unscrolled
-    /// ([`crate::scroll_copy::Painted`]), so a row a scroll only moved
-    /// encodes the same and a host copies it.
+    /// Row backgrounds (selection fill, zebra stripe) and per-column cell content, windowed to
+    /// [`Self::visible_row_range`] plus overscan: each row (and the add row) a part of the scrolled
+    /// body, drawn where it stands in the rows as if unscrolled ([`crate::scroll_copy::Painted`]),
+    /// so a row a scroll only moved encodes the same and a host copies it.
     fn draw_rows(
         &self,
         transform: Affine,
@@ -5511,12 +5497,10 @@ impl<'a> FaceColumn<'a> {
     }
 }
 
-/// An immediate-mode table for a painted host (a track list): the
-/// [`DataTable`]'s header, columns, row heights, zebra and lift, painted per
-/// frame. `paint` takes the table's content rect; the lift and the stripe
-/// bleed past it by [`crate::chrome::row_bleed`] as the retained table's do.
-/// The host hit-tests with [`Self::row_at`] and scrolls by passing the rows
-/// it shows.
+/// An immediate-mode table for a painted host (a track list): the [`DataTable`]'s header, columns,
+/// row heights, zebra and lift, painted per frame. `paint` takes the table's content rect; the lift
+/// and stripe bleed past it by [`crate::chrome::row_bleed`] as the retained table's do. The host
+/// hit-tests with [`Self::row_at`] and scrolls by passing the rows it shows.
 #[derive(Clone, Debug)]
 pub struct DataTableFace<'a> {
     columns: &'a [FaceColumn<'a>],

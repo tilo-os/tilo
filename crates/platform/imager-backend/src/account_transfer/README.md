@@ -214,8 +214,10 @@ bytes can leave this backend. Non-local contributed accounts are excluded.
 `Connector::seal_selected_accounts_with_password` now generates a fresh account
 content key and wraps it using canonical password sealing under the distinct
 `tilo-prepared-account-key/v1` domain plus explicit operation binding.
-`PasswordSealedAccounts::{as_bytes,from_bytes,read}` supports bounded artifact
-handoff, and `Connector::import_password_sealed_accounts` opens and reseals it.
+`PasswordSealedAccounts::{as_bytes,from_bytes}` and `read_artifact` support
+bounded artifact handoff, and `Connector::import_password_sealed_accounts` opens
+and reseals it. The codec itself lives in `account_custody::portable`; this
+backend adds only the pinned reads and atomic publication of the artifact file.
 Version 1 accepts only the canonical default Argon2 policy before derivation,
 refusing untrusted resource-expensive KDF parameters. The transport password
 uses the existing migration policy: at least 15 UTF-8 characters.

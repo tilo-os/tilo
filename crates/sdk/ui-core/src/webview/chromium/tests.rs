@@ -2621,3 +2621,49 @@ fn page_questions_reach_only_a_tab_that_answers_them() {
     });
     assert_eq!(queued(), 0, "an answer past the host's bound is never sent");
 }
+
+#[test]
+#[cfg(unix)]
+fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
+    // Closing the command queue hangs up helper stdin. Keep stdout owned by
+    // the supervised helper until cancellation fails it; otherwise an unrelated
+    // EOF can win the first-error latch before the refusal under test.
+    let (_fixture, host) = helper_fixture("exec 3>&1; cat >/dev/null; exec sleep 30");
+    // This route joins the supervisor on drop, so a fast test process cannot
+    // exit before its deliberately live helper has been killed and reaped.
+    let root = private_root();
+    let engine = ChromiumEngine::with_private_host(&host, &root).unwrap();
+    let enabled = Arc::new(AtomicBool::new(false));
+    let reentered = Arc::new(AtomicBool::new(false));
+    let weak = Arc::downgrade(&engine);
+    let ready = enabled.clone();
+    let observed = reentered.clone();
+    engine.set_waker(Box::new(move || {
+        if ready.swap(false, Ordering::AcqRel) {
+            weak.upgrade()
+                .unwrap()
+                .send(WebViewCommand::CancelScopedNavigation { request_id: 2 });
+            observed.store(true, Ordering::Release);
+        }
+    }));
+    engine.tx.close();
+    enabled.store(true, Ordering::Release);
+    let cancelling = engine.clone();
+    let (finished, received) = sync_channel(1);
+    let worker = std::thread::spawn(move || {
+        cancelling.send(WebViewCommand::CancelScopedNavigation { request_id: 1 });
+        finished.send(()).unwrap();
+    });
+    tilo_test_env::recv(
+        "cancel refusal must allow its waker to reenter the command path",
+        &received,
+    );
+    worker.join().unwrap();
+    assert!(reentered.load(Ordering::Acquire));
+    assert!(engine.drain_events().iter().any(|event| matches!(event, WebViewEvent::LoadFailed { error, .. } if error.contains("cancellation was not queued"))));
+    drop(engine);
+    assert!(
+        !root.exists(),
+        "cancellation failure must reap its owned helper"
+    );
+}

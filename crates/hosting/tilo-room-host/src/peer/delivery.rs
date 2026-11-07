@@ -2,8 +2,8 @@
 //! authorizing, writing and retiring state deliveries.
 
 use super::{
-    AsyncWriteExt, AuthenticatedPeer, Envelope, LiveEnvelope, PeerError, SessionCtx,
-    SharedWorkspace, StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_record,
+    AsyncWriteExt, AuthenticatedPeer, Envelope, PeerError, SessionCtx, SharedWorkspace,
+    StateDelivery, WorkspaceOperation, authorize_state_recipient, resume_record,
     trace_native_publication, unix_now_ns,
 };
 
@@ -240,7 +240,7 @@ async fn authorize_state_deliveries(
         .get(&workspace_id)
         .cloned()
         .ok_or_else(|| PeerError::Protocol("state workspace disappeared".into()))?;
-    let mut runtime = crate::workspace_io::fresh_membership(&workspace).await?;
+    let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     if !session.admits(&runtime, peer, WorkspaceOperation::State) {
         drop(runtime);
         return Ok((Vec::new(), workspace));
@@ -261,14 +261,6 @@ async fn authorize_state_deliveries(
             .as_ref()
             .is_some_and(|source| !source.authorized(&runtime))
         {
-            if matches!(&delivery.envelope, LiveEnvelope::Selected(_)) {
-                // CURRENT already committed this activation. A missing half
-                // cannot be retried live after semantic suppression; reconnect
-                // needs the durable basis. The exact recipient lease was
-                // checked above.
-                let _ = session.disconnect.try_send(());
-                runtime.remove_subscriber_session(&peer.device_public_key, session.outbound);
-            }
             continue;
         }
         accepted.push(delivery);

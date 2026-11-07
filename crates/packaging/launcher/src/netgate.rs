@@ -623,7 +623,6 @@ impl Destination {
 /// SOCKS5 reply codes we emit.
 pub mod reply {
     pub const SUCCESS: u8 = 0x00;
-    pub const GENERAL_FAILURE: u8 = 0x01;
     /// "connection not allowed by ruleset" — the allowlist said no.
     pub const NOT_ALLOWED: u8 = 0x02;
     pub const HOST_UNREACHABLE: u8 = 0x04;

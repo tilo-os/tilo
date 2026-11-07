@@ -1,15 +1,11 @@
 //! Driving a `ui` app without a display.
 //!
-//! `--shots` renders a cold-start frame offscreen but never delivers input,
-//! so it can't answer *does a change survive a restart?* [`FrameHarness`] does:
-//! it stands up the app's widget tree over a Taffy layout at a fixed
-//! viewport and feeds it the same `WindowEvent`s winit would, through the
-//! same [`Widget::handle_event`] the
-//! live app uses — nothing stubbed, including CRDT mutations.
+//! `--shots` renders a cold-start frame offscreen but never delivers input, so it can't answer
+//! *does a change survive a restart?* [`FrameHarness`] does: it stands up the app's widget tree over
+//! a Taffy layout at a fixed viewport and feeds it the same `WindowEvent`s winit would, through the
+//! same [`Widget::handle_event`] the live app uses — nothing stubbed, including CRDT mutations.
 //!
-//! Every app launched through the standard lifecycle takes a
-//! `--headless-drive '<json>'` flag:
-//!
+//! Every app launched through the standard lifecycle takes a `--headless-drive '<json>'` flag:
 //! ```text
 //! ebook --headless-drive '{"actions":[{"click_named":"library_item[0]"}]}'
 //! ebook --headless-drive '{"dump":"/tmp/after.json"}'
@@ -92,19 +88,16 @@ fn action_description(action: &Action) -> String {
     }
 }
 
-/// One node in a developer inspection snapshot.
-///
-/// `semantics` is the exact toolkit [`AccessNode`] used to build the exported
-/// AccessKit tree. Its nested `children` include virtualized semantic rows and
-/// cells that do not have a retained widget of their own.
+/// One node in a developer inspection snapshot; `semantics` is the [`AccessNode`] the exported
+/// AccessKit tree was built from, and `children` include virtualized rows and cells that own no
+/// retained widget.
 #[derive(Debug, serde::Serialize)]
 pub struct InspectionNode {
     pub path: String,
     pub widget: String,
     pub test_id: Option<String>,
-    /// Whether the retained widget participates in keyboard focus traversal.
-    /// Kept in the inspection format so an omitted semantic node cannot hide
-    /// an interactive control from the accessibility audit.
+    /// Whether the retained widget takes part in keyboard focus traversal; kept in the inspection
+    /// format so an omitted semantic node cannot hide a control from the accessibility audit.
     pub focusable: bool,
     /// `[x, y, width, height]` in logical window coordinates.
     pub rect: [f64; 4],
@@ -121,9 +114,9 @@ pub struct InspectionNode {
 #[derive(Debug, serde::Serialize)]
 pub struct InspectionSnapshot {
     pub viewport: [u32; 2],
-    /// Exact retained owner of the runner's current keyboard focus. Widgets
-    /// in other mounted apps may independently retain local editor focus.
-    /// Always serialize absence as null: omission means legacy unknown ownership.
+    /// The retained owner of the runner's current keyboard focus; other mounted apps may hold
+    /// editor focus of their own. Absence serializes as null: omission means legacy unknown
+    /// ownership.
     pub keyboard_focus_owner: Option<String>,
     pub root: InspectionNode,
 }
@@ -235,11 +228,14 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSchedule {
+    /// A frame drawn now would show something the last one did not: queued
+    /// work, a changed paint, an animation, a due deadline. False is rest.
     pub needs_redraw: bool,
-    /// The part of `needs_redraw` that is queued work: a component wake, a
-    /// pending invocation or a presence change. Widget dirtiness is left
-    /// out (leaves default to dirty), so a host that takes frames only for
-    /// input and this work stays idle while nothing happens.
+    /// The part of `needs_redraw` that is work queued off the tree: a
+    /// component wake, a pending invocation, a presence change, a layout a
+    /// row declaration asked for. Widget dirtiness is left out, so a host
+    /// that takes frames for queued work alone keeps a change drawn by hand
+    /// (an input the host answers with a frame) from waiting on it.
     pub queued_work: bool,
     pub needs_animation_frame: bool,
     pub next_wake_deadline: Option<crate::time::Instant>,
@@ -345,21 +341,18 @@ pub struct FrameHarness {
     /// The maps the last completed model service set aside, unread until
     /// its readmission checks them against the live tree.
     serviced_layout: Option<retained_layout::ServicedLayout>,
-    /// A replaced composition seen by a focus capture before the next
-    /// layout took it up: the next [`Self::take_composition_dirty`] still
-    /// reports it.
+    /// A replaced composition a focus capture saw before the next layout took it up: the next
+    /// [`Self::take_composition_dirty`] still reports it.
     composition_replaced: bool,
-    /// The root's widgets reported a change they carry out in place
-    /// ([`crate::widget::StructureChange::Children`]): the next layout
-    /// remounts their children in the retained tree, unless it rebuilds.
+    /// The root's widgets changed their children in place: the next layout remounts them, unless it
+    /// rebuilds.
     remount: bool,
     layout_requested: bool,
     /// The input generation the last drawn frame read: input handed to the
     /// tree after it makes the next frame due.
     drawn_input: u64,
-    /// Whether the frame on screen stands on a reading from outside the tree
-    /// ([`crate::outside_paint`]): input handed to the tree makes the next
-    /// one due only when it does.
+    /// The frame on screen stands on a reading from outside the tree, so input alone makes the next
+    /// one due.
     drawn_outside: bool,
     state: Box<State>,
     root: Box<dyn Widget>,
@@ -375,21 +368,18 @@ pub struct FrameHarness {
     /// on screen.
     window_refusal: Option<String>,
     ordinary_palette_return_focus: Option<crate::widget::layout::CompositionFocus>,
-    /// The window the open palette was asked for from, when the root lays
-    /// several out (the desktop's strip of app tiles): the palette stands
-    /// over it, as an app's own palette stands over its window.
+    /// The window the open palette stands over, when the root lays several out (the desktop's strip
+    /// of app tiles).
     palette_window: Option<Rect>,
-    /// Where the pointer is, which buttons it holds, and where the last
-    /// press landed until a key is pressed: a confirmation a press asked for
-    /// stands over the window pressed in.
+    /// Pointer position, buttons held and where the last press landed until a key is pressed: a
+    /// confirmation stands over the window pressed in.
     pointer: crate::host_core::PointerPlace,
     /// The open search palette has provider pages left to read.
     search_pending: bool,
     root_lifetime: uuid::Uuid,
     framework_input: std::rc::Rc<std::cell::Cell<bool>>,
-    /// Whether the window's History still holds the owners it registered, as
-    /// this frame last asked: the frame asks several times, and the answer
-    /// only moves when the composition does.
+    /// Whether the window's History still holds the owners it registered, as this frame last asked;
+    /// the answer moves only with the composition.
     history_standing: std::cell::Cell<Option<bool>>,
     taffy: TaffyTree<()>,
     node_map: HashMap<NodeId, *mut dyn Widget>,
@@ -402,14 +392,12 @@ pub struct FrameHarness {
     /// A frame was laid out: what arrives after it moves in
     /// (`motion::window_has_shown`).
     shown_a_frame: bool,
-    /// [`crate::permissions::shared_revision`] as the last frame drew it: a
-    /// permission change moves what widgets paint with nothing in the tree
-    /// marking it, so the next frame draws again from a cleared cache.
+    /// [`crate::permissions::shared_revision`] as the last frame drew it: a permission change
+    /// repaints widgets that nothing in the tree marks, so the next frame clears its cache.
     drawn_permissions: u64,
     child_node: NodeId,
-    /// The harness stands in for the desktop's window bar: the app's slots,
-    /// search and History are hosted there and every capture paints it over
-    /// the app's frame ([`Self::present_in_window_bar`]).
+    /// The harness stands in for the desktop's window bar, hosting the app's slots, search and
+    /// History and painting it over every capture.
     window_bar: bool,
     /// The window bar's search over the app's widgets, painted in the bar
     /// ([`Self::search_in_window`]).
@@ -420,9 +408,8 @@ pub struct FrameHarness {
     /// The app a concrete root stands for ([`Self::for_app`]): its kind and
     /// title, which its window's bar wears as a desktop window's tab does.
     window_app: Option<(crate::widget::AppKind, String)>,
-    /// What each frame's control refresh discovered, as the live App keeps
-    /// it: a component publishing a shared forest is filtered and surveyed
-    /// only where its forest changed.
+    /// What each frame's control refresh discovered: a component's shared forest is filtered and
+    /// surveyed only where it changed.
     bound_resources: crate::bound_dispatch::BoundResourceCache,
     /// Advanced whenever something a component's declarations may follow
     /// moved since the last publication ([`Self::bound_resource_key`]), so
@@ -446,16 +433,13 @@ pub struct FrameHarness {
     frame_witness: Option<FrameWitness>,
     /// Frames that skipped sync and publication as quiet, since construction.
     quiet_frames: u64,
-    /// The last frame was quiet, kept its composition, and nothing its
-    /// witness reads moved while it ran: the next quiet frame need not ask
-    /// the History surfaces again what only those inputs answer
-    /// ([`crate::history_mode::embedded::surfaces_at_rest`]).
+    /// The last frame was quiet and nothing its witness reads moved, so the next one need not ask
+    /// the History surfaces what only those inputs answer.
     history_settled: bool,
     /// Quiet frames that took that answer from the frame before them.
     settled_history_frames: u64,
-    /// The last frame showed a window at rest by replaying its drawing
-    /// ([`crate::retained_present::PanReplay`]): what that window's widgets
-    /// noted while drawing still describes where it was drawn.
+    /// The last frame replayed a window at rest, so what its widgets noted while drawing still
+    /// describes where it was drawn.
     replayed_draws: bool,
     /// Windows shown by replaying their drawing, since construction.
     replayed_window_draws: u64,
@@ -470,9 +454,8 @@ pub struct FrameHarness {
     pan_replay_allowed: bool,
     /// Frames drawn, numbered for [`crate::retained_present::PanReplay`].
     pan_frames: u64,
-    /// The host drives frames through [`Self::poll_frame`], so a witness can
-    /// make one quiet. A host that only calls [`Self::relayout`] never reads
-    /// one and does not pay for taking it.
+    /// The host drives frames through [`Self::poll_frame`], so a witness can make one quiet; a host
+    /// that only calls [`Self::relayout`] never reads one.
     polls_frames: bool,
     text: Box<TextRenderer>,
     theme: Box<Theme>,
@@ -489,21 +472,16 @@ pub struct FrameHarness {
     /// the capture renderer blurs under the material as a live window does.
     backdrop: std::sync::Arc<crate::backdrop::BackdropFrame>,
     presence: Box<PresenceCtx>,
-    /// Presence changed through [`Self::update_presence`]: the next frame
-    /// redraws (the collaborator overlays read presence at draw time) without
-    /// an extra synchronous relayout.
+    /// Presence changed through [`Self::update_presence`]: the next frame redraws the collaborator
+    /// overlays without a synchronous relayout.
     presence_redraw: bool,
     /// Other people's pointers its host placed over this surface
     /// ([`Self::set_placed_pointers`]), drawn above everything else.
     placed_pointers: Vec<crate::presence::PeerCursor>,
     /// Hover tooltips, driven by host input ([`Self::send_host_event`]).
     tooltips: crate::host_core::TooltipLayer,
-    /// The last frame drew a motion (the tooltip's arrival, a popover's)
-    /// before its end. A motion asks for frames only until it ends, and a
-    /// host whose frames come slower than the motion lasts (a busy or
-    /// software-rendered GPU) would see it end between two frames and keep
-    /// its last pose, mid-way, on screen: this owes the frame that draws it
-    /// at rest.
+    /// The last frame drew a motion before its end, so a host whose frames come slower than the
+    /// motion lasts owes the frame that draws it at rest.
     settle_frame_owed: bool,
     permissions: PermissionContext,
     modifiers: winit::event::Modifiers,
@@ -519,25 +497,18 @@ pub struct FrameHarness {
     /// As the live host: where the pointer last moved, replayed before a
     /// press or release that follows a rebuild under a still pointer.
     pointer_replay: crate::pointer_replay::PointerReplay,
-    /// Records this driver has open, when the app under test uses them —
-    /// without this a record-aware app would be driven against its workspace
-    /// index instead of the record it checked out, testing something the
-    /// user never runs.
+    /// The records this driver has open, for apps that use them; without them a record-aware app
+    /// would be driven against its workspace index instead.
     records: Option<crate::record::RecordSet>,
     room_index: Option<Box<automerge::AutoCommit>>,
-    /// The taffy node holding keyboard focus, or `None`. Mirrors
-    /// [`crate::app::App::focused_node`] — focus is App-level, not
-    /// something the root widget's `handle_event` does. Remapped across
-    /// every `relayout` by scanning for `is_focused()`: widget instances
-    /// survive a relayout, their taffy ids do not.
+    /// The taffy node holding keyboard focus, or `None`; remapped on every relayout by scanning for
+    /// `is_focused()`, since widget instances survive a relayout but their taffy ids do not.
     focused: Option<NodeId>,
-    /// The name the control with the keyboard answers to, as it stood before
-    /// a rebuild could replace it: what tells a rebuilt part that the answer
-    /// the person was on still stands in the new tree.
+    /// The name the focused control answered to before a rebuild could replace it: what tells a
+    /// rebuilt part the person's focus still stands.
     focus_name: Option<String>,
-    /// Whether this layout's keyboard came from a control answering by name
-    /// alone, not from one reporting itself focused. The frame's own snapshot
-    /// of where the keyboard was outranks a name, and takes its state along.
+    /// Whether this layout's keyboard came from a control answering by name alone; the frame's own
+    /// snapshot of where the keyboard was outranks a name.
     focus_by_name: bool,
     focus_trap_active: bool,
     active_input_instance: Option<crate::application::InstanceId>,
@@ -550,13 +521,11 @@ pub struct FrameHarness {
     saved_instance_focus:
         HashMap<crate::application::InstanceId, crate::widget::layout::CompositionFocus>,
     focus_before_trap: Option<crate::widget::layout::CompositionFocus>,
-    /// The widget that held the trap while it was open, as its node stood when it engaged: on
-    /// release, focus resting on the trap itself stays there, while focus the trap moved into
-    /// its content goes back to the control it was taken from.
+    /// The widget that held the trap as its node stood when it engaged: on release, focus resting
+    /// on the trap stays, focus moved into its content returns to where it was taken from.
     focus_trap_node: Option<NodeId>,
-    /// Identity the driver's commits and undos are attributed to. Mirrors
-    /// [`crate::app::App`]'s `local_author` so a scenario exercises the same
-    /// author-scoped history a user does.
+    /// Identity the driver's commits and undos are attributed to, mirroring [`crate::app::App`]'s
+    /// `local_author`.
     author: crate::permissions::UserId,
     /// Same decoder and transport doors used by the live application host.
     /// Tests register document action types explicitly, just as `main` does.
@@ -579,16 +548,13 @@ pub struct FrameHarness {
     /// runs ([`FrameHarness::start_bound_job_for`]).
     acting_for: HashMap<tilo_actions::InvocationId, crate::invocation_scope::Continuation>,
     invocation_results: Option<invocation_results::InvocationResults>,
-    /// Per-pass frame profiler, installed by the perf harness via
-    /// [`FrameHarness::begin_profiling`]. `None` on a normal (persistence) run, so
-    /// [`FrameHarness::relayout`] and [`FrameHarness::send`] pay nothing. When set, each
-    /// pass is timed and every frame committed — see [`crate::profiling`].
+    /// Per-pass frame profiler set by the perf harness; `None` on a normal run, so no frame pays
+    /// for it.
     profiler: Option<crate::profiling::FrameProfiler>,
     /// Whether the latest `send_host_event` was inert pointer motion that skipped relayout.
     last_send_skipped_relayout: bool,
-    /// The pointer move replayed ahead of a press or release is being
-    /// dispatched: the frame is the one the press or release runs, as the
-    /// live App dispatches both before its next frame.
+    /// The pointer move replayed ahead of a press or release is being dispatched: the frame is the
+    /// one the press runs, as the live App dispatches both before its next frame.
     replaying_pointer: bool,
     /// Opt-in: the frame an input event asks for is left to the host's next
     /// frame ([`Self::set_coalesce_input_frames`]).
@@ -601,20 +567,17 @@ pub struct FrameHarness {
     /// Opt-in diagnostics: dirty widget paths observed when pointer motion still demanded a frame.
     pointer_redraw_diagnostics: bool,
     pointer_redraw_sources: Vec<String>,
-    /// Whether `taffy`, `node_map`, `bindings`, `root_node` and `child_node`
-    /// describe a complete admitted composition that a later frame may
-    /// re-solve in place. False until the first successful build and after
-    /// every path that discards the raw maps, so the next frame rebuilds.
+    /// Whether the taffy tree, node map and bindings describe a complete admitted composition a
+    /// later frame may re-solve in place; false until the first build and after every path that
+    /// discards them.
     layout_built: bool,
     /// Test override for the `TILO_UI_FULL_RELAYOUT` safety valve: `Some`
     /// wins over the environment.
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
     last_relayout: RelayoutStats,
-    /// Whether every widget of the tree was placed and where focus stood then:
-    /// a frame that solves, builds and remounts nothing, with focus where it
-    /// stood, places only what moved
-    /// ([`crate::widget::layout::placing_again_in`]).
+    /// Whether every widget was placed and where focus stood; a frame that solves, builds and
+    /// remounts nothing places only what moved.
     placed_all: bool,
     placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
@@ -681,9 +644,8 @@ impl FrameWitness {
     }
 }
 
-/// What a publication of the bound components' controls read
-/// ([`FrameHarness::publish_undo_status`]): while it reads the same, what
-/// the last one discovered of each component still holds.
+/// What a publication of the bound components' controls read: while it reads the same, what the
+/// last one discovered still holds.
 #[derive(PartialEq, Eq)]
 struct BoundResourceKey {
     local_epoch: u64,
@@ -708,27 +670,22 @@ pub struct RelayoutStats {
     pub measured: bool,
     pub marked_dirty: usize,
     pub marked_leaves: usize,
-    /// The frame placed the widgets the views moved, not every widget of the
-    /// tree: nothing was solved, built or remounted since they were placed, so
-    /// what stood still stands where it stood and a long collection places only
-    /// what stands near its clip ([`crate::widget::layout::placing_again_in`]).
+    /// The frame placed only the widgets the views moved, so what stood still stands where it stood
+    /// and a long collection places only what is near its clip.
     pub placed_partly: bool,
 }
 
-/// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
-/// tree on every frame, as it did before retained relayout — a safety valve if
-/// a widget ever changes size without reporting `is_layout_dirty`, mirroring
-/// `App`'s `TILO_UI_NO_SCROLL_OPT`.
+/// `TILO_UI_FULL_RELAYOUT=1` rebuilds the layout tree every frame, mirroring `App`'s
+/// `TILO_UI_NO_SCROLL_OPT` as a safety valve for a widget that changes size without reporting
+/// `is_layout_dirty`.
 fn full_relayout_forced() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
     *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
 
-/// The modifiers a key spec holds down and the key it presses: `Shift+F10` is
-/// Shift held for `F10`, `+` types a plus. A leading name that is no modifier
-/// is the key itself. Only the names are trimmed: the key is the character
-/// written after the last `+`, and a space is a key.
+/// The modifiers a key spec holds and the key it presses: `Shift+F10` holds Shift for `F10`, `+`
+/// types a plus; only names are trimmed.
 fn chord(spec: &str) -> (&str, Vec<String>) {
     let mut held = Vec::new();
     let mut rest = spec;
@@ -766,20 +723,16 @@ pub struct FrameOptions {
     pub theme: Option<Theme>,
     /// Defaults to [`TextRenderer::new`]; its text scale follows the theme.
     pub text: Option<TextRenderer>,
-    /// Style of the viewport-sized node the root is laid out in, for a root
-    /// that must not be stretched by the default row. Its size is replaced
-    /// by the viewport.
+    /// The style of the node the root is laid out in, for a root that must not be stretched by the
+    /// default row: its size is replaced by the viewport.
     pub host_style: Option<Style>,
-    /// Lay the root out at its content height, measured against unbounded
-    /// height, the way a scrolling host lays out the document inside it. The
-    /// viewport still bounds culling and rasterisation.
+    /// Lay the root out at its content height against unbounded height, as a scrolling host lays
+    /// the document inside it; the viewport still bounds culling and rasterisation.
     pub content_height: bool,
 }
 
-/// A logical `(width, height)` as a harness viewport.
-///
-/// Fractions truncate and negative or NaN sizes become zero, so a size
-/// written as a float names the same viewport it would as an integer.
+/// A logical `(width, height)` as a harness viewport: fractions truncate and negative or NaN sizes
+/// become zero, so a float size names the same viewport it would as an integer.
 #[must_use]
 pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
     let (w, h) = (w.into(), h.into());
@@ -792,9 +745,8 @@ pub fn viewport<T: Into<f64>>((w, h): (T, T)) -> (u32, u32) {
 }
 
 impl FrameHarness {
-    /// Mount a prepared component without a native window, GPU, or service discovery.
-    /// # Errors
-    /// Refuses exhausted mount generations or remounts, retaining original recovery.
+    /// Mount a prepared component without a native window, GPU or service discovery. # Errors
+    /// Refuses exhausted mount generations or remounts, keeping the original recovery.
     pub fn from_component(
         component: crate::application::AppComponent,
         viewport: (u32, u32),
@@ -803,9 +755,8 @@ impl FrameHarness {
         Self::from_component_with_wake_notifier(component, viewport, inputs, || {})
     }
 
-    /// Mount with a lightweight scheduling signal. The callback captures a host
-    /// task identifier/proxy, never a GPU, widget tree, or owning host reference.
-    /// Browser hosts can dispatch that identifier to their local animation-frame queue.
+    /// Mount with a lightweight scheduling signal: a host task identifier or proxy, never a GPU,
+    /// widget tree or owning host, which a browser host dispatches to its animation-frame queue.
     pub fn from_component_with_wake_notifier(
         component: crate::application::AppComponent,
         viewport: (u32, u32),
@@ -918,10 +869,8 @@ impl FrameHarness {
         Ok((root, wake, history))
     }
 
-    /// Show the record the component asked to open in its window
-    /// ([`AppComponent::take_replacement`](crate::application::AppComponent::take_replacement)):
-    /// close it, keeping its recovery, and mount the component it built in
-    /// its place, with everything the host set on this harness kept.
+    /// Show the record the component asked to open: close it keeping its recovery, and mount the
+    /// component it built in its place with everything the host set kept.
     fn swap_requested_component(&mut self) {
         let Some(replacement) = crate::component_lifecycle::take_replacement(self.root.as_mut())
         else {
@@ -976,10 +925,8 @@ impl FrameHarness {
         }
     }
 
-    /// The lane the mounted component's record content travels on: the lane
-    /// its window keeps, read as the window reads it, so a test asking what
-    /// the window asked for looks here and not at the process's lane for the
-    /// record.
+    /// The lane the mounted component's record content travels on: the lane its window keeps, read
+    /// as the window reads it, so a test asking what the window asked for looks here.
     pub fn component_record_content_lane(
         &self,
     ) -> Option<std::sync::Arc<crate::collaboration::record_content::ContentLane>> {
@@ -1008,11 +955,8 @@ impl FrameHarness {
         self.pump_component_wakes();
     }
 
-    /// Force the mounted component's real record writer to acknowledge all
-    /// pending edits, then project the resulting durability state.
-    ///
-    /// Capture scenarios use this at an explicit save boundary instead of
-    /// depending on a wall-clock debounce or mutating a status widget.
+    /// Force the record writer to acknowledge every pending edit, then project the resulting
+    /// durability state: an explicit save boundary for captures instead of a debounce.
     pub fn flush_component_records(&mut self) -> Result<(), String> {
         self.invalidate_local();
         let result = self
@@ -1026,9 +970,8 @@ impl FrameHarness {
         result
     }
 
-    /// Attach the queue shared by this host's actual mounted components.
-    /// # Errors
-    /// A host cannot replace registration identity after attachment.
+    /// Attach the queue shared by this host's mounted components. # Errors Registration identity
+    /// cannot be replaced after attachment.
     pub fn attach_owner_wake_queue(
         &mut self,
         queue: crate::owner_wake::OwnerWakeQueue,
@@ -1040,9 +983,8 @@ impl FrameHarness {
         self.owner_wake_queue = Some(queue);
         Ok(())
     }
-    /// Service one snapshot through current checked owner and canonical admission.
-    /// # Errors
-    /// Refusal retains current and unvisited requests for retry.
+    /// Service one snapshot through the checked owner and canonical admission. # Errors A refusal
+    /// keeps the current and unvisited requests for retry.
     pub fn service_pending_owner_models(
         &mut self,
     ) -> Result<usize, crate::bound_dispatch::BoundDispatchError> {
@@ -1077,10 +1019,8 @@ impl FrameHarness {
         }
     }
 
-    /// Park as an idle live window does, until one of its components is
-    /// woken from another thread (a worker's answer, a store's write
-    /// landing) or `deadline` passes. Whether one was woken; `false` at once
-    /// for a harness whose components queue no wakes.
+    /// Park as an idle window does until a component is woken from another thread or `deadline`
+    /// passes; returns at once when no component queues wakes.
     pub fn park_until(&self, deadline: crate::time::Instant) -> bool {
         self.owner_wake_queue
             .as_ref()
@@ -1104,11 +1044,8 @@ impl FrameHarness {
             return Ok(());
         };
         let mut batch = queue.take_batch();
-        // Saves that moved on, and nothing else: each owner shows its save
-        // status alone, the layout stands and the next frame need not sync:
-        // no model callback ran. A frame follows only when an owner shows
-        // something new; a save that landed in time (each keystroke's)
-        // shows nothing, and draws no second frame after the key's.
+        // Saves that moved on, and nothing else: each owner shows its save status alone and the
+        // next frame need not sync, so a save that landed in time draws no second frame.
         if batch.front().is_some() && batch.all_save_progress_only() {
             while let Some(work) = batch.front() {
                 let _profile =
@@ -1122,9 +1059,9 @@ impl FrameHarness {
         }
         let mut aside = None;
         if batch.front().is_some() {
-            // An unknown visitor can replace descendants before it locates the
-            // target. Retire physical maps BEFORE the first arbitrary callback;
-            // they stay aside, unread, for readmission to check.
+            // An unknown visitor can replace descendants before it finds the target, so the
+            // physical maps are retired before the first arbitrary callback and kept for
+            // readmission to check.
             *attempted = true;
             aside = self.set_layout_aside();
             self.last_layout_viewport = None;
@@ -1168,9 +1105,8 @@ impl FrameHarness {
     fn pump_component_wakes_checked(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.readmit_owner_service_layout()?;
         self.drain_component_wakes();
-        // A host on its own frame clock takes a wake in its next frame, as
-        // the live window's redraw request does; input arriving before it
-        // is dispatched against the last frame, as there.
+        // A host on its own frame clock takes a wake in its next frame, as a live window's redraw
+        // request does; input arriving before it is dispatched against the last frame.
         if !self.coalesce_input_frames && self.take_wake() {
             self.relayout();
         }
@@ -1197,11 +1133,8 @@ impl FrameHarness {
         self.discard_layout_tree();
     }
 
-    /// The app root's structure flag, and framework History's: it is laid
-    /// out as a separate root, so its replaced controls are not the app's.
-    ///
-    /// A change the root's widgets carry out in place leaves every admitted
-    /// pointer valid: it is left to the next layout, not reported.
+    /// The app root's own structure flag, separate from framework History's: a change its widgets
+    /// make in place leaves every admitted pointer valid.
     fn take_composition_dirty(&mut self) -> bool {
         let root = self.root.take_structure_change();
         if root == crate::widget::StructureChange::Children {
@@ -1224,18 +1157,14 @@ impl FrameHarness {
         self.composition_replaced
     }
 
-    /// Force the next frame to recompose from scratch. Inputs that shape
-    /// every widget's style at build time (theme, platform conventions,
-    /// interaction environment, an installed history host) go through here
-    /// because retained widgets are not required to report them as layout
-    /// dirtiness.
+    /// Force the next frame to recompose from scratch: build-time style inputs (theme, platform
+    /// conventions, environment, an installed history host) are not layout dirtiness.
     fn invalidate_layout_tree(&mut self) {
         self.layout_built = false;
     }
 
-    /// The style of the node the root is laid out in, across a window `w`
-    /// by `h`: the host's, its top below the row of window slots the frame
-    /// hosts ([`Self::host_window_slots`]).
+    /// The style of the node the root is laid out in, across a window `w` by `h`: the host's, below
+    /// the row of window slots the frame hosts ([`Self::host_window_slots`]).
     #[allow(
         clippy::cast_precision_loss,
         clippy::cast_possible_truncation,
@@ -1274,13 +1203,8 @@ impl FrameHarness {
         std::mem::take(&mut self.component_close_reports)
     }
 
-    /// Stand the app up and resolve its first observable layout.
-    ///
-    /// Responsive structure discovered from the viewport is settled
-    /// before this returns, so tests can address compact/wide controls
-    /// immediately without an app-specific warm-up frame.
-    /// # Errors
-    /// Refuses invalid scope metadata or unavailable mounted document custody.
+    /// Stand the app up and resolve its first observable layout with responsive structure settled.
+    /// # Errors Refuses invalid scope metadata or unavailable mounted document custody.
     pub fn from_managed_root(
         state: State,
         root: crate::history_mode::ManagedRoot,
@@ -1302,9 +1226,8 @@ impl FrameHarness {
         Ok(harness)
     }
 
-    /// Construct a managed root with caller-owned fonts and identity.
-    /// # Errors
-    /// Refuses invalid scope metadata or unavailable mounted document custody.
+    /// Construct a managed root with caller-owned fonts and identity. # Errors Refuses invalid
+    /// scope metadata or unavailable mounted document custody.
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn from_managed_root_with_controlled_inputs(
@@ -1403,10 +1326,8 @@ impl FrameHarness {
         self.continue_pending_history_control_checked(token, false)
     }
 
-    /// Continue after the caller explicitly confirmed this exact current item.
-    /// The action the host's confirmation is asking about, and the
-    /// question it asks, while it asks: a destructive verb or a removal a
-    /// control, a menu or an immediate application submitted.
+    /// Continue after the caller explicitly confirmed this exact current item: the action the
+    /// host's confirmation asks about, and the question it asks while it asks.
     #[must_use]
     pub fn asking(&self) -> Option<(tilo_actions::ActionAddress, String)> {
         self.action_palette
@@ -1424,11 +1345,8 @@ impl FrameHarness {
             .and_then(|palette| palette.asking_why())
     }
 
-    /// Confirm what the host is asking, as the person does: activate the
-    /// dialog's own button named for the verb (a destructive question starts
-    /// on Cancel, so Enter would not go ahead). Answers the action
-    /// confirmed; `None`, changing nothing, when nothing is asked or the
-    /// dialog refused the activation.
+    /// Answer the question the host asked, as the person does: activate the dialog's button named
+    /// for the verb (a destructive question starts on Cancel).
     pub fn confirm_asked(&mut self) -> Option<tilo_actions::ActionAddress> {
         self.invalidate_local();
         let (address, _question) = self.asking()?;
@@ -1465,12 +1383,8 @@ impl FrameHarness {
         viewport: (u32, u32),
         theme: Theme,
     ) -> Self {
-        // Keep offscreen review/a11y runs faithful to the live host.  A
-        // text-scale theme without a matching renderer scale only changes
-        // widgets which manually consult `Theme::text_scale`; custom drawing
-        // and shared TextInput then render at the wrong size, hiding exactly
-        // the clipping and collision regressions these shots are meant to
-        // catch.
+        // Match the renderer's scale in a text-scale theme, or custom drawing and shared text
+        // render at the wrong size and hide the clipping these shots exist to catch.
         Self::with_inputs(
             state,
             root,
@@ -1688,20 +1602,15 @@ impl FrameHarness {
             root_type: None,
             host,
         };
-        // Match `App::rebuild_theme`: reduced motion is both a paint-time
-        // theme property and a lifecycle policy retained widgets use to settle
-        // their own transitions and stop requesting frames.  Headless shots
-        // must exercise both halves of that contract.
+        // Match `App::rebuild_theme`: reduced motion is both a paint-time property and a lifecycle
+        // policy widgets use to stop requesting frames.
         d.root.set_motion_reduced(d.theme.reduce_motion);
         d.relayout();
         d
     }
 
-    /// Run one frame at `viewport`, even when neither the size nor the
-    /// composition changed since the last one.
-    ///
-    /// # Errors
-    /// As [`Self::resize`].
+    /// Run one frame at `viewport` even when neither size nor composition changed. # Errors As
+    /// [`Self::resize`].
     pub fn relayout_at(
         &mut self,
         viewport: (u32, u32),
@@ -1711,21 +1620,15 @@ impl FrameHarness {
         self.try_relayout()
     }
 
-    /// Run one frame that rebuilds the whole layout tree, as a structural
-    /// change does, even when no widget reported one.
-    ///
-    /// # Errors
-    /// As [`Self::resize`].
+    /// Run one frame that rebuilds the whole layout tree, as a structural change does, even when no
+    /// widget reported one. # Errors As [`Self::resize`].
     pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
         self.invalidate_local();
         self.invalidate_layout_tree();
         self.try_relayout()
     }
 
-    /// [`Self::relayout_at`] under `theme`, which later frames keep.
-    ///
-    /// # Errors
-    /// As [`Self::resize`].
+    /// [`Self::relayout_at`] under `theme`, which later frames keep. # Errors As [`Self::resize`].
     pub fn relayout_themed(
         &mut self,
         viewport: (u32, u32),
@@ -1739,10 +1642,8 @@ impl FrameHarness {
         self.relayout_at(viewport)
     }
 
-    /// Hand `event` straight to the root's `handle_event` against the last
-    /// frame's layout, bypassing host focus routing, and report whether the
-    /// root marked it handled. Nothing is laid out until the next frame,
-    /// which rebuilds only if the root reports a structural change.
+    /// Hand `event` straight to the root's `handle_event` against the last frame's layout,
+    /// bypassing host focus routing; nothing is laid out until the next frame.
     pub fn dispatch_to_root(&mut self, event: &WindowEvent) -> bool {
         self.invalidate_local();
         crate::focus_visible::note(event);
@@ -1828,9 +1729,8 @@ impl FrameHarness {
         self.relayout();
     }
 
-    /// What the widget tree asked of the transport since the last call, as
-    /// a live window's host takes it: the other half of
-    /// [`Self::handle_collaboration_event`].
+    /// What the widget tree asked of the transport since the last call, as a live window's host
+    /// takes it: the other half of [`Self::handle_collaboration_event`].
     pub fn take_collaboration_requests(&mut self) -> Vec<crate::collaboration::CollabRequest> {
         crate::widget::take_collab_requests(self.root.as_mut())
     }
@@ -1847,22 +1747,16 @@ impl FrameHarness {
         &self.theme
     }
 
-    /// The backdrops the last frame's floating surfaces were drawn over, in
-    /// the frame's own pixels: what a host blurs outside the renderer and
-    /// hands back with [`crate::backdrop::provide_backdrops`].
+    /// The backdrops the last frame's floating surfaces were drawn over, in frame pixels: what a
+    /// host blurs outside the renderer and hands back.
     #[must_use]
     pub fn backdrops(&self) -> &crate::backdrop::BackdropFrame {
         &self.backdrop
     }
 
-    /// Resize in logical pixels and settle geometry-dependent composition
-    /// before exposing targets, accessibility, or a drawable frame. Uses the
-    /// same bounded prepaint lifecycle as the live App host. Equal sizes are a
-    /// no-op; paint and scroll-only frames do not trigger viewport refreshes.
-    ///
-    /// # Errors
-    /// Returns a layout error if measurement or bounded composition settlement
-    /// fails. The failed frame is not painted; callers may retry the resize.
+    /// Resize in logical pixels and settle geometry-dependent composition before exposing targets,
+    /// accessibility or a frame; equal sizes do nothing. # Errors Returns a layout error when
+    /// measurement or bounded composition fails, leaving the frame unpainted.
     pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
         self.invalidate_local();
         if self.viewport == viewport && self.last_layout_viewport == Some(viewport) {
@@ -1872,10 +1766,8 @@ impl FrameHarness {
         self.try_relayout()
     }
 
-    /// Register replayable document action decoders for a driven app.
-    /// Mirrors [`crate::App::action_registry_mut`].
-    /// Install an authenticated peer's action transport before dispatching actions.
-    /// Existing authority/owner/admission checks still run in the bound dispatcher.
+    /// Register replayable document action decoders, as [`crate::App::action_registry_mut`] does;
+    /// authority, owner and admission checks still run.
     pub fn set_action_transport(
         &mut self,
         transport: Box<dyn tilo_actions::ActionTransport>,
@@ -1888,9 +1780,8 @@ impl FrameHarness {
         Ok(())
     }
 
-    /// Serve this window the session `client` stands for, in `workspace`:
-    /// where opening another app goes. A host that serves its windows in
-    /// process, such as a page, installs its own session here.
+    /// Serve this window the session `client` stands for, in `workspace`: where opening another app
+    /// goes. A host that serves its windows in process, such as a page, installs its session here.
     pub fn set_session_door(&mut self, client: crate::RemoteActions, workspace: Option<String>) {
         self.invalidate_local();
         self.session_door = Some(crate::session_door::ClientDoor::new(client, workspace));
@@ -1902,10 +1793,8 @@ impl FrameHarness {
         &mut self.action_registry
     }
 
-    /// Undo or redo in `binding`'s document. A history holding a step that
-    /// queued an outside consequence is moved by the document's published
-    /// history action, as an agent or the palette invokes it, so its inverse
-    /// is a new admitted invocation; any other is moved in place.
+    /// Undo or redo in `binding`'s document: a step that queued an outside consequence moves by the
+    /// document's published history action, any other in place.
     fn history_through_component(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
@@ -1940,13 +1829,9 @@ impl FrameHarness {
         self.invoke_address(&address, &serde_json::Map::new(), false)
     }
 
-    /// Undo the last action, the way the live host does — through
-    /// [`State::undo_as`](crate::state::State::undo_as) with this driver's
-    /// author. Returns whether anything was undone.
-    ///
-    /// The driver's one undo door: `Ctrl+Z` and an
-    /// [`UndoButton`](crate::widget::UndoButton) both arrive here, so a
-    /// scenario cannot pass against a path the user never takes.
+    /// Undo the last action as the live host does, through
+    /// [`State::undo_as`](crate::state::State::undo_as) with this driver's author, and say whether
+    /// anything was undone.
     pub fn perform_undo(&mut self) -> bool {
         self.invalidate_local();
         self.perform_history(crate::undo::UndoRequest::Undo)
@@ -2048,14 +1933,8 @@ impl FrameHarness {
         acted
     }
 
-    /// Something a frame's sync, host tick or publication reads may have
-    /// changed in a way no frame can see: the next frame does all of them.
-    ///
-    /// Every public entry point that takes `&mut self` calls this first
-    /// (`every_mutable_entry_point_invalidates_local_state` holds them to
-    /// it), so a caller holding the harness can change nothing behind a quiet
-    /// frame's back. [`Self::poll_frame`] does not, and neither does a wheel
-    /// coalesced into it that the root declares view-only.
+    /// Something a frame's sync, tick or publication reads may have changed unseen, so the next
+    /// frame does all of them; every `&mut self` entry point calls this first.
     fn invalidate_local(&mut self) {
         self.local_epoch = self.local_epoch.wrapping_add(1);
     }
@@ -2067,18 +1946,15 @@ impl FrameHarness {
         self.quiet_frames
     }
 
-    /// Quiet frames that did not ask the History surfaces again what the
-    /// frame before them answered and nothing since moved: whether each
-    /// hosted app still has the document owners its History registered,
-    /// and whether a committed frontier moved.
+    /// Quiet frames that did not ask the History surfaces again, because nothing moved: whether
+    /// each hosted app keeps the owners its History registered, and whether a frontier moved.
     #[must_use]
     pub fn settled_history_frames(&self) -> u64 {
         self.settled_history_frames
     }
 
-    /// Windows a frame that only moved laid-out content showed by replaying
-    /// their last drawing where they are now, instead of drawing them
-    /// ([`crate::retained_present::PanReplay`]), since construction.
+    /// Windows a frame that only moved laid-out content showed by replaying their last drawing
+    /// where they are now ([`crate::retained_present::PanReplay`]), since construction.
     #[must_use]
     pub fn replayed_window_draws(&self) -> u64 {
         self.replayed_window_draws
@@ -2091,11 +1967,8 @@ impl FrameHarness {
         self.replayed_draws
     }
 
-    /// Draw the last frame again if it replayed windows at rest, so what
-    /// their widgets note while drawing (where a control was painted, where
-    /// a caret is) describes where they are now. Input does this before it
-    /// reaches a widget; a host calls it before it reads the frame's
-    /// semantics. Does nothing after a frame that replayed nothing.
+    /// Draw the last frame again if it replayed windows at rest, so what their widgets note while
+    /// drawing describes where they are now; input does this before reaching a widget.
     pub fn settle_replayed_draws(&mut self) {
         if !self.replayed_draws {
             return;
@@ -2109,9 +1982,8 @@ impl FrameHarness {
         }
     }
 
-    /// [`Self::skip_frame`] for a frame the harness runs itself (input's,
-    /// an idle pass's): its report goes to the log and waits for a host
-    /// that logs elsewhere ([`Self::take_skip_report`]).
+    /// [`Self::skip_frame`] for a frame the harness runs itself: its report goes to the log and
+    /// waits for a host that logs elsewhere.
     fn skip_own_frame(&mut self, error: &crate::widget::WidgetLayoutError) {
         if let Some(line) = self.skip_frame(error) {
             tracing::error!("headless: {line}");
@@ -2119,28 +1991,23 @@ impl FrameHarness {
         }
     }
 
-    /// The report of the last frame the harness skipped on its own since
-    /// this was last asked, when one was due: a host whose log is not
-    /// `tracing`'s (the browser's console) prints it.
+    /// The report of the last frame the harness skipped on its own, when one was due: a host whose
+    /// log is not `tracing`'s prints it.
     pub fn take_skip_report(&mut self) -> Option<String> {
         self.skip_report.take()
     }
 
-    /// Skip a frame whose layout failed with `error`, as every host does:
-    /// the next frame lays the tree out again, and what was presented last
-    /// stays on screen until then, so input keeps landing. The scene this
-    /// frame left may be partial; a host presents its last frame again
-    /// instead of drawing it. Returns the line to log when one is due
-    /// ([`crate::widget::SkippedFrames`]).
+    /// Skip a frame whose layout failed with `error`, as every host does: the next frame lays out
+    /// again and what was presented last stays on screen, so input keeps landing. Returns the line
+    /// to log when one is due ([`crate::widget::SkippedFrames`]).
     pub fn skip_frame(&mut self, error: &crate::widget::WidgetLayoutError) -> Option<String> {
         self.invalidate_local();
         self.skipped_frames.skip(error, crate::time::now())
     }
 
-    /// Let the frames that follow replay windows at rest when they only
-    /// move laid-out content (the default), or draw every window. A host
-    /// that is about to read a frame's semantics forbids it for that frame,
-    /// which then needs no [`Self::settle_replayed_draws`].
+    /// Let following frames replay windows at rest when they only move laid-out content (the
+    /// default), or draw every window; a host about to read a frame's semantics forbids it for that
+    /// frame, which then needs no [`Self::settle_replayed_draws`].
     pub fn set_pan_replay(&mut self, allowed: bool) {
         self.pan_replay_allowed = allowed;
     }
@@ -2153,9 +2020,8 @@ impl FrameHarness {
             && self.is_view_only_scroll(event)
     }
 
-    /// Whether the witness follows everything this frame's bookkeeping
-    /// would read. Presentations and owners it does not follow keep every
-    /// frame loud.
+    /// Whether the witness covers everything this frame's bookkeeping would read; presentations and
+    /// owners it does not follow keep every frame loud.
     fn bookkeeping_followed(&self) -> bool {
         !self.layout_requested
             && !self.owner_service_layout_retired
@@ -2212,10 +2078,9 @@ impl FrameHarness {
         })
     }
 
-    /// Whether the History this harness hosts around the app rests: closed,
-    /// nothing selected, no return to live content under way, and nothing
-    /// new for it to show. A frame then does with it exactly what the last
-    /// one did, as the live window's frame does, so it keeps no frame loud.
+    /// Whether the History this harness hosts around the app rests: closed, nothing selected, no
+    /// return to live content under way, nothing new to show, so a frame does with it what the last
+    /// one did.
     fn history_hosts_rest(&self) -> bool {
         self.history.as_ref().is_none_or(|history| {
             !history.captures_input()
@@ -2226,18 +2091,15 @@ impl FrameHarness {
         })
     }
 
-    /// Whether the window's History still holds the owners it registered
-    /// against the live root, asked of the tree at most once a frame: a frame
-    /// reads it to decide what its bookkeeping covers and to invalidate a
-    /// surface whose owner left, and the answer only moves when the
-    /// composition does ([`Self::discard_layout_tree`]).
+    /// Whether the window's History still holds the owners it registered against the live root,
+    /// asked at most once a frame: the answer moves only when the composition does
+    /// ([`Self::discard_layout_tree`]).
     fn history_owner_standing(&self) -> bool {
         if let Some(standing) = self.history_standing.get() {
             return standing;
         }
-        // The frame before proved it of the same composition and documents,
-        // and nothing either reads has moved since: its answer stands
-        // without walking the tree again.
+        // The frame before proved it of the same composition and documents and nothing either reads
+        // has moved since, so its answer stands without walking the tree again.
         let standing = self.history_settled
             || self
                 .history
@@ -2289,9 +2151,8 @@ impl FrameHarness {
             )
     }
 
-    /// Whether a polled frame's host tick would find nothing: no entry point
-    /// since the last complete frame (each runs its own tick), and nothing
-    /// in flight that a tick advances.
+    /// Whether a polled frame's host tick would find nothing: no entry point since the last
+    /// complete frame, and nothing in flight that a tick advances.
     fn tick_is_idle(&self) -> bool {
         self.frame_witness
             .as_ref()
@@ -2304,8 +2165,7 @@ impl FrameHarness {
     }
 
     /// The update pass, with the workspace's presence lent as the frame's
-    /// ([`crate::presence::frame`]) under the window's authority, as the
-    /// live App lends it.
+    /// ([`crate::presence::frame`]) under the window's authority, as the live App lends it.
     fn update_root(&mut self) -> bool {
         let (root, state) = (&mut self.root, &self.state);
         let permissions = self.permissions.clone();
@@ -2324,10 +2184,9 @@ impl FrameHarness {
     /// read, and what that sync took up written and shown in the same frame.
     fn sync_frame(&mut self) {
         let _phase = tilo_resource::profiling::Phase::start("ui.frame_sync");
-        // The sync runs in the root's wake scope, as the live window's runs
-        // in the App's: work it starts on another thread (an area
-        // Settings reads off the UI thread) wakes the frame that takes in
-        // its result instead of no one.
+        // The sync runs in the root's wake scope, as the live window's runs in the App's: work it
+        // starts on another thread (an area Settings reads off the UI thread) wakes the frame that
+        // takes in its result.
         let _wake = self.enter_wake();
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
@@ -2345,11 +2204,9 @@ impl FrameHarness {
         );
         let settled = crate::doc::settle_mark(&self.state.doc) != before;
         let submitted = crate::widget::controls::has_pending_control_invocation(self.root.as_ref());
-        // A readmission frame lays out the composition its caller's sync
-        // replaced, so that the tick which asked for it dispatches through
-        // admitted maps once it returns. Ticking here would ask for another
-        // readmission — a list re-reading its rows reports a structure change
-        // every time — and the frames would nest instead of settling.
+        // A readmission frame lays out the composition its caller's sync replaced, so the tick that
+        // asked dispatches through admitted maps once it returns. Ticking here would ask for
+        // another readmission and the frames would nest.
         if (settled || submitted) && !READMITTING.get() {
             self.idle_control_tick();
             self.update_root();
@@ -2357,19 +2214,14 @@ impl FrameHarness {
         }
     }
 
-    /// A debug build's proof of a quiet frame, as the accessibility walk
-    /// proves an unchanged tree: run the tick, sync and publication it
-    /// skipped anyway, and require that they changed nothing the frame's
-    /// semantics, document or composition show, and that the History surfaces
-    /// whose walks it skipped still rest. A difference fails a test
-    /// outright; any other debug build logs it and keeps what the work
-    /// found, so a missed change is never stale where it can be seen.
+    /// A debug build's proof of a quiet frame, as the accessibility walk proves an unchanged tree:
+    /// run the tick, sync and publication it skipped and require that they changed nothing the
+    /// frame shows and that the skipped History walks still rest. A difference fails a test; any
+    /// other debug build logs it.
     #[cfg(debug_assertions)]
     fn verify_quiet_frame(&mut self, history_settled: bool) {
-        /// Run `verify` with the clocks standing still: a frame that redraws
-        /// the time it shows, because a minute turned between the two
-        /// inspections, changed what the wall clock says rather than skipped
-        /// publishing a change of its own.
+        /// Run `verify` with the clocks standing still: a frame that redraws the time it shows
+        /// because a minute turned changed what the wall clock says, not what it publishes.
         fn standing_clock<T>(verify: impl FnOnce() -> T) -> T {
             #[cfg(feature = "test-support")]
             {
@@ -2426,11 +2278,9 @@ impl FrameHarness {
         if consistent {
             return;
         }
-        // A wake that came in during this frame announced new input (a
-        // reading landing off the UI thread): the frame was quiet for what it
-        // had, and the sync above took up what came after, which the woken
-        // next frame answers for. Only a difference nothing announced is a
-        // skipped sync.
+        // A wake that came during this frame announced new input, so the frame was quiet for what
+        // it had and the sync took up what came after, which the woken next frame answers for. Only
+        // a difference nothing announced is a skipped sync.
         self.drain_component_wakes();
         if self.wake_pending() {
             self.request_layout();
@@ -2647,20 +2497,17 @@ impl FrameHarness {
         self.platform
     }
 
-    /// Request deferred full composition without changing the viewport.
-    /// No callbacks run synchronously. Requests coalesce and survive failed
-    /// composition or postponed host presentation until the original pipeline
-    /// completes. A caller must still retire maps before replacing widgets;
-    /// this scheduling request does not establish topology validity.
+    /// Request deferred full composition without changing the viewport; callbacks run
+    /// asynchronously and requests coalesce until the pipeline completes. A caller must still
+    /// retire maps before replacing widgets: this does not establish topology validity.
     pub fn request_layout(&mut self) {
         self.invalidate_local();
         self.layout_requested = true;
         self.last_layout_viewport = None;
     }
 
-    /// What makes [`FrameSchedule::queued_work`] true, by name: what an idle
-    /// window would wake for. Diagnostics for a test that holds a window
-    /// idle; not part of scheduling.
+    /// What makes [`FrameSchedule::queued_work`] true, by name: what an idle window would wake for.
+    /// Diagnostics for a test holding a window idle; not part of scheduling.
     pub fn queued_work_sources(&self) -> Vec<&'static str> {
         self.drain_component_wakes();
         [
@@ -2721,56 +2568,53 @@ impl FrameHarness {
             || self.wake_pending();
         let (slots_declared, slots_moving) = self.slot_row_wants_frame();
         let queued_work = queued_work || slots_declared;
-        self.with_schedule_roots(|roots| FrameSchedule {
-            needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
-                || slots_moving
-                || self.settle_frame_owed
-                || self.tooltips.schedule().2
-                || crate::motion::frames_wanted(crate::time::now())
-                || self
-                    .presence
-                    .interaction_animation_demand(crate::time::now(), &self.theme),
-            next_wake_deadline: roots
+        let now = crate::time::now();
+        self.with_schedule_roots(|roots| {
+            let next_wake_deadline = roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
-                .chain(
-                    self.presence
-                        .interaction_next_wake_deadline(crate::time::now()),
-                )
+                .chain(self.presence.interaction_next_wake_deadline(now))
                 .chain(self.tooltips.schedule().1)
-                .min(),
-            needs_redraw: roots
-                .iter()
-                .any(|root| root.needs_redraw() || root.needs_animation_frame())
-                || queued_work
-                || self.permissions_moved()
-                // Only a drawing that read outside the tree goes stale with
-                // input; one that read inside it changed nothing.
-                || (self.drawn_input != crate::input_generation::generation()
-                    && self.drawn_outside),
-            queued_work,
+                .min();
+            FrameSchedule {
+                needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                    || slots_moving
+                    || self.settle_frame_owed
+                    || self.tooltips.schedule().2
+                    || crate::motion::frames_wanted(now)
+                    || self.presence.interaction_animation_demand(now, &self.theme),
+                next_wake_deadline,
+                needs_redraw: roots
+                    .iter()
+                    .any(|root| root.needs_redraw() || root.needs_animation_frame())
+                    || queued_work
+                    || self.permissions_moved()
+                    // Only a drawing that read outside the tree goes stale with input.
+                    || (self.drawn_input != crate::input_generation::generation()
+                        && self.drawn_outside)
+                    // A deadline the clock reached is work the frame takes now.
+                    || next_wake_deadline.is_some_and(|at| at <= now),
+                queued_work,
+            }
         })
     }
 
-    /// Whether the shared permissions moved since the last frame drew them:
-    /// what widgets paint from them is stale, so a frame is due and the
-    /// drawings are made again ([`Self::try_relayout_content`]).
+    /// Whether the shared permissions moved since the last frame drew them, so what widgets paint
+    /// from them is stale and the frame is due ([`Self::try_relayout_content`]).
     fn permissions_moved(&self) -> bool {
         self.drawn_permissions != crate::permissions::shared_revision()
     }
 
-    /// The roots [`Self::frame_schedule`] reads demand from, with this
-    /// workspace's presence lent for the pass: a widget that paints from the
-    /// people on the document answers whether they changed ([`crate::widget::Widget::needs_redraw`])
-    /// before anything draws, not only when it draws.
+    /// The roots [`Self::frame_schedule`] reads demand from, with this workspace's presence lent
+    /// for the pass, so a widget that paints from the people on the document answers whether they
+    /// changed before anything draws.
     fn with_schedule_roots<R>(&self, visit: impl FnOnce(Vec<&dyn Widget>) -> R) -> R {
         crate::presence::frame::lend(&self.presence, || visit(self.presentation_roots()))
     }
 
-    /// The widgets behind [`Self::frame_schedule`]'s animation demand and due
-    /// wake deadline, each as the path of widget names from its root to the
-    /// deepest widget whose demand none of its children explains. A
-    /// diagnostic for idle redraws; it walks only the demanding branches.
+    /// The widgets behind [`Self::frame_schedule`]'s animation demand and due wake deadline, each
+    /// as the path of names from its root to the deepest widget whose demand none of its children
+    /// explains. A diagnostic for idle redraws.
     pub fn frame_requesters(&self) -> Vec<(String, FrameDemand)> {
         fn visit(
             widget: &dyn Widget,
@@ -2810,16 +2654,10 @@ impl FrameHarness {
         })
     }
 
-    /// The widgets that make a retained frame re-solve sizes rather than
-    /// only re-apply positions: each widget reporting `layout_needs_measure`
-    /// that none of its children explains, as the path of widget names from
-    /// the root (a test id in brackets). Empty when the next retained frame
-    /// would solve no size.
-    ///
-    /// A diagnostic, like [`Self::frame_requesters`]: a host names what made
-    /// a frame measure, so a widget that claims a size change it did not
-    /// make (on a pan, a hover) can be found. It walks only the asking
-    /// branches.
+    /// The widgets that make a retained frame re-solve sizes rather than only re-apply positions:
+    /// each widget reporting `layout_needs_measure` that none of its children explains, as its path
+    /// from the root with a test id in brackets. Empty when the next retained frame would solve no
+    /// size.
     pub fn layout_measure_requesters(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
             let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
@@ -2856,11 +2694,9 @@ impl FrameHarness {
         self.text.take_browser_font_demands()
     }
 
-    /// Install one verified optional font and invalidate text caches; the
-    /// next frame rebuilds the layout, once for every font installed before
-    /// it, where rebuilding after each held a page loading several fonts.
-    /// # Errors
-    /// Propagates canonical font integrity and face-validation failures.
+    /// Install one verified optional font and invalidate text caches, so the next frame rebuilds
+    /// the layout once for every font installed before it. # Errors Propagates canonical font
+    /// integrity and face-validation failures.
     pub fn install_browser_font(
         &mut self,
         name: &str,
@@ -2884,12 +2720,11 @@ impl FrameHarness {
     }
 
     /// Diagnostic paths of dirty subtrees, without inspecting document content.
-    /// Queried outside a measured frame; not part of normal scheduling.
+    /// Queried outside a measured frame; not part of normal scheduling. It
+    /// reads the tree as [`Self::frame_schedule`] does — presence lent, no
+    /// widget entered — so a path it names is one the schedule counted.
     pub fn redraw_sources(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, parent: &str, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return;
-            };
             if !(widget.needs_redraw() || widget.needs_animation_frame()) {
                 return;
             }
@@ -2901,15 +2736,17 @@ impl FrameHarness {
         }
         self.drain_component_wakes();
         let mut result = Vec::new();
-        for root in self.presentation_roots() {
-            visit(root, "", &mut result);
-        }
+        self.with_schedule_roots(|roots| {
+            for root in roots {
+                visit(root, "", &mut result);
+            }
+        });
         result
     }
 
-    /// Record the damage parts of every scene the draw pass produces from
-    /// now on ([`crate::scene_parts`]), for a host that compares each frame
-    /// with the one it presented before ([`Self::scene_parts`]).
+    /// Record the damage parts of every scene the draw pass produces from now on
+    /// ([`crate::scene_parts`]), for a host that compares each frame with the one it presented
+    /// before.
     pub fn track_scene_parts(&mut self, track: bool) {
         self.track_scene_parts = track;
     }
@@ -2968,22 +2805,21 @@ impl FrameHarness {
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
+        if !frame.needs_redraw && !frame.needs_animation_frame {
+            return Ok(false);
+        }
         let due = frame
             .next_wake_deadline
             .is_some_and(|deadline| deadline <= crate::time::now());
-        if !frame.needs_redraw && !frame.needs_animation_frame && !due {
-            return Ok(false);
-        }
         if due {
-            // A deadline is a time a widget asked to be woken at, and what it
-            // does then its sync may read (a row notes when its windows were
-            // last synced to know which deadlines had their frame).
+            // A deadline is a time a widget asked to be woken at, and what it does then its sync
+            // may read (a row notes when its windows were last synced to know which deadlines had
+            // their frame).
             self.invalidate_local();
         }
         self.polls_frames = true;
-        // The tick follows interaction, and every interaction since the last
-        // complete frame ran its own: with nothing in flight it has nothing
-        // to dispatch, record or undo.
+        // The tick follows interaction, and every interaction since the last complete frame ran its
+        // own, so with nothing in flight it has nothing to dispatch, record or undo.
         if !self.tick_is_idle() {
             self.host_tick();
         }
@@ -2991,10 +2827,9 @@ impl FrameHarness {
         Ok(true)
     }
 
-    /// Whether the currently prepared scene must be withheld from external
-    /// capture. A host binds this to its actual presentation, never an update
-    /// that has not reached the surface yet. Includes protected components and
-    /// secret fields reported by the production paint, including cached trees.
+    /// Whether the prepared scene must be withheld from external capture; a host binds this to its
+    /// actual presentation, never an update that has not reached the surface. Includes protected
+    /// components and secret fields of the production paint, cached trees included.
     #[must_use]
     pub const fn capture_protected(&self) -> bool {
         self.scene_capture_protected
@@ -3078,9 +2913,8 @@ impl FrameHarness {
         crate::AppWidget::take_host_intent(bound)
     }
 
-    /// Offer the live document to its record's writer. Returns whether a
-    /// record set handled it — `false` means the caller should persist the
-    /// document itself, as an app without records does.
+    /// Offer the live document to its record's writer; `false` means the caller should persist it
+    /// itself, as an app without records does.
     pub fn persist_tick(&mut self) -> bool {
         self.invalidate_local();
         self.pump_component_wakes();
@@ -6728,25 +6562,6 @@ impl FrameHarness {
             .map_err(crate::bound_dispatch::BoundActionError::into_door)
     }
 
-    /// [`Self::invoke_bound_action_confirmed`] as the person at this device,
-    /// for an act the host saw them make themselves (a control they pressed
-    /// in its own chrome): what only a person's own invocation may do, such
-    /// as writing in their private conversations, it may.
-    ///
-    /// # Errors
-    /// As [`Self::invoke_bound_action`].
-    pub fn invoke_bound_action_by_person(
-        &mut self,
-        address: &crate::bound_dispatch::BoundActionAddress,
-        arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::DoorError> {
-        self.invalidate_local();
-        let _person = crate::invocation_scope::InvokerScope::enter(
-            tilo_actions::ActionInvoker::actor(self.author.0.clone()),
-        );
-        self.invoke_bound_action_confirmed(address, arguments)
-    }
-
     /// Invoke the action `action` that the hosted component publishes on its
     /// resource `resource` (its own, an item, a child or a live row, by the
     /// id it publishes), with JSON `arguments`, the way an agent's call
@@ -9320,9 +9135,8 @@ mod tests {
         }
     }
 
-    /// The browser and every other host deliver input through
-    /// `send_host_event`: it notes the modality, so a click hides focus rings
-    /// and a key brings them back, as it does for a native window.
+    /// Every host delivers input through `send_host_event`, which notes the modality: a click hides
+    /// focus rings, a key brings them back.
     #[test]
     fn host_events_decide_whether_focus_rings_show() {
         let mut harness = FrameHarness::new(
@@ -9501,8 +9315,7 @@ mod tests {
         assert!(pending.load(std::sync::atomic::Ordering::SeqCst));
     }
 
-    /// Animates for `length` from the first time it is asked whether it
-    /// animates, like a tab's entrance or a sliding panel; `until` records
+    /// Animates for `length` from the first time it is asked whether it animates; `until` records
     /// when that ends, so a slow harness start cannot end it unseen.
     struct Entrance {
         length: crate::time::Duration,
@@ -9611,13 +9424,9 @@ mod tests {
         }
     }
 
-    /// A written capture is the window a person sees a moment after it
-    /// opened, so an entrance still running is waited out before the frame is
-    /// taken. Without this, `--shots` and `--responsive-matrix` write whatever
-    /// the first draw happened to show: a scroll thumb mid-fade, or a page
-    /// still drawn from the bitmap of the width it had a moment ago, which is
-    /// a difference about the capture and reads as a layout difference when
-    /// two captures are compared.
+    /// A written capture is the window a person sees a moment after it opened, so a still-running
+    /// entrance is waited out; otherwise `--shots` writes a scroll thumb mid-fade or a page drawn
+    /// at its old width.
     #[cfg(feature = "native")]
     #[test]
     fn writing_a_shot_runs_the_animation_out_first() {
@@ -10159,9 +9968,8 @@ mod tests {
                 crate::permissions::UserId("anonymous-test".into()),
             );
             let old = driver.focused.unwrap();
-            // A plain relayout retains the composition; force the rebuild this
-            // scenario is about, so the anonymous control has to be found again
-            // in a fresh tree rather than kept by node id.
+            // A plain relayout retains the composition; force the rebuild this scenario is about,
+            // so the anonymous control must be found again in a fresh tree.
             driver.set_full_relayout(Some(true));
             driver.relayout();
             assert!(driver.last_relayout().rebuilt);
@@ -10223,11 +10031,8 @@ mod tests {
             );
         }
 
-        // Case `app_wrapper_routes_tab_to_an_opted_in_code_editor_but_traverses_forms`:
-        // The frame harness is the app wrapper used by scenarios. Keep Tab
-        // coverage here rather than only in direct widget tests: the live host
-        // decides whether focus traversal intercepts the key before a widget can
-        // see it.
+        // Tab coverage belongs here, not only in direct widget tests: the live host decides whether
+        // focus traversal intercepts the key before a widget sees it.
         {
             let mut editor =
                 FrameHarness::new(State::new(), Box::new(CodeEditor::local()), (320, 160));
@@ -10351,9 +10156,8 @@ mod tests {
             current.set_focus(focused);
 
             let mut stale = std::mem::replace(&mut self.current, current);
-            // The admitted map still points at this allocation until the
-            // FrameHarness starts its next relayout. Keep it alive so the fixture
-            // observes the logical stale-map distinction without a UAF.
+            // The admitted map points at this allocation until the next relayout; keeping it alive
+            // lets the fixture observe the stale-map distinction without a UAF.
             stale.set_focus(false);
             crate::undo::set_state(stale.as_mut(), "0");
             self.retired.push(stale);
@@ -10468,10 +10272,8 @@ mod tests {
         }
     }
 
-    /// A view that replaces its composition on every sync while a control
-    /// invocation is pending: a frame that answered its own sync with another
-    /// frame nested them until the harness gave up. Each frame now lays out
-    /// and admits the composition its sync replaced, so one frame settles it.
+    /// A view that replaces its composition on every sync while a control invocation is pending:
+    /// one frame must lay out and admit what its sync replaced, not nest another.
     #[test]
     fn a_view_that_replaces_its_composition_on_every_sync_settles_in_its_frame() {
         let restless = std::rc::Rc::new(std::cell::Cell::new(false));
@@ -10568,9 +10370,8 @@ mod tests {
         assert!(!before.is_empty(), "the old editor has admitted nodes");
         request.set(true);
         driver.root.sync(&driver.state.doc, &driver.state.root);
-        // This is the post-sync action boundary, before the next frame's
-        // normal layout. The fixture keeps old allocations alive so a
-        // regression fails deterministically rather than depending on UAF.
+        // The post-sync action boundary, before the next frame's layout; old allocations stay alive
+        // so a regression fails deterministically rather than as a UAF.
         driver.idle_control_tick();
         assert!(!driver.node_map.is_empty(), "the new editor is admitted");
         assert!(
@@ -10629,9 +10430,8 @@ mod tests {
         );
         assert!(before.state.focused);
 
-        // A real widget interaction replaces the live application view before
-        // FrameHarness::try_relayout. Sync then mounts one fresh editor, requiring
-        // the pre-frame live snapshot to restore local focus and selection.
+        // A widget interaction replaces the live application view before `try_relayout`; sync then
+        // mounts one fresh editor, so the pre-frame snapshot must restore focus and selection.
         driver.key("Escape");
 
         let after = driver.access_node_named("structure-editor", None).unwrap();
@@ -11328,9 +11128,7 @@ mod tests {
 
     #[test]
     fn pointer_touch_and_wait_actions_reach_named_targets_or_fail() {
-        // Case `clicking_a_named_target_reaches_the_widget`:
-        // A button click must reach the widget through the same
-        // `handle_event` the live app calls.
+        // A button click must reach the widget through the same `handle_event` the live app calls.
         {
             let button = Button::new("btn", "Save");
             let mut driver = FrameHarness::new(State::new(), Box::new(button), (400, 200));
@@ -12297,9 +12095,8 @@ mod a11y_driver_tests {
     use std::cell::RefCell;
     use std::rc::Rc;
 
-    /// A canvas widget: paints its own contents, exposes them only as synthetic
-    /// accessibility nodes, and implements only the routed action hook. The
-    /// shape a timeline or a spreadsheet grid takes.
+    /// A canvas widget: paints its own contents, exposes synthetic accessibility nodes only, and
+    /// implements only the routed action hook, as a timeline or a grid does.
     struct Strip {
         items: Rc<RefCell<Vec<&'static str>>>,
         cursor: usize,
@@ -12354,9 +12151,8 @@ mod a11y_driver_tests {
                             })
                             .collect(),
                     )
-                    // This is the high-complexity custom-canvas path: one
-                    // keyed tree becomes searchable/agent-driveable while AT
-                    // still reaches the existing `perform_action` switch.
+                    // The custom-canvas path: one keyed tree becomes searchable and agent-driveable
+                    // while assistive technology still reaches `perform_action`.
                     .with_keyed_action_routes("test-strip"),
             )
         }
@@ -12445,9 +12241,8 @@ mod a11y_driver_tests {
         }
 
         {
-            // The whole point: before, a canvas could be described in a headless
-            // test but only clicked at coordinates, which activates whatever
-            // happens to sit there.
+            // Before this a canvas could be described headlessly but only clicked at coordinates,
+            // activating whatever happened to sit there.
             let (mut d, activated) = driver();
             let beta = d.a11y_node_named("beta").unwrap();
             d.perform_a11y_action(beta, &Action::Activate).unwrap();
@@ -12475,12 +12270,9 @@ mod a11y_driver_tests {
     #[test]
     fn a11y_node_references_survive_relayout_or_report_gone() {
         {
-            // The gap this closes: the host throws its TaffyTree away and rebuilds
-            // it on every relayout, and ids used to be derived from taffy's
-            // per-tree node ids — so every id in the exported tree changed on each
-            // layout pass. An assistive technology holding a reference across a
-            // repaint got an id that no longer resolved, or one that resolved to a
-            // different element, which is worse than having no id at all.
+            // Ids used to come from taffy's per-tree node ids, so every id in the exported tree
+            // changed on each relayout; a reference an assistive technology held across a repaint
+            // then named nothing, or worse, a different element.
             let (mut d, _a) = driver();
             let before: Vec<(String, accesskit::NodeId)> = d
                 .a11y_nodes()
@@ -12520,11 +12312,9 @@ mod a11y_driver_tests {
         }
 
         {
-            // Identity keys, observed. Removing an earlier element renumbers every
-            // element after it. Keyed by ordinal, a reference an assistive
-            // technology took before the removal would afterwards name a DIFFERENT
-            // element — it would operate the wrong one, silently. Keyed by
-            // identity, it keeps naming the element it was taken from.
+            // Removing an earlier element renumbers every later one, so a reference kept by ordinal
+            // would afterwards name a different element; kept by identity, it still names the one
+            // it was taken from.
             let (mut d, activated, items) = driver_with_items();
             let gamma = d.a11y_node_named("gamma").expect("gamma is addressable");
 
@@ -12615,20 +12405,16 @@ mod a11y_driver_tests {
     }
 }
 
-/// Undo, driven through the headless harness — the path every scenario and
-/// every screenshot takes. A control that worked only under the live event
-/// loop would be dead in all of them.
+/// Undo through the harness: the path every scenario and screenshot takes, so a control that worked
+/// only under the live event loop would be dead in all of them.
 #[cfg(test)]
 mod undo_driver_tests {
     use super::*;
     use crate::state::State;
 
-    /// A minimal editor: appends every typed character to `body` and reports
-    /// the heads before that write as its committed action.
-    ///
-    /// Deliberately a widget rather than a direct write to the document —
-    /// the edit has to travel the driver's own `send` → owner bracket →
-    /// record path, or a test cannot see how that path attributes the action.
+    /// A minimal editor that appends typed characters to `body` and reports the heads before that
+    /// write as its committed action; a widget, so the edit travels the driver's own send and
+    /// bracket path.
     struct Typer {
         rect: vello::kurbo::Rect,
         committed: Option<Vec<automerge::ChangeHash>>,
@@ -12732,10 +12518,8 @@ mod undo_driver_tests {
 
     #[test]
     fn undo_driver_reaches_one_undo_and_publishes_status() {
-        // Case `clicking_undo_and_pressing_ctrl_z_reach_the_same_undo`:
-        // Clicking the control in a scenario undoes, and reaches the same place
-        // the harness's Ctrl+Z does. A control that only worked live would be
-        // dead in every screenshot and every driven test.
+        // Clicking the control undoes to the same place Ctrl+Z does; a control that only worked
+        // live would be dead in every screenshot.
         {
             let mut via_click = undo_driver();
             type_action(&mut via_click, "hello");
@@ -12766,9 +12550,8 @@ mod undo_driver_tests {
             assert_eq!(body(&mut via_click), "hello");
         }
 
-        // Case `the_driver_publishes_the_status_to_the_widget_tree`:
-        // The harness must publish the status, or a control renders dead in every
-        // shot regardless of the history behind it.
+        // The harness must publish the status, or a control renders dead in every shot regardless
+        // of the history behind it.
         {
             let mut d = undo_driver();
 
@@ -12792,9 +12575,7 @@ mod undo_driver_tests {
             assert_eq!(status.undo_summary, None);
         }
 
-        // Case `clicking_a_disabled_control_in_a_scenario_does_nothing`:
-        // A scenario that clicks a control with nothing to undo must not silently
-        // change the document.
+        // Clicking a control with nothing to undo must not silently change the document.
         {
             let mut d = undo_driver();
             type_action(&mut d, "hello");
@@ -12806,17 +12587,9 @@ mod undo_driver_tests {
     }
 }
 
-/// Undo for an app whose edits are dispatched [`tilo_actions`] actions — the
-/// shape every migrated Tilo app has — driven headlessly.
-///
-/// The module above drives a widget that writes the document itself and
-/// reports its own bracket. An app built on
-/// [`ActionHost`](crate::local_dispatch::LocalDispatch) writes only through
-/// dispatched actions: its boundary arrives through
-/// [`take_committed_action`](crate::undo::CommittedActions::take_committed_action)
-/// from the action host. Until the driver drained that, a headless test of such an app could
-/// deliver the input but could not observe the undo history the input produced,
-/// so undo behaviour was untestable for the majority of the fleet.
+/// Undo for an app whose edits are dispatched actions, the shape every migrated app has: its
+/// boundary arrives through [`take_committed_action`](crate::undo::take_committed_action), not from
+/// a widget reporting its own bracket.
 #[cfg(test)]
 mod dispatched_action_driver_tests {
     use super::*;
@@ -12850,22 +12623,15 @@ mod dispatched_action_driver_tests {
         }
     }
 
-    /// An editor in the migrated shape: every edit is dispatched through
-    /// [`ActionHost`](crate::local_dispatch::LocalDispatch), and the only thing it
-    /// tells the host is the bracket the action host captured — that is the
-    /// whole distinction under test.
-    ///
-    /// Two ways in, because a canvas app has two: a keystroke, and an
-    /// accessibility verb routed to `perform_action` (how an assistive
-    /// technology, and every headless scenario over a canvas, drives it).
+    /// An editor in the migrated shape: every edit is dispatched through `ActionHost`, and the only
+    /// thing it tells the host is the bracket the action host captured. Two ways in, as a canvas
+    /// app has: a keystroke, and an accessibility verb.
     struct ActionEditor {
         rect: vello::kurbo::Rect,
         actions: crate::local_dispatch::LocalDispatch,
         focused: bool,
-        /// Whether this editor claims the event. A `Row` stops dispatching to
-        /// later siblings once a child claims one, so a second editor that must
-        /// also see the keystroke is built without the claim — the shape of a
-        /// pane that reacts to an edit alongside the widget that owns it.
+        /// Whether this editor claims the event; a `Row` stops dispatching once a child claims one,
+        /// so a pane that must also see the keystroke is built without the claim.
         claims: bool,
     }
 
@@ -13061,14 +12827,8 @@ mod dispatched_action_driver_tests {
             );
         }
 
-        // Case `an_edit_dispatched_as_an_action_lights_undo_and_reverts_when_pressed`:
-        // The whole covenant on one interaction: a real edit dispatched as an
-        // action, the Undo control lighting because of it, pressing that control,
-        // and the edit going away.
-        //
-        // Every step is the driver's own output — `undo_status` is what the
-        // harness publishes to the tree, `click_named` is the production click
-        // path, and the document is read back from the live state.
+        // Edit dispatched as an action, the Undo control lighting, the press, the revert: every
+        // step is the driver's own output, through the production click path and published status.
         {
             let mut d = action_driver();
 
@@ -13109,9 +12869,8 @@ mod dispatched_action_driver_tests {
             assert_eq!(body(&mut d), "");
         }
 
-        // Case `ctrl_z_and_the_control_undo_the_same_dispatched_action`:
-        // The keyboard and the control must reach the same undo — for the action
-        // path too, not just the widget-written one.
+        // The keyboard and the control must reach the same undo on the action path too, not just
+        // the widget-written one.
         {
             let mut via_key = action_driver();
             via_key.type_text("a");
@@ -13132,12 +12891,8 @@ mod dispatched_action_driver_tests {
             );
         }
 
-        // Case `an_action_performed_through_accessibility_is_undoable`:
-        // A canvas app is driven through the accessibility tree, not through
-        // clicks — `perform_a11y_action` is the route
-        // [`docs/headless-testing.md`] tells scenarios to take. That route mutates
-        // the document without going through `send`, so it needs the boundary
-        // recorded too.
+        // A canvas app is driven through the accessibility tree, not clicks: `perform_a11y_action`
+        // mutates the document without going through `send`, so it needs the boundary recorded too.
         {
             let mut d = action_driver();
             let node = d
@@ -13175,10 +12930,8 @@ mod dispatched_action_driver_tests {
 
     #[test]
     fn dispatched_action_boundaries_follow_interactions() {
-        // Case `several_actions_in_one_event_are_one_boundary`:
-        // One event is one undo boundary, however many actions it dispatched —
-        // [`ActionHost`](crate::local_dispatch::LocalDispatch)'s contract, observed
-        // through the driver rather than asserted against the host in isolation.
+        // One event is one undo boundary, however many actions it dispatched: `ActionHost`'s
+        // contract, observed through the driver.
         {
             let mut d = action_driver();
             d.type_text("2"); // dispatches two Appends within the single keystroke
@@ -13196,11 +12949,8 @@ mod dispatched_action_driver_tests {
             );
         }
 
-        // Case `separate_interactions_are_separate_boundaries`:
-        // Two separate interactions are two separate boundaries, undone newest
-        // first. Guards the rising-edge drain: a host that failed to clear the
-        // bracket would bracket the second edit from the first edit's heads and
-        // revert both at once.
+        // Two interactions are two boundaries, undone newest first; a host that failed to clear the
+        // bracket would bracket the second edit from the first one's heads and revert both.
         {
             let mut d = action_driver();
             d.type_text("a");
@@ -13213,16 +12963,8 @@ mod dispatched_action_driver_tests {
             assert_eq!(body(&mut d), "");
         }
 
-        // Case `two_widgets_dispatching_in_one_tick_are_one_boundary_from_the_earlier`:
-        // Two widgets dispatching in the same tick is still one boundary, and it
-        // spans from the earlier of their brackets.
-        //
-        // The second widget captures its bracket *after* the first has already
-        // changed the document, so recording from that later bracket would strand
-        // the first widget's edit outside the entry: one Ctrl+Z would revert half
-        // the tick and leave the rest with nothing to undo it. Which bracket the
-        // sweep happens to see first is a hash-map order, so this cannot be left
-        // to luck.
+        // Two widgets dispatching in one tick are one boundary from the earlier bracket; recording
+        // from the later one would strand the first edit, and one Ctrl+Z would revert only half.
         {
             // Both editors handle the same keystroke, so a single key press
             // dispatches from each in turn.
@@ -13248,10 +12990,8 @@ mod dispatched_action_driver_tests {
             );
         }
 
-        // Case `an_event_that_dispatches_nothing_records_no_boundary`:
-        // An event that dispatches nothing must not push an empty entry, or the
-        // next Ctrl+Z is spent on a no-op and the user's edit survives a
-        // press they expected to undo it.
+        // An event that dispatches nothing must not push an empty entry, or the next Ctrl+Z is
+        // spent on a no-op and the person's edit survives.
         {
             let mut d = action_driver();
             d.type_text("a");
@@ -13355,9 +13095,8 @@ mod ordinary_confirmation_owner_tests {
     }
 }
 
-/// Where a test writes the captures a reviewer reads: the build's target
-/// directory, so a remote build can hand them back (`--fetch`), or the
-/// default target beside the source tree.
+/// Where a test writes captures a reviewer reads: the build's target directory, so a remote build
+/// can hand them back (`--fetch`).
 #[cfg(test)]
 pub(crate) fn agent_marker_shots() -> std::path::PathBuf {
     match crate::env::var_os("CARGO_TARGET_DIR") {

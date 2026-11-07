@@ -17,9 +17,8 @@ use super::SharedWorkspace;
 /// - `pause(ROOT, "name") on WORKERS` pauses on a blocking worker of the
 ///   `WORKERS` pool, so the workspace's async owner is not parked.
 /// - `if COND => POINT` reaches `POINT` only when `COND` holds.
-/// - `if COND => check(ROOT, "name") else VALUE = FAULT` rebinds `VALUE` to
-///   `FAULT` when `COND` holds and the check fails; `ROOT` is read only when
-///   `COND` holds.
+/// - `check(ROOT, "name") else VALUE = FAULT` rebinds `VALUE` to `FAULT`
+///   when the check fails, and `if COND => ...` only when `COND` holds.
 macro_rules! test_point {
     (if $cond:expr => $op:ident(workspace $workspace:expr, $name:literal) $($rest:tt)*) => {
         crate::peer::test_hooks::test_point!(
@@ -32,6 +31,24 @@ macro_rules! test_point {
         crate::peer::test_hooks::test_point!(
             $op(&crate::peer::test_hooks::store_root(&$workspace).await, $name) $($rest)*
         )
+    };
+    (
+        check(workspace $workspace:expr, $name:literal)
+        else $value:ident = $fault:expr
+    ) => {
+        crate::peer::test_hooks::test_point!(
+            check(
+                &crate::peer::test_hooks::store_root(&$workspace).await, $name
+            ) else $value = $fault
+        )
+    };
+    (check($root:expr, $name:literal) else $value:ident = $fault:expr) => {
+        #[cfg(test)]
+        let $value = crate::peer::test_hooks::inject_fault(
+            $value,
+            crate::store::test_barrier::check($root, $name).is_err(),
+            || $fault,
+        );
     };
     (if $cond:expr => check($root:expr, $name:literal) else $value:ident = $fault:expr) => {
         #[cfg(test)]

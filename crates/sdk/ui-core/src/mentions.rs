@@ -1,29 +1,20 @@
-//! Mentions as a workspace fact: who a record's rich text names, read from
-//! the record itself, and the one notice each mentioned reader gets.
+//! Mentions as a workspace fact: who a record's rich text names, read from the record itself, and
+//! the one notice each mentioned reader gets.
 //!
-//! A mention is a run of rich text marked `mention` with the participant's
-//! id, whichever app wrote it (native or tilolang): a paragraph of a note (an Automerge text
-//! mark, as `tilo-doc` keeps them) or a block of a chat message (a stored
-//! mark span, as `tilo_document::ClipBlock` keeps them). [`in_record`] finds
-//! every one in a record's document without the app's code, so whatever
-//! holds the record — the person's desktop, on any device, whether or not
-//! the app is open — derives the same facts from what it was sent. Only
-//! the record's readers are sent it, so only they learn of a mention in it.
-//! A notice's excerpt reads each reference to a resource as it reads for
-//! the person told ([`Look::read`]): never the title it was written with
-//! when they cannot read what it refers to.
+//! A mention is a run of rich text marked `mention` with the participant's id, whichever app wrote
+//! it: a paragraph of a note (an Automerge text mark, as `tilo-doc` keeps them) or a block of a
+//! chat message (a stored mark span, as `tilo_document::ClipBlock` keeps them). [`in_record`] finds
+//! every one without the app's code, so whatever holds the record derives the same facts from what
+//! it was sent; only the record's readers are sent it, so only they learn of a mention. A notice's
+//! excerpt reads each reference as it reads for the person told ([`Look::read`]).
 //!
-//! Where a mention is is the item of the record it was written in, as the
-//! app publishes it (`<kind>/<field>/<id>`, `tilo_resource::items`): a
-//! note of a notebook, a message of a chat (whose messages are kept in
-//! parts of a chain, but published as the chat's items). Opening that
-//! resource is what opening the mention means.
+//! Where a mention is is the item of the record it was written in, as the app publishes it
+//! (`<kind>/<field>/<id>`, `tilo_resource::items`); opening that resource is what opening the
+//! mention means.
 //!
-//! [`MentionInbox`] turns the facts into notices for one person: one per
-//! place, never for their own mention, quietly taken for what they were
-//! looking at when it arrived, withdrawn when the mention is edited away,
-//! and never again once told — what it told it keeps, so reopening a record
-//! or reloading tells nothing.
+//! [`MentionInbox`] turns the facts into notices for one person: one per place, never for their
+//! own mention, quietly taken for what they were looking at when it arrived, withdrawn when the
+//! mention is edited away, and never again once told.
 
 use std::collections::{BTreeMap, BTreeSet};
 

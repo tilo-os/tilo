@@ -1,26 +1,14 @@
-//! The person's arrangement as the desk they share with the workspace
-//! (workspace.md §9): what is open where, read off the desk itself, kept in
-//! the desk's own record ([`tilo_desktop_model::shared_record`], through the
-//! desk this session holds) with history and undo. A workspace's history — a
-//! strip made, a width dragged — is the desk's, and every member of the
-//! workspace reads the same one.
-//!
-//! A place also shows its resource through a view, and the person may pin it.
-//! Both are the window's own ([`tilo_desktop_model::Tab`]), so the desk's
-//! record answers what the arrangement is, on this device and across a
-//! restart.
-//!
+//! The person's arrangement as the desk they share with the workspace: what is
+//! open where, read off the desk itself, kept in the desk's own record
+//! ([`tilo_desktop_model::shared_record`]) with history and undo, so every member
+//! of the workspace reads the same one. A place's view and its pin are the
+//! window's own ([`tilo_desktop_model::Tab`]).
 //! Each arranging action ([`ArrangementAction`]) is one change of the desk,
-//! attributed to whoever asked for it — the person's own input included — and
-//! undone as that one step. What the desk changes on its own — a window an app
-//! opened, a drag — is a change of the desk like any other, made where the
-//! desk is.
-//!
-//! One rule is fixed (shell.md §1): nothing moves or takes focus under an
-//! ongoing gesture or while the person types. An arranging action that
-//! arrives then waits here and runs when the gesture or the typing ends; it
-//! is never dropped.
-
+//! attributed to whoever asked for it and undone as that one step; what the desk
+//! changes on its own is a change like any other.
+//! One rule is fixed (shell.md §1): nothing moves or takes focus under an ongoing
+//! gesture or while the person types. An action that arrives then waits here and
+//! runs when they end; it is never dropped.
 use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
@@ -264,15 +252,11 @@ fn placeable(hit: &tilo_desktop_search::Hit) -> Option<(&str, &str)> {
     }
 }
 
-/// Which of `hits` a text typed on the canvas places: the top one that names
-/// a resource `shows` accepts, or the one inside it that carries the same
-/// name when the text is that name.
-///
-/// This is the one ranking a text typed on the canvas and an agent's `find`
-/// share: the canvas stands this hit's resource, and `find` leads with this
-/// same hit — never with another row about the same resource. A hit the
-/// arrangement cannot place (a settings section) does not stand in the way
-/// of one it can.
+/// Which of `hits` a text typed on the canvas places: the top one that names a
+/// resource `shows` accepts, or the one inside it that carries the same name.
+/// This is the one ranking a typed text and an agent's `find` share, so `find`
+/// never leads with another row about the same resource. A hit the arrangement
+/// cannot place does not stand in the way of one it can.
 #[must_use]
 pub(crate) fn placed(
     hits: &[tilo_desktop_search::Hit],
@@ -492,31 +476,22 @@ impl Arrangement {
         Rc::clone(&self.catalog)
     }
 
-    /// The surface the desk shows at `(x, y)` as a place made there stands:
-    /// the workspace in front, its row, the id its own strip takes and the
-    /// id its place takes. Every id is this device's: a place made here is
-    /// this person's, synced by the record like any other.
-    ///
-    /// A workspace with no row yet — one just joined, whose first window is
-    /// what makes the row it goes in (`DesktopHost`, "the first window opened
-    /// there makes the strip it goes in") — is given a row here: a place put
-    /// on the canvas is that window, and refusing it would leave a person who
-    /// joined a workspace unable to place anything in it.
-    ///
+    /// The surface the desk shows at `(x, y)` as a place made there stands: the
+    /// workspace in front, its row, and the ids its strip and place take. Every id is
+    /// this device's. A workspace with no row yet — one just joined, whose first window
+    /// makes its row — is given a row here, so a person who joined a workspace can
+    /// place something in it.
     /// # Errors
-    /// The desk has no workspace in front to put anything on.
+    /// The desk has no workspace in front.
     pub fn surface_at(&self) -> Result<Surface, String> {
         self.surface_at_strip(None)
     }
 
-    /// The surface a place made in `strip` stands on: the strip's own workspace
-    /// and row when it names one on the desk, so the place joins that strip as
-    /// a tab; the workspace and row in front otherwise. The place's id is
-    /// minted here, whatever the strip.
-    ///
+    /// The surface a place made in `strip` stands on: the strip's own workspace and row
+    /// when it names one on the desk, so the place joins that strip as a tab; the
+    /// workspace and row in front otherwise. The place's id is minted here.
     /// # Errors
-    /// The desk has no workspace in front, or `strip` is not a strip on this
-    /// desk.
+    /// The desk has no workspace in front, or `strip` is not a strip on this desk.
     pub fn surface_at_strip(&self, strip: Option<u64>) -> Result<Surface, String> {
         let tree = self.handle.read(Clone::clone);
         if let Some(strip) = strip {
@@ -758,12 +733,9 @@ impl Arrangement {
         &self.person
     }
 
-    /// Carry out `action` as `asked`'s: one change of the record, attributed
-    /// to them and undone as one step. Under an ongoing gesture or while the
-    /// person types it waits ([`Self::waiting`]) and runs when they end.
-    ///
-    /// Returns whether it ran now.
-    ///
+    /// Carry out `action` as `asked`'s: one change of the record, attributed to them
+    /// and undone as one step. Under an ongoing gesture or while the person types it
+    /// waits ([`Self::waiting`]) and runs when they end. Returns whether it ran now.
     /// # Errors
     /// Why the action names something the arrangement does not hold.
     pub fn ask(
@@ -2018,12 +1990,6 @@ impl ArrangementDoor {
             ask,
         }
     }
-
-    /// Arrange as `actor` from now on: what the person's own input does, so
-    /// their drag, their resize and their close are attributed to them.
-    pub fn arrange_as(&self, actor: &str) {
-        actor.clone_into(&mut self.actor.borrow_mut());
-    }
 }
 
 impl Published for ArrangementDoor {
@@ -2127,16 +2093,11 @@ impl Published for ArrangementDoor {
 }
 
 impl ArrangementDoor {
-    /// A `place` that names no workspace, row, strip or id of its own stands
-    /// on the surface in front, in a strip of its own, under ids minted here:
-    /// what a reference activated in a view asks for (shell.md §3), which
-    /// knows the point it wants and none of the desk's ids. `action`, decoded
-    /// from `arguments`, takes the surface in front's workspace and row and
-    /// fresh strip and place ids for whichever of them `arguments` leaves
-    /// out. They go into the action itself, never back through the
-    /// arguments: a desk's ids span all of `u64`, which an integer argument
-    /// does not. The record holds the ids it was given, as for any other
-    /// place.
+    /// A `place` that names no workspace, row, strip or id of its own stands on the
+    /// surface in front, in a strip of its own, under ids minted here: what a reference
+    /// activated in a view asks for (shell.md §3). They go into the action itself,
+    /// never back through the arguments: a desk's ids span all of `u64`, which an
+    /// integer argument does not.
     fn place_at_surface(
         &self,
         arguments: &serde_json::Map<String, Json>,

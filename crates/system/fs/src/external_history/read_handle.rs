@@ -5,7 +5,6 @@ use super::{
     UnixStream, Write, io, nonce, process_binding, refused,
 };
 use super::{lane_controller::AcknowledgedRegistry, pending_source::within};
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
 use fs_protocol::{
     FileBindingV1, FileVersionId,
     files::{
@@ -15,11 +14,12 @@ use fs_protocol::{
 };
 use futures_util::future::LocalBoxFuture;
 use runtime_fs::{
-    directory_backend::HistoryReadObservation, directory_client::HistoryReadSubjectClient,
+    connection::{Connection, Object},
+    directory_backend::HistoryReadObservation,
+    directory_client::HistoryReadSubjectClient,
 };
 use runtime_portal::retained_role::NativeHistoryReadHandoff;
 use std::{cell::RefCell, rc::Rc};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub(super) struct ReadLineage {
     pub(super) observation: HistoryReadObservation,
@@ -40,13 +40,12 @@ struct ReadSource {
     program: File,
     expected: NativeHistoryReadHandoff,
     observation: HistoryReadObservation,
-    driver: Option<tokio::task::JoinHandle<Result<(), capnp::Error>>>,
+    /// This source's own connection; closing it ends the peer's custody.
+    connection: Option<std::sync::Arc<Connection>>,
 }
 impl Drop for ReadSource {
     fn drop(&mut self) {
-        if let Some(driver) = &self.driver {
-            driver.abort();
-        }
+        self.stop();
     }
 }
 fn expectation(mut file: File) -> io::Result<NativeHistoryReadHandoff> {
@@ -122,20 +121,10 @@ impl ReadSource {
                 .await?;
             let peer = result?;
 
-            stream.set_nonblocking(true)?;
-            let stream = tokio::net::UnixStream::from_std(stream)?;
-            let (reader, writer) = stream.into_split();
-            let network = VatNetwork::new(
-                reader.compat(),
-                writer.compat_write(),
-                Side::Client,
-                capnp::message::ReaderOptions::default(),
-            );
-            let mut rpc = RpcSystem::new(Box::new(network), None);
-            let raw: runtime_fs::fs_capnp::history_read_subject::Client =
-                rpc.bootstrap(Side::Server);
-            let subject = HistoryReadSubjectClient::from_authenticated_source_capability(raw);
-            let driver = tokio::task::spawn_local(rpc);
+            let connection = Connection::connect("history-read-source", stream)?;
+            let subject = HistoryReadSubjectClient::from_object(Object::root(
+                std::sync::Arc::clone(&connection),
+            ));
             let observation = match within(cancel, deadline, async {
                 subject.check_scope().await.map_err(io::Error::other)?;
                 subject.check().await.map_err(io::Error::other)?;
@@ -147,14 +136,12 @@ impl ReadSource {
             {
                 Ok(value) => value,
                 Err(error) => {
-                    driver.abort();
-                    let _ = driver.await;
+                    connection.close();
                     return Err(error);
                 }
             };
             if observation.source_owner != expected.source_owner {
-                driver.abort();
-                let _ = driver.await;
+                connection.close();
                 return Err(refused());
             }
             let mut source = Self {
@@ -164,7 +151,7 @@ impl ReadSource {
                 program,
                 expected,
                 observation,
-                driver: Some(driver),
+                connection: Some(connection),
             };
             if let Err(error) = source.check(cancel, deadline).await {
                 source.stop_and_wait().await?;
@@ -173,16 +160,15 @@ impl ReadSource {
             Ok(source)
         })
     }
+    /// Close this source's connection: the worker sees its custody end.
+    fn stop(&mut self) {
+        if let Some(connection) = self.connection.take() {
+            connection.close();
+        }
+    }
     fn stop_and_wait(&mut self) -> LocalBoxFuture<'_, io::Result<()>> {
         Box::pin(async move {
-            if let Some(driver) = self.driver.take() {
-                driver.abort();
-                match driver.await {
-                    Ok(_) => {}
-                    Err(error) if error.is_cancelled() => {}
-                    Err(error) => return Err(io::Error::other(error)),
-                }
-            }
+            self.stop();
             Ok(())
         })
     }
@@ -195,9 +181,9 @@ impl ReadSource {
             || !a.proof.shell.current()
             || !self.peer.current()
             || self
-                .driver
+                .connection
                 .as_ref()
-                .is_none_or(tokio::task::JoinHandle::is_finished)
+                .is_none_or(|connection| !connection.live())
             || self.peer.pid() != self.expected.worker_pid
             || self.peer.uid() != self.expected.worker_uid
             || self.peer.gid() != self.expected.worker_gid

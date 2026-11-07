@@ -1,32 +1,15 @@
 //! The session's Bluetooth pairing agent.
-//!
-//! `BlueZ` asks the desktop a question mid-pairing — "these six digits, do
-//! they match what the headphones are showing?" — and holds the pairing
-//! open until the answer comes back. Whoever answers decides whether a
-//! nearby device gets to inject keystrokes and read audio.
-//!
-//! [`PairingService`] keeps `tilo-bluez`'s agent registered as `BlueZ`'s
-//! default agent and asks each of its questions through the session's
-//! questions ([`tilo_service::Questions`]): one question of kind
-//! [`KIND`] at a time, listed under the device's name, whose details read
-//! as [`PairingDetails`]. The session's sheet answers it:
-//!
-//! - choice 0 confirms or accepts; for a typed passkey or PIN, `values[0]`
-//!   is what was typed, checked as [`reply`] says (a passkey up to
-//!   [`MAX_PASSKEY`], a PIN of at most [`tilo_bluez::MAX_PIN_CODE_BYTES`]).
-//!   Anything else, a blank or unreadable entry included, refuses.
-//! - Declining refuses; for a code on show ([`Method::DisplayPasskey`],
-//!   [`Method::DisplayPin`]), which has no reply to refuse, it stops the
-//!   pairing on the device.
-//!
-//! Confirming is for the person at the device only: a question's answer
-//! action is attended, so an agent acting for them may decline a pairing
-//! but never confirm one.
-//!
-//! A question goes away when it is answered, when `BlueZ` withdraws it
-//! (`Cancel`, `Release`), when a device showing a code finishes pairing,
-//! when another question takes its place (refusing it), or when nobody
-//! answers within the agent's timeout — never by being silently accepted.
+//! `BlueZ` asks the desktop a question mid-pairing — "these six digits, do they
+//! match what the headphones are showing?" — and holds the pairing open until the
+//! answer comes back; whoever answers decides whether a nearby device gets to
+//! inject keystrokes and read audio.
+//! [`PairingService`] keeps `tilo-bluez`'s agent registered as `BlueZ`'s default and
+//! asks each question through the session's questions: one of kind [`KIND`] at a
+//! time, listed under the device's name, answered on the session's sheet. Choice 0
+//! confirms or accepts the typed passkey or PIN; anything else, a blank included,
+//! refuses. Confirming is for the person at the device only: an answer action is
+//! attended, so an agent acting for them may decline a pairing but never confirm
+//! one. A question is never silently accepted.
 
 use std::future::Future;
 use std::pin::Pin;

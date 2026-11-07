@@ -544,10 +544,6 @@ impl WorkspaceActivityPane {
         Self::from_local_user(None)
     }
 
-    pub fn with_local_user(local: String) -> Self {
-        Self::from_local_user(Some(local))
-    }
-
     #[allow(
         clippy::too_many_lines,
         reason = "the shared pane constructor wires retained controllers and one-shot intents"
@@ -954,10 +950,6 @@ impl WorkspaceActivityPane {
         self.period
     }
 
-    pub fn author_filter(&self) -> Option<&str> {
-        self.author.as_deref()
-    }
-
     pub fn timeline(&self) -> &ActivityTimeline {
         &self.timeline
     }
@@ -979,14 +971,6 @@ impl WorkspaceActivityPane {
     /// Checkpoints whose causal heads or historical projection were unavailable.
     pub fn replay_unavailable_checkpoints(&self) -> usize {
         self.replay_unavailable
-    }
-
-    /// Workspace names at each checkpoint Replay can play, oldest first.
-    pub fn replay_checkpoint_names(&self) -> Vec<Vec<String>> {
-        self.replay_frames
-            .iter()
-            .map(|frame| frame.workspaces.iter().map(|ws| ws.name.clone()).collect())
-            .collect()
     }
 
     pub fn replay_is_playing(&self) -> bool {
@@ -1467,58 +1451,6 @@ impl WorkspaceActivityPane {
         self.last_heads.clear();
         self.refresh(tree);
         true
-    }
-
-    /// Give deterministic visual journeys a real, elapsed departure frontier
-    /// without reading or overwriting this device's persisted history state.
-    pub fn prepare_away_recap_for_shots(&mut self, tree: &mut impl ActivityTree) {
-        let workspace = tree.active.raw();
-        let departed_at_secs = self
-            .now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs()
-            .saturating_sub(AWAY_RECAP_AFTER.as_secs().saturating_add(60));
-        self.departures.insert(
-            workspace,
-            WorkspaceDeparture {
-                departed_at_secs,
-                frontier: WorkspaceSeenFrontier::default(),
-            },
-        );
-        self.presence_workspace = Some(workspace);
-        self.refresh(tree);
-        self.prepare_away_view(workspace);
-    }
-
-    pub fn expand_work_session_for_shots(&mut self, index: usize) -> bool {
-        if index >= self.digest.briefs.len() {
-            return false;
-        }
-        self.expanded_brief = Some(index);
-        true
-    }
-
-    #[doc(hidden)]
-    pub fn move_work_session_boundary_for_shots(
-        &mut self,
-        tree: &mut impl ActivityTree,
-        older: usize,
-        newer: usize,
-        into_newer: bool,
-    ) -> bool {
-        self.move_work_session_boundary(
-            tree,
-            WorkSessionBoundary {
-                older,
-                newer,
-                direction: if into_newer {
-                    BoundaryDirection::IntoNewer
-                } else {
-                    BoundaryDirection::IntoOlder
-                },
-            },
-        )
     }
 
     fn entry_position(&self, id: &HistoryEntryId) -> Option<usize> {
@@ -2476,20 +2408,6 @@ impl WorkspaceActivityPane {
 
     pub fn narrative_request(&self) -> Option<NarrativeRequest> {
         self.narrative_request.clone()
-    }
-
-    /// Install optional model prose only when every cited action belongs to
-    /// the current digest. Invalid or stale output leaves the deterministic
-    /// summary in place.
-    pub fn apply_generated_narrative(&mut self, narrative: ui::GroundedNarrative) -> bool {
-        let Some(request) = self.narrative_request.as_ref() else {
-            return false;
-        };
-        let Some(valid) = ui::validate_narrative(request, narrative) else {
-            return false;
-        };
-        self.narrative = Some(valid);
-        true
     }
 
     pub fn set_scope(&mut self, scope: WorkspaceScope, tree: &impl ActivityTree) {

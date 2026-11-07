@@ -1,29 +1,21 @@
-//! `Section`: a titled group of content on the ground, separated from the
-//! next group by space, never boxed.
+//! `Section`: a titled group of content on the ground, separated from the next group by space,
+//! never boxed.
 //!
-//! A section is an intrinsic-height stack whose items sit `rhythm.sibling`
-//! apart. Consecutive [`ListRow`]s are one list: they sit edge to edge with
-//! no rule between them; their badge columns share one width, and a run of
-//! selected rows is one lift.
-//! The optional header carries the group's title (sentence case, in
-//! `Heading` for a section of a page or `Subheading` for a group inside
-//! one), a count of what it holds, and one trailing text action ("Clear
-//! all", "Stage all"), `rhythm.related` above the first item. There is no
-//! subtitle: a description goes in the content only when it tells the
-//! person something they need to act on.
+//! An intrinsic-height stack whose items sit `rhythm.sibling` apart, with consecutive
+//! [`ListRow`]s one list: edge to edge with no rule between them, badge columns sharing one
+//! width, and a run of selected rows one lift. The optional header carries the group's title
+//! (sentence case, `Heading` for a section of a page, `Subheading` inside one), a count, and one
+//! trailing text action ("Clear all", "Stage all"), `rhythm.related` above the first item. There
+//! is no subtitle: a description goes in the content only when it tells the person something
+//! they need to act on.
 //!
-//! **One content edge.** The header's title starts on the column's content
-//! edge, like the rows' text under it; the action's label ends on the
-//! trailing edge, its hover lift bleeding past it as a row's does. The
-//! header is one fixed height whether or not it has an action.
+//! **One content edge**: the title starts on the column's content edge like the rows' text, the
+//! action's label ends on the trailing edge with its hover lift bleeding past as a row's does,
+//! and the header is one fixed height whether or not it has an action.
 //!
-//! A [`Section::collapsible`] section is a disclosure: its header toggles
-//! the items with a pointer, Enter or Space, and the arrow keys, and says
-//! whether it is expanded.
-//!
-//! [`StatusLine`] and [`ObjectHeader`] are the two non-interactive parts a
-//! section most often carries: a status with its dot, and the head of a
-//! detail view.
+//! A [`Section::collapsible`] section is a disclosure: its header toggles the items with a
+//! pointer, Enter, Space or the arrow keys, and says whether it is expanded. [`StatusLine`] and
+//! [`ObjectHeader`] are the two non-interactive parts a section most often carries.
 //!
 //! [`ListRow`]: crate::widget::ListRow
 

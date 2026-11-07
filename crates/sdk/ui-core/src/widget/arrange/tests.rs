@@ -609,7 +609,9 @@ fn a_page_its_parent_places_stays_where_it_is_placed_when_it_settles_its_width()
     let theme = Theme::dark();
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-    let mut page = Page::full().row().push(boxed(20.0));
+    let mut page = Page::full()
+        .row_after(crate::tokens::Rhythm::Sibling)
+        .push(boxed(20.0));
     let node = page.build_layout(&mut tree, &theme, &mut nodes);
     // Placed as a virtual list places a row.
     let mut placed = tree.style(node).expect("styled").clone();

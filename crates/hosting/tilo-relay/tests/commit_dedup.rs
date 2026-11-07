@@ -11,33 +11,11 @@
 use std::time::Duration;
 
 use tilo_relay::{Envelope, RelayClient};
-use tilo_user_identity::{DeviceCapabilities, RevocationList};
+use tilo_user_identity::DeviceCapabilities;
 
-use crate::common::{TestDevice, TestUser, client_endpoint, next, spawn_relay_on};
+use crate::common::{TestDevice, TestUser, connect, next, spawn_relay_on};
 
 const WS: u64 = 43;
-
-async fn connect(
-    user: &TestUser,
-    device: &TestDevice,
-    addr: iroh_base::EndpointAddr,
-) -> RelayClient {
-    let client = RelayClient::connect(
-        client_endpoint().await,
-        addr,
-        user.user_pk,
-        device.cert.clone(),
-        device.sk.clone(),
-        RevocationList::new(),
-    )
-    .await
-    .unwrap();
-    client
-        .send(Envelope::Subscribe { workspace_id: WS })
-        .unwrap();
-    next(&client, |env| matches!(env, Envelope::Ready { .. })).await;
-    client
-}
 
 async fn no_delta(client: &RelayClient) {
     let deadline = tokio::time::Instant::now()
@@ -87,8 +65,8 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
         &members,
     )
     .await;
-    let a_client = connect(&user, &a, host.node_addr()).await;
-    let b_client = connect(&user, &b, host.node_addr()).await;
+    let a_client = connect(&user, &a, host.node_addr(), WS).await;
+    let b_client = connect(&user, &b, host.node_addr(), WS).await;
 
     a_client.send(commit(&a, [1; 16], vec![1, 2, 3])).unwrap();
     let seq = committed(&a_client, [1; 16]).await;
@@ -118,8 +96,8 @@ async fn resent_commits_keep_their_host_order_and_are_not_fanned_out_again() {
         &members,
     )
     .await;
-    let a_client = connect(&user, &a, host.node_addr()).await;
-    let b_client = connect(&user, &b, host.node_addr()).await;
+    let a_client = connect(&user, &a, host.node_addr(), WS).await;
+    let b_client = connect(&user, &b, host.node_addr(), WS).await;
     a_client.send(commit(&a, [1; 16], vec![1, 2, 3])).unwrap();
     assert_eq!(committed(&a_client, [1; 16]).await, seq);
     no_delta(&b_client).await;

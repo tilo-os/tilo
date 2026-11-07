@@ -76,10 +76,6 @@ reason = "it is the sync engine, and everyone else acts on the workspace through
   why = "the relay embeds the workspace host and keeps workspaces for offline peers, the store node's network side"
 
   [[rule.allow]]
-  package = "tilo-relay-shell"
-  why = "the seam a workspace host reads the engine's peer-sync vocabulary through"
-
-  [[rule.allow]]
   package = "tilo-agent-participant"
   why = "a participant opens the document frame of the record it plans against, the framing every reader of a record's frames speaks"
 

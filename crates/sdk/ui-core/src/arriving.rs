@@ -1,40 +1,27 @@
-//! Data that is not here yet: the one model for every read whose answer
-//! arrives later.
+//! Data that is not here yet: the one model for every read whose answer arrives later.
 //!
-//! An [`Arriving`] value is a read in flight. Its [`Arrival`] is pending
-//! (with the [`Source`] the answer comes from), ready, or failed. App code
-//! says only what it shows once the data is there; the framework decides
-//! every timing and placeholder ([`crate::widget::ArrivingView`]):
+//! An [`Arriving`] value is a read in flight, its [`Arrival`] pending (with the [`Source`] the
+//! answer comes from), ready or failed. App code says only what it shows once the data is
+//! there; the framework decides every timing and placeholder ([`crate::widget::ArrivingView`]):
 //!
-//! - **Local data** (this device's files, workspaces and store) normally answers
-//!   within a frame or two. A window or a view opens complete: the frame
-//!   that would show it waits up to one frame budget for the answer
-//!   ([`frame_budget`]), and an answer inside that budget shows with no
-//!   placeholder and no motion. A local read that misses the budget (a cold
-//!   disk) behaves like a remote one from then on.
-//! - **Remote data** (another of the person's devices, a collaborator's, a
-//!   host) gets its space reserved at the content's geometry from the
-//!   start. Nothing but that ground shows for [`GRACE`]; then a skeleton in
-//!   the content's shape, which stays at least [`MIN_SHOWN`] so it never
-//!   flashes; after [`NAME_SOURCE_AFTER`] the placeholder says where the
-//!   data comes from. The answer cross-fades in
-//!   ([`crate::motion::CrossFade::arrive`]); a failure turns the reserved
-//!   space into the error, with a retry.
+//! - **Local data** answers within a frame or two: the frame that would show it waits up to
+//!   one frame budget ([`frame_budget`]), and an answer inside it shows with no placeholder and
+//!   no motion. A local read that misses the budget (a cold disk) behaves like a remote one.
+//! - **Remote data** reserves its space at the content's geometry: nothing but that ground for
+//!   [`GRACE`], then a skeleton in the content's shape for at least [`MIN_SHOWN`] so it never
+//!   flashes, saying where it comes from after [`NAME_SOURCE_AFTER`]. The answer cross-fades in
+//!   ([`crate::motion::CrossFade::arrive`]); a failure turns the reserved space into the error,
+//!   with a retry.
 //!
-//! Every timed step is a deadline ([`ArrivalClock::next_step_at`]), served
-//! by the window's wake scheduler: a pending read draws no frames between
-//! its steps.
+//! Every timed step is a deadline ([`ArrivalClock::next_step_at`]) served by the window's wake
+//! scheduler, so a pending read draws no frames between its steps.
 //!
-//! A window whose first frame is not drawn yet is the same arrival at the
-//! scale of a tile ([`crate::widget::TileHost`]): its content says where
-//! that frame comes from ([`crate::widget::Widget::arrives_from`]), and,
-//! when what it waits on can measure itself (an app downloaded before it
-//! starts), how much of it has come ([`Progress`]).
-//!
-//! The answer lives in a [`LocalState`], so a bound view updates and an idle
-//! window wakes when it lands. [`Arriving::begin`] restarts the read and
-//! makes every older [`ArrivalCompletion`] stale ([`LatestTask`]'s rule), so a
-//! slow answer can never overwrite a newer one.
+//! A window whose first frame is not drawn is the same arrival at a tile's scale
+//! ([`crate::widget::TileHost`]): its content says where that frame comes from and, when what
+//! it waits on can measure itself, how much of it has come ([`Progress`]). The answer lives in
+//! a [`LocalState`], so a bound view updates and an idle window wakes when it lands;
+//! [`Arriving::begin`] restarts the read and makes every older [`ArrivalCompletion`] stale, so
+//! a slow answer can never overwrite a newer one.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};

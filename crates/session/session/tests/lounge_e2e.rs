@@ -1186,7 +1186,7 @@ fn the_launchers_child() {
     let display = std::env::var_os("WAYLAND_DISPLAY").expect("the display the session handed");
     let socket = std::path::Path::new(&runtime).join(display);
     let title = app.clone();
-    let _window = common::window::Window::on(&socket, &app, &title);
+    let _window = common::window::Client::on(&socket, &app, &title);
 }
 
 /// The launcher a session starts packages through: this test binary, in the

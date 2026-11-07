@@ -2110,17 +2110,30 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
         .collect()
 }
 
-/// A task's row menu is every command a person can run on that task, worded once, in one order:
-/// it takes something away before it adds, dates before priorities, a reminder with the dates,
-/// and a move a gesture also runs among the commands like any other.
+/// The commands a task's row places before any other: the view's own order, what a person
+/// opens the row for.
+fn placed_commands() -> Vec<&'static str> {
+    vec!["Complete", "Pick date…", "Assign…", "Delete"]
+}
+
+/// A task's row opens with the commands its view places for it — checking it off, when it is
+/// due, who is doing it, and taking it away — and keeps every other command the task takes
+/// behind its "More", worded once and in the order the app declares them.
 #[test]
-fn a_tasks_row_menu_offers_every_command_in_one_order() {
+fn a_tasks_row_opens_with_the_commands_its_view_places() {
     let (mut ada, root) = workspace();
     let booked = call(&ada, "new_task", create(&root, "Book a haircut"));
     ada.commit();
     let mut view = ada.view(APP);
     let commands = row_commands(&mut view, &booked);
-    assert_eq!(labels(&commands), spec_commands(), "as a person reads them");
+    let placed = placed_commands();
+    let rest: Vec<&str> = spec_commands()
+        .into_iter()
+        .filter(|label| !placed.contains(label))
+        .collect();
+    let mut expected = placed.clone();
+    expected.extend(rest.iter().copied());
+    assert_eq!(labels(&commands), expected, "as a person reads them");
     assert_eq!(
         commands[0].key.as_deref(),
         Some("Ctrl+enter"),
@@ -2128,34 +2141,43 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
     );
     assert_eq!(
         commands[0].group, None,
-        "a command of no run stands on its own"
+        "a command its view places on its own stands on its own"
     );
     assert_eq!(
-        commands[3].group.as_deref(),
-        Some("Due"),
-        "the dates are one run"
+        commands[1].group.as_deref(),
+        Some("Plan"),
+        "the view puts the date picker in a run of its own"
     );
-    assert_eq!(commands[6].group.as_deref(), Some("Due"));
-    assert_eq!(commands[8].group.as_deref(), Some("Priority"));
     assert!(
-        !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
+        commands[placed.len()..]
+            .iter()
+            .all(|command| command.group.as_deref() == Some("More")),
+        "what the view left over stands behind its \"More\": {commands:?}"
+    );
+    let at = |label: &str| {
+        commands
+            .iter()
+            .position(|command| command.label == label)
+            .unwrap_or_else(|| panic!("the menu offers {label}"))
+    };
+    assert!(
+        !commands[at("No date")].enabled
+            && commands[at("No date")].reason.as_deref() == Some("It has no date"),
         "a command that cannot run stays listed and says why: {:?}",
-        commands[6]
+        commands[at("No date")]
     );
     assert!(
-        !commands[8].enabled && commands[8].reason.as_deref() == Some("It has no priority"),
+        !commands[at("No priority")].enabled
+            && commands[at("No priority")].reason.as_deref() == Some("It has no priority"),
         "what it already is cannot be chosen: {:?}",
-        commands[8]
+        commands[at("No priority")]
     );
     assert_eq!(
-        commands[17].key.as_deref(),
+        commands[at("Duplicate")].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );
-    let delete = commands
-        .iter()
-        .find(|command| command.label == "Delete")
-        .expect("the menu offers deleting the task");
+    let delete = &commands[at("Delete")];
     assert!(
         delete.destructive,
         "delete is drawn as taking something away"
@@ -2163,10 +2185,9 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
     assert_eq!(delete.key.as_deref(), Some("delete"));
 }
 
-/// Every command is offered once, in the order the app declares it, and the ones that need
-/// something of the task stand in that same order among the rest: a task of a project is placed
-/// on its board where it is declared, and the move that needs nothing of the task stands where
-/// it is declared.
+/// Every command is still offered, once: a row places the ones its view names, keeps the rest
+/// behind its "More" in the order the app declares them, and the page of the task holds them
+/// all behind its "…" in that declared order.
 #[test]
 fn the_commands_a_task_takes_beside_every_other_stand_in_the_one_order() {
     let (mut ada, root) = workspace();
@@ -2183,28 +2204,35 @@ fn the_commands_a_task_takes_beside_every_other_stand_in_the_one_order() {
     go_to(&mut home, "New project");
     let commands = row_commands(&mut home, &booked);
     let row = labels(&commands);
-    let at = |label: &str| {
-        row.iter()
-            .position(|shown| *shown == label)
-            .unwrap_or_else(|| panic!("the menu offers {label}: {row:?}"))
-    };
+    let placed = placed_commands();
     assert_eq!(
-        row[at("Move to…") - 1],
-        "Assign…",
-        "the move stands where the app declares it: {row:?}"
+        &row[..placed.len()],
+        placed.as_slice(),
+        "the row opens with what its view places: {row:?}"
     );
+    let mut rest: Vec<&str> = spec_commands()
+        .into_iter()
+        .filter(|label| !placed.contains(label))
+        .collect();
+    rest.push("Place in board…");
     assert_eq!(
-        row[at("Place in board…") - 1],
-        "Delete",
-        "the board's place follows what takes a task away, as it is declared: {row:?}"
+        &row[placed.len()..],
+        rest.as_slice(),
+        "and the rest keeps the order the app declares: {row:?}"
     );
     assert_eq!(
         row.last().copied(),
         Some("Place in board…"),
-        "and nothing of the task's steps is its own command: {row:?}"
+        "the board's place stands among the rest, where the app declares it: {row:?}"
     );
     let page = page_commands(&task_page(&ada, &booked));
-    assert_eq!(labels(&page), row, "the row and the page offer one menu");
+    let mut declared = spec_commands();
+    declared.push("Place in board…");
+    assert_eq!(
+        labels(&page),
+        declared,
+        "the page offers every command, in the order the app declares"
+    );
 }
 
 /// A window whose type declares more than one view offers them as one labeled switch, in the
@@ -2411,8 +2439,9 @@ fn a_typing_control_is_named_by_a_word_a_person_says() {
     );
 }
 
-/// The page a task opens offers the same commands, in the same order, with the same keys and the
-/// same reasons: one list of what a person can do to a task, drawn wherever it is asked for.
+/// A task's page offers every command the task takes, in the order the app declares them, with
+/// the same keys and the same reasons its row gives them: the row's view places a few of them up
+/// front, and neither surface loses one.
 #[test]
 fn a_tasks_page_menu_offers_what_its_row_does() {
     let (mut ada, root) = workspace();
@@ -2423,7 +2452,14 @@ fn a_tasks_page_menu_offers_what_its_row_does() {
     let page = task_page(&ada, &booked);
     let behind_the_door = page_commands(&page);
     assert_eq!(labels(&behind_the_door), spec_commands());
-    assert_eq!(behind_the_door, row, "the row and the page offer one menu");
+    let mut offered = labels(&behind_the_door);
+    offered.sort_unstable();
+    let mut placed = labels(&row);
+    placed.sort_unstable();
+    assert_eq!(
+        offered, placed,
+        "the row and the page offer the same commands"
+    );
 }
 
 /// Adding a subtask from a menu asks for its title and makes it right under the task, after the

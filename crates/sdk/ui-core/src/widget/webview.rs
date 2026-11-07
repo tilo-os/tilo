@@ -1,39 +1,26 @@
 //! `WebView` — a leaf widget that displays the live output of a
-//! [`crate::webview::WebViewEngine`] and forwards pointer, scroll and
-//! keyboard input into it.
+//! [`crate::webview::WebViewEngine`] and forwards pointer, scroll and keyboard input into it.
 //!
-//! The widget is deliberately chrome-free: address bar, navigation
-//! buttons, progress and permission prompts belong to the host app / OS
-//! chrome. It paints whatever frame the engine last produced (scaled to
-//! its layout rect), shows a neutral placeholder until the first frame
-//! arrives, and translates toolkit-space input into engine commands
-//! (physical pixels relative to the view's origin).
-//!
-//! Navigation state (URL, title, progress) intentionally does NOT flow
-//! through this widget — the host app drains
-//! [`crate::webview::WebViewEvent`]s from the engine during `sync` and
-//! owns that state in its CRDT.
+//! The widget is deliberately chrome-free: address bar, navigation buttons, progress and
+//! permission prompts belong to the host app or the OS chrome. It paints whatever frame the
+//! engine last produced (scaled to its layout rect), shows a neutral placeholder until the
+//! first frame arrives, and translates toolkit-space input into engine commands (physical
+//! pixels relative to the view's origin). Navigation state (URL, title, progress) does not flow
+//! through it: the host app drains [`crate::webview::WebViewEvent`]s during `sync` and owns
+//! that state in its CRDT.
 //!
 //! # Device scale
 //!
-//! The page is rendered at the device scale of the surface it is shown on,
-//! so one frame pixel is one physical pixel. That scale has one source at a
-//! time and nothing else changes it:
+//! The page is rendered at the device scale of the surface it is shown on, so one frame pixel
+//! is one physical pixel. That scale has one source at a time: a live host's surface, told on
+//! mount and when the scale changes ([`crate::widget::NativeViewLifecycle`]), or without a live
+//! host the scale the view lands on screen with, read through every cache being recorded around
+//! it ([`crate::scroll_copy::on_screen`]) — a container that caches its children draws them at
+//! the identity and scales the cache, so the draw's own transform says 1 on any display.
 //!
-//! - a live host's surface, told on mount and again when the surface's scale
-//!   changes ([`crate::widget::NativeViewLifecycle`]); the window moving to
-//!   a display of another density re-renders the page once;
-//! - without a live host (an offscreen capture, an app embedded in a host's
-//!   scene), the scale the view lands on screen with, read through every
-//!   cache being recorded around it ([`crate::scroll_copy::on_screen`]): a
-//!   container that caches its children draws them at the identity and
-//!   scales the cache, so the draw's own transform says 1 on any display.
-//!
-//! Input never changes it. An event's scale is the scale of the surface
-//! that delivered it, and the engine re-renders the whole page at every new
-//! scale, briefly showing the old frame stretched or the new one at the old
-//! size: a pointer moving over a page whose draws and events disagreed
-//! re-rendered it at alternating scales on every move.
+//! Input never changes it: an event's scale is the scale of the surface that delivered it, and
+//! the engine re-renders the whole page at every new scale, briefly showing the old frame
+//! stretched or the new one at the old size.
 
 use crate::num::f32_of_f64;
 use crate::widget::{AppModel, ModelPath};

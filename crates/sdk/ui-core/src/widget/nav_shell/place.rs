@@ -224,11 +224,32 @@ fn place_header(
             widths.iter().sum::<f64>() + gap * f64_of_usize(widths.len().saturating_sub(1))
         }
     };
-    let reserve = run(&compact);
+    // Labels, icons, or the More menu. Where the host lists the window's
+    // actions, the row keeps none of them and has no door either: the
+    // person reaches them where the host lists them.
+    let more = index_of(Part::More(column));
+    let door = more.filter(|_| !inputs.actions_listed);
+
+    // What the row keeps beside the title: the actions that stand in it rather than only in its
+    // menu, at the widths a tight row gives them, and the door's button. Reserving every action
+    // instead would leave the title a third of the row while most of them wait in the menu and
+    // the row has room to spare.
+    let kept = if inputs.actions_listed {
+        0
+    } else {
+        fit.menu_from
+            .map_or(items.len(), |from| from.min(items.len()))
+    };
+    let mut reserve = run(compact.get(..kept).unwrap_or(&[]));
+    if let Some(index) = door {
+        let more_w = measure(ctx, index, None)?.0;
+        reserve += if kept > 0 { gap + more_w } else { more_w };
+    }
 
     // The title: its measured width, never pushing the actions past their
     // icons, and keeping a third of the row however many actions there are.
     let mut start = lead;
+    let mut title: Option<(usize, f64, f64, f64)> = None;
     if let Some(index) = index_of(Part::Title(column)) {
         let (tw, th) = measure(ctx, index, None)?;
         let room = if reserve > 0.0 {
@@ -237,6 +258,7 @@ fn place_header(
             avail
         };
         let width = tw.min(room.max(tw.min(avail / 3.0))).clamp(0.0, avail);
+        title = Some((index, width, tw, th));
         if let Some(slot) = placed.get_mut(index) {
             *slot = Some(centred(lead, width, th));
         }
@@ -246,11 +268,6 @@ fn place_header(
     }
     let band = (trail - start).max(0.0);
 
-    // Labels, icons, or the More menu. Where the host lists the window's
-    // actions, the row keeps none of them and has no door either: the
-    // person reaches them where the host lists them.
-    let more = index_of(Part::More(column));
-    let door = more.filter(|_| !inputs.actions_listed);
     let (use_compact, shown) = if run(&full) <= band {
         (false, items.len())
     } else if run(&compact) <= band {
@@ -290,6 +307,20 @@ fn place_header(
     }
     let mut x = (trail - total).max(start.min(trail));
     let actions_x0 = if total > 0.0 { x } else { trail };
+    // The title had a third of the row before the actions were fitted, and the row often keeps
+    // fewer of them than that: the room between the title and the first control is the title's,
+    // up to what it says, where no leading fill stands there to take it.
+    if let Some((index, width, tw, th)) = title {
+        let end = if total > 0.0 { actions_x0 - gap } else { trail };
+        let room = (end - lead).max(0.0);
+        let wanted = tw.min(room).clamp(0.0, avail);
+        if index_of(Part::Leading(column)).is_none() && wanted > width {
+            if let Some(slot) = placed.get_mut(index) {
+                *slot = Some(centred(lead, wanted, th));
+            }
+            start = lead + wanted + gap;
+        }
+    }
     for (k, (index, _, h)) in items.iter().enumerate() {
         let rect = if k < shown {
             let w = widths.get(k).copied().unwrap_or(0.0);

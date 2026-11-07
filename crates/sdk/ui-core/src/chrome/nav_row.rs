@@ -1,19 +1,16 @@
-//! One navigation row and one navigation section header, painted the same
-//! everywhere.
+//! One navigation row and one navigation section header, painted the same everywhere.
 //!
-//! `NavList` paints every row through [`paint_nav_row`] and every section
-//! header through [`paint_nav_section`]; a painted app that cannot host a
-//! `NavList` calls the same two functions with the same faces, so a sidebar
-//! drawn by hand is pixel-for-pixel the sidebar the widget draws. The
-//! geometry ([`nav_row_layout`], [`nav_section_layout`]) is public so a
-//! painted host hit-tests exactly what was painted.
+//! `NavList` paints every row through [`paint_nav_row`] and every section header through
+//! [`paint_nav_section`]; a painted app that cannot host a `NavList` calls the same two functions
+//! with the same faces, so a sidebar drawn by hand is pixel-for-pixel the widget's. The geometry
+//! ([`nav_row_layout`], [`nav_section_layout`]) is public so a painted host hit-tests exactly what
+//! was painted.
 //!
-//! A row is the list's `s2` inset from both edges; its selection is the
-//! neutral lift of the ground it stands on ([`super::paint_row_selection`]),
-//! with primary ink. Counts are `Caption` tabular figures in tertiary ink; a
-//! [`NavCount::Live`] count (unread, needs attention) is the one filled
-//! badge, in the person's own colour. Section headers are sentence-case
-//! `Subheading` in secondary ink.
+//! A row is the list's `s2` inset from both edges; its selection is the neutral lift of the ground
+//! it stands on ([`super::paint_row_selection`]), with primary ink. Counts are `Caption` tabular
+//! figures in tertiary ink; a [`NavCount::Live`] count (unread, needs attention) is the one filled
+//! badge, in the person's own colour. Section headers are sentence-case `Subheading` in secondary
+//! ink.
 //!
 //! Every part a row can show, leading to trailing:
 //!
@@ -34,8 +31,8 @@
 //! Hover and focus swap the trailing parts for the row's actions.
 //!
 //! Draw with the theme of the ground the rows stand on
-//! (`theme.in_region(Region::Sidebar)` in a sidebar, `theme.on_ground(..)`
-//! elsewhere): the painter reads that ground from `surfaces.content`.
+//! (`theme.in_region(Region::Sidebar)` in a sidebar, `theme.on_ground(..)` elsewhere): the painter
+//! reads that ground from `surfaces.content`.
 
 use crate::num::f32_of_f64;
 use crate::num::f64_of_usize;

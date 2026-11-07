@@ -1,20 +1,20 @@
-use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
-use std::io::{self, Read as _};
-use std::os::fd::{IntoRawFd, RawFd};
-use std::os::unix::net::UnixStream as StdUnixStream;
-use std::path::Path;
-use std::rc::Rc;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashMap,
+    io::{self, Read as _},
+    os::unix::net::UnixStream as StdUnixStream,
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 
-use capnp_rpc::rpc_twoparty_capnp;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt as _;
 use wire_frame::Framing;
 
-pub use crate::blobs_capnp::{
-    ReadStatus as WireReadStatus, blob_upload, document_blobs, public_content, session_blobs,
+use crate::{
+    connection::{Connection as Transport, Object},
+    wire::{FsReply, FsRequest, ROOT},
 };
 
 /// Where the root filesystem daemon listens for document-media connections.
@@ -23,7 +23,7 @@ pub use crate::blobs_capnp::{
 pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
 /// Launcher service name; the app finds its descriptor in `TILO_SVC_BLOBS_FD`.
 pub const BLOB_SERVICE: &str = "blobs";
-/// Prefix of the handoff frame that precedes Cap'n Proto on every connection.
+/// Prefix of the handoff frame that precedes the protocol on every connection.
 pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
 pub const BLOB_HANDOFF_PROTOCOL: u16 = 1;
 /// Largest payload one `put` message carries; larger content uses `upload`.
@@ -115,7 +115,7 @@ pub fn valid_hash(hash: &str) -> bool {
 }
 
 /// A stored blob, as a document records it.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlobRef {
     pub hash: String,
     pub len: u64,
@@ -123,7 +123,7 @@ pub struct BlobRef {
 }
 
 /// The answer to a read.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReadOutcome {
     Ready {
         bytes: Vec<u8>,
@@ -169,11 +169,13 @@ impl std::fmt::Display for BlobError {
 
 impl std::error::Error for BlobError {}
 
-impl From<capnp::Error> for BlobError {
-    fn from(error: capnp::Error) -> Self {
-        match error.kind {
-            capnp::ErrorKind::Disconnected => Self::Disconnected(error.to_string()),
-            _ => Self::Refused(error.extra),
+impl From<runtime_portal::NotAvailable> for BlobError {
+    fn from(error: runtime_portal::NotAvailable) -> Self {
+        match error {
+            runtime_portal::NotAvailable::ConnectionFailed(error) => {
+                Self::Disconnected(error.to_string())
+            }
+            error => Self::Refused(error.to_string()),
         }
     }
 }
@@ -280,21 +282,7 @@ pub struct WriteAttribution {
 /// Most paths one write attribution names.
 pub const MAX_ATTRIBUTION_PATHS: usize = 256;
 
-fn read_outcome(read: crate::blobs_capnp::blob_read::Reader<'_>) -> Result<ReadOutcome, BlobError> {
-    let status = read
-        .get_status()
-        .map_err(|_| BlobError::Refused("unknown read status".into()))?;
-    Ok(match status {
-        WireReadStatus::Ready => ReadOutcome::Ready {
-            bytes: read.get_bytes()?.to_vec(),
-            total_len: read.get_total_len(),
-        },
-        WireReadStatus::Pending => ReadOutcome::Pending,
-        WireReadStatus::Unavailable => ReadOutcome::Unavailable,
-    })
-}
-
-type Reply<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
+type Answer<T> = std::sync::mpsc::SyncSender<Result<T, BlobError>>;
 
 /// One request to the connection's driver thread. Every job is one round
 /// trip: content larger than a message travels as a sequence of upload jobs,
@@ -306,25 +294,25 @@ enum Job {
         hash: String,
         offset: u64,
         max_len: u32,
-        reply: Reply<ReadOutcome>,
+        reply: Answer<ReadOutcome>,
     },
     Has {
         target: u64,
         hash: String,
-        reply: Reply<bool>,
+        reply: Answer<bool>,
     },
     Size {
         target: u64,
         hash: String,
-        reply: Reply<Option<u64>>,
+        reply: Answer<Option<u64>>,
     },
     Scope {
         scope: BlobScope,
-        reply: Reply<u64>,
+        reply: Answer<u64>,
     },
     Attribute {
         attribution: WriteAttribution,
-        reply: Reply<()>,
+        reply: Answer<()>,
     },
     Public(PublicJob),
 }
@@ -334,22 +322,22 @@ enum PublicJob {
     Keep {
         target: u64,
         name: String,
-        reply: Reply<()>,
+        reply: Answer<()>,
     },
     Release {
         target: u64,
         name: String,
-        reply: Reply<()>,
+        reply: Answer<()>,
     },
     Read {
         target: u64,
         name: String,
         offset: u64,
         max_len: u32,
-        reply: Reply<PublicRead>,
+        reply: Answer<PublicRead>,
     },
     Refresh {
-        reply: Reply<u32>,
+        reply: Answer<u32>,
     },
 }
 
@@ -359,21 +347,21 @@ enum StoreJob {
         target: u64,
         bytes: Vec<u8>,
         mime: String,
-        reply: Reply<BlobRef>,
+        reply: Answer<BlobRef>,
     },
     Begin {
         target: u64,
         mime: String,
-        reply: Reply<u64>,
+        reply: Answer<u64>,
     },
     Write {
         upload: u64,
         bytes: Vec<u8>,
-        reply: Reply<()>,
+        reply: Answer<()>,
     },
     Finish {
         upload: u64,
-        reply: Reply<BlobRef>,
+        reply: Answer<BlobRef>,
     },
     /// Release an upload that will not finish; nothing it wrote is stored.
     Abort {
@@ -381,15 +369,12 @@ enum StoreJob {
     },
 }
 
-/// The root capability of a connection's own principal.
-const ROOT: u64 = 0;
-
 struct Worker {
     jobs: tokio::sync::mpsc::UnboundedSender<Job>,
     session: bool,
 }
 
-/// A synchronous client for [`DocumentBlobs`](document_blobs::Client).
+/// A synchronous client for the document-media capability.
 ///
 /// Cheap to clone; clones share one connection and its driver thread. Every
 /// call blocks for at most one local round trip to the daemon (a remote
@@ -426,7 +411,7 @@ impl BlobClient {
                 error => error.to_string(),
             })
         })?;
-        Self::start(connection.into_raw_fd(), false)
+        Self::start(connection.into(), false)
     }
 
     /// Wrap a connection whose handoff was already written for an app scope.
@@ -436,7 +421,7 @@ impl BlobClient {
     ///
     /// Returns [`BlobError::Disconnected`] if the driver thread cannot start.
     pub fn from_app_stream(stream: StdUnixStream) -> Result<Self, BlobError> {
-        Self::start(stream.into_raw_fd(), false)
+        Self::start(stream, false)
     }
 
     /// Connect to the daemon at `socket` as the desktop session.
@@ -458,7 +443,7 @@ impl BlobClient {
     ///
     /// Returns [`BlobError::Disconnected`] if the driver thread cannot start.
     pub fn from_session_stream(stream: StdUnixStream) -> Result<Self, BlobError> {
-        Self::start(stream.into_raw_fd(), true)
+        Self::start(stream, true)
     }
 
     /// For a session client: the capability of one app in one workspace.
@@ -863,7 +848,7 @@ impl BlobClient {
         })
     }
 
-    fn call<T>(&self, job: impl FnOnce(Reply<T>) -> Job) -> Result<T, BlobError> {
+    fn call<T>(&self, job: impl FnOnce(Answer<T>) -> Job) -> Result<T, BlobError> {
         let (reply, answer) = std::sync::mpsc::sync_channel(1);
         self.worker
             .jobs
@@ -874,11 +859,11 @@ impl BlobClient {
             .map_err(|_| BlobError::Disconnected("document media service did not answer".into()))?
     }
 
-    fn start(fd: RawFd, session: bool) -> Result<Self, BlobError> {
+    fn start(stream: StdUnixStream, session: bool) -> Result<Self, BlobError> {
         let (jobs, receiver) = tokio::sync::mpsc::unbounded_channel();
         std::thread::Builder::new()
             .name("blob-client".into())
-            .spawn(move || drive(fd, session, receiver))
+            .spawn(move || drive(stream, session, receiver))
             .map_err(|error| BlobError::Disconnected(error.to_string()))?;
         Ok(Self {
             worker: Arc::new(Worker { jobs, session }),
@@ -1139,22 +1124,25 @@ fn blob_error(error: &io::Error) -> BlobError {
 }
 
 /// What the driver thread holds for one connection.
-struct Connection {
-    /// The principal's root, for a session connection.
-    session_root: Option<session_blobs::Client>,
-    scopes: RefCell<HashMap<u64, document_blobs::Client>>,
-    uploads: RefCell<HashMap<u64, blob_upload::Client>>,
+struct Session {
+    root: Arc<Object>,
+    scopes: RefCell<HashMap<u64, Arc<Object>>>,
+    uploads: RefCell<HashMap<u64, Arc<Object>>>,
     next_id: Cell<u64>,
 }
 
-impl Connection {
+impl Session {
     fn issue_id(&self) -> u64 {
         let id = self.next_id.get();
         self.next_id.set(id.saturating_add(1));
         id
     }
 
-    fn scope(&self, target: u64) -> Result<document_blobs::Client, BlobError> {
+    fn child(&self, handle: Option<u64>) -> Result<Arc<Object>, BlobError> {
+        crate::handle_reply(handle, &self.root).map_err(BlobError::from)
+    }
+
+    fn scopes(&self, target: u64) -> Result<Arc<Object>, BlobError> {
         self.scopes
             .borrow()
             .get(&target)
@@ -1162,16 +1150,26 @@ impl Connection {
             .ok_or(BlobError::InvalidScope)
     }
 
-    fn upload(&self, id: u64) -> Result<blob_upload::Client, BlobError> {
+    fn upload(&self, id: u64) -> Result<Arc<Object>, BlobError> {
         self.uploads
             .borrow()
             .get(&id)
             .cloned()
             .ok_or_else(|| BlobError::Refused("no such upload".into()))
     }
+
+    fn issue_id_for(&self, object: Arc<Object>) -> u64 {
+        let id = self.issue_id();
+        self.scopes.borrow_mut().insert(id, object);
+        id
+    }
 }
 
-fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceiver<Job>) {
+fn drive(
+    stream: StdUnixStream,
+    session: bool,
+    mut jobs: tokio::sync::mpsc::UnboundedReceiver<Job>,
+) {
     let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1179,32 +1177,26 @@ fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceive
         // Dropping the receiver fails every pending and later call.
         return;
     };
+    let Ok(transport) = Transport::connect("blob-client", stream) else {
+        return;
+    };
+    let root = Object::root(transport);
+    let mut scopes = HashMap::new();
+    if !session {
+        scopes.insert(ROOT, Arc::clone(&root));
+    }
+    let session = std::rc::Rc::new(Session {
+        root,
+        scopes: RefCell::new(scopes),
+        uploads: RefCell::new(HashMap::new()),
+        next_id: Cell::new(ROOT.saturating_add(1)),
+    });
     let local = tokio::task::LocalSet::new();
     local.block_on(&runtime, async move {
-        let Ok(rpc) = runtime_portal::UnixCapnpClient::from_connected_fd(
-            fd,
-            rpc_twoparty_capnp::Side::Client,
-        ) else {
-            return;
-        };
-        let mut scopes = HashMap::new();
-        let session_root: Option<session_blobs::Client> = if session {
-            Some(rpc.bootstrap())
-        } else {
-            let root: document_blobs::Client = rpc.bootstrap();
-            scopes.insert(ROOT, root);
-            None
-        };
-        let connection = Rc::new(Connection {
-            session_root,
-            scopes: RefCell::new(scopes),
-            uploads: RefCell::new(HashMap::new()),
-            next_id: Cell::new(ROOT.saturating_add(1)),
-        });
         while let Some(job) = jobs.recv().await {
-            let connection = Rc::clone(&connection);
+            let session = std::rc::Rc::clone(&session);
             tokio::task::spawn_local(async move {
-                run_job(job, &connection).await;
+                run_job(job, &session).await;
             });
         }
     });
@@ -1212,11 +1204,11 @@ fn drive(fd: RawFd, session: bool, mut jobs: tokio::sync::mpsc::UnboundedReceive
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
 )]
-async fn run_job(job: Job, connection: &Connection) {
+async fn run_job(job: Job, session: &Session) {
     match job {
-        Job::Store(job) => store(job, connection).await,
+        Job::Store(job) => store(job, session).await,
         Job::Read {
             target,
             hash,
@@ -1225,16 +1217,18 @@ async fn run_job(job: Job, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let client = connection.scope(target)?;
-                let mut request = client.get_request();
+                let client = session.scopes(target)?;
+                match client
+                    .call(FsRequest::Get {
+                        hash,
+                        offset,
+                        max_len,
+                    })
+                    .await?
                 {
-                    let mut params = request.get();
-                    params.set_hash(hash.as_str());
-                    params.set_offset(offset);
-                    params.set_max_len(max_len);
+                    FsReply::BlobRead(outcome) => Ok(outcome),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
-                let answer = request.send().promise.await?;
-                read_outcome(answer.get()?.get_read()?)
             }
             .await;
             let _ = reply.send(result);
@@ -1245,11 +1239,11 @@ async fn run_job(job: Job, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let client = connection.scope(target)?;
-                let mut request = client.has_request();
-                request.get().set_hash(hash.as_str());
-                let answer = request.send().promise.await?;
-                Ok(answer.get()?.get_present())
+                let client = session.scopes(target)?;
+                match client.call(FsRequest::Has { hash }).await? {
+                    FsReply::Present(present) => Ok(present),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
@@ -1260,95 +1254,87 @@ async fn run_job(job: Job, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let client = connection.scope(target)?;
-                let mut request = client.size_request();
-                request.get().set_hash(hash.as_str());
-                let answer = request.send().promise.await?;
-                let answer = answer.get()?;
-                Ok(answer.get_known().then(|| answer.get_len()))
+                let client = session.scopes(target)?;
+                match client.call(FsRequest::Size { hash }).await? {
+                    FsReply::Size(len) => Ok(len),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
         }
         Job::Scope { scope, reply } => {
             let result = async {
-                let root = connection
-                    .session_root
-                    .as_ref()
-                    .ok_or(BlobError::InvalidScope)?;
-                let mut request = root.scope_request();
+                match session
+                    .root
+                    .call(FsRequest::SessionScope {
+                        workspace: scope.workspace().to_owned(),
+                        app: scope.app().to_owned(),
+                    })
+                    .await?
                 {
-                    let mut params = request.get();
-                    // The schema field keeps `room`: it is wire that the
-                    // one-wire replacement removes.
-                    params.set_room(scope.workspace());
-                    params.set_app(scope.app());
+                    FsReply::Scope(id) => Ok(session.issue_id_for(
+                        crate::handle_reply(Some(id), &session.root).map_err(BlobError::from)?,
+                    )),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
-                let answer = request.send().promise.await?;
-                let client = answer.get()?.get_blobs()?;
-                let id = connection.issue_id();
-                connection.scopes.borrow_mut().insert(id, client);
-                Ok(id)
             }
             .await;
             let _ = reply.send(result);
         }
         Job::Attribute { attribution, reply } => {
-            let _ = reply.send(attribute(attribution, connection).await);
+            let _ = reply.send(attribute(attribution, session).await);
         }
-        Job::Public(job) => public(job, connection).await,
+        Job::Public(job) => public(job, session).await,
     }
 }
 
 /// Name the agent behind this device's next writes, as the session.
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
 )]
-async fn attribute(
-    attribution: WriteAttribution,
-    connection: &Connection,
-) -> Result<(), BlobError> {
-    let root = connection
-        .session_root
-        .as_ref()
-        .ok_or(BlobError::InvalidScope)?;
-    let mut request = root.attribute_writes_request();
+async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(), BlobError> {
+    let color = attribution.color;
+    match session
+        .root
+        .call(FsRequest::SessionAttributeWrites {
+            paths: attribution.paths,
+            actor: attribution.actor,
+            label: attribution.label,
+            color,
+            ttl_ms: u32::try_from(attribution.ttl.as_millis()).unwrap_or(u32::MAX),
+        })
+        .await?
     {
-        let mut params = request.get();
-        let count = u32::try_from(attribution.paths.len())
-            .map_err(|_| BlobError::Refused("too many attributed paths".into()))?;
-        let mut paths = params.reborrow().init_paths(count);
-        for (index, path) in (0..count).zip(&attribution.paths) {
-            paths.set(index, path.as_str());
-        }
-        params.set_actor(attribution.actor.as_str());
-        params.set_label(attribution.label.as_str());
-        let [red, green, blue] = attribution.color;
-        params.set_color(u32::from_be_bytes([0, red, green, blue]));
-        params.set_ttl_ms(u32::try_from(attribution.ttl.as_millis()).unwrap_or(u32::MAX));
+        FsReply::Empty => Ok(()),
+        _ => Err(BlobError::Refused("unexpected media reply".into())),
     }
-    request.send().promise.await?;
-    Ok(())
 }
 
 /// The public copy `name` as the capability `target` reaches it.
-fn public_copy(
-    connection: &Connection,
-    target: u64,
-    name: &str,
-) -> Result<public_content::Client, BlobError> {
-    let client = connection.scope(target)?;
-    let mut request = client.public_content_request();
-    request.get().set_name(name);
-    Ok(request.send().pipeline.get_content())
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
+async fn public_copy(session: &Session, target: u64, name: &str) -> Result<Arc<Object>, BlobError> {
+    let client = session.scopes(target)?;
+    match client
+        .call(FsRequest::PublicContent {
+            name: name.to_owned(),
+        })
+        .await?
+    {
+        FsReply::Handle(handle) => session.child(handle),
+        _ => Err(BlobError::Refused("unexpected media reply".into())),
+    }
 }
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
 )]
-async fn public(job: PublicJob, connection: &Connection) {
+async fn public(job: PublicJob, session: &Session) {
     match job {
         PublicJob::Keep {
             target,
@@ -1356,9 +1342,11 @@ async fn public(job: PublicJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let copy = public_copy(connection, target, &name)?;
-                copy.keep_request().send().promise.await?;
-                Ok(())
+                let copy = public_copy(session, target, &name).await?;
+                match copy.call(FsRequest::PublicKeep).await? {
+                    FsReply::Empty => Ok(()),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
@@ -1369,9 +1357,11 @@ async fn public(job: PublicJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let copy = public_copy(connection, target, &name)?;
-                copy.release_request().send().promise.await?;
-                Ok(())
+                let copy = public_copy(session, target, &name).await?;
+                match copy.call(FsRequest::PublicRelease).await? {
+                    FsReply::Empty => Ok(()),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
@@ -1384,32 +1374,24 @@ async fn public(job: PublicJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let copy = public_copy(connection, target, &name)?;
-                let mut request = copy.read_request();
-                {
-                    let mut params = request.get();
-                    params.set_offset(offset);
-                    params.set_max_len(max_len);
+                let copy = public_copy(session, target, &name).await?;
+                match copy.call(FsRequest::PublicRead { offset, max_len }).await? {
+                    FsReply::PublicRead { read, hash } => Ok(PublicRead {
+                        outcome: read,
+                        hash: valid_hash(&hash).then_some(hash),
+                    }),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
-                let answer = request.send().promise.await?;
-                let answer = answer.get()?;
-                let hash = answer.get_hash()?.to_str().unwrap_or_default().to_owned();
-                Ok(PublicRead {
-                    outcome: read_outcome(answer.get_read()?)?,
-                    hash: valid_hash(&hash).then_some(hash),
-                })
             }
             .await;
             let _ = reply.send(result);
         }
         PublicJob::Refresh { reply } => {
             let result = async {
-                let root = connection
-                    .session_root
-                    .as_ref()
-                    .ok_or(BlobError::InvalidScope)?;
-                let answer = root.refresh_public_content_request().send().promise.await?;
-                Ok(answer.get()?.get_refreshed())
+                match session.root.call(FsRequest::SessionRefreshPublic).await? {
+                    FsReply::Refreshed(refreshed) => Ok(refreshed),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
@@ -1419,9 +1401,9 @@ async fn public(job: PublicJob, connection: &Connection) {
 
 #[allow(
     clippy::future_not_send,
-    reason = "capnp-rpc clients are Rc-based and driven on this thread's LocalSet"
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
 )]
-async fn store(job: StoreJob, connection: &Connection) {
+async fn store(job: StoreJob, session: &Session) {
     match job {
         StoreJob::Put {
             target,
@@ -1430,16 +1412,11 @@ async fn store(job: StoreJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let client = connection.scope(target)?;
-                let mut request = client.put_request();
-                {
-                    let mut params = request.get();
-                    params.set_bytes(&bytes);
-                    params.set_mime(mime.as_str());
+                let client = session.scopes(target)?;
+                match client.call(FsRequest::Put { bytes, mime }).await? {
+                    FsReply::Blob(reference) => Ok(reference),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
-                drop(bytes);
-                let answer = request.send().promise.await?;
-                blob_ref_from(answer.get()?.get_ref()?)
             }
             .await;
             let _ = reply.send(result);
@@ -1450,14 +1427,16 @@ async fn store(job: StoreJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let client = connection.scope(target)?;
-                let mut request = client.upload_request();
-                request.get().set_mime(mime.as_str());
-                let answer = request.send().promise.await?;
-                let upload = answer.get()?.get_upload()?;
-                let id = connection.issue_id();
-                connection.uploads.borrow_mut().insert(id, upload);
-                Ok(id)
+                let client = session.scopes(target)?;
+                match client.call(FsRequest::Upload { mime }).await? {
+                    FsReply::Handle(handle) => {
+                        let upload = session.child(handle)?;
+                        let id = session.issue_id();
+                        session.uploads.borrow_mut().insert(id, upload);
+                        Ok(id)
+                    }
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
@@ -1468,46 +1447,29 @@ async fn store(job: StoreJob, connection: &Connection) {
             reply,
         } => {
             let result = async {
-                let upload = connection.upload(upload)?;
-                let mut request = upload.write_request();
-                request.get().set_bytes(&bytes);
-                drop(bytes);
-                request.send().promise.await?;
-                Ok(())
+                let upload = session.upload(upload)?;
+                match upload.call(FsRequest::UploadWrite { bytes }).await? {
+                    FsReply::Empty => Ok(()),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
         }
         StoreJob::Finish { upload, reply } => {
             let result = async {
-                let client = connection.upload(upload)?;
-                connection.uploads.borrow_mut().remove(&upload);
-                let answer = client.finish_request().send().promise.await?;
-                blob_ref_from(answer.get()?.get_ref()?)
+                let client = session.upload(upload)?;
+                session.uploads.borrow_mut().remove(&upload);
+                match client.call(FsRequest::UploadFinish).await? {
+                    FsReply::Blob(reference) => Ok(reference),
+                    _ => Err(BlobError::Refused("unexpected media reply".into())),
+                }
             }
             .await;
             let _ = reply.send(result);
         }
         StoreJob::Abort { upload } => {
-            connection.uploads.borrow_mut().remove(&upload);
+            session.uploads.borrow_mut().remove(&upload);
         }
     }
-}
-
-fn blob_ref_from(reader: crate::blobs_capnp::blob_ref::Reader<'_>) -> Result<BlobRef, BlobError> {
-    let hash = reader
-        .get_hash()?
-        .to_str()
-        .map_err(|error| BlobError::Refused(error.to_string()))?
-        .to_owned();
-    let mime = reader
-        .get_mime()?
-        .to_str()
-        .map_err(|error| BlobError::Refused(error.to_string()))?
-        .to_owned();
-    Ok(BlobRef {
-        hash,
-        len: reader.get_len(),
-        mime,
-    })
 }

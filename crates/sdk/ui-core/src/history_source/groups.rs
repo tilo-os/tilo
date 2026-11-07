@@ -1,9 +1,8 @@
 //! Where a version's name lives: in the document, with the changes it names.
 //!
-//! A name that lived in the widget would vanish on close, and a name that
-//! lived beside the document would never reach a collaborator. So a name
-//! is written into the same CRDT as the content it describes — one record
-//! at the document root per named range, keyed by the range it covers:
+//! A name that lived in the widget would vanish on close, and one beside the document would
+//! never reach a collaborator. So a name is written into the same CRDT as the content it
+//! describes — one record at the document root per named range, keyed by the range it covers:
 //!
 //! ```text
 //! ROOT
@@ -14,18 +13,14 @@
 //!      at    : <unix millis>
 //! ```
 //!
-//! The key is the range's first change, not minted per writer: two people
-//! naming the same run then collide on one map key, and automerge's own
-//! conflict rule resolves it deterministically and identically on every
-//! peer (the loser stays reachable via `get_conflicts`). Records sit at the
-//! root rather than under one container map for the same reason at a
-//! coarser grain: a container created independently by two peers naming
-//! *different* ranges at the same time would have one discarded whole,
-//! silently losing a name. Flat, prefixed root keys have no container to
-//! race over.
+//! The key is the range's first change, not minted per writer, so two people naming the same
+//! run collide on one map key and automerge's conflict rule resolves it identically on every
+//! peer. Records sit at the root rather than under one container map for the same reason at a
+//! coarser grain: a container created independently by two peers naming *different* ranges
+//! would have one discarded whole, silently losing a name.
 //!
-//! Naming a version is a change like any other, but is deliberately not
-//! given its own row in the history surfaces — see [`is_group_marker`].
+//! Naming a version is a change like any other, but deliberately gets no row of its own in the
+//! history surfaces — see [`is_group_marker`].
 
 use crate::time::{Duration, UNIX_EPOCH};
 use tilo_automerge::ReadTyped as _;

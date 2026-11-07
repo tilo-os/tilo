@@ -1,43 +1,34 @@
-//! The app's slots in a window's bar ([`crate::window_toolbar`]): back and
-//! forward, the location, and the actions, laid out across one row and
-//! drawn with the window's own icon button
+//! The app's slots in a window's bar ([`crate::window_toolbar`]): back and forward, the location,
+//! and the actions, laid out across one row and drawn with the window's own icon button
 //! ([`super::window_controls::paint_icon_button`]). At most
-//! [`MAX_ACTIONS`](crate::window_toolbar::MAX_ACTIONS) actions stand in the
-//! row, fewer when the location would be squeezed; the rest are in the menu
-//! of a trailing overflow button. Every button names its outcome in a
-//! tooltip ([`ToolbarRow::tooltip_at`]).
+//! [`MAX_ACTIONS`](crate::window_toolbar::MAX_ACTIONS) actions stand in the row, fewer when the
+//! location would be squeezed; the rest are in the menu of a trailing overflow button. Every button
+//! names its outcome in a tooltip ([`ToolbarRow::tooltip_at`]).
 //!
 //! The location is text at rest, or a breadcrumb of its levels
-//! ([`super::breadcrumb::Breadcrumb`]) where the app declared them; a click
-//! on a level commits it. An editable location reads as a field, and a
-//! click (or [`ToolbarRow::begin_edit`], the bar's Ctrl+L) turns it into a
-//! real [`TextInput`] holding the whole value, all of it selected, with a go
-//! button at its end ([`AccessoryAction::Submit`]). Enter or the go button
-//! commits the typed text to the app ([`ToolbarEvent::Commit`]); Esc puts the
-//! location back. While it is edited the app hears the text
-//! ([`ToolbarEvent::Edit`]) and its suggestions are listed under the field,
-//! as wide as it, in the shared [`SuggestionList`]: each row its icon, its
-//! title and the line under it. The arrow keys move through them; Enter, a
-//! click or a tap commits one. This list is the only one: the app draws no
-//! suggestions of its own while the bar hosts its location.
+//! ([`super::breadcrumb::Breadcrumb`]) where the app declared them; a click on a level commits it.
+//! An editable location reads as a field, and a click (or [`ToolbarRow::begin_edit`], the bar's
+//! Ctrl+L) turns it into a real [`TextInput`] holding the whole value, all selected, with a go
+//! button at its end ([`AccessoryAction::Submit`]). Enter or the go button commits the typed text
+//! ([`ToolbarEvent::Commit`]); Esc puts the location back. While it is edited the app hears the
+//! text ([`ToolbarEvent::Edit`]) and its suggestions are listed under the field, as wide as it, in
+//! the shared [`SuggestionList`] — the only one, since the app draws none while the bar hosts its
+//! location. The arrow keys move through them; Enter, a click or a tap commits one.
 //!
 //! A location that is one of a few places (its app declared
-//! [`LocationChoice`](crate::window_toolbar::LocationChoice)s) reads as a
-//! picker: its label with a chevron, lifting under the pointer like the
-//! bar's buttons. A click, a tap or the location's accessibility action opens
-//! the choices in the shared [`ContextMenu`] under it, the current one
-//! checked; choosing one commits its value ([`ToolbarEvent::Commit`]).
-//!
-//! The overflow menu is the shared [`ContextMenu`] too. Both are painted in
-//! the window's top layer ([`ToolbarRow::paint_popups`]).
+//! [`LocationChoice`](crate::window_toolbar::LocationChoice)s) reads as a picker: its label with a
+//! chevron, lifting under the pointer like the bar's buttons. A click, a tap or the location's
+//! accessibility action opens the choices in the shared [`ContextMenu`] under it, the current one
+//! checked; choosing one commits its value ([`ToolbarEvent::Commit`]). The overflow menu is the
+//! shared [`ContextMenu`] too; both paint in the window's top layer
+//! ([`ToolbarRow::paint_popups`]).
 //!
 //! When the window shows another tab, the row's content cross-fades in place
-//! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where
-//! they stood while the incoming ones fade in. Slots shown where none stood
-//! appear at once. When the app changes the slots of the tab that shows, the
-//! slots move on the standard list change ([`crate::motion::ListChange`],
-//! `slot_change`): what it adds fades in, what it takes away fades out where
-//! it stood, and the slots that stay glide to their new places.
+//! ([`crate::motion::CrossFade`]): the outgoing tab's slots fade out where they stood while the
+//! incoming ones fade in, and slots shown where none stood appear at once. When the app changes the
+//! slots of the showing tab, they move on the standard list change
+//! ([`crate::motion::ListChange`], `slot_change`): added fade in, removed fade out where they
+//! stood, staying ones glide to their new places.
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};

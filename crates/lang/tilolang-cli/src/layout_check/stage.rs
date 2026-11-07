@@ -185,6 +185,11 @@ impl Staged {
         theme.reduce_motion = true;
         let (app_end, window_end) = pair();
         let me = "ada".to_owned();
+        let names = Rc::new(tilolang_tilo::names::Told::new(
+            &me,
+            Rc::new(tilolang_tilo::names::Unnamed),
+        ));
+        names.tell("Ada".to_owned(), Vec::new());
         let mut instance = Instance::new(
             Config {
                 app: app.to_owned(),
@@ -200,9 +205,10 @@ impl Staged {
                 sink: Some(Box::new(tilolang_tilo::runtime::MemorySink::new())),
             },
             Rc::clone(packages) as Rc<dyn Platform>,
-            // People are called as a window calls them when nobody told it their names: a
-            // scenario's sample person (`person("Leo")`) by that name, never by their id.
-            Rc::new(tilolang_tilo::names::Unnamed),
+            // The person the layout opens as is called as a person is, `Ada`, and everyone else
+            // as a window calls them when nobody told it their names: a scenario's sample person
+            // (`person("Leo")`) by that name, never by their id.
+            names,
             Box::new(app_end),
         );
         let mut record = staging.record.unwrap_or_default();

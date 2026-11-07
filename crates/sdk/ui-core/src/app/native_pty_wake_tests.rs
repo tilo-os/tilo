@@ -1,8 +1,9 @@
 use super::*;
 use automerge::AutoCommit;
+use std::cell::Cell;
 use std::io::{Read, Write};
 use std::os::fd::FromRawFd;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{mpsc, Arc, Mutex};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 const TYPE: &str = "test.native-pty";
@@ -23,8 +24,8 @@ struct PtyRoot {
     reader: Option<std::thread::JoinHandle<()>>,
     chunks: mpsc::Receiver<Vec<u8>>,
     queued: String,
-    runs: Rc<std::cell::Cell<usize>>,
-    updates: Rc<std::cell::Cell<usize>>,
+    runs: Rc<Cell<usize>>,
+    updates: Rc<Cell<usize>>,
 }
 impl Drop for PtyRoot {
     fn drop(&mut self) {
@@ -34,11 +35,7 @@ impl Drop for PtyRoot {
     }
 }
 impl PtyRoot {
-    fn open(
-        witness: Arc<Mutex<Vec<u8>>>,
-        runs: Rc<std::cell::Cell<usize>>,
-        updates: Rc<std::cell::Cell<usize>>,
-    ) -> Self {
+    fn open(witness: Arc<Mutex<Vec<u8>>>, runs: Rc<Cell<usize>>, updates: Rc<Cell<usize>>) -> Self {
         use std::os::unix::process::CommandExt;
         let (mut master, mut slave) = (-1, -1);
         // SAFETY: valid output descriptors; no termios or name buffers requested.
@@ -214,8 +211,8 @@ impl crate::resources::PublishesResources for PtyRoot {
 #[test]
 fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
     let witness = Arc::new(Mutex::new(Vec::new()));
-    let runs = Rc::new(std::cell::Cell::new(0));
-    let updates = Rc::new(std::cell::Cell::new(0));
+    let runs = Rc::new(Cell::new(0));
+    let updates = Rc::new(Cell::new(0));
     let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
         Box::new(PtyRoot::open(
             witness.clone(),
@@ -299,9 +296,9 @@ fn native_idle_wake_publishes_real_pty_output_without_any_frame() {
 }
 
 struct IdleCounts {
-    updates: Rc<std::cell::Cell<usize>>,
-    syncs: Rc<std::cell::Cell<usize>>,
-    wake_during_update: Rc<std::cell::Cell<bool>>,
+    updates: Rc<Cell<usize>>,
+    syncs: Rc<Cell<usize>>,
+    wake_during_update: Rc<Cell<bool>>,
     wake: crate::WakeHandle,
 }
 impl Widget for IdleCounts {
@@ -320,9 +317,9 @@ impl Widget for IdleCounts {
 
 #[test]
 fn native_idle_services_only_unconsumed_own_model_wakes() {
-    let updates = Rc::new(std::cell::Cell::new(0));
-    let syncs = Rc::new(std::cell::Cell::new(0));
-    let wake_during_update = Rc::new(std::cell::Cell::new(false));
+    let updates = Rc::new(Cell::new(0));
+    let syncs = Rc::new(Cell::new(0));
+    let wake_during_update = Rc::new(Cell::new(false));
     let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
         Box::new(IdleCounts {
             updates: updates.clone(),

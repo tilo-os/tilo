@@ -262,6 +262,22 @@ fn component_local_view_restores_presentation_without_reverting_document() {
     assert_eq!(doc.base_heads(), before);
 }
 #[test]
+fn a_window_that_has_not_opened_a_conversation_opens_the_workspace_first() {
+    let mut doc = AutoCommit::new();
+    let identity = LocalIdentity::demo();
+    crate::testing::starter(&mut doc, &identity.id, &identity.name, &identity.initials);
+    doc.commit();
+    let app = projection(&doc, identity);
+    let first = app
+        .ws_channels()
+        .into_iter()
+        .find(|channel| channel.kind == crate::model::ChannelKind::Text)
+        .expect("the starter workspace has a text channel")
+        .id
+        .clone();
+    assert_eq!(app.active_channel, first);
+}
+#[test]
 fn canonical_idle_projection_does_not_request_perpetual_frames() {
     let mut doc = AutoCommit::new();
     let me = LocalIdentity::demo();

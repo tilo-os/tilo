@@ -21,6 +21,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use crate::support::render::{pixel_hash, write_png};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
@@ -139,28 +140,6 @@ fn render_group_themed(
     renderer.render(&scene, theme.tokens.colors.surfaces.content)
 }
 
-/// Cheap 64-bit FNV-1a over the full RGBA buffer — not a golden-image
-/// comparison, just a fingerprint good enough to detect any pixel-level
-/// divergence between two renders.
-fn pixel_hash(buf: &[u8]) -> u64 {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in buf {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x100_0000_01b3);
-    }
-    h
-}
-
-fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
-    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
-        return;
-    };
-    let path = std::path::Path::new(&dir).join(format!("{name}.png"));
-    std::fs::create_dir_all(&dir).ok();
-    tilo_ui::png::write_rgba8(&path, w, h, rgba).expect("write screenshot png");
-    eprintln!("wrote {} to {}", name, path.display());
-}
-
 #[test]
 fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes() {
     // Case `window_group_visual_journey_distinguishes_all_states`.
@@ -175,13 +154,13 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         let mut group = make_window_group();
         let fresh = render_group(&mut renderer, &mut group);
         let fresh_hash = pixel_hash(&fresh);
-        maybe_write_png(&fresh, w, h, "window_group_fresh");
+        write_png("window_group_fresh", w, h, &fresh);
 
         // Should paint the indigo ring/glow pair around the whole card.
         group.search_active = true;
         let search = render_group(&mut renderer, &mut group);
         let search_hash = pixel_hash(&search);
-        maybe_write_png(&search, w, h, "window_group_search");
+        write_png("window_group_search", w, h, &search);
         assert_ne!(
             fresh_hash, search_hash,
             "search_active must change the rendered output (focus ring + glow)",
@@ -192,7 +171,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         group.maximized = true;
         let maximized = render_group(&mut renderer, &mut group);
         let maximized_hash = pixel_hash(&maximized);
-        maybe_write_png(&maximized, w, h, "window_group_maximized");
+        write_png("window_group_maximized", w, h, &maximized);
         assert_ne!(
             fresh_hash, maximized_hash,
             "maximized must change the rendered output (outline + floating pills)",
@@ -210,7 +189,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         assert!(detached.is_some(), "detach_tab(1) must succeed");
         let post_close = render_group(&mut renderer, &mut group);
         let post_close_hash = pixel_hash(&post_close);
-        maybe_write_png(&post_close, w, h, "window_group_post_close");
+        write_png("window_group_post_close", w, h, &post_close);
         assert_ne!(
             fresh_hash, post_close_hash,
             "removing a tab must change the rendered output (one fewer pill)",
@@ -232,12 +211,12 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         let mut group = make_window_group();
         let fresh = render_group_themed(&mut renderer, &mut group, &theme);
         let fresh_hash = pixel_hash(&fresh);
-        maybe_write_png(&fresh, w, h, "window_group_fresh_light");
+        write_png("window_group_fresh_light", w, h, &fresh);
 
         group.search_active = true;
         let search = render_group_themed(&mut renderer, &mut group, &theme);
         let search_hash = pixel_hash(&search);
-        maybe_write_png(&search, w, h, "window_group_search_light");
+        write_png("window_group_search_light", w, h, &search);
         assert_ne!(
             fresh_hash, search_hash,
             "light: search_active must change the rendered output",
@@ -246,7 +225,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         group.maximized = true;
         let maximized = render_group_themed(&mut renderer, &mut group, &theme);
         let maximized_hash = pixel_hash(&maximized);
-        maybe_write_png(&maximized, w, h, "window_group_maximized_light");
+        write_png("window_group_maximized_light", w, h, &maximized);
         assert_ne!(
             fresh_hash, maximized_hash,
             "light: maximized must change the rendered output (floating pills)",
@@ -261,7 +240,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
         assert!(group.detach_tab(1).is_some(), "detach_tab(1) must succeed");
         let post_close = render_group_themed(&mut renderer, &mut group, &theme);
         let post_close_hash = pixel_hash(&post_close);
-        maybe_write_png(&post_close, w, h, "window_group_post_close_light");
+        write_png("window_group_post_close_light", w, h, &post_close);
         assert_ne!(
             fresh_hash, post_close_hash,
             "light: removing a tab must change the rendered output",

@@ -1,14 +1,10 @@
-//! The device's whole-desktop document: every workspace this machine holds,
-//! as one automerge document the host keeps for local history and recovery.
-//!
-//! Unlike a workspace document (see [`crate::projection`]), it describes every
-//! workspace, so it is never handed to a peer. This module is the only
-//! definition of its shape: [`seed`] writes it from a [`DesktopTree`],
-//! [`rebuild`] reads it back, and every other function is a narrow edit that
-//! mirrors one change the tree already made. Topology is decided by
-//! [`crate::topology`]; the edits here only record the outcome. The host owns
-//! the document, decides when to commit, and stamps history.
-//!
+//! The device's whole-desktop document: every workspace this machine holds, as one
+//! automerge document the host keeps for local history and recovery. It describes
+//! every workspace, so it is never handed to a peer. This module is the only
+//! definition of its shape: [`seed`] writes it from a [`DesktopTree`], [`rebuild`]
+//! reads it back, and every other function is a narrow edit that mirrors one change
+//! the tree already made. Topology is [`crate::topology`]'s; the host owns the
+//! document, decides when to commit, and stamps history.
 //! Shape: `{ active: uint, authors_v1?: {actor → author},
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
 //! tab id → person},
@@ -20,11 +16,9 @@
 //! arrangement_v1?: "canvas", canvas_v1?: {group id → json place},
 //! floats_v1?: {group id → json float}, local_v1?: json,
 //! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
-//! Canvas places and floats are the workspace's arrangement, `local_v1` is what only this
-//! device reads of a workspace, and `view_v1` is how this device shows the
-//! desk: none of them reaches another device, and all are in this document
-//! because it is the one store of the desk here.
-
+//! Canvas places and floats are the workspace's arrangement, `local_v1` is what only
+//! this device reads, and `view_v1` is how this device shows the desk; none reaches
+//! another device, all are here because it is the one store of the desk.
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use tilo_automerge::{ReadTyped as _, WriteTyped as _};
@@ -482,15 +476,12 @@ fn read_local(doc: &AutoCommit, entry: &ObjId) -> Option<Local> {
     serde_json::from_slice(&bytes).ok()
 }
 
-/// How this device shows the desk: which strip and group are in front in
-/// each workspace, how wide each group is, whether it is maximized, which of
-/// its tabs is in front, and which display it is on.
-///
-/// The device's own — another device shows the same desk its own way — but
-/// kept in this document all the same, because it is the one store of the
-/// desk here: a desk reopened without it puts every window back at a default
-/// width, and a version restored from the history could not put the layout
-/// back with the windows.
+/// How this device shows the desk: which strip and group are in front in each
+/// workspace, how wide each group is, whether it is maximized, which of its tabs is
+/// in front, and which display it is on.
+/// The device's own, but kept in this document all the same: a desk reopened without
+/// it puts every window back at a default width, and a version restored from the
+/// history could not put the layout back with the windows.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct View {
     #[serde(
@@ -592,25 +583,18 @@ fn default_apps_unset(defaults: &desktop_policy::WorkspaceDefaults) -> bool {
     *defaults == desktop_policy::WorkspaceDefaults::default()
 }
 
-/// Make `doc` describe exactly `desktop`, writing only the difference.
-/// Workspaces, strips, groups and tabs are matched by id, so an unchanged
-/// entry keeps its object, its history and any concurrent edit made to it,
-/// and a rename is one write to `name`. The tree is the source of truth:
-/// an entry the tree no longer holds is deleted. Best-effort: a write that
-/// fails skips the entries nested under it rather than aborting.
+/// Make `doc` describe exactly `desktop`, writing only the difference. Workspaces,
+/// strips, groups and tabs are matched by id, so an unchanged entry keeps its object,
+/// its history and any concurrent edit; a rename is one write to `name`. An entry the
+/// tree no longer holds is deleted. Best-effort: a failed write skips what is nested
+/// under it.
 pub fn seed(doc: &mut AutoCommit, desktop: &DesktopTree) {
     let _ = seed_of_the_view(doc, desktop);
 }
 
-/// [`seed`], saying whether all it wrote was how this device shows the desk —
-/// which workspace, strip and window is in front, how wide each window is —
-/// and nothing of the desk itself. `false` when it wrote nothing at all, or
-/// wrote anything of the desk's own.
-///
-/// A host that keeps every change of the desk as its history uses this to
-/// write a drag once it is over: a resize writes the view on every frame, and
-/// sixty changes a second of how a window looks are not what happened to the
-/// desk.
+/// [`seed`], saying whether all it wrote was how this device shows the desk. A host
+/// that keeps every change of the desk as its history uses this to write a drag once
+/// it is over: a resize writes the view on every frame.
 pub fn seed_of_the_view(doc: &mut AutoCommit, desktop: &DesktopTree) -> bool {
     let before = doc.pending_ops();
     if doc.uint_at(&ROOT, ACTIVE_KEY) != Some(desktop.active.raw()) {
@@ -660,13 +644,12 @@ fn read_keyed_blob_map<T: serde::de::DeserializeOwned>(
     )
 }
 
-/// A workspace's owner and grants as the document records them. An absent
-/// grants map leaves a freshly created workspace's default grants intact; an
-/// existing empty map records a deliberate removal of every grant.
-///
-/// A workspace's people are its governance's, not the document's: old documents
-/// keep the `members` and `members_joined_v1` maps they were written with, and
-/// nothing reads them.
+/// A workspace's owner and grants as the document records them. An absent grants map
+/// leaves a freshly created workspace's default grants intact; an existing empty map
+/// records a deliberate removal.
+/// A workspace's people are its governance's, not the document's: old documents keep
+/// the `members` and `members_joined_v1` maps they were written with, and nothing
+/// reads them.
 type StoredPolicy = (Option<UserId>, Option<Vec<Grant>>);
 
 /// Read policy fields independently: a new workspace has an owner before its
@@ -674,11 +657,9 @@ type StoredPolicy = (Option<UserId>, Option<Vec<Grant>>);
 fn read_policy(doc: &AutoCommit, entry: &ObjId) -> StoredPolicy {
     let owner = doc.str_at(entry, "owner");
     let grants = read_blob_map(doc, entry, GRANTS_KEY).map(|mut grants: Vec<Grant>| {
-        // Map keys are lexical, but the default role grants have a deliberate
-        // order in `workspace_role_grants`: by role as `Role::ALL` lists them, then
-        // by the index in their `role:<role>:<index>` id. Rebuild that order
-        // (index 10 after 9, not after 1) before exposing the policy to the
-        // live tree.
+        // Map keys are lexical, but the default role grants have a deliberate order in
+        // `workspace_role_grants`: rebuild it (index 10 after 9, not after 1) before
+        // exposing the policy to the live tree.
         fn role_order(grant: &Grant) -> usize {
             match grant.subject {
                 Subject::Role(role) => Role::ALL
@@ -764,14 +745,11 @@ fn tile_from_blob(blob: &[u8], title: &str) -> TileContent {
     })
 }
 
-/// Refresh `desktop` from `doc`. The active workspace, names, workspaces,
-/// ownership, members, grants, sandbox, grant sets, receipts, shortcuts and
-/// each workspace's own fields come from the document; `active_strip`,
-/// `active_group` and presence stay as the tree had them, and so does how
-/// each group is shown ([`rebuild_view`] reads that). Each workspace keeps
-/// its existing strips by id, then the document's topology and tabs are
-/// folded in: width and maximization stay on the matching local group, and a
-/// group seen for the first time gets local defaults.
+/// Refresh `desktop` from `doc`. Everything the document holds comes from it, while
+/// `active_strip`, `active_group`, presence and how each group is shown stay as the
+/// tree had them ([`rebuild_view`] reads that). Each workspace keeps its existing
+/// strips by id, then the document's topology and tabs are folded in, and a group
+/// seen for the first time gets local defaults.
 pub fn rebuild(doc: &AutoCommit, desktop: &mut DesktopTree) {
     if let Some(raw) = doc.uint_at(&ROOT, ACTIVE_KEY) {
         desktop.active = WorkspaceSlot::from(raw);
@@ -887,15 +865,10 @@ fn rebuild_strips(doc: &AutoCommit, entry: &ObjId, ws: &mut Workspace) {
     }
 }
 
-/// Read how this device showed the desk from `doc` into `desktop`: which
-/// strip and group are in front, how wide each group is, whether it is
-/// maximized, which of its tabs is in front, and which display it is on.
-///
-/// [`rebuild`] leaves those on the tree it is given, because a host that
-/// holds its own view (the shell's cache) is the one that knows them. A
-/// reader that keeps no view of its own — a session starting on this
-/// document alone, or a version restored out of its history — calls this
-/// after [`rebuild`] and takes the desk back exactly as it was left.
+/// Read how this device showed the desk from `doc` into `desktop`. [`rebuild`] leaves
+/// those on the tree it is given, because a host that holds its own view is the one
+/// that knows them; a reader that keeps no view of its own calls this after
+/// [`rebuild`] and takes the desk back exactly as it was left.
 pub fn rebuild_view(doc: &AutoCommit, desktop: &mut DesktopTree) {
     let Some(view) = view_of(doc) else {
         return;
@@ -1023,11 +996,10 @@ fn workspace_entry(doc: &AutoCommit, slot: WorkspaceSlot) -> Option<ObjId> {
         .map(|(_, entry)| entry)
 }
 
-/// Append a new workspace entry with its workspace's default grants. Its strips
-/// reach the document through later edits or the next [`seed`]. The workspace and
-/// its initial authority travel in the same change that creates the entry,
-/// so a later grant revocation can remove a real document key. Creates the
-/// list for an unseeded document.
+/// Append a new workspace entry with its workspace's default grants. Its strips reach
+/// the document through later edits or the next [`seed`]. The workspace and its
+/// initial authority travel in the same change, so a later grant revocation can
+/// remove a real document key.
 pub fn append_workspace(
     doc: &mut AutoCommit,
     slot: WorkspaceSlot,
@@ -1065,11 +1037,9 @@ pub fn set_active(doc: &mut AutoCommit, slot: WorkspaceSlot) {
     let _ = doc.put(&ROOT, ACTIVE_KEY, ScalarValue::Uint(slot.raw()));
 }
 
-/// Whether `change` did nothing but change how this device shows the desk:
-/// which workspace, strip or group is in front, how wide a group is, or on
-/// which display it is. Every operation puts one of the two root keys that
-/// hold none of the desk's content, [`ACTIVE_KEY`] and [`VIEW_KEY`]. Which
-/// workspace's windows exist is as the changes before it left them.
+/// Whether `change` did nothing but change how this device shows the desk: every
+/// operation puts one of the two root keys that hold none of the desk's content,
+/// [`ACTIVE_KEY`] and [`VIEW_KEY`].
 pub fn only_moves_the_view(change: &automerge::Change) -> bool {
     use automerge::legacy::{Key, ObjectId, OpType};
     !change.is_empty()
@@ -1122,11 +1092,9 @@ pub fn holds(doc: &impl ReadDoc) -> bool {
     )
 }
 
-/// The record each window shows, by tab, for the windows bound to one: what
-/// a page keeps of which document a window is on, so the same windows come
-/// back on the records they showed and a peer's window opens the record it
-/// shows there. Each entry is its own, so two people binding their own
-/// windows at once keep both.
+/// The record each window shows, by tab, for the windows bound to one, so the same
+/// windows come back on the records they showed and a peer's window opens the record
+/// it shows there. Each entry is its own.
 #[must_use]
 pub fn records(doc: &AutoCommit) -> Vec<(TabId, String)> {
     let Some(map) = obj(doc, &ROOT, RECORDS_KEY) else {
@@ -1140,13 +1108,9 @@ pub fn records(doc: &AutoCommit) -> Vec<(TabId, String)> {
     held
 }
 
-/// Note that the window `tab` shows `record`, beside every other window's: a
-/// window that takes up a record names it here, so the same windows come back
-/// on the records they showed ([`records`]). Whether the document changed.
-///
-/// It adds one entry and removes none: a window's record arrives with the
-/// window, which the desk adds in the same change, so a write that knows one
-/// binding is no authority over the others.
+/// Note that the window `tab` shows `record`. Whether the document changed. It adds
+/// one entry and removes none: a window's record arrives with the window, so a write
+/// that knows one binding is no authority over the others.
 #[must_use]
 pub fn note_record(doc: &mut AutoCommit, tab: TabId, record: &str) -> bool {
     let before = doc.pending_ops();
@@ -1209,11 +1173,9 @@ pub fn set_window_authors(doc: &mut AutoCommit, authors: &crate::ownership::Auth
 /// entry there, before the desk was one document.
 const RECORD_KEYS: [&str; 3] = ["strips", "groups", "windows"];
 
-/// Write a shared desktop — its workspaces, the record each window shows and
-/// who made each strip and opened each window — into `doc` as the desk
-/// document. A document that kept the desk the old way, an entry per window,
-/// becomes the desk document here, and the entries it kept are forgotten.
-/// Returns whether it wrote anything.
+/// Write a shared desktop — its workspaces, the record each window shows and who made
+/// each strip and opened each window — into `doc`. A document that kept the desk the
+/// old way becomes the desk document here. Returns whether it wrote anything.
 pub fn write_shared(
     doc: &mut AutoCommit,
     tree: &DesktopTree,
@@ -1261,13 +1223,6 @@ fn delete_blob(doc: &mut AutoCommit, slot: WorkspaceSlot, map_key: &str, key: &s
     doc.delete(&map, key).is_ok()
 }
 
-/// Record a grant. Grants are a map keyed by id rather than a list:
-/// deleting a map key merges concurrently, while deleting list index 3 on
-/// two peers removes two different grants.
-pub fn insert_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, grant: &Grant) -> bool {
-    upsert_blob(doc, slot, GRANTS_KEY, grant.id.as_str(), grant)
-}
-
 /// Delete a grant, so a revocation is not only local.
 pub fn revoke_grant(doc: &mut AutoCommit, slot: WorkspaceSlot, id: &GrantId) -> bool {
     delete_blob(doc, slot, GRANTS_KEY, id.as_str())
@@ -1281,12 +1236,6 @@ pub fn insert_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap: &CapOverri
 /// Delete a sandbox capability.
 pub fn revoke_sandbox(doc: &mut AutoCommit, slot: WorkspaceSlot, cap_id: &str) -> bool {
     delete_blob(doc, slot, SANDBOX_KEY, cap_id)
-}
-
-/// Record a named grant set under its name's key.
-pub fn upsert_preset(doc: &mut AutoCommit, slot: WorkspaceSlot, preset: &Preset) -> bool {
-    let key = preset_key(&preset.name);
-    upsert_blob(doc, slot, PRESETS_KEY, &key, preset)
 }
 
 /// Record a shortcut under its id, replacing any earlier version of it.
@@ -1316,21 +1265,6 @@ pub fn remove_shortcut(doc: &mut AutoCommit, slot: WorkspaceSlot, shortcut_id: &
         && doc.delete(&shortcuts, shortcut_id).is_ok()
 }
 
-/// Record a schedule claim under its schedule, replacing the earlier one.
-pub fn upsert_schedule_claim(
-    doc: &mut AutoCommit,
-    slot: WorkspaceSlot,
-    claim: &tilo_automation::ScheduleClaim,
-) -> bool {
-    upsert_blob(
-        doc,
-        slot,
-        WORKSPACE_SCHEDULE_CLAIMS_KEY,
-        &claim.key(),
-        claim,
-    )
-}
-
 /// Record an effect receipt under its invocation.
 pub fn upsert_effect_receipt(
     doc: &mut AutoCommit,
@@ -1339,25 +1273,6 @@ pub fn upsert_effect_receipt(
 ) -> bool {
     let key = receipt.invocation.0.to_string();
     upsert_blob(doc, slot, WORKSPACE_EFFECT_RECEIPTS_KEY, &key, receipt)
-}
-
-/// Delete one tab, or its whole group when the tab was the group's last.
-/// The narrow mirror of a user-driven close, so a later merge cannot
-/// resurrect the tab.
-/// Whether `doc` holds what [`remove_tab`] with the same arguments would
-/// delete: the tab, or with `remove_group` its whole group.
-pub fn holds_tab(
-    doc: &AutoCommit,
-    strip_id: StripId,
-    group_id: GroupId,
-    tab_id: TabId,
-    remove_group: bool,
-) -> bool {
-    if remove_group {
-        group_anywhere(doc, group_id).is_some()
-    } else {
-        tab_in_strip(doc, strip_id, tab_id).is_some()
-    }
 }
 
 pub fn remove_tab(
@@ -1374,11 +1289,9 @@ pub fn remove_tab(
     tab_in_strip(doc, strip_id, tab_id).is_some_and(|(tabs, idx)| doc.delete(&tabs, idx).is_ok())
 }
 
-/// Record a tab move the tree made (see
-/// [`DesktopTree::move_tab_across_strips`] and
-/// [`DesktopTree::split_tab_into_new_group`]), at the exact index or seam
-/// the tree used. `src_strip` and `dst_strip` may be the same strip.
-/// All-or-nothing: `false` leaves `doc` as it was.
+/// Record a tab move the tree made, at the exact index or seam the tree used.
+/// `src_strip` and `dst_strip` may be the same strip. All-or-nothing: `false` leaves
+/// `doc` as it was.
 pub fn apply_tab_move(
     doc: &mut AutoCommit,
     src_strip: StripId,
@@ -1491,28 +1404,6 @@ pub fn move_group(
         insert_group(doc, &groups, index, group);
         Some(())
     })
-}
-
-/// Replace one strip's group list with `groups`, leaving the rest of the
-/// document — and concurrent changes to it — alone.
-pub fn rewrite_strip_groups(
-    doc: &mut AutoCommit,
-    strip_id: StripId,
-    groups: &[WindowGroup],
-) -> bool {
-    let Some((_, strip_entry, _)) = strip_entries(doc)
-        .into_iter()
-        .find(|(id, _, _)| *id == strip_id.raw())
-    else {
-        return false;
-    };
-    let Ok(list) = doc.put_object(&strip_entry, GROUPS_KEY, ObjType::List) else {
-        return false;
-    };
-    for (i, group) in groups.iter().enumerate() {
-        insert_group(doc, &list, i, group);
-    }
-    true
 }
 
 /// Replace one group's tab list with `tabs`, in order.

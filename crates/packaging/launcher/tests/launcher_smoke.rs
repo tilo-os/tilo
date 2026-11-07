@@ -17,12 +17,12 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::manifest::{Entrypoint, Fs, ManifestView, Net, Sandbox, ServiceReq, read_manifest};
+use launcher::manifest::{ManifestView, ServiceReq, read_manifest};
 use launcher::run::{RunError, RunOptions, run, run_with, run_with_captured};
 use launcher::services::EXIT_REQUIRED_SERVICE_MISSING;
 use tilo_test_env::{ScopedEnv, TestHome};
 
-use crate::support::{hello_payload, isolated_options};
+use crate::support::{bwrap, hello_payload, isolated_options, manifest};
 
 // helpers
 
@@ -40,52 +40,10 @@ fn service_req(raw: &str) -> ServiceReq {
     ServiceReq::parse("", raw).expect("valid service requirement")
 }
 
-fn hello_manifest(payload_root: &Path, services: BTreeMap<String, ServiceReq>) -> ManifestView {
-    let _ = payload_root;
-    ManifestView {
-        package_id: "com.example.hello".to_string(),
-        name: None,
-        localized_names: BTreeMap::default(),
-        keywords: Vec::new(),
-        category: None,
-        icon: None,
-        version: "0.0.0".to_string(),
-        kind: "app".to_string(),
-        runtime: None,
-        required_runtimes: Vec::new(),
-        entrypoint: Entrypoint {
-            bin: "bin/hello".to_string(),
-            r#type: launcher::manifest::EntrypointType::Gui,
-            gui_bin: None,
-            cli_bin: None,
-            runtime: None,
-            origins: Vec::new(),
-        },
-        sandbox: Sandbox {
-            net: Net {
-                mode: "off".to_string(),
-                ..Net::default()
-            },
-            fs: Fs::default(),
-            services,
-            portals: BTreeMap::new(),
-            ..Sandbox::default()
-        },
-        cli_commands: Vec::new(),
-        opens_ext: Vec::new(),
-        opens_mime: Vec::new(),
-        opens_schemes: Vec::new(),
-        opens_secondary: false,
-        continuity: launcher::manifest::ContinuityContract::default(),
-        capabilities: Vec::new(),
-    }
-}
-
-/// Locate the product sandbox executable. A test unable to observe it fails.
-fn bwrap_path() -> PathBuf {
-    let p = PathBuf::from("/usr/bin/bwrap");
-    assert!(p.exists(), "bwrap is required to verify tapp launching");
-    p
+fn hello_manifest(services: BTreeMap<String, ServiceReq>) -> ManifestView {
+    let mut manifest = manifest("com.example.hello", "bin/hello", "off");
+    manifest.sandbox.services = services;
+    manifest
 }
 
 // tests
@@ -110,7 +68,7 @@ fn manifest_errors_fail_before_exec_and_manifests_round_trip() {
         // the search path: expect a RuntimeBundleMissing error naming the
         // paths looked at.
         let home = runtime_home();
-        let mut m = hello_manifest(home.root(), BTreeMap::new());
+        let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/nope-9.9.9".to_string());
         let opts = RunOptions {
             no_services: true,
@@ -187,7 +145,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
 
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("required@1"));
-        let m = hello_manifest(dir.path(), svcs);
+        let m = hello_manifest(svcs);
         let opts = RunOptions {
             no_services: false,
             landlock_enforce: true,
@@ -212,12 +170,12 @@ fn apps_launch_unless_a_required_service_is_missing() {
     }
     // Phase `no_services_flag_skips_required`.
     {
-        let bwrap = bwrap_path();
+        let bwrap = bwrap();
         let payload = hello_payload();
         let data = tempfile::tempdir().unwrap();
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("required@1"));
-        let m = hello_manifest(payload, svcs);
+        let m = hello_manifest(svcs);
         let opts = RunOptions {
             no_services: true,
             runtime_root: None,
@@ -232,7 +190,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
     }
     // Phase `optional_service_missing_warns_and_runs`.
     {
-        let bwrap = bwrap_path();
+        let bwrap = bwrap();
         let dir = tempfile::tempdir().unwrap();
         let _env = runtime_dir_env(dir.path());
 
@@ -240,7 +198,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
 
         let mut svcs = BTreeMap::new();
         svcs.insert("collab".to_string(), service_req("optional@1"));
-        let m = hello_manifest(payload, svcs);
+        let m = hello_manifest(svcs);
         let opts = RunOptions {
             no_services: false,
             runtime_root: None,
@@ -255,11 +213,11 @@ fn apps_launch_unless_a_required_service_is_missing() {
     }
     // Phase `hello_world_runs`.
     {
-        let bwrap = bwrap_path();
+        let bwrap = bwrap();
         let payload = hello_payload();
         let data = tempfile::tempdir().unwrap();
 
-        let m = hello_manifest(payload, BTreeMap::new());
+        let m = hello_manifest(BTreeMap::new());
         let opts = RunOptions {
             no_services: false,
             runtime_root: None,
@@ -284,7 +242,7 @@ fn apps_launch_unless_a_required_service_is_missing() {
     // tree materialised read-only from there), resolve it through the catalogue
     // the desktop reads, and launch it from the materialised tree.
     {
-        let bwrap = bwrap_path();
+        let bwrap = bwrap();
         let identity = tilo_app_package::SigningIdentity::generate();
         let manifest = tilo_app_package::Manifest::from_toml_str(&format!(
             r#"
@@ -438,7 +396,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
     // `LD_LIBRARY_PATH` to <mount>/lib, and NOT include the --minimal-libs
     // loader binds even if the flag is on.
     {
-        use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
         use launcher::sandbox::build_bwrap_argv;
 
         // Set up a real signed bundle so resolve_runtime + its integrity
@@ -446,43 +403,8 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         let home = runtime_home();
         let (bundle_dir, _identity) = install_signed_bundle(home.data(), "smoke-1.0.0");
 
-        let mut m = ManifestView {
-            package_id: "com.example.hello".to_string(),
-            name: None,
-            localized_names: BTreeMap::default(),
-            keywords: Vec::new(),
-            category: None,
-            icon: None,
-            version: "0.0.0".to_string(),
-            kind: "app".to_string(),
-            runtime: Some("tilo-runtime/smoke-1.0.0".to_string()),
-            required_runtimes: Vec::new(),
-            entrypoint: Entrypoint {
-                bin: "bin/hello".to_string(),
-                r#type: launcher::manifest::EntrypointType::Gui,
-                gui_bin: None,
-                cli_bin: None,
-                runtime: None,
-                origins: Vec::new(),
-            },
-            sandbox: Sandbox {
-                net: Net {
-                    mode: "off".to_string(),
-                    ..Net::default()
-                },
-                fs: Fs::default(),
-                services: BTreeMap::new(),
-                portals: BTreeMap::new(),
-                ..Sandbox::default()
-            },
-            cli_commands: Vec::new(),
-            opens_ext: Vec::new(),
-            opens_mime: Vec::new(),
-            opens_schemes: Vec::new(),
-            opens_secondary: false,
-            continuity: launcher::manifest::ContinuityContract::default(),
-            capabilities: Vec::new(),
-        };
+        let mut m = manifest("com.example.hello", "bin/hello", "off");
+        m.runtime = Some("tilo-runtime/smoke-1.0.0".to_string());
         // Assert the sandbox argv contains the runtime bind + LD_LIBRARY_PATH
         // for a manually-supplied runtime tuple (the pure-function surface).
         let argv = build_bwrap_argv(
@@ -535,7 +457,6 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
     // and the launcher sets `LD_LIBRARY_PATH=<mount>/lib`, so the loader
     // finds them by soname. Signature integrity is enforced along the way.
     {
-        use launcher::manifest::{Entrypoint, Fs, Net, Sandbox};
         use launcher::sandbox::build_bwrap_argv;
 
         let home = runtime_home();
@@ -577,43 +498,11 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         assert!(bundle_dir.join("lib/libstd-abc123.so").exists());
         assert!(bundle_dir.join("lib/libruntime_dylib.so").exists());
 
-        let m = ManifestView {
-            package_id: "so.tilo.thin".to_string(),
-            name: None,
-            localized_names: BTreeMap::default(),
-            keywords: Vec::new(),
-            category: None,
-            icon: None,
-            version: "0.1.0".to_string(),
-            kind: "app".to_string(),
-            runtime: Some(format!("tilo-runtime/{version}")),
-            required_runtimes: Vec::new(),
-            entrypoint: Entrypoint {
-                bin: "bin/thin".to_string(),
-                r#type: launcher::manifest::EntrypointType::Cli,
-                gui_bin: None,
-                cli_bin: None,
-                runtime: None,
-                origins: Vec::new(),
-            },
-            sandbox: Sandbox {
-                net: Net {
-                    mode: "off".to_string(),
-                    ..Net::default()
-                },
-                fs: Fs::default(),
-                services: BTreeMap::new(),
-                portals: BTreeMap::new(),
-                ..Sandbox::default()
-            },
-            cli_commands: vec!["thin".to_string()],
-            opens_ext: Vec::new(),
-            opens_mime: Vec::new(),
-            opens_schemes: Vec::new(),
-            opens_secondary: false,
-            continuity: launcher::manifest::ContinuityContract::default(),
-            capabilities: Vec::new(),
-        };
+        let mut m = manifest("so.tilo.thin", "bin/thin", "off");
+        m.version = "0.1.0".to_string();
+        m.runtime = Some(format!("tilo-runtime/{version}"));
+        m.entrypoint.r#type = launcher::manifest::EntrypointType::Cli;
+        m.cli_commands = vec!["thin".to_string()];
 
         // The manifest's `runtime` field resolves to the signed bundle
         // (signature verified inside resolve_runtime).
@@ -735,7 +624,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
             },
         )
         .unwrap();
-        let mut manifest = hello_manifest(Path::new("/payload"), BTreeMap::new());
+        let mut manifest = hello_manifest(BTreeMap::new());
         manifest.runtime = Some(format!("tilo-runtime/{version}"));
         // An installed bundle of the same version under the data home must lose.
         install_signed_bundle(home.data(), version);
@@ -765,7 +654,7 @@ fn runtime_bundles_and_the_dbus_proxy_shape_the_launch_argv() {
         env.set(PROXY_BIN_ENV, &mock)
             .set("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1234/bus");
 
-        let mut m = hello_manifest(tmp.path(), BTreeMap::new());
+        let mut m = hello_manifest(BTreeMap::new());
         m.sandbox.portals.insert(
             "notifications".to_string(),
             launcher::manifest::PortalPolicy::ViaHost,
@@ -841,7 +730,7 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
     let mut home = runtime_home();
     let (installed, identity) = install_signed_bundle(home.data(), "2026.10.0-engine");
     let _unsigned = install_unsigned_bundle(home.data(), "2026.10.0-unsigned");
-    let mut m = hello_manifest(home.root(), BTreeMap::new());
+    let mut m = hello_manifest(BTreeMap::new());
     m.required_runtimes = vec!["tilo-runtime/2026.10.0-engine".to_string()];
     let trust_file = home.root().join("trust.txt");
     std::fs::write(&trust_file, format!("{}\n", identity.public_key_hex())).unwrap();
@@ -909,7 +798,7 @@ fn required_runtimes_mount_when_installed_and_trusted_and_refuse_the_launch_othe
 fn an_entrypoint_runtime_is_mounted_and_required() {
     let mut home = runtime_home();
     let (installed, identity) = install_signed_bundle(home.data(), "0.1.0-tilolang");
-    let mut m = hello_manifest(home.root(), BTreeMap::new());
+    let mut m = hello_manifest(BTreeMap::new());
     m.required_runtimes = vec!["tilolang/0.1.0-tilolang".to_string()];
     m.entrypoint.runtime = Some("tilolang/0.1.0-tilolang".to_string());
     let trust_file = home.root().join("trust.txt");
@@ -969,7 +858,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
         let home = runtime_home();
         let _bundle = install_unsigned_bundle(home.data(), "sig-refuse-1");
 
-        let mut m = hello_manifest(home.root(), BTreeMap::new());
+        let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/sig-refuse-1".to_string());
 
         let opts = RunOptions {
@@ -1002,7 +891,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
         let mut home = runtime_home();
         let (_bundle, identity) = install_signed_bundle(home.data(), "trust-file-1");
 
-        let mut m = hello_manifest(home.root(), BTreeMap::new());
+        let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/trust-file-1".to_string());
         let opts = RunOptions {
             no_services: true,
@@ -1059,7 +948,7 @@ fn bundle_signatures_gate_the_runtime_mount() {
         let home = runtime_home();
         let (_bundle, identity) = install_signed_bundle(home.data(), "sig-pin-1");
 
-        let mut m = hello_manifest(home.root(), BTreeMap::new());
+        let mut m = hello_manifest(BTreeMap::new());
         m.runtime = Some("tilo-runtime/sig-pin-1".to_string());
 
         // Default: accepted.
@@ -1132,7 +1021,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
         )
         .unwrap();
 
-        let m = hello_manifest(dir.path(), BTreeMap::new());
+        let m = hello_manifest(BTreeMap::new());
         let opts = RunOptions {
             no_services: true,
             landlock_enforce: false,
@@ -1167,7 +1056,7 @@ fn capability_files_on_disk_become_binds_or_nothing() {
     // failure, both are just the manifest's sandbox.
     {
         let dir = tempfile::tempdir().unwrap();
-        let m = hello_manifest(dir.path(), BTreeMap::new());
+        let m = hello_manifest(BTreeMap::new());
 
         let malformed = dir.path().join("caps.json");
         std::fs::write(&malformed, b"not json at all").unwrap();

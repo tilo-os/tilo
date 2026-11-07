@@ -1091,8 +1091,8 @@ impl Device {
     /// Map a window of `app` called `title` on this device's desk, as an app
     /// starting its own window does: a window of the workspace it shows, kept
     /// up while the returned value lives.
-    pub fn window(&self, app: &str, title: &str) -> super::window::Window {
-        super::window::Window::open(self.directory(), app, title)
+    pub fn window(&self, app: &str, title: &str) -> super::window::Client {
+        super::window::Client::open(self.directory(), app, title)
     }
 
     /// Open the installed app `app` on this device's desk, as a person

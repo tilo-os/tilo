@@ -33,15 +33,7 @@ use automerge::{AutoCommit, ROOT};
 use tilo_relay::{Envelope, RelayClient};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use crate::common::{TestUser, client_endpoint, spawn_relay_on};
-
-fn pending_count(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir).map_or(0, |rd| {
-        rd.flatten()
-            .filter(|e| e.file_name().to_string_lossy().ends_with(".delta"))
-            .count()
-    })
-}
+use crate::common::{TestUser, client_endpoint, pending_count, spawn_relay_on};
 
 /// A connects to `addr1`, subscribes, drains Ready(0), publishes
 /// `note = "durable"`, waits until the host has queued it on disk for

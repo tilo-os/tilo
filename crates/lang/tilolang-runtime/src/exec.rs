@@ -47,9 +47,12 @@ pub struct ExecCtx {
     pub invoker: Principal,
     pub chain: Vec<ModuleHash>,
     pub approved_by: Option<Principal>,
-    /// The recorded suggestion an approval runs, when there is one: what an outside effect it
-    /// queues is keyed by, so that approving the same suggestion on two devices queues it once.
-    pub origin: Option<String>,
+    /// The run this invocation already is, when something every replica reads names it: the
+    /// record of a suggestion names the run that waits on a person (`InvocationRecord::run`),
+    /// and a device that holds no journal of it runs its action under that run. Every effect the
+    /// run queues is keyed by the id it starts with, so a device that runs the same invocation
+    /// queues each effect once. Without one, the run gets an id of its own.
+    pub identity: Option<RunId>,
     /// The resource the invocation was made from, when it was made from one: what the resources
     /// it creates were made from, recorded in the change ([`crate::store::Version::from`]).
     pub from: Option<ResourceRef>,
@@ -632,7 +635,7 @@ impl Core {
             invoker: invoker.clone(),
             chain,
             approved_by: None,
-            origin: None,
+            identity: None,
             from: from.cloned(),
             suggested_by: None,
             at: None,
@@ -664,7 +667,7 @@ impl Core {
                     pending: Some(Pending::Ask(suggestion.clone())),
                     finished: false,
                     approved_by: None,
-                    origin: None,
+                    effects: 0,
                     parent: None,
                     invocation: run.clone(),
                 };
@@ -683,7 +686,7 @@ impl Core {
     /// The run of one action applied to many items: one attempt, and no journal, because an
     /// action that calls another action has a change and a journal per call.
     fn many_run(&self, ctx: &ExecCtx, first: &ActionRef) -> RunState {
-        let run = self.store.borrow_mut().fresh_id("r");
+        let run = self.run_id(ctx);
         RunState {
             journal: Journal {
                 action: Some(first.action.clone()),
@@ -697,7 +700,7 @@ impl Core {
                 pending: None,
                 finished: false,
                 approved_by: ctx.approved_by.clone(),
-                origin: ctx.origin.clone(),
+                effects: 0,
                 parent: None,
                 invocation: run.clone(),
             },
@@ -746,7 +749,6 @@ impl Core {
                 action: first.action.clone(),
                 primary,
                 invoker: ctx.invoker.clone(),
-                origin: ctx.origin.clone(),
                 suggested_by: ctx.suggested_by.clone(),
                 suggestions: Vec::new(),
                 queued: Vec::new(),
@@ -854,7 +856,7 @@ impl Core {
             chain,
             approved_by: None,
             suggested_by: None,
-            origin: None,
+            identity: None,
             from: from.cloned(),
             at: None,
         };
@@ -886,7 +888,7 @@ impl Core {
                     pending: Some(Pending::Ask(suggestion.clone())),
                     finished: false,
                     approved_by: None,
-                    origin: None,
+                    effects: 0,
                     parent: None,
                     invocation: run.clone(),
                 };
@@ -948,7 +950,7 @@ impl Core {
             chain,
             approved_by: None,
             suggested_by: None,
-            origin: None,
+            identity: None,
             from: None,
             at: None,
         };
@@ -958,10 +960,19 @@ impl Core {
         )
     }
 
+    /// The id a run started for `ctx` has: the one the invocation it stands for already has,
+    /// else one of its own. Every effect it queues is keyed by it, so a device that runs the
+    /// same invocation queues each of them under the key the device that ran it first did.
+    fn run_id(&self, ctx: &ExecCtx) -> RunId {
+        ctx.identity
+            .clone()
+            .unwrap_or_else(|| self.store.borrow_mut().fresh_id("r"))
+    }
+
     /// Start a run of `aref` for `ctx`: a journal, and the code run until it finishes or waits
     /// for a person. Nothing is written until it does.
     fn start_ctx(&self, ctx: &ExecCtx, aref: &ActionRef) -> Result<RunOutcome, RuntimeError> {
-        let run = self.store.borrow_mut().fresh_id("r");
+        let run = self.run_id(ctx);
         let journal = Journal {
             action: Some(aref.action.clone()),
             args: aref.args.clone(),
@@ -974,7 +985,7 @@ impl Core {
             pending: None,
             finished: false,
             approved_by: ctx.approved_by.clone(),
-            origin: ctx.origin.clone(),
+            effects: 0,
             parent: None,
             invocation: run.clone(),
         };
@@ -1149,13 +1160,13 @@ impl Core {
     }
 
     /// The context a run's code runs in, as its journal recorded it when it started.
-    fn ctx_of(journal: &Journal) -> ExecCtx {
+    fn ctx_of(run: &RunId, journal: &Journal) -> ExecCtx {
         ExecCtx {
             invoker: journal.invoker.clone(),
             chain: journal.chain.clone(),
             approved_by: journal.approved_by.clone(),
             suggested_by: journal.suggested_by.clone().map(Principal),
-            origin: journal.origin.clone(),
+            identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
         }
@@ -1177,7 +1188,7 @@ impl Core {
         };
         let action = state.journal.action.clone().unwrap_or_default();
         let args = state.journal.args.clone();
-        let ctx = Self::ctx_of(&state.journal);
+        let ctx = Self::ctx_of(&state.run, &state.journal);
         let primary = args.iter().find_map(|v| match v {
             Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
             _ => None,
@@ -1194,7 +1205,6 @@ impl Core {
                 action: action.clone(),
                 primary,
                 invoker: ctx.invoker.clone(),
-                origin: ctx.origin.clone(),
                 suggested_by: ctx.suggested_by,
                 suggestions: Vec::new(),
                 queued: Vec::new(),
@@ -1305,7 +1315,7 @@ impl Core {
             chain,
             approved_by: None,
             suggested_by: journal.suggested_by.clone().map(Principal),
-            origin: None,
+            identity: None,
             from: step.from.clone().or_else(|| journal.from.clone()),
             at: step.at.clone(),
         };
@@ -1362,7 +1372,10 @@ impl Core {
         ctx: &ExecCtx,
         aref: &ActionRef,
     ) -> Result<Option<Suggestion>, RuntimeError> {
-        let child = self.store.borrow_mut().fresh_id("r");
+        // The call is a step of the run: the run's effects before it and its calls after it
+        // are the same on a device that runs the invocation again from the top, so what the
+        // call does is held under the keys the first device used.
+        let child = format!("{run}/{}", journal.entries.len());
         let child_journal = Journal {
             action: Some(aref.action.clone()),
             args: aref.args.clone(),
@@ -1375,7 +1388,7 @@ impl Core {
             pending: None,
             finished: false,
             approved_by: ctx.approved_by.clone(),
-            origin: ctx.origin.clone(),
+            effects: 0,
             parent: Some(run.clone()),
             invocation: journal.invocation.clone(),
         };
@@ -1413,15 +1426,6 @@ impl Core {
         approver: &Principal,
         resolution: Resolution,
     ) -> Result<RunOutcome, RuntimeError> {
-        self.resolve_run(run, approver, resolution)
-    }
-
-    fn resolve_run(
-        &self,
-        run: &RunId,
-        approver: &Principal,
-        resolution: Resolution,
-    ) -> Result<RunOutcome, RuntimeError> {
         let mut journal = self
             .store
             .borrow_mut()
@@ -1439,14 +1443,14 @@ impl Core {
         // The wait split the run: what it wrote before the call was one action, and what it does
         // on from the answer is another, under an invocation of its own.
         journal.invocation = self.store.borrow_mut().fresh_id("i");
+        // The run goes on as itself: the effects the answer queues are keyed by its id, which a
+        // device that held no journal of it reads from the record and runs it under too.
         let ctx = ExecCtx {
             invoker: suggestion.invoker.clone(),
             chain: suggestion.chain.clone(),
             approved_by: Some(approver.clone()),
             suggested_by: journal.suggested_by.clone().map(Principal),
-            // The key its outside effects are queued under, so that approving the same
-            // suggestion on two devices queues them once.
-            origin: Some(format!("{run}:{}", journal.entries.len())),
+            identity: Some(run.clone()),
             from: journal.from.clone(),
             at: journal.at.clone(),
         };
@@ -1888,14 +1892,22 @@ impl Core {
             }
             None => None,
         };
-        let (txn, action, primary, origin) = {
-            let frames = self.frames.borrow();
-            match &frames.top()?.kind {
-                FrameKind::Action(a) => {
-                    (a.txn, a.action.clone(), a.primary.clone(), a.origin.clone())
-                }
+        let (txn, action, primary, key) = {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                return trap("outside is only available in actions");
+            };
+            // One key per effect of the run the action belongs to: a device that runs the same
+            // invocation, before or after a person was asked, queues each effect under the key
+            // the device that ran it first did, so the record holds it once. An effect the
+            // journal answers was counted when the run first came this way, and counting it
+            // again would hold the effects after it under keys no other device uses.
+            let key = (!run.replaying()).then(|| run.next_effect_key());
+            let (txn, action, primary) = match &frames.top()?.kind {
+                FrameKind::Action(a) => (a.txn, a.action.clone(), a.primary.clone()),
                 _ => return trap("outside is only available in actions"),
-            }
+            };
+            (txn, action, primary, key)
         };
         let class = self
             .registry
@@ -1915,7 +1927,7 @@ impl Core {
                 capability,
                 payload,
                 held_until,
-                key: origin,
+                key,
             },
         )?;
         self.ret_h(Value::Unit)

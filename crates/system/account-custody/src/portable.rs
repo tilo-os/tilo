@@ -101,7 +101,8 @@ impl SealedAccounts {
 const ARTIFACT_MAGIC: &[u8; 8] = b"TILOACC1";
 const WRAP_DOMAIN: &[u8] = b"tilo-prepared-account-key/v1\0";
 const MAX_WRAPPED: usize = 256;
-const MAX_ARTIFACT: usize = 16 + MAX_WRAPPED + MAX_SEALED;
+/// Largest accepted password-wrapped artifact, in bytes.
+pub const MAX_ARTIFACT: usize = 16 + MAX_WRAPPED + MAX_SEALED;
 
 /// A portable password-wrapped artifact: sealed selected accounts and a fresh
 /// wrapped transport key. The password and unwrapped key are never serialized.
@@ -370,6 +371,20 @@ pub fn seal_selected_accounts(
     let sealed = envelope::seal(key, Context::new(Label::MigrationPackage, &context), &plain)
         .map_err(|_| PortableError::CredentialUnavailable)?;
     Ok(SealedAccounts(sealed))
+}
+
+/// Import every account the artifact carries into an explicit custody root.
+/// The caller has already authenticated the artifact's selection itself.
+/// # Errors
+/// Refuses authentication failures, invalid bundles and storage conflicts.
+pub fn import_password_sealed_accounts(
+    root: &Path,
+    artifact: &PasswordSealedAccounts,
+    password: &[u8],
+    setup_binding: &[u8],
+) -> Result<Vec<AccountId>, PortableError> {
+    let (selected, key) = artifact.open(password, setup_binding)?;
+    import_sealed_accounts(root, &selected, &key, setup_binding)
 }
 
 /// Authenticate the full artifact and exact selection before touching destination
@@ -950,6 +965,55 @@ mod tests {
             assert_eq!(std::fs::metadata(path).unwrap().uid(), uid);
         }
         assert!(!home.join(".config").exists());
+    }
+
+    #[test]
+    fn untrusted_expensive_kdf_and_framing_are_refused_before_decryption() {
+        let temp = tempfile::tempdir().unwrap();
+        let from = temp.path().join("from");
+        let id = source(&from);
+        let artifact =
+            seal_selected_accounts_with_password(&from, &[id], PASSWORD, b"setup").unwrap();
+        let mut expensive = artifact.as_bytes().to_vec();
+        // The wrapped envelope starts at 12; its Argon2 memory field at 8.
+        expensive[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(PasswordSealedAccounts::from_bytes(&expensive).is_err());
+        let short = &artifact.as_bytes()[..artifact.as_bytes().len() - 1];
+        assert!(PasswordSealedAccounts::from_bytes(short).is_err());
+    }
+
+    #[test]
+    fn foreign_owner_bundle_is_refused_before_target_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let to = temp.path().join("never-created");
+        let key = SymmetricKey::generate().unwrap();
+        let mut account = Account::new(
+            AccountId::new("foreign-account"),
+            accounts::AccountTypeId::new("webdav"),
+        );
+        account.owner = Some("another-collaborator".into());
+        let bundle = Bundle {
+            version: 1,
+            entries: vec![Entry {
+                account,
+                secret: Secret::password("private-collaborator-password"),
+            }],
+        };
+        let plain = Zeroizing::new(serde_json::to_vec(&bundle).unwrap());
+        let context = binding(b"setup-1").unwrap();
+        let sealed = SealedAccounts(
+            envelope::seal(
+                &key,
+                Context::new(Label::MigrationPackage, &context),
+                &plain,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            import_sealed_accounts(&to, &sealed, &key, b"setup-1"),
+            Err(PortableError::InvalidConfiguration)
+        );
+        assert!(!to.exists());
     }
 
     #[test]

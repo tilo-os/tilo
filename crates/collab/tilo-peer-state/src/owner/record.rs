@@ -33,20 +33,6 @@ impl NativeAuthorityStorage {
     pub fn workspaces(&self) -> impl Iterator<Item = WorkspaceId> + '_ {
         self.workspaces.keys().chain(self.pending.keys()).copied()
     }
-    /// Whether `workspace`'s host runs on the device `device`: this device entered
-    /// it at a host there, or an enrollment into it there is in flight.
-    #[must_use]
-    pub fn hosted_on(&self, workspace: WorkspaceId, device: &[u8; 32]) -> bool {
-        if let Some(stored) = self.workspaces.get(&workspace) {
-            return stored.enrollment.as_ref().is_some_and(|enrollment| {
-                crate::owner::hosted_by(&enrollment.transport_hint, device)
-            });
-        }
-        self.pending.get(&workspace).is_some_and(|pending| {
-            crate::owner::VerifiedNativeEnrollmentIntent::restore(&pending.intent)
-                .is_ok_and(|intent| crate::owner::hosted_by(intent.transport_hint(), device))
-        })
-    }
     /// Whether this device holds `workspace`: its replica is installed, not
     /// merely an enrollment into it in flight.
     #[must_use]
@@ -66,13 +52,6 @@ impl NativeAuthorityStorage {
         self.pending
             .iter()
             .map(|(workspace, pending)| (*workspace, pending.target_workspace()))
-    }
-    /// Whether every pending enrollment names the local slot it binds.
-    #[must_use]
-    pub fn every_pending_has_slot(&self) -> bool {
-        self.pending
-            .values()
-            .all(|pending| pending.target.is_some())
     }
 }
 

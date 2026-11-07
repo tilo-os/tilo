@@ -1784,9 +1784,12 @@ impl Widget for ContextMenu {
 
     /// A menu paints its panel in the window's top layer and nothing in
     /// place: it asks for a frame only when what it paints — its own panel
-    /// or one nested in it, which it paints too — has changed.
+    /// while it is on screen, or a box standing without it — has changed.
+    /// A closed menu is no child of its area's tree, so no frame's
+    /// [`Self::mark_drawn`] reaches its flag: what it would paint next is
+    /// not a frame the window owes while it paints nothing.
     fn needs_redraw(&self) -> bool {
-        self.dirty
+        (self.is_drawn() && self.dirty)
             || self.send_to.needs_redraw()
             || self
                 .submenu
@@ -2370,6 +2373,7 @@ impl Widget for ContextMenu {
         true
     }
 }
+
 mod button;
 pub use button::MenuButton;
 

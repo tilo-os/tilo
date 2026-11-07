@@ -1301,13 +1301,19 @@ impl Widget for RichTextLine {
         self.inner.set_interaction_environment(environment);
     }
 
+    /// Read what the document holds. A sync is not a paint: the text and the
+    /// styling it shows mark their own frames, and the authorship runs are
+    /// the part only this read computes.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.paint_dirty = true;
         let (state, path) = crate::doc::document_ref(state, path);
         // Realigning the mark-diff snapshot here keeps a remotely-synced edit
         // from being misread as a local splice on the next keystroke.
         self.inner.sync(state, path);
+        let authors = std::mem::take(&mut self.author_runs);
         self.align_bound_projection(state);
+        if self.author_runs != authors {
+            self.paint_dirty = true;
+        }
         self.refresh_attributes();
     }
 

@@ -846,7 +846,8 @@ impl Instance {
     }
 
     /// The name a bound control is announced by: the field it edits, through what the host
-    /// declares of that field.
+    /// declares of that field — the field's own word in the window's language, and its declared
+    /// name in words while the package names it in no catalogue.
     fn field_name(host: &Host, binding: &Binding) -> String {
         announced(binding, |target, field| {
             type_of(host, &target.ty)
@@ -854,7 +855,13 @@ impl Instance {
                     ty.fields
                         .iter()
                         .find(|declared| declared.id == field)
-                        .map(|declared| sentence(&declared.name))
+                        .map(|declared| {
+                            host.runtime().words().word(
+                                &tilolang::messages::key_of(&declared.id),
+                                &[],
+                                &sentence(&declared.name),
+                            )
+                        })
                 })
                 .unwrap_or_default()
         })

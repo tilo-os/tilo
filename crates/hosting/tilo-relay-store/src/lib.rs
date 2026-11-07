@@ -1,28 +1,16 @@
-//! Retained-store primitives a Tilo workspace host shares with its shell
-//! replay adapter.
-//!
-//! The relay core (`tilo-relay`) owns a workspace's on-disk store. Native
-//! shell replay selection (`tilo-relay-shell`) reads and writes the same
-//! retained tree under the desktop's retention proofs. Both build on what is
-//! here:
+//! Retained-store primitives a Tilo workspace host keeps a workspace's on-disk
+//! store with:
 //!
 //! - [`bounded`]: disk-spilled metadata ordering and bounded work quanta;
 //! - [`durable`]: counted file and directory barriers, generation selectors
 //!   (`CURRENT`) and bounded generation collection;
-//! - [`frames`]: complete retained relay frames and their co-edit payloads;
-//! - [`tail_cache`]: the per-root continuation a clean shell selection leaves
-//!   for the next route tail;
-//! - [`shell`]: the seam the store drives shell replay through. A store holds
-//!   an opaque [`shell::ShellBinding`] and never names the proof types behind
-//!   it.
+//! - [`frames`]: complete retained relay frames and their co-edit payloads.
 //!
-//! Every barrier the store and its adapter issue is counted in [`fsyncs`].
+//! Every barrier the store issues is counted in [`fsyncs`].
 
 pub mod bounded;
 pub mod durable;
 pub mod frames;
-pub mod shell;
-pub mod tail_cache;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_barrier;
 

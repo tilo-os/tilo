@@ -225,6 +225,11 @@ session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übe
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
+## The person asked to report a problem and this computer has nowhere to
+## send one: the report box says so where they asked, rather than opening
+## on an address that would never carry it.
+session-feedback-nowhere = Ein Problem melden
+session-feedback-nowhere-body = Dieser Rechner ist nicht dafür eingerichtet, Berichte an Tilo zu schicken.
 session-apps = Apps
 session-apps-uninstall = Eine App deinstallieren
 session-param-app = Der Name der App

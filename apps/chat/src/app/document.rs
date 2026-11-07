@@ -71,11 +71,13 @@ impl ChatApp {
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);
         }
-        // Keep the active channel valid (e.g. after it was deleted). A
-        // conversation the record need not list as a channel — any direct one,
-        // with a person or with an agent — is valid by its id.
-        if !self.active_channel.is_empty()
-            && !self.is_conversation(&self.active_channel)
+        // Open a conversation: the one already open while it exists, and the
+        // workspace's first otherwise — a deleted channel, and a window that
+        // has not opened one yet, which a recorded view leaves empty on a
+        // device that has not chosen. A conversation the record need not list
+        // as a channel — any direct one, with a person or with an agent — is
+        // valid by its id.
+        if (self.active_channel.is_empty() || !self.is_conversation(&self.active_channel))
             && let Some(first) = self
                 .ws_channels()
                 .into_iter()

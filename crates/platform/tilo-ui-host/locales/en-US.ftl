@@ -81,6 +81,8 @@ tilolang-done = Done
 tilolang-no-date = No date
 # Said over the items of a list done with, where every one of them is: the list is not empty, it is finished.
 tilolang-all-done = All done
+# What one of an app's places says on another app's page when nothing stands in it.
+tilolang-all-caught-up = All caught up
 # A reference in rich text to something the reader cannot read, as its chip says it.
 rich-text-reference-unreadable = Not shared with you
 tilolang-none-selected = No { $kind } selected
@@ -119,8 +121,6 @@ tilolang-history-changes = { $count ->
 tilolang-history-show = Show changes
 tilolang-history-hide = Hide changes
 tilolang-history-undo-run = Undo run
-tilolang-history-made = Created
-tilolang-history-removed = Removed
 
 # How a repeating item comes round again, and when it is reminded of. The count picks the plural
 # ("every 2 weeks", "3 days after done"); the source words are the same, so a window with no

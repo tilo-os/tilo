@@ -105,6 +105,17 @@ mod cases {
             .collect()
     }
 
+    /// The field that edits the title of what the window shows: the one it marks as the title,
+    /// whatever words it puts in its placeholder. A page edits one title.
+    fn title_field(tree: &UiNode) -> &UiNode {
+        let titled: Vec<&UiNode> = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .filter(|field| field.props.get("title") == Some(&Value::Int(1)))
+            .collect();
+        assert_eq!(titled.len(), 1, "the page edits its title:\n{}", dump(tree));
+        titled[0]
+    }
+
     /// The text of a node's property.
     fn text_of(node: &UiNode, prop: &str) -> String {
         node.props
@@ -213,6 +224,105 @@ mod cases {
         );
     }
 
+    /// Whether any node of the tree carries the property `name`.
+    fn any_prop(node: &UiNode, name: &str) -> bool {
+        node.props.contains_key(name) || node.children.iter().any(|child| any_prop(child, name))
+    }
+
+    /// A row shows the actions its view places, in the order it placed them, and keeps what it
+    /// left over behind its "More": the board's placement is not on every row, and every
+    /// command a task takes stays in the row's menu.
+    #[test]
+    fn a_tasks_row_offers_the_actions_its_view_places_first() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        let row = of_kind(tree, "ui.ListItem")[0];
+        let menu = slot(row, "menu");
+        let labels: Vec<String> = menu.iter().map(|item| text_of(item, "label")).collect();
+        assert_eq!(
+            labels.get(..4).unwrap_or_default(),
+            ["Complete", "Pick date…", "Assign…", "Delete"],
+            "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
+        assert!(
+            menu[4..]
+                .iter()
+                .all(|item| item.props.get("group") == Some(&Value::text("More"))),
+            "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
+        assert!(
+            labels
+                .get(4..)
+                .is_some_and(|held| held.contains(&"Duplicate".to_owned())),
+            "every other action a task takes stays in the row's menu, whole menu \
+             {labels:?}:\n{}",
+            dump(tree)
+        );
+        // The swipe a row offers is one it placed: Delete, the destructive action it names.
+        let swipe = slot(row, "swipe");
+        assert_eq!(
+            swipe.first().map(|node| text_of(node, "label")).as_deref(),
+            Some("Delete"),
+            "the row swipes an action it placed:\n{}",
+            dump(tree)
+        );
+        // The host read the placement while it built the surfaces and took it off the tree: the
+        // row is sent with the properties its widget declares and no other.
+        assert!(
+            !any_prop(tree, "actions"),
+            "a row is sent no placement:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// The bar shows the window's actions its view placed, in its order, and keeps the rest of
+    /// what the window's own place offers behind a "More" the bar holds itself.
+    #[test]
+    fn the_tasks_bar_places_the_actions_its_view_names() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        let shell = of_kind(tree, "ui.NavShell")[0];
+        let bar = slot(shell, "overview_actions");
+        let buttons: Vec<String> = bar
+            .iter()
+            .filter(|node| node.kind == "ui.Button")
+            .map(|node| text_of(node, "label"))
+            .collect();
+        assert_eq!(
+            buttons,
+            ["New task", "New task due today", "Delete finished tasks"],
+            "the bar holds the actions the view placed, in its order:\n{}",
+            dump(tree)
+        );
+        let more = bar
+            .iter()
+            .find(|node| node.kind == "ui.MenuButton")
+            .unwrap_or_else(|| panic!("the bar keeps the rest behind More:\n{}", dump(tree)));
+        let behind = more
+            .children
+            .iter()
+            .filter(|child| child.kind == "ui.MenuItem")
+            .any(|child| text_of(child, "label") == "New project");
+        assert!(
+            behind,
+            "the rest of what Tasks offers stands behind More:\n{}",
+            dump(tree)
+        );
+        assert!(
+            !any_prop(tree, "actions"),
+            "a shell is sent no placement:\n{}",
+            dump(tree)
+        );
+    }
+
     /// An action that destroys what it names is drawn as the destructive button the action
     /// declares, wherever the bar places it: its role is the one its declaration gives it, not
     /// one the bar picks.
@@ -304,14 +414,13 @@ mod cases {
         let window = w.window("task_page", &task);
         let tree = window.tree();
         one_bar(tree);
-        let title = nodes_with(tree, "ui.TextInput", "placeholder", "Title");
-        assert_eq!(title.len(), 1, "the page edits its title:\n{}", dump(tree));
-        let path = path_to(tree, &title[0].key).expect("the title stands in the tree");
+        let title = title_field(tree);
+        let path = path_to(tree, &title.key).expect("the title stands in the tree");
         let parent = path[path.len() - 2];
         let at = parent
             .children
             .iter()
-            .position(|child| child.key == title[0].key)
+            .position(|child| child.key == title.key)
             .expect("the title is its parent's child");
         let more = parent
             .children
@@ -413,10 +522,7 @@ view quiet_page(q: Quiet) {
         );
         let window = w.window("card_page", &card);
         let tree = window.tree();
-        let title = of_kind(tree, "ui.TextInput")
-            .into_iter()
-            .find(|field| field.props.get("title") == Some(&Value::Int(1)))
-            .unwrap_or_else(|| panic!("the page edits its title:\n{}", dump(tree)));
+        let title = title_field(tree);
         let path = path_to(tree, &title.key).expect("the title stands in the tree");
         let line = path[path.len() - 2];
         assert_eq!(

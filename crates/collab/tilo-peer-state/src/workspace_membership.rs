@@ -435,21 +435,6 @@ impl AppAction {
     }
 }
 
-/// How long an app-action grant lasts, from the word a person picked.
-///
-/// # Errors
-/// A `session` grant, which a workspace has no session to end with, and any
-/// other word but `always`.
-pub fn app_action_lifetime(lifetime: &str) -> Result<tilo_action_policy::Lifetime, String> {
-    match lifetime.trim().to_ascii_lowercase().as_str() {
-        "always" => Ok(tilo_action_policy::Lifetime::UntilRevoked),
-        "session" => {
-            Err("a workspace has no session to end a session grant with: grant it always".into())
-        }
-        _ => Err("lifetime must be always".into()),
-    }
-}
-
 /// The workspace's name, trimmed, when it is 1 to 80 characters and no control
 /// characters.
 ///

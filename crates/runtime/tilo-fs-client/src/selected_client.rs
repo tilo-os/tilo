@@ -1,22 +1,12 @@
 //! Bounded bridge to the existing filesystem capability on a connected fd.
 //! The Cap'n Proto client stays on its `LocalSet`; FUSE never receives source fds.
 
-use crate::{Metadata, OpenMode};
-use std::{
-    collections::HashMap,
-    io,
-    os::unix::net::UnixStream,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    thread::JoinHandle,
-    time::Duration,
+use crate::{
+    Metadata, OpenMode,
+    bridge::{self, Bridge, Dispatch, LIMIT, LocalFuture, refused},
 };
+use std::{collections::HashMap, io, os::unix::net::UnixStream};
 
-const LIMIT: usize = 16;
-const DEADLINE: Duration = Duration::from_secs(10);
 const FILE: &str = crate::SELECTED_FILE;
 
 enum Request {
@@ -37,123 +27,30 @@ enum Response {
     Written(u32),
     Empty,
 }
-struct Call {
-    request: Request,
-    answer: mpsc::SyncSender<io::Result<Response>>,
-}
 
-struct Inner {
-    calls: Option<tokio::sync::mpsc::Sender<Call>>,
-    transport: UnixStream,
-    live: Arc<AtomicBool>,
-    fault: Arc<AtomicBool>,
-    thread: Mutex<Option<JoinHandle<io::Result<()>>>>,
-}
-impl Drop for Inner {
-    fn drop(&mut self) {
-        self.live.store(false, Ordering::Release);
-        drop(self.calls.take());
-        let thread = match self.thread.get_mut() {
-            Ok(thread) => thread,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if let Some(thread) = thread.take() {
-            // Never in paint/layout: the projection owner retires off the UI.
-            if let Err(error) = join_worker(thread) {
-                eprintln!("retained source retirement failed: {error}");
-            }
-        }
-    }
-}
-
+/// One retained source file's capability on an authenticated stream.
 #[derive(Clone)]
-pub struct SelectedFileConnection(Arc<Inner>);
-
-fn refused() -> io::Error {
-    io::Error::new(
-        io::ErrorKind::PermissionDenied,
-        "Retained source is unavailable",
-    )
-}
-
-fn join_worker(thread: JoinHandle<io::Result<()>>) -> io::Result<()> {
-    thread
-        .join()
-        .map_err(|_| io::Error::other("retained source worker panicked"))?
-}
+pub struct SelectedFileConnection(Bridge<Request, Response>);
 
 impl SelectedFileConnection {
     /// Close the queue and observe the exact RPC worker and transport outcome.
     /// Requires sole custody after all FUSE callbacks and handles have retired.
     pub fn retire(self) -> io::Result<()> {
-        let mut inner = Arc::try_unwrap(self.0)
-            .map_err(|_| io::Error::other("retained source still has active owners"))?;
-        inner.live.store(false, Ordering::Release);
-        drop(inner.calls.take());
-        let thread = inner
-            .thread
-            .get_mut()
-            .map_err(|_| io::Error::other("retained source worker lock poisoned"))?
-            .take()
-            .ok_or_else(|| io::Error::other("retained source already retired"))?;
-        join_worker(thread)
+        self.0.retire()
     }
     /// Terminally close this exact authenticated channel before waiting for
     /// callbacks. The source provider observes peer death at native effect gates.
     pub fn revoke(&self) {
-        self.0.live.store(false, Ordering::Release);
-        let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
+        self.0.revoke();
     }
     pub fn connected(stream: UnixStream) -> io::Result<Self> {
-        let transport = stream.try_clone()?;
-        let (calls, receive) = tokio::sync::mpsc::channel::<Call>(LIMIT);
-        let live = Arc::new(AtomicBool::new(true));
-        let worker_live = Arc::clone(&live);
-        let fault = Arc::new(AtomicBool::new(false));
-        let worker_fault = Arc::clone(&fault);
-        let (started, ready) = mpsc::sync_channel(1);
-        let thread = std::thread::Builder::new()
-            .name("retained-source-fs".into())
-            .spawn(move || run_worker(stream, receive, worker_live, worker_fault, started))?;
-        let inner = Arc::new(Inner {
-            calls: Some(calls),
-            transport,
-            live,
-            fault,
-            thread: Mutex::new(Some(thread)),
-        });
-        ready
-            .recv_timeout(DEADLINE.saturating_add(Duration::from_secs(1)))
-            .map_err(|_| refused())??;
-        Ok(Self(inner))
+        Bridge::connect::<WorkerState>("retained-source-fs", stream).map(Self)
     }
     fn call(&self, request: Request) -> io::Result<Response> {
         self.call_with(|| request)
     }
     fn call_with(&self, request: impl FnOnce() -> Request) -> io::Result<Response> {
-        if !self.0.live.load(Ordering::Acquire) {
-            return Err(refused());
-        }
-        let (answer, receive) = mpsc::sync_channel(1);
-        let permit = self
-            .0
-            .calls
-            .as_ref()
-            .ok_or_else(refused)?
-            .try_reserve()
-            .map_err(|_| io::Error::from(io::ErrorKind::WouldBlock))?;
-        // Finite admission precedes cloning a potentially 1 MiB payload.
-        permit.send(Call {
-            request: request(),
-            answer,
-        });
-        receive
-            .recv_timeout(DEADLINE.saturating_add(Duration::from_secs(1)))
-            .map_err(|_| {
-                self.0.live.store(false, Ordering::Release);
-                self.0.fault.store(true, Ordering::Release);
-                refused()
-            })?
+        self.0.call_with(request)
     }
     /// # Errors
     /// Refuses revoked source handle scope or transport loss.
@@ -222,9 +119,6 @@ impl SelectedFileConnection {
         }
     }
 }
-
-// Boxed futures deliberately omit Send: capability clients stay on the local worker task.
-type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
 // Capability clients remain confined to the worker's local task throughout each request.
 struct WorkerState {
@@ -348,133 +242,23 @@ impl WorkerState {
     }
 }
 
-fn run_worker(
-    stream: UnixStream,
-    receive: tokio::sync::mpsc::Receiver<Call>,
-    worker_live: Arc<AtomicBool>,
-    worker_fault: Arc<AtomicBool>,
-    started: mpsc::SyncSender<io::Result<()>>,
-) -> io::Result<()> {
-    let runtime = match tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-    {
-        Ok(runtime) => runtime,
-        Err(error) => {
-            let _ = started.send(Err(error));
-            return Err(refused());
-        }
-    };
-    tokio::task::LocalSet::new().block_on(
-        &runtime,
-        run_rpc(stream, receive, worker_live, worker_fault, started),
-    )
+impl Dispatch<Request, Response> for WorkerState {
+    fn dispatch(&mut self, request: Request) -> LocalFuture<'_, io::Result<Response>> {
+        WorkerState::dispatch(self, request)
+    }
 }
 
-fn run_rpc(
-    stream: UnixStream,
-    receive: tokio::sync::mpsc::Receiver<Call>,
-    worker_live: Arc<AtomicBool>,
-    worker_fault: Arc<AtomicBool>,
-    started: mpsc::SyncSender<io::Result<()>>,
-) -> LocalFuture<'static, io::Result<()>> {
-    Box::pin(async move {
-        use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-        stream.set_nonblocking(true)?;
-        let stream = tokio::net::UnixStream::from_std(stream)?;
-        let (read, write) = stream.into_split();
-        let network = capnp_rpc::twoparty::VatNetwork::new(
-            read.compat(),
-            write.compat_write(),
-            capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            capnp::message::ReaderOptions::default(),
-        );
-        let mut rpc = capnp_rpc::RpcSystem::new(Box::new(network), None);
-        let raw: crate::WorkspaceFsClient =
-            rpc.bootstrap(capnp_rpc::rpc_twoparty_capnp::Side::Server);
-        let disconnect = rpc.get_disconnector();
-        let mut driver = tokio::task::spawn_local(rpc);
-        let client = crate::FsClient::from_raw(raw);
-        let outcome = serve(client, receive, &worker_live, &worker_fault, started).await;
-        worker_live.store(false, Ordering::Release);
-        // The driver is owned here, never detached by bootstrap().
-        // Graceful disconnect drains transport; cancellation is observed.
-        let disconnect_result = tokio::time::timeout(DEADLINE, disconnect).await;
-        let transport = if let Ok(result) = tokio::time::timeout(DEADLINE, &mut driver).await {
-            result.map_err(io::Error::other)?.map_err(io::Error::other)
-        } else {
-            driver.abort();
-            let cancelled = driver.await;
-            Err(io::Error::other(format!(
-                "retained RPC driver did not stop: {cancelled:?}"
-            )))
-        };
-        outcome?;
-        disconnect_result
-            .map_err(|_| io::Error::other("retained RPC disconnect timed out"))?
-            .map_err(io::Error::other)?;
-        transport
-    })
-}
-
-fn serve<'a>(
-    client: crate::FsClient,
-    mut receive: tokio::sync::mpsc::Receiver<Call>,
-    worker_live: &'a AtomicBool,
-    worker_fault: &'a AtomicBool,
-    started: mpsc::SyncSender<io::Result<()>>,
-) -> LocalFuture<'a, io::Result<()>> {
-    Box::pin(async move {
-        let initial = tokio::time::timeout(DEADLINE, client.stat(FILE)).await;
-        match initial {
-            Ok(Ok(metadata)) if metadata.kind == crate::EntryKind::File => {
-                let _ = started.send(Ok(()));
+impl bridge::Serve<Request, Response> for WorkerState {
+    fn admit(client: crate::FsClient) -> LocalFuture<'static, io::Result<Self>> {
+        Box::pin(async move {
+            match client.stat(FILE).await {
+                Ok(metadata) if metadata.kind == crate::EntryKind::File => Ok(WorkerState {
+                    handles: HashMap::new(),
+                    next: 0,
+                    client,
+                }),
+                _ => Err(refused()),
             }
-            _ => {
-                worker_live.store(false, Ordering::Release);
-                let _ = started.send(Err(refused()));
-                return Err(refused());
-            }
-        }
-        let mut state = WorkerState {
-            handles: HashMap::new(),
-            next: 0,
-            client,
-        };
-        let mut terminal = None;
-        while let Some(call) = receive.recv().await {
-            if !worker_live.load(Ordering::Acquire) {
-                let _ = call.answer.send(Err(refused()));
-                continue;
-            }
-            let work = state.dispatch(call.request);
-            let answer = match tokio::time::timeout(DEADLINE, work).await {
-                Ok(Ok(response)) => Ok(response),
-                Ok(Err(error)) if crate::native_reply::is_operation_refusal(&error) => Err(error),
-                Ok(Err(error)) => {
-                    worker_live.store(false, Ordering::Release);
-                    terminal = Some(io::Error::new(error.kind(), error.to_string()));
-                    Err(error)
-                }
-                // A timed-out write has an unknown outcome. Never replay it.
-                Err(_) => {
-                    worker_live.store(false, Ordering::Release);
-                    terminal = Some(io::Error::new(
-                        io::ErrorKind::TimedOut,
-                        "retained source request timed out; outcome unknown",
-                    ));
-                    Err(refused())
-                }
-            };
-            let _ = call.answer.send(answer);
-        }
-        match terminal {
-            Some(error) => Err(error),
-            None if worker_fault.load(Ordering::Acquire) => Err(io::Error::new(
-                io::ErrorKind::TimedOut,
-                "retained caller lost request outcome",
-            )),
-            None => Ok(()),
-        }
-    })
+        })
+    }
 }

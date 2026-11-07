@@ -1,24 +1,8 @@
-//! Records — the unit of state, collaboration and storage. A record has a
-//! type, a stable identity, and a home workspace. A file's identity is its file
-//! record — the durable id the filesystem gives the file, which a rename or
-//! move keeps — and its path is only where it currently sits (see
-//! [`RecordId::identify_file`]). Records reference other records
-//! rather than nesting (annotations reference the document they mark up),
-//! so "share the book without my notes" is expressible.
-//!
-//! A record id is scoped by the workspace that hydrates it. Workspaces hold
-//! references ([`index::reference`]), but an identical id in another
-//! workspace gets a distinct local document and collaboration route; explicit
-//! export/import is required to move content across that authority boundary.
-//!
-//! One document per record is forced, not chosen: an Automerge change graph
-//! names its dependencies by hash, so a filtered stream leaves the receiver
-//! holding orphaned changes — it cannot be served in part.
-//!
-//! [`RecordSet`] owns the open records and hands the active one to the
-//! toolkit; [`tick`] parks the outgoing document and checks the named one
-//! in each frame. Not all app state is a record — a theme or account stays
-//! in the package-level document (the workspace index) instead.
+//! Records — the unit of state, collaboration and storage: a type, a stable identity and a home
+//! workspace. A file's identity is its file record, which a rename or move keeps, and its path is
+//! only where it sits; records reference other records rather than nesting, so "share the book
+//! without my notes" is expressible. One document per record is forced, not chosen: an Automerge
+//! change graph names its dependencies by hash, so a filtered stream leaves orphaned changes.
 
 pub mod bootstrap;
 /// A record's identity, as it travels on the collaboration wire.
@@ -51,24 +35,20 @@ pub mod transfer;
 pub mod workspace;
 
 use ::collaboration::record::fields::{META, ObjectAt, StringAt, meta_ro, object_at, string_at};
-/// Key in a record document for the workspace that owns this local replica.
-/// It keeps the name records were first written under: a record is synced to
-/// devices and apps that may run a build from before this module named the
-/// field for what it means, and their reader knows no other key. `RecordId` is
-/// a user/application name; it is not an authority boundary.
+/// Key in a record document for the workspace that owns this local replica. It keeps the name
+/// records were first written under: peers may run a build from before this module named the field
+/// for what it means.
 const WORKSPACE: &str = "room";
-/// The key a record written while the field was named `workspace` carries its
-/// workspace under. Those documents exist, so it reads where it is (see
-/// [`stored_workspace`]) and is never written.
+/// The key a record written while the field was named `workspace` carries its workspace under;
+/// those documents exist, so it is read where it is (see [`stored_workspace`]) and never written.
 pub const WORKSPACE_ALIAS: &str = "workspace";
 /// Key, in a workspace's index document, of the map of record references.
 const INDEX: &str = "tilo:records";
 /// Key, in a record's meta map, of the identities it was adopted from.
 const FORMERLY: &str = "formerly";
 
-/// Upper bound for the records an app learns from one workspace index at once.
-/// This is deliberately small: the index is replicated input, not a request
-/// to allocate one local document per entry.
+/// Upper bound for the records an app learns from one workspace index at once: the index is
+/// replicated input, not a request to allocate one local document per entry.
 pub const MAX_DISCOVERED_RECORDS: usize = 64;
 const MAX_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_RECORDS * 4;
 
@@ -88,12 +68,9 @@ fn str_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Option<String> {
     }
 }
 
-/// The workspace a record document is stamped with, read from the one place
-/// every reader goes: the key every record is written under, or the key one
-/// build wrote it under while the field was named `workspace`. A document
-/// holding both reads under the key every record is written with; a value
-/// that is not a name is a document that cannot say which workspace it
-/// belongs to, and it is refused rather than guessed at.
+/// The workspace a record document is stamped with: the key every record is written under, or the
+/// one a build used while the field was named `workspace`. A value that is not a name cannot say
+/// which workspace it belongs to, and is refused.
 fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
     match string_at(doc, meta, WORKSPACE) {
         StringAt::Missing => string_at(doc, meta, WORKSPACE_ALIAS),
@@ -101,18 +78,15 @@ fn stored_workspace(doc: &AutoCommit, meta: &ObjId) -> StringAt {
     }
 }
 
-/// Stamp a document with the identity of the record it holds. Idempotent:
-/// re-opening leaves an existing stamp alone, so a restart doesn't author
-/// a change graph entry that says nothing new.
+/// Stamp a document with the identity of the record it holds; idempotent, so a reopen does not
+/// author a change graph entry that says nothing new.
 pub fn init(doc: &mut AutoCommit, id: &RecordId, kind: &RecordKind, home: &str) {
     let _ = init_scoped(doc, id, kind, home, None);
 }
 
-/// Bind a record document to `workspace`.  Unlike the historical [`init`],
-/// this never rewrites an existing identity or workspace: accepting a
-/// document stamped for another workspace would turn a matching record id
-/// into an alias across workspaces. A document that names no workspace yet
-/// may be adopted exactly once after its identity has been checked.
+/// Bind a record document to `workspace`, never rewriting an existing identity or workspace: a
+/// document stamped for another workspace would turn a matching record id into an alias across
+/// workspaces. A document naming none may be adopted once, after its identity is checked.
 pub fn init_scoped(
     doc: &mut AutoCommit,
     id: &RecordId,
@@ -128,17 +102,16 @@ pub fn init_scoped(
     if RecordId::parse(id.as_str()).is_none() || !kind.is_valid() {
         return false;
     }
-    // A stamp written on its own is the record's genesis and is committed
-    // as one; written with other pending operations, it is part of the
-    // change those make, which names itself.
+    // A stamp written on its own is the record's genesis and is committed as one; with other
+    // pending operations it is part of the change those make, which names itself.
     let alone = doc.pending_ops() == 0;
     let stamped = stamp_scoped(doc, id, kind, home, workspace);
     if alone && stamped && doc.pending_ops() != 0 {
         commit_genesis(doc);
     } else if alone && stamped && stamp_surface(doc).is_some() {
-        // The app's package opens a record its surface did not name yet (a
-        // newer package, or a record from before records named one): its
-        // surface decides the record's changes from here on.
+        // The app's package opens a record its surface did not name yet (a newer package, or a
+        // record from before records named one): its surface decides the record's changes from here
+        // on.
         doc.commit_with(
             automerge::transaction::CommitOptions::default()
                 .with_message(tilo_actions::FrameworkChange::Upgrade.change_message()),
@@ -188,9 +161,8 @@ fn stamp_scoped(
     if matches!(&existing_home, StringAt::Missing) {
         let _ = doc.put(&m, "home", home);
     }
-    // A document that already names a workspace — under either key — keeps
-    // it: nothing here rewrites a record's workspace, or moves it to the key
-    // this build writes.
+    // A document that already names a workspace under either key keeps it: nothing here rewrites a
+    // record's workspace, or moves it to the key this build writes.
     if let Some(workspace) = workspace
         && matches!(&existing_workspace, StringAt::Missing)
     {
@@ -216,9 +188,9 @@ fn commit_genesis(doc: &mut AutoCommit) {
 /// decided against: the content hash of its app package's `surface.toml`.
 pub const SURFACE: &str = "surface";
 
-/// Name, in the record's identity, the surface of its app running here.
-/// `Some(true)` when it replaced another app surface, `Some(false)` when it
-/// named the first, `None` when nothing changed.
+/// Name, in the record's identity, the surface of its app running here: `Some(true)` when it
+/// replaced another app surface, `Some(false)` when it named the first, `None` when nothing
+/// changed.
 fn stamp_surface(doc: &mut AutoCommit) -> Option<bool> {
     let m = meta_ro(doc)?;
     let kind = str_at(doc, &m, "kind")?;
@@ -261,10 +233,9 @@ pub fn former_identities(doc: &AutoCommit) -> Vec<RecordId> {
         .collect()
 }
 
-/// Give an adopted document `want`'s identity: the stamped id becomes the
-/// new one, the old one is remembered, and references to a former identity
-/// of a declared reference target now name that target. `false` (and the
-/// document untouched) when it isn't `former`'s document of `want`'s kind.
+/// Give an adopted document `want`'s identity: the stamped id becomes the new one, the old is
+/// remembered, and references to a former identity of a declared reference target now name that
+/// target. Untouched when it isn't `former`'s document of `want`'s kind.
 fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bool {
     if identity(doc).is_none_or(|found| found.id != *former || found.kind != want.kind) {
         return false;
@@ -314,12 +285,9 @@ fn restamp(doc: &mut AutoCommit, former: &RecordId, want: &RecordCheckout) -> bo
     true
 }
 
-/// Adopt the stored document of the first former identity of `want` that
-/// exists, belongs to `want`'s kind and workspace, and whose custody this
-/// successor can claim. `key` names a record's storage in the workspace; `load`
-/// decodes the document stored there. The former document is only read,
-/// never changed: the adopted copy is restamped and returned for the caller
-/// to persist under the new id.
+/// Adopt the stored document of the first former identity of `want` that exists, belongs to its
+/// kind and workspace, and whose custody this successor can claim. The former document is only
+/// read: the copy is restamped and returned to persist under the new id.
 fn adopt_former(
     store: &Rc<dyn DurableStore>,
     want: &RecordCheckout,
@@ -344,8 +312,7 @@ fn adopt_former(
             tracing::warn!(record = %want.id, former = %former, "former record does not match; not adopting it");
             continue;
         }
-        // First successor wins, durably: another record naming the same
-        // former identity later (a different file now at the old path) must
+        // First successor wins, durably: another record naming the same former identity later must
         // never receive these edits as well.
         if !store.claim(&former_key, &want.id.storage_key())? {
             tracing::info!(record = %want.id, former = %former, "former record already adopted by another record");
@@ -366,11 +333,9 @@ pub fn home(doc: &AutoCommit) -> Option<String> {
     str_at(doc, &m, "home")
 }
 
-/// The workspace this local record replica is bound to: the key every record
-/// is written under, or the [`WORKSPACE_ALIAS`] one build wrote it under.
-/// Absent only for records written before records were scoped to a
-/// workspace; callers may adopt those once with [`init_scoped`], but must
-/// never treat an explicit different workspace as interchangeable.
+/// The workspace this local replica is bound to, under either key, absent only for records written
+/// before records were scoped to a workspace; callers may adopt those once with [`init_scoped`],
+/// but must never treat an explicit other workspace as interchangeable.
 pub fn workspace_scope(doc: &AutoCommit) -> Option<String> {
     let m = meta_ro(doc)?;
     match stored_workspace(doc, &m) {
@@ -436,11 +401,9 @@ pub fn references(doc: &AutoCommit) -> Vec<RecordRef> {
         .collect()
 }
 
-/// A content-addressed blob a record depends on: immutable bytes the
-/// record's content is about or embeds (the PDF an annotation set marks up,
-/// an image a document shows). Kept in the record's metadata next to its
-/// record references, so sync, retention and history can see which blobs a
-/// record keeps alive without knowing the record's own schema.
+/// A content-addressed blob a record depends on: immutable bytes its content is about or embeds
+/// (the PDF an annotation set marks up, an image a document shows). Kept in the record's metadata,
+/// so sync, retention and history see which blobs a record keeps alive.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobRef {
     /// Lowercase hex BLAKE3 of the bytes — the blob store's key.
@@ -524,17 +487,12 @@ pub fn blob_references(doc: &AutoCommit) -> Vec<BlobRef> {
         .collect()
 }
 
-// ---------------------------------------------------------------------------
 // The record index: which records a workspace holds.
-// ---------------------------------------------------------------------------
 
-/// A workspace's index of the records it holds. Ownership of the index
-/// document is the caller's business — the session keeps one per workspace
-/// (`shell::room_records`).
-///
-/// **The reference is what grants access.** A member can reach only the
-/// records the workspace references. Removing a reference stops future
-/// changes flowing; it cannot un-share bytes a peer already synced.
+/// A workspace's index of the records it holds. Ownership of the document is the caller's business.
+/// **The reference is what grants access**: a member reaches only the records the workspace
+/// references, and removing one stops future changes but cannot un-share bytes a peer already
+/// synced.
 pub mod index;
 
 /// One record this process has open but is not currently showing.
@@ -546,39 +504,31 @@ struct Parked {
     /// Debounced writer for this record's file. `None` for an in-memory
     /// set, or when the store failed to open (reported once, not per frame).
     autosave: Option<app_state::DocWriter>,
-    /// Belongs to the record: an [`crate::state::UndoEntry`] is a pair of
-    /// change hashes in *this* document's graph, so sharing a stack across
-    /// records would revert the wrong history.
+    /// Belongs to the record: an undo entry is a pair of change hashes in *this* document's graph,
+    /// so sharing a stack would revert the wrong history.
     history: crate::state::UndoLog,
     action_state: crate::bound_dispatch::RecordActionState,
 }
 
-/// The records one app process has open, and which is live. Owns
-/// per-record persistence and parking — not collaboration: routing a
-/// record's deltas is the toolkit's business (`tilo_ui::App` re-announces its
-/// channel on checkout), since a channel is a property of the connection.
+/// The records one app process has open, and which is live. Owns per-record persistence and
+/// parking, not collaboration: routing a record's deltas is the toolkit's business, since a channel
+/// belongs to the connection.
 pub struct RecordSet {
     package_id: String,
     /// The workspace these records are opened in, which is the cluster its
     /// route names. Stamped as a record's home when it is first created here.
     home: String,
-    /// The person's own cluster, for records kept in their own scope
-    /// ([`person::PERSONAL_SCOPE`]): their route names it, so one record of
-    /// an app is one record on every device the person uses, and the record
-    /// store that carries it is theirs rather than a workspace's. `None` for
-    /// records kept in a workspace, and for a person's records on a device
-    /// whose identity derives no cluster.
+    /// The person's own cluster, for records kept in their own scope: their route names it, so one
+    /// record of an app is one record on every device they use, in their store rather than a
+    /// workspace's.
     person: Option<uuid::Uuid>,
-    /// The workspace this person's records were kept in before their own
-    /// store existed ([`collab_types::retired_person_workspace`]): a record
-    /// whose own key holds nothing is read here once and taken into the
-    /// person's own scope. `None` for any other scope, and for a device that
-    /// never had one.
+    /// The workspace this person's records were kept in before their own store existed: a record
+    /// whose own key holds nothing is read here once and taken into their scope.
     retired: Option<String>,
     open: HashMap<RecordId, Parked>,
-    /// Names currently granted by the workspace index.  Discovery is intentionally
-    /// separate from `open`: a hostile or merely large index must not create
-    /// local replicas or subscribe the app to unrelated documents.
+    /// Names currently granted by the workspace index. Discovery is separate from `open`: a hostile
+    /// or merely large index must not create local replicas or subscribe the app to unrelated
+    /// documents.
     known: BTreeMap<RecordId, RecordKind>,
     active: Option<RecordId>,
     /// False for [`RecordSet::in_memory`]: no per-record files are opened, so
@@ -596,9 +546,8 @@ pub struct RecordSet {
     /// Records being opened off the frame ([`RecordStore::begin_opening`]): not open until they
     /// are taken in.
     opening: HashMap<RecordId, opening::Opening>,
-    /// The records lent out of the set to an action frame
-    /// ([`RecordStore::with_action_state`]): their documents are with the
-    /// frame, so the other records of the set stay open to it meanwhile.
+    /// The records lent out to an action frame: their documents are with the frame, so the other
+    /// records stay open to it meanwhile.
     lent: HashSet<RecordId>,
     next_reservation: u64,
     // Retained from the private native construction scope; weakly borrows the
@@ -610,13 +559,10 @@ pub struct RecordSet {
     /// Records of this store's trees peers wrote that it does not hold yet
     /// ([`RecordStore::announce`]).
     announced: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
-    /// Records the workspace's hosts sent everything they hold of
-    /// ([`RecordStore::note_workspace_answered`]), until something of them
-    /// arrives.
+    /// Records the workspace's hosts sent everything they hold of, until something of them arrives.
     answered: std::cell::RefCell<std::collections::BTreeSet<RecordId>>,
-    /// The windows that read this store's records
-    /// ([`RecordStore::wake_on_arrival`]): woken when another replica's
-    /// change arrives, which no input or wake of theirs announces.
+    /// The windows that read this store's records, woken when another replica's change arrives,
+    /// which no input or wake of theirs announces.
     readers: std::cell::RefCell<Vec<crate::WakeHandle>>,
     // Drop after the writers and reservations above. Temporary profiles must
     // outlive asynchronous flushes and recovery handles, not just their host.
@@ -634,17 +580,9 @@ struct Reserved {
 }
 
 impl RecordSet {
-    /// The launch-environment set: per-record documents under this package's
-    /// state directory. The host's package id always wins over `manifest_id`
-    /// (as the workspace index is) — resolving it differently here would
-    /// split a package's records from its workspace index.
-    ///
-    /// The process environment names the package and workspace, and the native
-    /// store ([`app_state::DocStore::native_store`]) holds the documents; see
-    /// [`Self::open_in`]. Hosts with an explicit profile open records through
-    /// [`RecordOwners`] instead.
-    ///
-    /// The host's workspace (else cluster) id scopes the records.
+    /// The launch-environment set: per-record documents under this package's state directory. The
+    /// host's package id wins over `manifest_id`, as the workspace index does, or a package's
+    /// records would split from its index; the host's workspace id scopes them.
     pub fn open(manifest_id: impl Into<String>) -> Self {
         let environment = crate::host::environment();
         let identity = &environment.identity;
@@ -655,16 +593,15 @@ impl RecordSet {
         let home = identity
             .workspace_id
             .clone()
-            // A launcher-less process still gets an explicit, non-routable
-            // scope.  It may not collaborate (the broker rejects nil), but
-            // it must never fall back to the historical package-global file.
+            // A launcher-less process still gets an explicit, non-routable scope: it may not
+            // collaborate, but it must never fall back to the historical package-global file.
             .unwrap_or_else(|| uuid::Uuid::nil().to_string());
         Self::open_in(app_state::DocStore::native_store(), package_id, home)
     }
 
-    /// The launch-environment set over an explicit store: each record is a
-    /// shared-writer document in workspace `home`, and pre-workspace package records
-    /// are imported into exactly one workspace on first open.
+    /// The launch-environment set over an explicit store: each record is a shared-writer document
+    /// in workspace `home`, and pre-workspace package records are imported into exactly one
+    /// workspace on first open.
     pub fn open_in(
         store: Rc<dyn DurableStore>,
         package_id: impl Into<String>,
@@ -764,9 +701,8 @@ impl RecordSet {
     ) -> Result<Vec<app_state::PrivateAction>, String> {
         let id = self.active.as_ref().ok_or("no active record")?;
         let slot = self.open.get(id).ok_or("active record is not open")?;
-        // A session-owned record may have no process-local checkpoint store.
-        // There is then nothing to recover; writing new evidence still requires
-        // a durable writer through record_active_private_action.
+        // A session-owned record may have no process-local checkpoint store; there is then nothing
+        // to recover, and writing new evidence still needs a durable writer.
         match slot.autosave.as_ref() {
             Some(writer) => writer.private_actions(doc),
             None => Ok(Vec::new()),
@@ -784,9 +720,8 @@ impl RecordSet {
         out
     }
 
-    /// The bounded, validated names currently granted by the workspace index.
-    /// Unlike [`Self::open_records`], this does not imply their documents
-    /// were loaded, persisted, or joined on the collaboration transport.
+    /// The bounded, validated names currently granted by the workspace index, without implying
+    /// their documents are loaded, persisted or joined on the transport.
     pub fn known_records(&self) -> Vec<RecordCheckout> {
         self.known
             .iter()
@@ -794,10 +729,9 @@ impl RecordSet {
             .collect()
     }
 
-    /// Refresh the workspace-granted record names without opening any of them.
-    /// A removed/tombstoned index entry disappears from future discovery, but
-    /// already-open data remains in memory: revocation stops future access;
-    /// it cannot un-share bytes the process has already received.
+    /// Refresh the workspace-granted names without opening any: a removed or tombstoned entry
+    /// disappears from future discovery, but open data stays in memory, since revocation cannot
+    /// un-share bytes already received.
     pub fn discover_workspace(&mut self, workspace: &AutoCommit) -> Vec<RecordCheckout> {
         let found = index::discoverable_references(workspace);
         self.known = found
@@ -926,11 +860,9 @@ impl RecordSet {
         self.checkout(state, workspace, want)
     }
 
-    /// Switch the live document to `want`: the outgoing document is parked
-    /// and flushed, the incoming one loaded (or created) and referenced
-    /// into `workspace`'s index. Returns whether anything changed — checking
-    /// out the already-live record is a no-op, so a widget can declare its
-    /// record every frame.
+    /// Switch the live document to `want`: the outgoing one is parked and flushed, the incoming
+    /// loaded (or created) and referenced into the workspace's index. Returns whether anything
+    /// changed, so a widget can declare its record every frame.
     pub fn checkout(
         &mut self,
         state: &mut crate::state::State,
@@ -948,10 +880,9 @@ impl RecordSet {
             return false;
         }
 
-        // A document with content and no record *becomes* this record's
-        // rather than being replaced — this is "save untitled as
-        // report.odt". Replacing it here would be the data loss records
-        // exist to prevent.
+        // A document with content and no record *becomes* this record's rather than being replaced,
+        // which is "save untitled as report.odt"; replacing it would be the data loss records exist
+        // to prevent.
         if self.active.is_none() && !state.doc.get_heads().is_empty() {
             let adopted = std::mem::replace(&mut state.doc, AutoCommit::new());
             state.adopt_doc(adopted);
@@ -1019,18 +950,16 @@ impl RecordSet {
         self.finish_checkout(state, workspace, want)
     }
 
-    /// Stamps identity, applies declared references, and indexes the
-    /// record (and its references) into the workspace — shared by both
-    /// checkout routes.
+    /// Stamps identity, applies declared references and indexes the record and its references into
+    /// the workspace; shared by both checkout routes.
     fn finish_checkout(
         &mut self,
         state: &mut crate::state::State,
         workspace: Option<&mut AutoCommit>,
         want: &RecordCheckout,
     ) -> bool {
-        // Persistent records must always have an explicit workspace.  Failing
-        // closed here prevents a launcher-less process from recreating the
-        // old package-global record namespace.
+        // Persistent records always have an explicit workspace: failing closed keeps a
+        // launcher-less process from recreating the old package-global namespace.
         if self.persistent && self.home.is_empty() {
             tracing::error!(record = %want.id, "refusing to open a persistent record without a workspace scope");
             return false;
@@ -1149,11 +1078,9 @@ impl RecordSet {
         )
     }
 
-    /// Attach `doc` to this record's file: merge in what's stored, and
-    /// hand back the writer. Merges rather than overwrites so adopted
-    /// content survives. The writer is seeded from the **stored** heads,
-    /// not merged — seeding from merged heads would mark adopted content
-    /// as already saved.
+    /// Attach `doc` to this record's file: merge in what is stored and hand back the writer. The
+    /// writer is seeded from the **stored** heads, not the merged ones, or adopted content would
+    /// read as already saved.
     fn persist_for(
         &self,
         want: &RecordCheckout,
@@ -1193,9 +1120,8 @@ impl RecordSet {
                 ))));
             }
         };
-        // A former identity's record is a read-only source. It remains on
-        // disk until a later explicit cleanup, so a crash before the first
-        // scoped autosave cannot lose it.
+        // A former identity's record is a read-only source, left on disk until an explicit cleanup,
+        // so a crash before the first scoped autosave cannot lose it.
         let mut adopted_elsewhere = false;
         let stored = match stored {
             Some(stored) => Some(stored),
@@ -1233,17 +1159,15 @@ impl RecordSet {
         ) {
             return Err(RecordOpenError::IdentityMismatch);
         }
-        // The package actor belongs to its index, and a bootstrap fork actor
-        // belongs to pre-admission edits. All subsequent canonical record
-        // operations belong to this record's original persistent writer.
+        // The package actor belongs to its index, and a bootstrap fork actor to pre-admission
+        // edits; every later canonical operation belongs to this record's original persistent
+        // writer.
         merged.set_actor(store.actor().clone());
         *doc = merged;
         let mut autosave = store.writer();
         if let Some(mut stored) = stored {
-            // Only seed heads that are already in this scoped store.  An
-            // adopted document's heads are absent from the new file; seeding
-            // them would append just the metadata change and strand its
-            // dependencies after a crash.
+            // Seed only heads already in this scoped store: an adopted document's heads are absent
+            // from the new file, and seeding them would strand their dependencies after a crash.
             if !adopted_elsewhere {
                 autosave.seed(&mut stored);
             }
@@ -1251,14 +1175,12 @@ impl RecordSet {
         Ok(Some(autosave))
     }
 
-    // A host showing several records at once: none can be "checked out"
-    // the way `checkout` assumes, since all are on screen in one frame.
-    // These reach an open record where it lies; opening, persistence and
-    // history are shared machinery.
+    // A host showing several records at once: none can be checked out, since all are on screen in
+    // one frame, so these reach an open record where it lies, sharing the same opening, persistence
+    // and history.
 
-    /// Open `want` if it is not open already, loading its document from
-    /// its own file and bringing it into `workspace`'s index. Returns whether
-    /// this opened it.
+    /// Open `want` if it is not open already, loading its document from its own file and bringing
+    /// it into the workspace's index; returns whether it opened it.
     pub fn open_record(
         &mut self,
         want: &RecordCheckout,
@@ -1338,12 +1260,9 @@ impl RecordSet {
         ))
     }
 
-    /// Whether `id` is a record of the workspace rather than of one window:
-    /// the workspace's own document, and the records its people share
-    /// ([`collab_types::WORKSPACE_RECORDS`], such as a person's own state of
-    /// an app). Every window and host of the workspace writes such a record
-    /// — the app's windows, the session's own parts — so each joins it as a
-    /// shared writer. Any other record has one owner.
+    /// Whether `id` is a record of the workspace rather than of one window: its own document and
+    /// the records its people share, each written by every window and host, which join as shared
+    /// writers. Any other record has one owner.
     fn shared_in_workspace(&self, id: &RecordId) -> bool {
         id.is_package_primary()
             || collab_types::workspace_record(&self.package_id, id.as_str()).is_some()
@@ -1443,22 +1362,18 @@ impl RecordSet {
             self.answered.borrow_mut().remove(&want.id);
             return Ok(RecordOpenOutcome::Loaded);
         }
-        // On a thread that may not wait on the disk, whether there is a
-        // record at all is told by a read, not by a lease the reservation of
-        // a new one would take again: each lease there is opened by the
-        // store's own thread and handed over once.
+        // On a thread that may not wait on the disk, a record's presence is told by a read, not by
+        // a lease a new reservation would take again: each lease is opened by the store's own
+        // thread and handed over once.
         if want.formerly.is_empty()
             && backend.declined_waiting_here()
             && backend.read(&key)?.is_none()
         {
             return Err(RecordOpenError::MissingRecord);
         }
-        // The workspace's own documents — its index, and the records its people
-        // share — are held by every window and host of the workspace, each in
-        // its own process, and a relaunch overlaps the instance still exiting:
-        // they join the document's shared writers (appends interleave and every
-        // load merges them) instead of refusing the second opener. Other
-        // records have one owner.
+        // The workspace's own documents are held by every window and host, each in its own process,
+        // and a relaunch overlaps the instance still exiting: they join as shared writers (appends
+        // interleave, every load merges) instead of refusing the second opener.
         let owner = if self.shared_in_workspace(&want.id) {
             app_state::DocOwner::acquire_shared(Rc::clone(&backend), key)?
         } else {
@@ -1476,9 +1391,8 @@ impl RecordSet {
             let autosave = app_state::DocWriter::try_start(&owner)?;
             (doc, autosave)
         } else {
-            // Nothing under the new id: a record the person kept before their
-            // own store existed, or a former identity's, is written in full
-            // under the new key before it is shown.
+            // Nothing under the new id: a record kept before the person's own store existed, or a
+            // former identity's, is written in full under the new key before it is shown.
             let mut doc = match self.take_from_retired_workspace(&backend, want)? {
                 Some(taken) => taken,
                 None => adopt_former(
@@ -1520,9 +1434,8 @@ impl RecordSet {
         Ok(RecordOpenOutcome::Loaded)
     }
 
-    /// An open record's document, for a host showing several at once.
-    /// `None` for a record not held here, or the one currently checked
-    /// out (the live document is the toolkit's).
+    /// An open record's document, for a host showing several at once; `None` for a record not held
+    /// here or the one checked out, whose live document is the toolkit's.
     pub fn document_mut(&mut self, id: &RecordId) -> Option<&mut AutoCommit> {
         let parked = self.open.get_mut(id)?;
         if let Some(doc) = parked.doc.as_mut() {
@@ -1557,12 +1470,8 @@ impl RecordSet {
         Some((doc, &mut parked.history))
     }
 
-    /// Offer every open record's document to its own writer. The
-    /// multi-record twin of [`Self::tick`], for a host with no single live
-    /// document to hand in.
-    ///
-    /// # Errors
-    /// A record's cache reports that it could not take the document.
+    /// Offer every open record's document to its own writer, the multi-record twin of
+    /// [`Self::tick`]. # Errors A record's cache reports that it could not take the document.
     pub fn tick_open(&mut self) -> Result<(), String> {
         if self.portable.is_some() {
             return self.flush_portable(None, false);
@@ -1576,11 +1485,8 @@ impl RecordSet {
         Ok(())
     }
 
-    /// Write out every open record and wait for it to land. The
-    /// multi-record twin of [`Self::flush`].
-    ///
-    /// # Errors
-    /// Each record's writer that reports a storage failure, by record.
+    /// Write out every open record and wait for it to land, the multi-record twin of
+    /// [`Self::flush`]. # Errors Each record's writer that reports a storage failure, by record.
     pub fn flush_open(&mut self) -> Result<(), String> {
         if self.portable.is_some() {
             return self.flush_portable(None, false);
@@ -1613,18 +1519,14 @@ impl RecordSet {
         }
     }
 
-    /// Flush active and parked records, reporting unavailable or failed writers.
-    ///
-    /// # Errors
-    /// Returns record-specific persistence failures without discarding live bytes.
+    /// Flush active and parked records, reporting unavailable or failed writers. # Errors Returns
+    /// record-specific persistence failures without discarding live bytes.
     pub fn try_flush(&mut self, live: &mut AutoCommit) -> Result<(), String> {
         self.try_flush_documents(Some(live), Durability::Durable)
     }
 
-    /// [`Self::try_flush`] for a caller that must know the records are
-    /// *written*, not that the store has committed them: a store that
-    /// commits on a thread of its own (the page's worker) always answers
-    /// "not yet" ([`DocWriter::try_flush_written`]).
+    /// [`Self::try_flush`] for a caller that must know the records are *written*, not that the
+    /// store committed them: a store that commits on a thread of its own always answers "not yet".
     fn try_flush_written(&mut self) -> Result<(), String> {
         self.try_flush_documents(None, Durability::Written)
     }
@@ -1668,11 +1570,8 @@ impl RecordSet {
         }
     }
 
-    /// Write out everything still pending, live document included, and wait
-    /// for it to land.
-    ///
-    /// # Errors
-    /// Each record's writer that reports a storage failure, by record.
+    /// Write out everything still pending, the live document included, and wait for it to land. #
+    /// Errors Each record's writer that reports a storage failure, by record.
     pub fn flush(&mut self, live: &mut AutoCommit) -> Result<(), String> {
         self.try_flush(live)
     }
@@ -1686,10 +1585,8 @@ enum Durability {
     Written,
 }
 
-/// A [`RecordSet`] several widgets share via a handle, so two tabs on the
-/// same file stay one document rather than drifting under per-widget
-/// ownership. Single-threaded on purpose — a widget tree is, and a
-/// `Mutex` here would guard against nothing.
+/// A [`RecordSet`] several widgets share via a handle, so two tabs on the same file stay one
+/// document; single-threaded on purpose, since a `Mutex` here would guard against nothing.
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
@@ -1726,9 +1623,9 @@ impl RecordStore {
         initialization
             .commit(checkout.kind.as_str(), bytes)
             .map_err(RecordOpenError::Initialization)?;
-        // Ordinary peer merges require an already initialized local identity.
-        // Only this exact original creation may install its acknowledged genesis.
-        // Recheck after the blocking owner ACK: never replace intervening edits.
+        // Ordinary peer merges require an initialized local identity; only this exact original
+        // creation may install its acknowledged genesis, and only after the blocking owner ACK,
+        // never replacing intervening edits.
         let mut set = self.0.try_borrow_mut().map_err(|_| RecordOpenError::Busy)?;
         if set.home != workspace.id {
             return Err(RecordOpenError::IdentityMismatch);
@@ -1792,10 +1689,8 @@ impl RecordOwners {
         self.profile_lifetime = Some(lifetime);
     }
 
-    /// Get the unique live owner for this package and workspace.
-    ///
-    /// # Errors
-    /// Rejects an invalid package or workspace.
+    /// Get the unique live owner for this package and workspace. # Errors Rejects an invalid
+    /// package or workspace.
     pub fn open(
         &mut self,
         package_id: &str,
@@ -1804,15 +1699,9 @@ impl RecordOwners {
         self.open_with(package_id, workspace_id, true)
     }
 
-    /// The owner of `package_id`'s records of the person, kept in `scope`
-    /// ([`person`]: the person's own scope, or the workspace the app's own
-    /// records of a kind are kept in). Unlike [`Self::open`] it never joins a
-    /// native component's construction: the person's records are opened
-    /// beside the component's own and are not the history it was launched to
-    /// read.
-    ///
-    /// # Errors
-    /// Rejects an invalid package or scope.
+    /// The owner of `package_id`'s records of the person, kept in `scope`: unlike [`Self::open`] it
+    /// never joins a native component's construction, since the person's records are not the
+    /// history that component was launched to read. # Errors Rejects an invalid package or scope.
     pub fn open_person(
         &mut self,
         package_id: &str,
@@ -1821,18 +1710,10 @@ impl RecordOwners {
         self.open_scoped(package_id, scope, false, None)
     }
 
-    /// The owner of `package_id`'s records of the person `person` (the
-    /// lowercase hex of their identity root), kept in their own scope
-    /// ([`person::PERSONAL_SCOPE`]).
-    ///
-    /// Those records carry one route per `(app, record)` in the person's own
-    /// cluster, so every device of theirs that opens the record opens the
-    /// same document, and the person's store is what carries it between
-    /// them. A `person` that derives no cluster keeps them on this device,
-    /// as it does without a root identity.
-    ///
-    /// # Errors
-    /// Rejects an invalid package or scope.
+    /// The owner of `package_id`'s records of one person, kept in their own scope. Those carry one
+    /// route per `(app, record)` in the person's cluster, so every device of theirs opens the same
+    /// document, and their store carries it; one that derives no cluster keeps them on this device.
+    /// # Errors Rejects an invalid package or scope.
     pub fn open_personal(
         &mut self,
         package_id: &str,
@@ -1923,10 +1804,8 @@ impl RecordOwners {
     }
 }
 
-/// The heads of what `doc` keeps without the changes `refused` names and
-/// every change made on top of one of them, and a [`RecordRefusal`] saying
-/// `reason` per action the withdrawn changes carried, in the order they were
-/// made.
+/// The heads of what `doc` keeps without the changes `refused` names and everything built on them,
+/// and a [`RecordRefusal`] saying `reason` per action the withdrawn changes carried, in order.
 fn withdrawal(
     doc: &mut AutoCommit,
     refused: &[automerge::ChangeHash],
@@ -1974,10 +1853,8 @@ fn withdrawal(
     (kept, refusals)
 }
 
-/// An action whose change the workspace refused: the record withdrew it
-/// ([`RecordStore::withdraw_refused`]), and the app that holds the record is
-/// told ([`crate::widget::AppWidget::record_refused`]) as it is of an action
-/// refused on this device.
+/// An action whose change the workspace refused: the record withdrew it, and the app holding the
+/// record is told, as it is of an action refused on this device.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordRefusal {
     /// The verb's key, or the edited field's path
@@ -1989,16 +1866,10 @@ pub struct RecordRefusal {
     pub reason: String,
 }
 
-/// What windows said they did to a record ("Added Buy milk"), held until
-/// the workspace it is shared in keeps the change, so success is never said
-/// of a change the workspace then refuses ([`RecordStore::hold_notice`]).
-///
-/// A record no host replicates is decided by nobody else: what is said of
-/// it is said at once. A replicated one holds each notice with the heads it
-/// was said at; the next publication carries them, and once the workspace
-/// answered every commit of the record ([`RecordStore::workspace_settled`]) the
-/// notices are said. A refusal withdraws the changes, and a notice whose
-/// heads went with them is dropped: the refusal is said instead.
+/// What windows said they did to a record, held until the workspace it is shared in keeps the
+/// change, so success is never said of a change the workspace then refuses. An unreplicated record
+/// is decided by nobody else, so it is said at once; a refusal withdraws the changes and drops the
+/// notice.
 #[derive(Debug, Default)]
 pub(crate) struct WorkspaceNotices {
     /// A host replicates the record to a host that decides its changes.
@@ -2087,20 +1958,17 @@ pub enum RecordOpenError {
     MissingRecord,
     #[error("record is reserved or already initialized")]
     Busy,
-    /// The store's own thread is still opening the record's document for a
-    /// thread that must not wait on storage; that thread's wake is called
-    /// when it is done (see [`durable_store::waiting`]).
+    /// The store's own thread is still opening the record's document for a thread that must not
+    /// wait on storage; that thread's wake is called when it is done.
     #[error("the document is still opening")]
     Opening,
     #[error("the new record identity already exists or is reserved")]
     AlreadyExists,
     #[error("record initialization failed: {0}")]
     Initialization(String),
-    /// A record the workspace sends this device only once it asks
-    /// ([`RecordId::arrives_on_demand`]) is not here yet: it was asked for,
-    /// and the store wakes its readers when it arrives
-    /// ([`RecordStore::wake_on_arrival`]) or when the workspace's hosts say they
-    /// have none of it ([`RecordStore::workspace_answered`]).
+    /// A record the workspace sends only once asked is not here yet: it was asked for, and the
+    /// store wakes its readers when it arrives or when the workspace's hosts say they have none of
+    /// it.
     #[error("the record is on its way from the workspace")]
     Arriving,
     /// The record left this workspace (see [`transfer`]); its history stays, but
@@ -2110,10 +1978,9 @@ pub enum RecordOpenError {
 }
 
 impl RecordOpenError {
-    /// Whether another process was writing the record's store at this moment
-    /// ([`app_state::StoreError::WriterBusy`]): the record is not one this
-    /// device cannot open, it is one it did not open this time, and opening
-    /// it again once that write is done succeeds.
+    /// Whether another process was writing the store at this moment: the record is not one this
+    /// device cannot open, just one it did not open this time, and opening it again once that write
+    /// is done succeeds.
     #[must_use]
     pub fn writer_busy(&self) -> bool {
         matches!(self, Self::Store(app_state::StoreError::WriterBusy { .. }))
@@ -2337,13 +2204,10 @@ fn genesis_actor_of(id: &RecordId, kind: &RecordKind, workspace: &str) -> autome
     automerge::ActorId::from(digest.get(..16).unwrap_or_default())
 }
 
-/// The actor `author`'s mount edits a record as, when the record's own
-/// writer is `record_writer` and the host asked for per-author writers
-/// ([`crate::application::HostContext::write_as_author`]). Mounts of one
-/// profile and device share a record's document and so its writer; this
-/// keeps each author's edits apart in history. It is unique wherever the
-/// record's writer is, and the same after a reopen, so history names the
-/// same author again.
+/// The actor `author`'s mount edits a record as, when the record's writer is `record_writer` and
+/// the host asked for per-author writers; mounts of one profile and device share a document, so
+/// this keeps each author's edits apart. Unique per writer, and the same after a reopen, so history
+/// names the same author.
 pub fn author_writer(record_writer: &automerge::ActorId, author: &str) -> automerge::ActorId {
     use sha2::Digest as _;
     let digest = sha2::Sha256::new()
@@ -2355,25 +2219,17 @@ pub fn author_writer(record_writer: &automerge::ActorId, author: &str) -> autome
     automerge::ActorId::from(digest.get(..16).unwrap_or_default())
 }
 
-/// The actor that made the genesis of the record `doc` holds. Nobody edits
-/// as it, and its changes carry no time, so history lists none of them.
-/// `None` when `doc` holds no record.
+/// The actor that made the genesis of the record `doc` holds: nobody edits as it, and its changes
+/// carry no time, so history lists none of them.
 pub fn genesis_actor(doc: &AutoCommit) -> Option<automerge::ActorId> {
     let checkout = identity(doc)?;
     let home = str_at(doc, &meta_ro(doc)?, "home")?;
     Some(genesis_actor_of(&checkout.id, &checkout.kind, &home))
 }
 
-/// Make `doc` the record `checkout` of `workspace` as it is created: its
-/// identity and the app's `initialize`d content, in one change that is byte
-/// for byte the same on every peer that creates it. The change is made by an
-/// actor derived from the record's identity, at time zero, so it hashes the
-/// same everywhere: two members of a workspace that each create a record another
-/// member is creating too (a derived default, the same file) make the same
-/// change and converge on one record rather than two competing roots.
-/// `doc` is a fresh document of this device; what it holds so far (the
-/// store's schema stamp) is made part of the genesis, and its own actor
-/// writes everything after it.
+/// Make `doc` the record as it is created: its identity and the app's `initialize`d content in one
+/// change, byte for byte the same on every peer. An actor derived from the record's identity makes
+/// it at time zero, so two members creating the same record hash the same change.
 fn genesis(
     doc: &mut AutoCommit,
     checkout: &RecordCheckout,
@@ -2445,10 +2301,8 @@ impl RecordReservation {
         &self.checkout
     }
 
-    /// Privately initialize once, then create the one history/writer and publish Ready.
-    ///
-    /// # Errors
-    /// Retains the reservation on initializer, validation or worker-startup failure.
+    /// Privately initialize once, then create the one history and writer and publish Ready. #
+    /// Errors Retains the reservation on initializer, validation or worker-startup failure.
     pub fn initialize(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
@@ -2456,14 +2310,9 @@ impl RecordReservation {
         self.initialize_seeded(initialize, |_| Ok(()))
     }
 
-    /// [`Self::initialize`], then `seed` the record on this device: what it
-    /// starts with that depends on who creates it or where (the creator as
-    /// owner, settings that already exist). The seed is written after the
-    /// genesis, which stays the same on every device, and before the
-    /// record's undo history begins, so it is nobody's undo step.
-    ///
-    /// # Errors
-    /// As [`Self::initialize`]; a failing seed fails the initialization.
+    /// [`Self::initialize`], then `seed` the record with what depends on who creates it or where;
+    /// the seed follows the genesis and precedes undo history, so it is nobody's undo step. #
+    /// Errors As [`Self::initialize`]; a failing seed fails the initialization.
     pub fn initialize_seeded(
         &mut self,
         initialize: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
@@ -2593,11 +2442,9 @@ impl RecordStore {
         set.wire_route(&checkout.id)
     }
 
-    /// The route native component admission joins before the factory runs:
-    /// the open record's, a live New reservation's, the workspace's record while
-    /// it opens off the frame ([`Self::begin_opening`]), or an exact native original
-    /// creation capture whose genesis the factory has yet to write. This does
-    /// not make the record publishable before the owner's Initialize reply.
+    /// The route native component admission joins before the factory runs: the open record's, a
+    /// live New reservation's, the workspace's record while it opens off the frame, or an original
+    /// creation whose genesis the factory has yet to write.
     pub(crate) fn admission_route(
         &self,
         checkout: &RecordCheckout,
@@ -2637,12 +2484,9 @@ impl RecordStore {
         self.route(checkout)
     }
 
-    /// Schedule this already committed History result through its existing writer.
-    /// Do not sweep or close unrelated owners' unfinished edits.
-    ///
-    /// # Errors
-    /// The record's cache reports that it could not take the document, or the
-    /// store is busy and took nothing.
+    /// Schedule this already committed History result through its existing writer, without sweeping
+    /// or closing other owners' unfinished edits. # Errors The cache could not take the document,
+    /// or the store is busy and took nothing.
     pub fn schedule_committed_history(&self, id: &RecordId) -> Result<(), String> {
         let Ok(mut set) = self.0.try_borrow_mut() else {
             return Err("record store is busy".to_string());
@@ -2669,11 +2513,9 @@ impl RecordStore {
         Ok(())
     }
 
-    /// Cheap content witness for retained projections over open records.
-    ///
-    /// Base heads cover committed changes and `pending_ops` covers the live
-    /// typing transaction before its next commit boundary. Record identity is
-    /// included so opening or closing a document also invalidates a snapshot.
+    /// Cheap content witness for retained projections over open records: base heads cover committed
+    /// changes, `pending_ops` the live typing transaction, and the record identity makes opening or
+    /// closing a document invalidate a snapshot.
     pub fn content_revision(&self) -> String {
         let set = self.0.borrow();
         let mut records = set.open.iter().collect::<Vec<_>>();
@@ -2724,9 +2566,8 @@ impl RecordStore {
     pub(crate) fn readable(&self) -> bool {
         self.0.try_borrow().is_ok()
     }
-    /// The package and home workspace this store's records belong to, which
-    /// name their replication route.
-    /// The durable store this set's records live in, when it has one.
+    /// The package and home workspace this store's records belong to, which name their replication
+    /// route, and the durable store they live in when it has one.
     pub(crate) fn backend(&self) -> Option<Rc<dyn DurableStore>> {
         let set = self.0.borrow();
         set.backend.clone().or_else(|| set.documents.clone())
@@ -2737,12 +2578,9 @@ impl RecordStore {
         (set.package_id.clone(), set.home.clone())
     }
 
-    /// The numbers of the parts of the chain `base` ([`RecordId::part`])
-    /// this store holds, in order: those open here, and those kept on this
-    /// device without being open (synced in while no window had them).
-    /// Listing what is kept reads the store's index, so a caller on a frame
-    /// loop asks when the store was told something arrived
-    /// ([`Self::kept_revision`]), not every frame.
+    /// The numbers of the parts of the chain `base` this store holds, in order: those open here,
+    /// and those kept on this device unopened. Listing reads the store's index, so a frame loop
+    /// asks on [`Self::kept_revision`] instead of every frame.
     #[must_use]
     pub fn held_parts(&self, base: &RecordId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
@@ -2757,9 +2595,8 @@ impl RecordStore {
             .map(|(_, index)| index)
             .collect();
         if !set.home.is_empty() {
-            // What the person kept before their own store existed is listed
-            // with what it holds now: asking for a part opens it, which takes
-            // that record into the store.
+            // What the person kept before their own store existed is listed with what it holds now:
+            // asking for a part opens it, which takes that record into the store.
             let kept: Vec<String> = std::iter::once(set.home.as_str())
                 .chain(set.retired.as_deref())
                 .flat_map(|workspace| {
@@ -2789,11 +2626,9 @@ impl RecordStore {
         held.into_iter().collect()
     }
 
-    /// Tell the store that a record it does not have open was just kept in
-    /// its backend by someone else (a workspace's replication, delivering a part
-    /// another device started), or arrived for it to open: what follows the
-    /// records it keeps ([`Self::held_parts`]) looks again, which nothing
-    /// else makes it do. Callable while a frame reads the store.
+    /// Tell the store that a record it does not have open was kept in its backend by someone else
+    /// (a workspace's replication, delivering a part another device started), so what follows the
+    /// records it keeps looks again. Callable while a frame reads the store.
     pub fn note_kept(&self) {
         if let Ok(set) = self.0.try_borrow() {
             set.kept.set(set.kept.get().wrapping_add(1));
@@ -2801,10 +2636,9 @@ impl RecordStore {
         self.wake_readers();
     }
 
-    /// Peers wrote `records` of this store's trees ([`RecordId::tree`]),
-    /// which it does not hold: whatever follows those trees takes them up
-    /// at once ([`Self::announced_parts`]), as after [`Self::note_kept`].
-    /// Callable while a frame reads the store.
+    /// Peers wrote `records` of this store's trees, which it does not hold: whatever follows those
+    /// trees takes them up at once, as after [`Self::note_kept`]. Callable while a frame reads the
+    /// store.
     pub fn announce(&self, records: impl IntoIterator<Item = RecordId>) {
         if let Ok(set) = self.0.try_borrow() {
             set.announced
@@ -2838,9 +2672,8 @@ impl RecordStore {
         self.0.try_borrow().map_or(0, |set| set.kept.get())
     }
 
-    /// The numbers of the parts of the chain `base` open in this store and
-    /// ready to read, in order: what this process opened, or merged in from
-    /// a peer. Reads no index, so it is cheap enough for every frame.
+    /// The numbers of the parts of the chain `base` open here and ready to read, in order. Reads no
+    /// index, so it is cheap enough for every frame.
     #[must_use]
     pub fn open_parts(&self, base: &RecordId) -> Vec<u64> {
         let Ok(set) = self.0.try_borrow() else {
@@ -2858,15 +2691,10 @@ impl RecordStore {
         open
     }
 
-    /// Every [window default record](RecordId::window_default) of `kind`
-    /// this package keeps in this workspace, sorted by id, each as last made
-    /// durable: the documents an app's windows started, which it lists so a
-    /// closed window's document is reached again, or left behind once it
-    /// keeps one per workspace. Read without taking any writer, so a window
-    /// still showing one keeps it, and nothing here changes them. A record
-    /// that cannot be read, is retired, or is not of `kind` in this workspace is
-    /// left out (and logged), never an error: one bad one must not keep the
-    /// others out.
+    /// Every window default record of `kind` this package keeps in this workspace, sorted by id, as
+    /// last made durable: what an app's windows started, so a closed window's document is reached
+    /// again. Read without taking a writer; a record that cannot be read, is retired or is not of
+    /// `kind` here is left out and logged.
     pub fn window_records(&self, kind: &RecordKind) -> Vec<(RecordId, AutoCommit)> {
         let Some(store) = self.backend() else {
             return Vec::new();
@@ -2882,9 +2710,8 @@ impl RecordStore {
                 return Vec::new();
             }
         };
-        // Windows of the person's kept before their own store existed are
-        // listed with the ones it starts here; opening one of them takes it
-        // into the store, as opening any other record of theirs does.
+        // Windows of the person's kept before their own store existed are listed with the ones it
+        // starts here; opening one takes it into the store.
         let ids = keys
             .iter()
             .filter_map(|key| RecordId::window_default_of_storage_key(key))
@@ -2920,10 +2747,8 @@ impl RecordStore {
         ))
     }
 
-    /// Open Existing only; a missing document is never implicitly initialized.
-    ///
-    /// # Errors
-    /// Reports ownership contention, absence, identity/schema refusal and storage failures.
+    /// Open Existing only; a missing document is never implicitly initialized. # Errors Reports
+    /// ownership contention, absence, identity or schema refusal and storage failures.
     pub fn try_open_record(
         &self,
         want: &RecordCheckout,

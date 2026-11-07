@@ -666,9 +666,6 @@ pub type NodeCompletion = Box<dyn FnOnce(Result<Option<[u8; 32]>, String>) + Sen
 /// Called once with who is here, see [`PeerHandle::here_then`].
 pub type HereCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::web::HereReply, String>) + Send>;
-/// Called once with the governor's answer, see [`PeerHandle::private_then`].
-pub type PrivateCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::private::PrivateReply, String>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
@@ -3751,8 +3748,6 @@ fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
             LinkError::Unavailable("host does not speak tilo-relay/1".into())
         }
         ClientError::Iroh(reason) => LinkError::Unavailable(reason),
-        // An iroh dial never produces it; the HTTPS carrier's own reason.
-        ClientError::Https(error) => error,
         ClientError::Sign(reason) => LinkError::Sign(reason),
         ClientError::Codec(reason) => LinkError::Malformed(reason),
         ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },

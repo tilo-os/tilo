@@ -1058,12 +1058,6 @@ impl NotificationCenter {
         self.start
     }
 
-    /// Scroll so `row` is the first visible one; the next paint or input
-    /// clamps it to the rows there are.
-    pub fn set_first_visible_row(&mut self, row: usize) {
-        self.start = row;
-    }
-
     /// Complete rows the panel shows now.
     pub fn visible_rows(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> usize {
         let shapes = Self::shapes(host, layout, &self.rows(host));
@@ -1199,26 +1193,6 @@ impl NotificationCenter {
             .visible_rows_in(&shapes, start)
             .min(rows.len().saturating_sub(start));
         (rows, shapes, start, shown)
-    }
-
-    /// The notification whose row is drawn at `p` (a group header names
-    /// none).
-    pub fn notification_at(
-        &self,
-        host: &dyn NotificationHost,
-        layout: &CenterLayout,
-        p: Point,
-    ) -> Option<u64> {
-        if self.is_reading() {
-            return None;
-        }
-        let (index, _) = self.row_hit(host, layout, p)?;
-        let (rows, ..) = self.window(host, layout);
-        let log = host.log();
-        match rows.get(index)?.identity(log.history())? {
-            super::history::RowIdentity::Item(id) => Some(id),
-            super::history::RowIdentity::Group(_) => None,
-        }
     }
 
     /// The row (and control) under `p` among the visible rows. A row's icon

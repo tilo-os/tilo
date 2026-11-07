@@ -1,31 +1,15 @@
 //! One session-lifetime owner for persistent audio transforms.
-//!
 //! Settings writes intent to the shared settings store. This worker reads it,
-//! observes `PipeWire` in its own process, and owns any virtual mono node
-//! and the echo-cancelled microphone until the desktop session ends. It is
-//! intentionally not a `DBus` service: neither operation is privileged, and
-//! one owner per graphical session is the security/correctness boundary we
-//! need. The same observation reports audio devices arriving and leaving, for
-//! the "device connected/disconnected" system sounds.
-//!
-//! It also watches for hotplug: when the output sound was going to
-//! was a headset, headphones or a Bluetooth sink and it disappears, playing
-//! media is paused rather than suddenly coming out of the speakers — as on a
-//! phone. Plugging the device back in never resumes it. A headset,
-//! headphones or Bluetooth sink that arrives becomes the output, as on a
-//! phone: `WirePlumber` alone keeps an output the person once chose for as
-//! long as it exists, so a newly connected headset stayed silent while the
-//! speakers played on.
-//!
-//! Observation is event-driven. A native registry watch
-//! ([`media::audio_watch`]) reports device changes within
-//! [`media::audio_watch::DEBOUNCE`], the settings file watch reports
-//! preference changes, and between them the worker blocks with no timer: an
-//! idle desktop neither shells `pw-dump` nor re-reads settings. Only when
-//! `PipeWire` runs but cannot be watched does it fall back to polling —
-//! slower, but still observing, never blind. When `PipeWire` is not running
-//! at all there is nothing to poll: the worker waits, again with no timer,
-//! for its socket to appear.
+//! observes `PipeWire` in its own process, and owns any virtual mono node and the
+//! echo-cancelled microphone until the desktop session ends. It is intentionally
+//! not a `DBus` service: neither operation is privileged, and one owner per
+//! graphical session is the boundary. The same observation reports devices
+//! arriving and leaving, for the system sounds.
+//! If the output sound was going to a headset, headphones or a Bluetooth sink and
+//! it disappears, playing media is paused rather than coming out of the speakers,
+//! and plugging it back in never resumes; a newly connected one becomes the output.
+//! Observation is event-driven: a registry watch plus the settings file watch, and
+//! no timer between them. Only when `PipeWire` cannot be watched does it poll.
 
 use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};

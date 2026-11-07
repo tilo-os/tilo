@@ -1,32 +1,19 @@
-//! `EmptyState` — the centered "there's nothing here yet" placeholder that
-//! almost every list-shaped app hand-rolls (Inbox with no mail, a feed with
-//! no articles, a contacts book with no contacts, …). Before this widget the
-//! pattern was copy-pasted as a `Column` of a big icon + a heading `Text` +
-//! a dim subtitle + an optional call-to-action `Button` across the fleet.
+//! `EmptyState` — the centered "there's nothing here yet" placeholder almost every list-shaped
+//! app hand-rolled (Inbox with no mail, a feed with no articles): one theme-driven widget for an
+//! optional large [`Icon`] in tertiary ink (or an illustration the app paints in the same slot),
+//! a **title** in the `Title` role, an optional one-sentence **message** in secondary ink s3
+//! under it, and an optional primary **action** s4 under the text.
 //!
-//! `EmptyState` folds that into one theme-driven widget:
+//! An error state ([`EmptyState::error`]) tints its icon with the danger status colour, and its
+//! message wraps to its full text: what went wrong and what to do about it is never cut off.
+//! What went wrong technically (an error code, what a service answered) is not the person's
+//! message: [`EmptyState::with_details`] keeps it behind a "Details" disclosure, closed until
+//! someone opens it.
 //!
-//! - an optional large [`Icon`] in tertiary ink, or an illustration the app
-//!   paints into the same slot (a weather scene),
-//! - a **title** in the `Title` role (the "No messages" headline),
-//! - an optional **message**: one sentence in secondary ink, `rhythm` s3
-//!   under the title,
-//! - an optional primary **action**, s4 under the text.
-//!
-//! An error state ([`EmptyState::error`]) tints its icon with the danger
-//! status colour. Its message wraps to its full text like any other: what
-//! went wrong and what to do about it is never cut off mid-sentence.
-//!
-//! What went wrong technically (an error code, what a service answered) is
-//! not the person's message: [`EmptyState::with_details`] keeps it behind a
-//! "Details" disclosure under the stack, closed until someone opens it.
-//!
-//! The content is centered on both axes inside whatever space the parent
-//! gives the widget, so dropping it as the sole child of a content pane
-//! "just works". The action is surfaced through the toolkit's drain channel
-//! ([`EmptyState::take_action`]) rather than a callback, matching the
-//! CRDT-native input model used by [`super::ContextMenu`] /
-//! `TriStateControl`.
+//! The content is centered on both axes inside whatever space the parent gives, so dropping it
+//! as the sole child of a content pane just works; the action is surfaced through the toolkit's
+//! drain channel ([`EmptyState::take_action`]) rather than a callback, matching the CRDT-native
+//! input model of [`super::ContextMenu`].
 
 use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;

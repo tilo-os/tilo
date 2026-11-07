@@ -168,6 +168,29 @@ fn page(
     body(&app)
 }
 
+/// The session a task runs in: a laptop's root, the host's own device and the
+/// relay it serves, and the browser participant holding that root.
+async fn session() -> (
+    ed25519_dalek::SigningKey,
+    support::Device,
+    tempfile::TempDir,
+    support::TestHost,
+    participant::Participant,
+) {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let laptop = participant::Participant::start(&host.relay, &root).await;
+    (root, host_device, state, host, laptop)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_web_app_over_the_session() {
     let (root, _) = UserIdentity::generate("Ada", 1);
@@ -868,17 +891,7 @@ fn run_task(
 /// its parameters in full.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_one_app_task_is_planned_in_one_model_request() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let set_cells = "sheets.workbook#set-cells";
     let (url, sent) = model_endpoint(vec![tool_call(
         "p1",
@@ -925,17 +938,7 @@ async fn a_one_app_task_is_planned_in_one_model_request() {
 /// re-plan — and the read is no step of the task.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_view_is_read_in_the_planning_conversation() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (url, sent) = model_endpoint(vec![
         tool_call(
             "r1",
@@ -1012,17 +1015,7 @@ async fn a_view_is_read_in_the_planning_conversation() {
 /// before it runs, saying why.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_task_reports_the_content_its_steps_produced() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1136,17 +1129,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
         );
         return;
     }
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1230,17 +1213,7 @@ async fn a_task_s_video_still_is_drawn_by_the_hosts_render_service() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn written_steps_name_a_records_field_and_carry_content_into_it() {
     const WRITER: &str = "so.tilo.word-processor";
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let store = tilo_content::ContentStore::memory();
     let (mut agent, control) = planning_agent(
         &root,
@@ -1299,17 +1272,7 @@ fn sheet_rows(
 /// up itself.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_step_takes_the_value_a_formula_computed() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1360,17 +1323,7 @@ async fn a_step_takes_the_value_a_formula_computed() {
 /// subtracts nor counts business days.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_step_takes_arithmetic_written_in_words() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1426,17 +1379,7 @@ async fn a_step_takes_arithmetic_written_in_words() {
 /// it text.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_untyped_value_that_is_only_arithmetic_is_computed() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1502,17 +1445,7 @@ const MESSAGES: &str = "so.tilo.messages";
 /// message and takes the code out, so the model copies neither.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (mut agent, control) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1559,17 +1492,7 @@ async fn a_step_takes_a_field_of_the_message_a_rule_picks() {
 /// the task's repair plans around it with that reason.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_missing_value_goes_to_repair_naming_its_reference() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let set_cells = |rows: serde_json::Value| {
         tool_call(
             "p1",
@@ -1656,17 +1579,7 @@ async fn task_with_model(
     Vec<serde_json::Value>,
     serde_json::Value,
 ) {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (url, sent) = model_endpoint(answers);
     let (mut agent, control) = planning_agent(
         &root,
@@ -1821,17 +1734,7 @@ async fn a_refusal_no_plan_changes_is_not_repaired() {
 /// never the next one by position, which the other agent is writing too.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn upserts_by_key_from_two_agents_overwrite_nothing() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let (mut first, _) = planning_agent(
         &root,
         (&host, &host_device),
@@ -1952,17 +1855,7 @@ fn chat_parts_text(agent: &AgentParticipant, route: &DocumentRoute) -> String {
 /// its author and its text, not the record's roster alone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chat_post_by_another_agent_is_news_with_its_text_and_wakes_a_wait() {
-    let (root, _) = UserIdentity::generate("Ada", 1);
-    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
-    let state = tempfile::tempdir().unwrap();
-    let host = start_host(
-        &root,
-        &host_device,
-        state.path(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await;
-    let _laptop = participant::Participant::start(&host.relay, &root).await;
+    let (root, host_device, _state, host, _laptop) = session().await;
     let plan = |id: &str, input: serde_json::Value| tool_call(id, "plan", &input);
     let (gate, held) = std::sync::mpsc::channel();
     let (url, sent) = gated_model_endpoint(vec![

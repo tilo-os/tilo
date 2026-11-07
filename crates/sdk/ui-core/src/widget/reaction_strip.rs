@@ -1,28 +1,19 @@
-//! The reaction strip: one pill per emoji people reacted with, its count
-//! beside it, and a trailing button to add one.
+//! The reaction strip: one pill per emoji people reacted with, its count beside it, and a trailing
+//! button to add one.
 //!
-//! Everything that takes reactions ([`tilo_resource::Reactions`]) shows them
-//! with this strip, so a reaction reads the same under a chat message, on a
-//! page and in a window's toolbar. Your own reaction is the chosen pill: the
-//! accent washed in, with an accent edge ([`ChipStyle::Neutral`] selected).
-//! A workspace emoji (`:name:`) is drawn as its picture from the window's
-//! workspace emoji ([`crate::workspace_emoji`]), and as its `:name:` while
-//! the picture is not there. Pointing at a pill names who reacted, with the
-//! shared tooltip. A pill arriving appears from its centre and a count
-//! changing cross-fades (`motion::Appear`, `motion::CrossFade`), both only
-//! once the strip is on screen, and as reduced motion allows.
+//! Everything that takes reactions ([`tilo_resource::Reactions`]) shows them with this strip, so a
+//! reaction reads the same under a chat message, on a page and in a window's toolbar. Your own
+//! reaction is the chosen pill (the accent washed in, with an accent edge); a workspace emoji
+//! (`:name:`) is drawn as its picture from [`crate::workspace_emoji`] and as its `:name:` while
+//! the picture is not there. Pointing at a pill names who reacted. A pill arriving appears from its
+//! centre and a count changing cross-fades (`motion::Appear`, `motion::CrossFade`), both only once
+//! the strip is on screen and as reduced motion allows.
 //!
-//! Two ways in:
-//!
-//! - **By hand** (a canvas that paints its own rows, a toolbar):
-//!   [`ReactionStrip`] keeps one strip's motion; [`ReactionStrip::layout`]
-//!   lays the pills out from an origin within a width, wrapping onto
-//!   further rows, and [`ReactionStrip::paint`], [`ReactionStrip::hit`],
-//!   [`ReactionStrip::tooltip_at`] and [`ReactionStrip::accessibility`] work
-//!   on that layout. [`measure_height`] sizes a row before painting.
-//! - **Retained**: [`ReactionStripWidget`], a widget a view places like any
-//!   other; it reports a toggle as [`ReactionToggle`] (to an action binding or
-//!   a callback) and opens the shared emoji picker from its add button.
+//! Two ways in: **by hand**, [`ReactionStrip`] keeps one strip's motion and lays the pills out from
+//! an origin within a width ([`ReactionStrip::layout`], then [`ReactionStrip::paint`], `hit`,
+//! `tooltip_at`, `accessibility`; [`measure_height`] sizes a row first); **retained**,
+//! [`ReactionStripWidget`] places like any widget, reports a toggle as [`ReactionToggle`] and opens
+//! the shared emoji picker from its add button.
 
 use std::collections::HashMap;
 
