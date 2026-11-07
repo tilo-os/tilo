@@ -45,7 +45,12 @@ impl Service for RustApps {
                 "page",
                 channel.name.clone(),
                 "open",
-            ));
+            ))
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new("channel", "channels"),
+                app: tilo_actions::Noun::new("Tube", "Tube"),
+                root: false,
+            });
             spec.app_id = Some("tube".to_owned());
             spec
         });
@@ -54,7 +59,12 @@ impl Service for RustApps {
                 format!("tube.video:{}", video.id),
                 "tube.video",
                 video.title.clone(),
-            );
+            )
+            .with_type(tilo_actions::ResourceType {
+                noun: tilo_actions::Noun::new("video", "videos"),
+                app: tilo_actions::Noun::new("Tube", "Tube"),
+                root: false,
+            });
             spec.app_id = Some("tube".to_owned());
             spec
         });
