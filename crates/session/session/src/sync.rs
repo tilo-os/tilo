@@ -2518,10 +2518,14 @@ fn endpoint_for(
     // directory gate and its public relays held back
     // ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network
-    // until a workspace this session shows has someone else in it.
+    // until a workspace this session shows has someone else in it. A peer's
+    // key also resolves on the local network
+    // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices
+    // that share one find each other while their relays rest.
     let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
         .address_lookup(tilo_endpoint_reachability::collaborating())
+        .address_lookup(tilo_endpoint_reachability::lan())
         .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
