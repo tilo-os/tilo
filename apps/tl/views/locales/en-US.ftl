@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-views = Views
+
 d-bqgmjsyo = Written view
     .doc = A view of the person's own: a tilolang `view` definition, written as an app declares one (`view open_threads(m: mail.Mail) {"{"} ...
     .noun = { $count ->
@@ -25,6 +27,12 @@ d-loizxjpf = Kept
 d-bckibjl6 = Shows
     .doc = The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it: what it can be the default view of.
 
+d-bqgmjsyo-filter-kept = Kept
+    .doc = Whether the person kept it.
+
+d-bqgmjsyo-filter-author = Author
+    .doc = Who wrote it, as the host recorded them: the agent task that answered with it, the
+
 d-uibilwji = Default
     .doc = How the person shows a type on one kind of device: through one of their own views.
     .noun = { $count ->
@@ -38,6 +46,10 @@ d-2atmuo4h = Shows
 d-h6n4gvgn = Device
 
 d-7rv6o4rt = Chosen
+
+d-uibilwji-filter-device = Device
+
+d-uibilwji-filter-chosen = Chosen
 
 d-f6dcaezu = Views
     .doc = The person's views, and the types they show through one of them.

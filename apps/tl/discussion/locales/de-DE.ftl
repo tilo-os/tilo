@@ -1,5 +1,7 @@
 # Discussion in German. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
+d-so-tilo-lang-discussion = Diskussion
+
 d-kj3aantt = Kommentar
     .doc = Was jemand zu einer Ressource gesagt hat: zu einer Aufgabe, einer Notiz, einer Mail, einem Tag.
     .noun = { $count ->

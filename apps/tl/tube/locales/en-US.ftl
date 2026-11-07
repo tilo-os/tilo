@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-tube = YouTube
+
 d-m5wewovo = Channel
     .doc = A channel someone publishes videos on.
     .noun = { $count ->
@@ -74,6 +76,15 @@ d-4mojz3hw = Trending
 
 d-5o5fpqgh = Found for
     .doc = The search that found it, empty for a video a feed or a page brought in.
+
+d-albed4jx-filter-liked = Liked
+    .doc = The person liked it.
+
+d-albed4jx-filter-watch_later = Watch later
+    .doc = The person kept it to watch later.
+
+d-albed4jx-filter-trending = Trending
+    .doc = The trending feed listed it.
 
 d-mmzhfe3o = Playlist
     .doc = A playlist: videos in an order its maker chose.

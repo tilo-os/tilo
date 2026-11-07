@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-tasks = Tasks
+
 d-75ojxgs3 = Task
     .doc = Something to do: what, by when, by whom, and in which project.
     .noun = { $count ->
@@ -38,6 +40,30 @@ d-4sriymst = Priority
 d-3pf74ifm = Parent
     .doc = The task it is a subtask of; none for a task of its own.
 
+d-75ojxgs3-filter-inbox = Inbox
+
+d-75ojxgs3-filter-today = Today
+
+d-75ojxgs3-filter-upcoming = Upcoming
+
+d-75ojxgs3-filter-done = Done
+
+d-75ojxgs3-filter-assigned_to_me = Assigned to me
+
+d-75ojxgs3-filter-due = Due
+    .doc = The day it is due by, if any.
+
+d-75ojxgs3-filter-project = Project
+    .doc = The project it belongs to; none while it waits in the inbox.
+
+d-75ojxgs3-filter-priority = Priority
+
+d-75ojxgs3-filter-parent = Parent
+    .doc = The task it is a subtask of; none for a task of its own.
+
+d-75ojxgs3-filter-assignee = Assignee
+    .doc = Who is doing it.
+
 d-bfqi332m = Project
     .doc = A project: tasks that work towards one outcome.
     .noun = { $count ->
@@ -60,6 +86,9 @@ d-5wdrqcpl = Section
 d-yfd266wj = Name
 
 d-ohbjjsu7 = Project
+    .doc = The project it is a section of.
+
+d-5wdrqcpl-filter-project = Project
     .doc = The project it is a section of.
 
 d-fjqi4yze = Tasks

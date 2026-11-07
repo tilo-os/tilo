@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-discussion = Discussion
+
 d-kj3aantt = Comment
     .doc = What someone said about one resource: a task, a note, a mail, a day.
     .noun = { $count ->

@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-chat = Chat
+
 d-lmdoxbnn = Conversations
     .doc = The workspace's conversations in the sidebar's order: channels outside any category, the categories each with its own, and the direct messages, in the list as people.
     .noun = { $count ->
@@ -65,6 +67,9 @@ d-ofad24rc = Reactions
 d-dh6346no = Sent view
     .doc = A view the message sends, as its sender had it among their views: its tilolang definition, which a reader adds to their own views (Views' `add`), its author whoever sent the message.
 
+d-hk2t6bvk-filter-pinned = Pinned
+    .doc = Whether it is pinned to its channel, which search finds.
+
 d-6qpql3pg = Thread
     .doc = A side conversation branched off one message.
     .noun = { $count ->
@@ -77,6 +82,8 @@ d-xuvfifa5 = Name
 d-ijy454g6 = Messages
 
 d-2ki7h2z5 = Archived
+
+d-6qpql3pg-filter-archived = Archived
 
 d-5nkbpj6q = Direct
     .doc = A private conversation: one other person, or a named group of them, in the same message model as a channel.
@@ -93,6 +100,9 @@ d-ycadyqh5 = Person
 d-y65whtrn = Messages
 
 d-3p73kpuw = Threads
+
+d-5nkbpj6q-filter-person = Person
+    .doc = The one person it is with, for a direct message.
 
 d-yx5sbebu = Part
     .doc = A piece of a message from before messages were rich text: its text, or a block's source.
