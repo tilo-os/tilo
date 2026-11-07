@@ -17,6 +17,10 @@ pub struct RowChange<'a> {
     pub name: &'a str,
     /// What assistive technology says of it: who, and in which run.
     pub spoken: &'a str,
+    /// What they did, as the line under the row's title: the sentence history says of the
+    /// change, after who did it ("Scout moved this to today"), and how many more of the row's
+    /// changes wait behind it ("and 1 more"). Empty: no line.
+    pub said: &'a str,
 }
 
 impl RowChange<'_> {

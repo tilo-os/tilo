@@ -461,15 +461,7 @@ impl Core {
         // words for the action (`did:`) where it declares them, else what the change itself
         // says (`self.changes_value`), and for one that made or removed the resource, that.
         // Read through the catalogue, so a translation says it in the reader's language.
-        let declared_did = declared
-            .as_ref()
-            .map_or_else(String::new, |a| match (&a.did, &a.id) {
-                (Some(source), id) => {
-                    let key = format!("{}.did", tilolang::messages::key_of(id));
-                    self.words.borrow().word(&key, &[], source)
-                }
-                (None, _) => String::new(),
-            });
+        let declared_did = self.declared_did(&v);
         let did = match v.kind {
             crate::store::VersionKind::Created if declared_did.is_empty() => {
                 self.word("tilolang-did-created", "created this")
@@ -518,6 +510,84 @@ impl Core {
             Value::Text(v.action),
             Value::Text(v.change),
         ]))
+    }
+
+    /// The words the action that made `v` declares it does (`did:`), read through the
+    /// catalogue, or empty where it declares none.
+    fn declared_did(&self, v: &crate::store::Version) -> String {
+        self.registry
+            .borrow()
+            .action_package(&v.action)
+            .and_then(|pkg| pkg.action(&v.action).cloned())
+            .map_or_else(String::new, |a| match (&a.did, &a.id) {
+                (Some(source), id) => {
+                    let key = format!("{}.did", tilolang::messages::key_of(id));
+                    self.words.borrow().word(&key, &[], source)
+                }
+                (None, _) => String::new(),
+            })
+    }
+
+    /// What a version of `of` did, as one line of text: the sentence history says of it
+    /// (`std.version_said`), its values as their types show them in a phrase. A row says it
+    /// under its title, and a step of a catch-up popover reads it, so what a person reads is
+    /// worded once wherever it stands.
+    pub(crate) fn version_line(&self, v: &crate::store::Version, of: &ResourceRef) -> String {
+        let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
+        if v.count > 1 {
+            let kind = info.as_ref().map_or_else(String::new, |info| {
+                tilolang::meta::plural(&tilolang::meta::in_words(&info.name))
+            });
+            return self.words.borrow().word(
+                "tilolang-did-many",
+                &[
+                    ("count".to_owned(), v.count.to_string()),
+                    ("kind".to_owned(), kind),
+                ],
+                "changed { $count }",
+            );
+        }
+        let declared = self.declared_did(v);
+        if !declared.is_empty() {
+            return declared;
+        }
+        match v.kind {
+            crate::store::VersionKind::Created => {
+                return self.word("tilolang-did-created", "created this");
+            }
+            crate::store::VersionKind::Removed => {
+                return self.word("tilolang-did-removed", "removed this");
+            }
+            crate::store::VersionKind::Changed => {}
+        }
+        let Some(info) = info else {
+            return self.action_label(&v.action);
+        };
+        let said: Vec<String> = self
+            .changes_value(v, of, &info)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|change| {
+                let Value::Tuple(parts) = change else {
+                    return None;
+                };
+                let words = parts.get(4).and_then(Value::as_text)?.to_owned();
+                let held = match parts.get(5).and_then(Value::as_text) {
+                    Some("after") => parts.get(3),
+                    Some("before") => parts.get(2),
+                    _ => None,
+                };
+                Some(held.map_or_else(
+                    || words.clone(),
+                    |held| format!("{words} {}", self.said(held)),
+                ))
+            })
+            .collect();
+        if said.is_empty() {
+            self.action_label(&v.action)
+        } else {
+            said.join(" ")
+        }
     }
 
     /// What proposing `action` with `args` would change, in the words history says a change

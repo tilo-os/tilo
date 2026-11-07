@@ -66,9 +66,10 @@ pub struct Button {
     /// optional badge pill on its corner: what an extension's toolbar action
     /// shows. The glyph in `icon` remains the fallback and the layout key.
     image: Option<vello::peniko::ImageData>,
-    /// Who is here, as their faces ([`Self::with_faces`]): the button's whole face, and the
-    /// label names them to assistive technology.
-    faces: Vec<String>,
+    /// Who is here, as their faces ([`Self::with_faces`]), each with their name and their
+    /// identity: a button with no label is their faces alone, and one with a label leads with
+    /// them.
+    faces: Vec<(String, String)>,
     /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
     /// as a person field's chip shows who it holds.
     avatar: Option<(String, String)>,
@@ -443,8 +444,22 @@ impl Button {
     /// rest. The button is as wide as the group and as tall as its face, its label the name a
     /// screen reader hears (`with_accessible_name`), and no text on it at any width. One
     /// press does what the button does — open the roster of everyone here.
+    ///
+    /// Each name is its own identity: a caller with people whose names are not their
+    /// identities shows them by both ([`Self::with_faces_of`]).
     #[must_use]
     pub fn with_faces(mut self, faces: impl IntoIterator<Item = String>) -> Self {
+        self.faces = faces.into_iter().map(|name| (name.clone(), name)).collect();
+        self.layout_dirty = true;
+        self.dirty = true;
+        self
+    }
+
+    /// Show who is here as their faces, each named and identified: the face is picked and
+    /// coloured by the identity, and the name is what a reader hears. A button with a label
+    /// leads with them; one without draws them alone ([`Self::with_faces`]).
+    #[must_use]
+    pub fn with_faces_of(mut self, faces: impl IntoIterator<Item = (String, String)>) -> Self {
         self.faces = faces.into_iter().collect();
         self.layout_dirty = true;
         self.dirty = true;
@@ -1282,8 +1297,9 @@ struct FaceContent<'a> {
     icon: Option<crate::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
-    /// Who is here, as their faces; empty for every face that is not a group of people.
-    faces: &'a [String],
+    /// Who is here, as their faces (name, identity), leading a label or standing alone;
+    /// empty for every face that is not a group of people.
+    faces: &'a [(String, String)],
     /// One person's avatar before the label, as a person chip leads with it.
     avatar: Option<(&'a str, &'a str)>,
     /// The label names no value yet: painted in the secondary ink.
@@ -1320,6 +1336,10 @@ impl FaceContent<'_> {
         if self.icon.is_some() || self.avatar.is_some() {
             width += metrics.icon + metrics.icon_gap;
         }
+        if !self.faces.is_empty() {
+            width += crate::presence::FaceStack::in_face(height).group_width(self.faces.len())
+                + metrics.icon_gap;
+        }
         if !self.label.is_empty() {
             width += f64::from(text.measure_style(self.label, None, &metrics.label_style).0);
         }
@@ -1337,25 +1357,26 @@ impl FaceContent<'_> {
         }
     }
 
-    /// The group of who is here centred in `rect`: the faces shown and a face counting the
-    /// rest, standing on the bar's own ground so each face's ring separates it from the next.
-    fn draw_faces(&self, ctx: &mut PaintCtx<'_>, rect: Rect) {
-        let stack = crate::presence::FaceStack::in_face(rect.height());
+    /// The group of who is here from `left` on, centred on the face: the faces shown and a
+    /// face counting the rest, standing on the bar's own ground so each face's ring separates
+    /// it from the next.
+    fn draw_faces(&self, ctx: &mut PaintCtx<'_>, left: f64, center_y: f64, side: f64) {
+        let stack = crate::presence::FaceStack::in_face(side);
         let (shown, more) = stack.group(self.faces.len());
         let palette = &ctx.theme.tokens.colors.presence;
         let faces: Vec<crate::presence::Face<'_>> = self
             .faces
             .iter()
             .take(shown)
-            .map(|name| {
-                let hue = crate::tokens::colors::PresenceHue::of_identity(name);
-                crate::presence::Face::new(name, name, palette.hue(hue))
+            .map(|(name, identity)| {
+                let hue = crate::tokens::colors::PresenceHue::of_identity(identity);
+                crate::presence::Face::new(name, identity, palette.hue(hue))
             })
             .collect();
         let width = stack.width_of(faces.len(), more);
         stack.paint(
             ctx,
-            (rect.center().x + width / 2.0, rect.center().y),
+            (left + width, center_y),
             (&faces, more),
             crate::chrome::panel_ground(ctx.theme),
         );
@@ -1414,7 +1435,14 @@ impl FaceContent<'_> {
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
             if !self.faces.is_empty() {
-                self.draw_faces(ctx, rect);
+                let width = crate::presence::FaceStack::in_face(rect.height())
+                    .group_width(self.faces.len());
+                self.draw_faces(
+                    ctx,
+                    rect.center().x - width / 2.0,
+                    rect.center().y,
+                    rect.height(),
+                );
                 return;
             }
             if let Some((name, identity)) = self.avatar {
@@ -1453,6 +1481,11 @@ impl FaceContent<'_> {
             icon_px + metrics.icon_gap
         } else {
             0.0
+        } + if self.faces.is_empty() {
+            0.0
+        } else {
+            crate::presence::FaceStack::in_face(rect.height()).group_width(self.faces.len())
+                + metrics.icon_gap
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
         let trail = if self.menu {
@@ -1489,6 +1522,9 @@ impl FaceContent<'_> {
             let iy = rect.center().y - icon_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
             crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+        }
+        if !self.faces.is_empty() {
+            self.draw_faces(ctx, start_x, rect.center().y, rect.height());
         }
         let text_y = rect.y0 + (rect.height() - f64::from(label_h)) / 2.0;
         let label_x = start_x + lead;
@@ -1958,7 +1994,8 @@ impl<'a> ButtonFace<'a> {
                 // A painted face fills the rect its host gave it.
                 flush: false,
                 filled_icon: self.icon.is_some_and(|icon| {
-                    icon.is_brand() || icon == crate::icons::Icon::HeartFilled
+                    icon.is_brand()
+                        || icon == crate::icons::Icon::HeartFilled
                         || (self.on && fills_when_on(icon))
                 }),
                 menu: false,
@@ -2406,7 +2443,8 @@ impl Widget for Button {
                 label: &label,
                 hint,
                 filled_icon: self.icon.is_some_and(|icon| {
-                    icon.is_brand() || icon == crate::icons::Icon::HeartFilled
+                    icon.is_brand()
+                        || icon == crate::icons::Icon::HeartFilled
                         || (on && fills_when_on(icon))
                 }),
                 menu: self.opens_menu,

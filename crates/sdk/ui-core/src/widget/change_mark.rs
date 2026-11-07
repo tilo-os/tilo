@@ -21,6 +21,12 @@ pub struct ChangeMarkProps {
     pub of: Option<ResourceId>,
     /// Who made the newest change the person has not seen.
     pub by: Option<Person>,
+    /// Everyone who made one of the changes the person has not seen, newest first, each once.
+    pub by_all: Vec<Person>,
+    /// What the newest change did, in the words history says it with ("moved this to").
+    pub said: Option<String>,
+    /// What one item of it is called, plural ("tasks"): the noun a window's count names.
+    pub noun: Option<String>,
     /// The task run it was part of, as its task is titled.
     pub run: Option<String>,
     /// What they did: `created`, `changed` or `removed`.
@@ -36,11 +42,15 @@ pub struct ChangeMarkProps {
 }
 
 /// What a row shows of a change mark, at its own height ([`crate::widget::ListRow::change`]):
-/// who (identity and name), what is said of it, and what pressing their face does.
+/// who (identity and name), what they did said under the row's title, and what pressing their
+/// face does.
 pub struct RowMark {
     pub identity: String,
     pub name: String,
     pub spoken: String,
+    /// What the newest change did, one line under the row's title, "and N more" where there
+    /// are more; empty shows no line.
+    pub said: String,
     pub show: Option<Box<dyn FnMut()>>,
 }
 
@@ -52,6 +62,9 @@ impl ChangeMarkProps {
         Self {
             of: self.of.clone(),
             by: self.by.clone(),
+            by_all: self.by_all.clone(),
+            said: self.said.clone(),
+            noun: self.noun.clone(),
             run: self.run.clone(),
             kind: self.kind.clone(),
             count: self.count,
@@ -61,8 +74,8 @@ impl ChangeMarkProps {
     }
 
     /// The mark as a row carries it: the face of who changed it and their colour under the
-    /// row; who and the run said on hover and to assistive technology. `None` while nothing is
-    /// unseen.
+    /// row, and one line under the row's title saying what they did; who and the run said on
+    /// hover and to assistive technology. `None` while nothing is unseen.
     #[must_use]
     pub fn row(self) -> Option<RowMark> {
         let by = self.by?;
@@ -79,10 +92,31 @@ impl ChangeMarkProps {
             ),
             None => what,
         };
+        // What they did, under the row's title: the sentence history says of the change, after
+        // who did it, and how many more of the row's changes wait behind it.
+        let said = self
+            .said
+            .filter(|said| !said.is_empty())
+            .map_or_else(String::new, |said| {
+                let line = crate::i18n::widget_format(
+                    "change-mark-said",
+                    &[("who", by.name.clone().into()), ("said", said.into())],
+                );
+                let also = self.count.saturating_sub(1);
+                if also > 0 {
+                    crate::i18n::widget_format(
+                        "change-mark-said-more",
+                        &[("said", line.into()), ("count", also.into())],
+                    )
+                } else {
+                    line
+                }
+            });
         Some(RowMark {
             identity: by.identity,
             name: by.name,
             spoken,
+            said,
             show: self.activate.handler(),
         })
     }
@@ -105,60 +139,102 @@ impl ChangeMarkProps {
         })
     }
 
-    /// The pill: who and the run, in their colour, led by their face. `None` while nothing is
-    /// unseen (no `by`).
+    /// The header's mark: the faces of everyone who changed what the window shows, and a
+    /// label naming them and saying how many. `None` while nothing is unseen (no `by`).
     #[must_use]
-    pub fn chip(self, key: &str) -> Option<Chip> {
+    pub fn chip(self, key: &str) -> Option<Element> {
         let Self {
             by,
-            run,
-            kind,
+            by_all,
+            noun,
             count,
             window,
             activate,
             ..
         } = self;
         let by = by?;
-        let who = by.name.clone();
-        let did = match kind.as_deref() {
-            Some("created") => "change-mark-created",
-            Some("removed") => "change-mark-removed",
-            _ => "change-mark-changed",
+        let mut who: Vec<Person> = Vec::new();
+        for person in by_all.into_iter().chain(std::iter::once(by)) {
+            if !who.iter().any(|seen| seen.identity == person.identity) {
+                who.push(person);
+            }
+        }
+        // A row's mark shows one face; a window's shows everyone, its label naming the first
+        // few and its count saying what they changed.
+        let faces: Vec<(String, String)> = if window {
+            who.iter()
+                .map(|person| (person.name.clone(), person.identity.clone()))
+                .collect()
+        } else {
+            who.iter()
+                .take(1)
+                .map(|person| (person.name.clone(), person.identity.clone()))
+                .collect()
         };
-        let what = crate::i18n::widget_format(did, &[("who", who.clone().into())]);
-        // The face says who changed it, so the pill's text says the run alone: one fact each,
-        // never two joined into one line.
-        let run = run.filter(|run| !run.is_empty());
-        let label = match run.as_deref() {
-            _ if window => crate::i18n::widget_format(
-                "change-window",
-                &[("count", count.max(1).into()), ("who", who.clone().into())],
-            ),
-            Some(run) => run.to_owned(),
-            None => crate::i18n::widget_format("change-mark-who", &[("who", who.clone().into())]),
+        let count = count.max(1);
+        let label = if window {
+            let names = names(&who);
+            match noun.filter(|noun| !noun.is_empty()) {
+                Some(noun) => crate::i18n::widget_format(
+                    "change-window-changed",
+                    &[
+                        ("who", names.into()),
+                        ("count", count.into()),
+                        ("noun", noun.into()),
+                    ],
+                ),
+                None => crate::i18n::widget_format(
+                    "change-window",
+                    &[("count", count.into()), ("who", names.into())],
+                ),
+            }
+        } else {
+            let name = who
+                .first()
+                .map_or_else(String::new, |person| person.name.clone());
+            crate::i18n::widget_format("change-mark-who", &[("who", name.into())])
         };
-        let tooltip = match run {
-            Some(run) => crate::i18n::widget_format(
-                "change-mark-in-run",
-                &[("what", what.into()), ("run", run.into())],
-            ),
-            None => what,
+        let mut button = crate::widget::Button::new(key, &label)
+            .role(crate::widget::ButtonRole::Plain)
+            .with_faces_of(faces)
+            .with_accessible_name(&label)
+            .tooltip(label.clone());
+        button = match activate {
+            Event::None => button,
+            Event::Action(binding) => button.on_action(binding),
+            Event::View(intent) => button.on_view(intent.sender()),
         };
-        let hue = PresenceHue::of_identity(&by.identity);
-        let chip = Chip::new(label)
-            .with_id(key.to_owned())
-            .with_face(who.clone(), face_colour(hue))
-            .style(ChipStyle::Tinted(Tone::Presence(hue)))
-            .tooltip(tooltip)
-            .with_accessible_name(crate::i18n::widget_format(
-                "change-mark-open",
-                &[("who", who.into())],
-            ));
-        Some(match activate {
-            Event::None => chip,
-            Event::Action(binding) => chip.on_action(binding),
-            Event::View(intent) => chip.on_view(intent.sender()),
-        })
+        Some(Box::new(button))
+    }
+}
+
+/// What `people` are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout and
+/// Kit", and past three "Bo, Scout and 3 others" — the faces count the rest.
+fn names(people: &[Person]) -> String {
+    let name = |index: usize| -> String { people[index].name.clone() };
+    match people.len() {
+        0 => String::new(),
+        1 => name(0),
+        2 => crate::i18n::widget_format(
+            "change-mark-names-two",
+            &[("first", name(0).into()), ("second", name(1).into())],
+        ),
+        3 => crate::i18n::widget_format(
+            "change-mark-names-three",
+            &[
+                ("first", name(0).into()),
+                ("second", name(1).into()),
+                ("third", name(2).into()),
+            ],
+        ),
+        more => crate::i18n::widget_format(
+            "change-mark-names-more",
+            &[
+                ("first", name(0).into()),
+                ("second", name(1).into()),
+                ("count", i64::try_from(more - 2).unwrap_or(i64::MAX).into()),
+            ],
+        ),
     }
 }
 
@@ -176,7 +252,7 @@ pub fn entry() -> component::Entry {
         let key = source.key().to_owned();
         let props = ChangeMarkProps::from_source(source)?;
         Ok(match props.chip(&key) {
-            Some(chip) => Box::new(chip),
+            Some(chip) => chip,
             // Nothing unseen: nothing to show.
             None => Box::new(crate::widget::arrange::Stack::stack()),
         })

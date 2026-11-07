@@ -65,6 +65,28 @@ fn principal(node: &UiNode, prop: &str) -> Option<String> {
     }
 }
 
+/// Everyone the mark names, in the order it names them.
+fn principals(node: &UiNode) -> Vec<String> {
+    match node.props.get("by_all") {
+        Some(Value::List(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::Principal(who) => Some(who.0.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// What the mark says the newest change did, as the line under the row's title.
+fn said(node: &UiNode) -> String {
+    match node.props.get("said") {
+        Some(Value::Text(said)) => said.clone(),
+        other => panic!("a mark says what was done: {other:?}"),
+    }
+}
+
 fn marked<'m>(marks: &'m [(String, Option<UiNode>)], id: &str) -> Option<&'m UiNode> {
     marks
         .iter()
@@ -96,6 +118,16 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
         );
         assert_eq!(mark.props.get("kind"), Some(&Value::text(kind)));
     }
+    // What each marked row says under its title: the change in words.
+    assert_eq!(
+        said(marked(&marks, &made.id_string()).unwrap()),
+        "created this"
+    );
+    assert!(
+        said(marked(&marks, &groceries.id_string()).unwrap()).contains("title"),
+        "the renamed note says what changed: {}",
+        said(marked(&marks, &groceries.id_string()).unwrap())
+    );
     // The window's header counts what changed in it, and by whom.
     let window = all(notebook.tree(), "ui.ChangeMark")
         .into_iter()
@@ -103,6 +135,15 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
         .cloned()
         .expect("the window's header is marked");
     assert_eq!(principal(&window, "by").as_deref(), Some(AGENT));
+    assert_eq!(
+        principals(&window),
+        vec![AGENT.to_owned()],
+        "the header names everyone who changed it"
+    );
+    assert!(
+        matches!(window.props.get("noun"), Some(Value::Text(noun)) if !noun.is_empty()),
+        "the header's count names what changed: {window:?}"
+    );
     assert!(
         matches!(window.props.get("count"), Some(Value::Int(n)) if *n >= 2),
         "{window:?}"
@@ -132,6 +173,41 @@ fn the_host_marks_rows_and_the_window_and_a_mark_shows_its_run() {
     assert!(
         all(notebook.tree(), "ui.ChangeMark").is_empty(),
         "the window's mark is gone"
+    );
+}
+
+/// The window's mark names everyone who changed what it shows, newest first: not only whoever
+/// happened to change it last.
+#[test]
+fn the_header_names_everyone_who_changed_it() {
+    const BO: &str = "bo";
+    const SORTED: &str = "issue-8@8000000000000001";
+    let Tidied { mut ada, .. } = a_run_in_notes_and_tasks();
+    let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
+    call(&ada, BO, NOTES_APP, "new_note", vec![notes]);
+    ada.commit_in_run(BO, SORTED, "Sort the paper mail");
+
+    let mut notebook = ada.view(NOTES_APP);
+    notebook.poll_patches().unwrap();
+    let window = all(notebook.tree(), "ui.ChangeMark")
+        .into_iter()
+        .find(|m| m.props.get("window") == Some(&Value::Bool(true)))
+        .cloned()
+        .expect("the window's header is marked");
+    let mut who = principals(&window);
+    who.sort();
+    assert_eq!(
+        who,
+        {
+            let mut expected = vec![BO.to_owned(), AGENT.to_owned()];
+            expected.sort();
+            expected
+        },
+        "the header names everyone who changed it"
+    );
+    assert!(
+        matches!(window.props.get("count"), Some(Value::Int(n)) if *n >= 3),
+        "every change is counted: {window:?}"
     );
 }
 

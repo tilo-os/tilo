@@ -1165,6 +1165,7 @@ struct Changed {
     identity: String,
     name: String,
     spoken: String,
+    said: String,
     show: Option<Box<dyn FnMut()>>,
 }
 
@@ -1768,14 +1769,15 @@ impl ListRow {
 
     /// A change `identity` (called `name`) made to what the row shows and the person has not
     /// seen: their face on the trailing edge and their colour faintly under the row, at its own
-    /// height; `spoken` (who, in which run) on hover and to assistive technology; pressing the
-    /// face runs `show`.
+    /// height, and `said` as a line under the row's title; `spoken` (who, in which run) on hover
+    /// and to assistive technology; pressing the face runs `show`.
     #[must_use]
     pub fn change(
         mut self,
         identity: impl Into<String>,
         name: impl Into<String>,
         spoken: impl Into<String>,
+        said: impl Into<String>,
         show: Option<Box<dyn FnMut()>>,
     ) -> Self {
         let spoken = spoken.into();
@@ -1786,6 +1788,7 @@ impl ListRow {
             identity: identity.into(),
             name: name.into(),
             spoken,
+            said: said.into(),
             show,
         });
         self
@@ -2363,6 +2366,7 @@ impl ListRow {
                 identity: &change.identity,
                 name: &change.name,
                 spoken: &change.spoken,
+                said: &change.said,
             });
         }
         if let Some((kind, id)) = &self.status {

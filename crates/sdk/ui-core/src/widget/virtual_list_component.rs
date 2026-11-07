@@ -821,7 +821,7 @@ fn bare_row(
                     row = row.struck();
                 }
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
-                    row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
+                    row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
                 // A tree indents the row's content one disclosure gutter per depth, its lift
