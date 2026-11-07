@@ -207,25 +207,14 @@ struct Rest {
     rounds: u32,
 }
 
-/// The frame the window runs now: the frame of what the host just did (its patches wake the
-/// window and the frame reads them), or one it owes itself (a wake, a deadline, an animation). A
-/// window at rest runs none: asking it by hand (`Window::frame`) is asking it to lay out and draw
-/// again, which is work no person's interaction made. A frame only a clock asks for is not a
-/// step's cost either — these tests settle motion — so the window runs one where it has work
-/// queued ([`ui::headless::FrameSchedule::queued_work`]), not for widget dirtiness, which leaves
-/// default to dirty and keep until a later frame draws them.
+/// The frame the window runs now: the frame of what the host just did (the patches it published
+/// wake the window and the frame takes them in). A window at rest runs none, and nothing is asked
+/// of it by hand (`Window::frame`), which lays out and draws again work no person's interaction
+/// made. What a frame it runs is asked for by is the host's change, not widget dirtiness, which
+/// leaves default to dirty and keeps until a later frame draws them.
 fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     match &mut session.window {
-        Window::Harness(window) => {
-            if changed {
-                window.relayout();
-                return true;
-            }
-            if !window.frame_schedule().queued_work {
-                return false;
-            }
-            window.poll_frame().unwrap_or(true)
-        }
+        Window::Harness(window) => changed && window.poll_frame().unwrap_or(true),
         Window::Live(app) => {
             Window::live_frame(app);
             true
@@ -254,7 +243,11 @@ fn at_rest(session: &mut Session) -> Rest {
                 rest.full = rest.full.saturating_add(1);
             }
         }
-        if changed || framed {
+        // The step is over when the host has nothing left to show the window. What an instance
+        // reads off its frames — its publication sweeping the workspace's records, one a turn,
+        // waking the window as each moves what a view shows — is the workspace's work, sized by
+        // the workspace and not by what the person did, so it does not hold the window here.
+        if changed {
             quiet = 0;
         } else {
             quiet = quiet.saturating_add(1);
