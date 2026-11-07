@@ -1,7 +1,7 @@
 //! A window an app asks for: it lands after the focused window of the shown
 //! strip, which it makes when the workspace holds none yet.
 
-use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth};
+use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
 use super::{RowOp, Shared};
 use crate::TileSource;
@@ -50,6 +50,18 @@ pub(super) fn open(tiles: &mut dyn TileSource, shared: &mut Shared, app: &str) -
             focus_history: Vec::new(),
         },
     );
+    // A window group the canvas does not place is a window neither the framed
+    // canvas, the spaces canvas nor the traditional desktop draws: the desk a
+    // person just opened an app on would look empty. The group takes a place
+    // as any other group does, by the same rule ([`Arrangement::place_missing`]).
+    if let Some(workspace) = shared.tree.workspaces.iter_mut().find(|w| w.slot == slot) {
+        let Workspace {
+            strips,
+            arrangement,
+            ..
+        } = workspace;
+        arrangement.place_missing(strips);
+    }
     shared.tree.set_active_group(strip, group_id);
     shared.tree.external_revision = shared.tree.external_revision.wrapping_add(1);
     Some(RowOp::Open {

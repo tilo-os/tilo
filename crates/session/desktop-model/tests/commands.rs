@@ -131,6 +131,72 @@ fn open_app_lands_in_a_new_group_of_the_last_owned_strip() {
     assert_eq!(workspace.strips[0].window_groups.len(), 2);
 }
 
+/// A window the desk opens takes a place on the canvas without anyone naming one: the framed
+/// canvas, the spaces canvas and the traditional desktop draw a window group by its place, so
+/// a group with none stands on none of them and a desk a person opened an app on looks empty.
+/// The place runs on from the strip's windows, and a place already given is kept.
+#[test]
+fn an_opened_window_takes_a_place_the_canvas_can_draw_where_none_was_named() {
+    let mut workspace = workspace_with_group();
+    let held = workspace.arrangement.place_of(20);
+    assert_eq!(held, None, "nothing has placed this window yet");
+    apply_command(
+        &mut workspace,
+        &DesktopCommand::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+        },
+        &mut minter(200),
+        &mut create,
+    )
+    .unwrap();
+    let opened = workspace.strips[0].window_groups[1].id;
+    let place = workspace
+        .arrangement
+        .place_of(opened)
+        .expect("the window the desk opened stands on the canvas");
+    assert!(place.width > 0 && place.height > 0, "{place:?}");
+    // The group that was there took one too, at the strip's first point.
+    let first = workspace
+        .arrangement
+        .place_of(20)
+        .expect("the window that was there stands too");
+    assert_eq!((first.x, first.y), (0, 0), "a strip starts at its corner");
+    assert!(
+        i64::from(place.x) >= first.right(),
+        "the window the desk opened runs on from the one before it: {place:?} after {first:?}"
+    );
+
+    // A place someone gave is never moved: the desk only fills in what none stands on.
+    let given = tilo_desktop_model::arrangement::CanvasPlace::new(-400, 250, 640, 480);
+    apply_command(
+        &mut workspace,
+        &DesktopCommand::PlaceGroup {
+            group: opened,
+            place: given,
+        },
+        &mut minter(300),
+        &mut create,
+    )
+    .unwrap();
+    assert_eq!(workspace.arrangement.place_of(opened), Some(given));
+    apply_command(
+        &mut workspace,
+        &DesktopCommand::OpenApp {
+            app: "so.tilo.files".into(),
+            beside: None,
+        },
+        &mut minter(400),
+        &mut create,
+    )
+    .unwrap();
+    assert_eq!(
+        workspace.arrangement.place_of(opened),
+        Some(given),
+        "a window that stands where the person put it is not moved"
+    );
+}
+
 /// An open for an actor names the group its view is in: the owner places
 /// the new view right after it, on that group's strip, never at the end.
 #[test]
