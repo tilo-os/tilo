@@ -89,7 +89,7 @@ pub(super) fn note_versions<'c>(
 /// person has seen them go ([`idx::REMOVED`]).
 fn removed(index: &Versions) -> Removed {
     let mut removed: Removed = BTreeMap::new();
-    for (resource, (stamp, version)) in &index.removed {
+    for (resource, (_, version)) in &index.removed {
         let Some(left) = version.left.as_ref() else {
             continue;
         };
@@ -99,7 +99,6 @@ fn removed(index: &Versions) -> Removed {
             .push(LeftRow {
                 path: resource.clone(),
                 version: version.clone(),
-                op: stamp.op,
             });
     }
     removed

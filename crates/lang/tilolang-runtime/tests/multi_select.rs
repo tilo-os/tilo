@@ -8,10 +8,7 @@ mod common;
 #[cfg(test)]
 mod cases {
     use super::common::*;
-    use tilolang_runtime::store::versions_in;
-    use tilolang_runtime::{
-        AmStore, ChangeNote, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance,
-    };
+    use tilolang_runtime::{AmStore, Principal, ResourceRef, Runtime, UiNode, Value, ViewInstance};
 
     const TASKS: &str = include_str!("../../../../apps/tl/tasks/app.tl");
     /// What a task's page says about it: tasks are made from discussions of them.
@@ -75,14 +72,9 @@ mod cases {
             window
         }
 
-        /// The notes of the document the resource stands in.
-        fn notes(&self, at: &ResourceRef) -> Vec<ChangeNote> {
-            self.rt.history(&at.doc).unwrap()
-        }
-
         /// The versions the resource's own changes made, oldest first.
         fn versions(&self, at: &ResourceRef) -> Vec<tilolang_runtime::store::Version> {
-            versions_in(&self.notes(at), at)
+            self.rt.versions(at).unwrap()
         }
 
         /// The task's last change as `(change, count, action)`.

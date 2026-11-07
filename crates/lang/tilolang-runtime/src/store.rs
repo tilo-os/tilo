@@ -407,6 +407,13 @@ pub struct Version {
     /// The change that made it, as its store names changes; empty while provisional. What a
     /// seen mark names ([`crate::seen`]).
     pub change: String,
+    /// The counter of the change's first operation: the change's place in the record's causal
+    /// order, which every replica agrees on however the change reached it. A change made on
+    /// top of another counts past every operation of it, so of two versions recorded in the
+    /// same second the later change is the later version; [`u64::MAX`] for an action this
+    /// device has not committed yet.
+    #[serde(default)]
+    pub op: u64,
     /// For an item it removed, where the item stood: what a list that held it shows of it
     /// until the person has seen its removal.
     pub left: Option<Left>,
@@ -425,6 +432,26 @@ pub struct Version {
     /// How many items the change was made over ([`ChangeNote::count`]): more than one for one
     /// action applied to many items at once.
     pub count: u32,
+}
+
+impl Version {
+    /// What orders two versions, the same on every replica: when it happened, then the
+    /// change's causal place for the versions one second holds, then the change itself for two
+    /// that are neither before the other.
+    #[must_use]
+    pub fn order(&self) -> (&str, u64, &str) {
+        // Two people changing a resource apart each hold the version they made last until
+        // their changes reach each other, and the one made later in the day is the last
+        // version both read once they have. The change's place in the log says nothing there,
+        // since a replica holds the changes in the order they reached it.
+        (&self.at, self.op, &self.change)
+    }
+
+    /// Whether this version comes before `other` ([`Self::order`]).
+    #[must_use]
+    pub fn before(&self, other: &Self) -> bool {
+        self.order() < other.order()
+    }
 }
 
 /// Where a removed item stood ([`Version::left`]).
@@ -607,22 +634,28 @@ pub fn field_of_changed(id: &str) -> Option<&str> {
     id.strip_prefix(CHANGED).filter(|field| !field.is_empty())
 }
 
-/// The versions of `at` among a document's change notes, oldest first: the changes whose
-/// resources include it (named by id, or by the path an older change named it by).
+/// The versions of `at` among a document's changes, oldest first ([`Version::order`]): the
+/// changes whose resources include it (named by id, or by the path an older change named it
+/// by), whatever order the changes reached this replica in.
 #[must_use]
-pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
+pub fn versions_in<'c>(
+    changes: impl IntoIterator<Item = &'c automerge::Change>,
+    at: &ResourceRef,
+) -> Vec<Version> {
     let id = at.id_string();
     // A change is named by its place in the document's log.
     let mut making = true;
-    notes
-        .iter()
+    let mut versions: Vec<Version> = changes
+        .into_iter()
         .enumerate()
-        .filter(|(_, note)| {
+        .filter_map(|(n, change)| {
+            let note: ChangeNote = serde_json::from_str(change.message()?).ok()?;
             note.touched
                 .iter()
                 .any(|touched| *touched == id || crate::value::flat_id(touched) == id)
+                .then_some((n, note, change))
         })
-        .map(|(n, note)| {
+        .map(|(n, note, change)| {
             let kind = if note.action == CREATE_ACTION {
                 VersionKind::Created
             } else {
@@ -642,6 +675,7 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 fields: Vec::new(),
                 resource: id.clone(),
                 change: n.to_string(),
+                op: change.start_op().get(),
                 left: None,
                 placed: Vec::new(),
                 // What it was made from is a fact of the change that made it.
@@ -650,7 +684,9 @@ pub fn versions_in(notes: &[ChangeNote], at: &ResourceRef) -> Vec<Version> {
                 count: note.count.max(1),
             }
         })
-        .collect()
+        .collect();
+    versions.sort_by(|one, other| one.order().cmp(&other.order()));
+    versions
 }
 
 /// The last version of `versions` (oldest first) that changed the field `field`
@@ -1419,15 +1455,15 @@ pub trait Store {
     ///
     /// `NotFound` for a missing document.
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError>;
-    /// The versions of the resource `at`, oldest first: each change that changed it, with who
-    /// made it, when, and which action (reflection: `created(r)`, `updated(r)`, `history(r)`).
+    /// The versions of the resource `at`, oldest first ([`Version::order`]): each change that
+    /// changed it, with who made it, when, and which action (reflection: `created(r)`,
+    /// `updated(r)`, `history(r)`). A store reads them from its log, which says where each
+    /// change stands causally ([`Version::op`]).
     ///
     /// # Errors
     ///
     /// As [`Store::history`].
-    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        Ok(versions_in(&self.history(&at.doc)?, at))
-    }
+    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError>;
 
     /// The first version of the resource `at` (`created(r)`), or its last (`updated(r)`,
     /// `last`). A store with an index keeps both per resource, so a view showing them, or a

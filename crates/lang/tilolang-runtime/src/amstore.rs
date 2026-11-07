@@ -1078,15 +1078,23 @@ impl Store for AmStore {
             .collect())
     }
 
+    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        let inner = self.inner.borrow();
+        let am = inner.doc(&at.doc)?;
+        Ok(crate::store::versions_in(
+            am.committed_document().get_changes(&[]).iter(),
+            at,
+        ))
+    }
+
     fn run_changes(&self, run: &str) -> Result<Vec<Version>, StoreError> {
         let inner = self.inner.borrow();
         let mut out = Vec::new();
         for (id, doc) in &inner.docs {
-            let notes: Vec<ChangeNote> = doc
-                .committed_document()
-                .get_changes(&[])
+            let changes = doc.committed_document().get_changes(&[]);
+            let notes: Vec<ChangeNote> = changes
                 .iter()
-                .filter_map(|c| c.message().and_then(|m| serde_json::from_str(m).ok()))
+                .filter_map(|change| change.message().and_then(|m| serde_json::from_str(m).ok()))
                 .collect();
             let mut touched: Vec<&String> = notes
                 .iter()
@@ -1099,13 +1107,17 @@ impl Store for AmStore {
                 let at = ResourceRef::parse_id(resource, String::new())
                     .unwrap_or_else(|| ResourceRef::root(id.clone(), String::new()));
                 out.extend(
-                    crate::store::versions_in(&notes, &at)
+                    crate::store::versions_in(changes.iter(), &at)
                         .into_iter()
                         .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run)),
                 );
             }
         }
-        out.sort_by(|a, b| a.at.cmp(&b.at));
+        out.sort_by(|a, b| {
+            a.order()
+                .cmp(&b.order())
+                .then_with(|| a.resource.cmp(&b.resource))
+        });
         Ok(out)
     }
 
@@ -1204,13 +1216,14 @@ impl Store for AmStore {
         let inner = self.inner.borrow();
         let mut out: Vec<Link> = Vec::new();
         for doc in inner.docs.keys() {
-            let notes = self.history(doc).unwrap_or_default();
+            let am = inner.doc(doc)?;
+            let changes = am.committed_document().get_changes(&[]);
             for of in inner.resources(doc)? {
                 let id = of.id_string();
                 if id == target {
                     continue;
                 }
-                let made = crate::store::versions_in(&notes, &of)
+                let made = crate::store::versions_in(changes.iter(), &of)
                     .first()
                     .and_then(|version| version.from.as_ref())
                     .is_some_and(|from| from.id_string() == target);

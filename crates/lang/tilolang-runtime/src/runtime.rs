@@ -1340,6 +1340,16 @@ impl Runtime {
         Ok(self.core.store.borrow().history(doc)?)
     }
 
+    /// The versions of the resource `at`, oldest first ([`Version::order`]): who made each
+    /// change that changed it, when, and by which action.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::history`].
+    pub fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, RuntimeError> {
+        Ok(self.core.store.borrow().versions(at)?)
+    }
+
     /// The modules currently compiled.
     pub fn compiled_modules(&self) -> usize {
         self.core.engine.cached_modules()

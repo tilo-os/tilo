@@ -526,20 +526,18 @@ fn write_ends(sink: &mut impl Sink, resource: &str, end: &Ends) -> Result<(), In
     Ok(())
 }
 
-/// A row of what left a collection: the item, the version that removed it, and the counter of
-/// that change's first operation, which orders two removals recorded in the same second.
+/// A row of what left a collection: the item, and the version that removed it, which says
+/// when that happened and where the change stands causally.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LeftRow {
     pub path: String,
     pub version: Version,
-    #[serde(default)]
-    pub op: u64,
 }
 
 impl LeftRow {
-    /// What orders it among the rows of what left a collection, as [`Stamp`] orders versions.
+    /// What orders it among the rows of what left a collection, as [`Version`] orders versions.
     fn order(&self) -> (&str, u64, &str) {
-        (&self.version.at, self.op, &self.version.change)
+        self.version.order()
     }
 
     /// Whether it left before `other`.
@@ -709,7 +707,6 @@ fn left_version(stamp: &Stamp, path: &str, key: &FieldKey, ty: Option<String>) -
     LeftRow {
         path: path.to_owned(),
         version,
-        op: stamp.op,
     }
 }
 

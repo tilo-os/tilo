@@ -808,6 +808,12 @@ impl TiloStore {
                         &inner.index,
                     );
                 }
+                // Oldest first, by [`Version::order`]: the order the changes reached this
+                // replica in says nothing of when they happened or of where they stand
+                // causally, and every replica reads one history.
+                for held in built.by_resource.values_mut() {
+                    held.sort_by(|one, other| one.order().cmp(&other.order()));
+                }
                 inner.versions = Some(built);
             }
         }
@@ -1805,12 +1811,11 @@ impl Inner {
                 task: note.group.clone(),
                 from: note.from.clone(),
                 count: note.count.max(1),
+                // No change yet: the action was invoked on top of every change this device
+                // holds, so it orders after each of them recorded in the same second.
+                op: idx::reflect::PROVISIONAL,
                 ..Version::default()
             },
-            // No change yet: the action was invoked on top of every change this device
-            // holds, so it orders after each of them recorded in the same second.
-            change: String::new(),
-            op: idx::reflect::PROVISIONAL,
         };
         let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
         let mut ends = Ends::new();
@@ -2647,7 +2652,11 @@ impl Store for TiloStore {
             .filter(|v| v.task.as_ref().is_some_and(|task| task.id == run))
             .cloned()
             .collect();
-        out.sort_by(|a, b| (&a.at, &a.change, &a.resource).cmp(&(&b.at, &b.change, &b.resource)));
+        out.sort_by(|a, b| {
+            a.order()
+                .cmp(&b.order())
+                .then_with(|| a.resource.cmp(&b.resource))
+        });
         Ok(out)
     }
 

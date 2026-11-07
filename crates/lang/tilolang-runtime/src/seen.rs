@@ -140,6 +140,7 @@ mod tests {
             fields: Vec::new(),
             resource: "d".to_owned(),
             change: change.to_owned(),
+            op: 0,
             count: 1,
             left: None,
             placed: Vec::new(),

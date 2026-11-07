@@ -75,18 +75,11 @@ pub fn field(id: &str) -> Option<&'static FieldSchema> {
     FIELDS.iter().find(|f| f.id == id)
 }
 
-/// One version of a resource as the index keeps it: the runtime's [`Version`] and the change
-/// that made it, which orders two versions recorded at the same time.
+/// One version of a resource as the index keeps it: the runtime's [`Version`], which says
+/// when the change happened, where it stands causally and which change it is.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Stamp {
     pub version: Version,
-    /// The change's hash, as hex.
-    pub change: String,
-    /// The counter of the change's first operation: a change made on top of another counts
-    /// past every operation of it, so of two versions recorded in the same second the later
-    /// change is the later version. [`PROVISIONAL`] for an action this device has not
-    /// committed yet.
-    pub op: u64,
 }
 
 /// The causal place of an action this device invoked and has not committed yet: after every
@@ -95,19 +88,13 @@ pub const PROVISIONAL: u64 = u64::MAX;
 
 impl Stamp {
     pub(crate) fn order(&self) -> (&str, u64, &str) {
-        // When it happened first: two people changing a resource apart each hold the version
-        // they made last until they exchange them, and the one made later in the day is the
-        // last version both read once they have. The change's place in the log says nothing
-        // there, since a replica holds the changes in the order they reached it. The counter
-        // orders the versions one second holds, and a change made on top of the other counts
-        // past it on every replica; the hash orders two that are neither before the other.
-        (&self.version.at, self.op, &self.change)
+        self.version.order()
     }
 
     /// Whether this version comes before `other`.
     #[must_use]
     pub fn before(&self, other: &Self) -> bool {
-        self.order() < other.order()
+        self.version.before(&other.version)
     }
 
     /// This stamp as the version of the resource it is kept under, changed in `fields`: what it
@@ -127,8 +114,8 @@ impl Stamp {
             "at": self.version.at,
             "action": self.version.action,
             "kind": self.version.kind.word(),
-            "change": self.change,
-            "op": self.op,
+            "change": self.version.change,
+            "op": self.version.op,
         });
         if let (Some(task), Some(map)) = (&self.version.task, held.as_object_mut()) {
             map.insert(
@@ -201,7 +188,6 @@ impl Stamp {
                     .collect()
             })
             .unwrap_or_default();
-        let change = text("change").unwrap_or_default();
         Some(Self {
             version: Version {
                 who: text("who")?,
@@ -209,7 +195,8 @@ impl Stamp {
                 at: text("at")?,
                 action: text("action")?,
                 task,
-                change: change.clone(),
+                change: text("change").unwrap_or_default(),
+                op: json.get("op").and_then(Json::as_u64)?,
                 from,
                 suggested_by: text("suggested_by"),
                 // An index written before versions named what they did holds only changes.
@@ -223,8 +210,6 @@ impl Stamp {
                     .unwrap_or(1),
                 ..Version::default()
             },
-            change,
-            op: json.get("op").and_then(Json::as_u64)?,
         })
     }
 }
@@ -374,14 +359,13 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<TaskRun>
             at,
             action: action.action_id.clone(),
             task: task.clone(),
-            change: hash.clone(),
+            change: hash,
+            op: change.start_op().get(),
             from: action.authorship.from.clone(),
             suggested_by: action.authorship.suggested_by.clone(),
             count: action.authorship.count.max(1),
             ..Version::default()
         },
-        change: hash,
-        op: change.start_op().get(),
     };
     Some((stamp, action, task))
 }
@@ -437,7 +421,6 @@ impl Ends {
                 kind: self.last_kind,
                 ..self.last.version.clone()
             },
-            ..self.last.clone()
         }
     }
 
@@ -640,12 +623,11 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
             task: task_of(&context),
-            change: hash.clone(),
+            change: hash,
+            op: change.start_op().get(),
             count: 1,
             ..Version::default()
         },
-        change: hash,
-        op: change.start_op().get(),
     })
 }
 
@@ -688,10 +670,10 @@ mod tests {
             version: Version {
                 who: "ada".to_owned(),
                 at: at.to_owned(),
+                change: change.to_owned(),
+                op,
                 ..Version::default()
             },
-            change: change.to_owned(),
-            op,
         }
     }
 
