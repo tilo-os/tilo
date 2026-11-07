@@ -739,8 +739,11 @@ fn declared_shortcuts(
         {
             continue;
         }
-        if let Some(run) = item.choose.clone().command() {
-            out.push((shortcut, run));
+        // A command the view bound to a published action is that action, which the host runs
+        // from its own key; only the view's own events run from here.
+        let press = crate::widget::Press::of(item.choose.clone());
+        if press.address().is_none() && !press.is_none() {
+            out.push((shortcut, press.runner()));
         }
     }
     out

@@ -31,6 +31,9 @@ pub(super) fn index_error(error: IndexError) -> StoreError {
 pub struct View<'a> {
     pub snapshot: &'a Arc<Snapshot>,
     pub overlay: &'a Arc<Overlay>,
+    /// The time it is read at: what a column reading the clock holds of an item the open writes
+    /// changed ([`super::Clock`]).
+    pub clock: super::Clock,
 }
 
 /// A resource holding text, as [`View::every_text`] lists it.
@@ -241,6 +244,7 @@ impl View<'_> {
     ) -> super::merged::Locate {
         let snapshot = Arc::clone(self.snapshot);
         let overlay = Arc::clone(self.overlay);
+        let clock = self.clock;
         let resource = resource.to_owned();
         let field = field.to_owned();
         let column = column.map(|(ty, name)| (ty.to_owned(), name.to_owned()));
@@ -248,6 +252,7 @@ impl View<'_> {
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             let column = column
                 .as_ref()
@@ -298,7 +303,7 @@ impl View<'_> {
         schema: &TypeSchema,
         column: &crate::schema::ColumnSchema,
     ) -> Result<Vec<String>, IndexError> {
-        super::columns::values(column, schema, &mut |f| {
+        super::columns::values(column, schema, self.clock, &mut |f| {
             if f.kind == MergeKind::Collection {
                 let len = self.list(path, &f.id)?.len();
                 return Ok(FieldValue::Counter(i64::try_from(len).unwrap_or(i64::MAX)));

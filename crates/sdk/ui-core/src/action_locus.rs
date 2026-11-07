@@ -137,8 +137,18 @@ fn visit_action_ui_routes<'tree>(
     address: &tilo_actions::ActionAddress,
     visit: &mut ActionRouteVisitor<'tree, '_>,
 ) {
+    // A widget composed in two places of one window reports its control twice
+    // with the same binding: the same expression, listed twice. Only distinct
+    // bindings sharing a key can name different expressions.
+    let mut unique: Vec<&crate::widget::ControlBindingMetadata> =
+        Vec::with_capacity(bindings.len());
     for binding in bindings {
-        if bindings
+        if !unique.contains(&binding) {
+            unique.push(binding);
+        }
+    }
+    for binding in &unique {
+        if unique
             .iter()
             .filter(|candidate| candidate.control_id == binding.control_id)
             .count()

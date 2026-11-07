@@ -212,6 +212,19 @@ impl SemanticId {
     fn synthetic(parent: &SemanticId, index: usize) -> Self {
         SemanticId(format!("{}~{}", parent.0, index))
     }
+    /// The id of a synthetic control under `parent`: keyed by its semantic key, as a widget's
+    /// own node is, since that is the control id its binding names
+    /// ([`crate::a11y::AccessNode::with_action_target`]); a control without one keeps the key
+    /// it hashed, or else its place among its siblings.
+    fn synthetic_of(parent: &SemanticId, index: usize, access: &crate::a11y::AccessNode) -> Self {
+        if let Some(key) = &access.semantic_key {
+            return SemanticId::keyed(parent, key);
+        }
+        access.key.map_or_else(
+            || SemanticId::synthetic(parent, index),
+            |key| SemanticId::keyed(parent, key),
+        )
+    }
     fn keyed(parent: &SemanticId, key: impl std::fmt::Display) -> Self {
         SemanticId(format!("{}{KEYED}{}", parent.0, key))
     }
@@ -1442,10 +1455,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             );
             return;
         }
-        let id = access.node().key.map_or_else(
-            || SemanticId::synthetic(&parent.id, index),
-            |key| SemanticId::keyed(&parent.id, key),
-        );
+        let id = SemanticId::synthetic_of(&parent.id, index, access.node());
         if let Some(retained) = self.retained_before.remove(&id)
             && retained.durable == parent.durable
             && retained.owner == parent.owner
@@ -1690,13 +1700,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         parent: &mut Level,
     ) -> ((), Level) {
         let index = path.last().copied().unwrap_or_default();
-        let id = access.key.map_or_else(
-            || SemanticId::synthetic(&parent.id, index),
-            |key| SemanticId::keyed(&parent.id, key),
-        );
+        let id = SemanticId::synthetic_of(&parent.id, index, access);
         let level = Level {
             id,
-            durable: access.key.is_some() && parent.durable,
+            durable: access.semantic_key.is_some() && parent.durable,
             owner: parent.owner,
             children: Vec::new(),
         };

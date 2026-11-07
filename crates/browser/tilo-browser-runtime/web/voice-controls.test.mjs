@@ -97,6 +97,25 @@ test('an active call polls the retained controls even when the canvas stops redr
 });
 
 
+test('a page with no call still has its lane served: Chat watches the rosters there', async () => {
+  const f = fixture();
+  let scheduled;
+  let schedules = 0;
+  let cleared = false;
+  const clock = {setTimeout: next => {scheduled = next; schedules++; return 1;}, clearTimeout: () => {cleared = true;}};
+  let looks = 0;
+  f.voice.call.subscribe = () => () => {};
+  const pump = createMediaPump({voice: f.voice, workspace: 'room-1', id: 1n, active: () => true, clock,
+    runtime: {take_media_requests: () => {looks++; return '[]';}}});
+  pump.pump();
+  assert.equal(looks, 1);
+  assert.equal(typeof scheduled, 'function', 'a call starting elsewhere is heard with no call here');
+  scheduled();
+  assert.equal(looks, 2);
+  pump.close();
+  assert.equal(cleared, true);
+});
+
 test('two shared Chat surfaces cannot mute or leave one another’s call', async () => {
   const f = fixture();
   await f.controls.execute({...f.request({op: 'join', channel_id: 'standup'}), instance: '1'});

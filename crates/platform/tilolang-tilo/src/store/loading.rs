@@ -116,14 +116,16 @@ pub(super) fn unloaded(inner: &Inner, chunk: ChunkNo) -> bool {
 }
 
 /// The chunks the plan of a write names that the store was not sent: a collection's items go to
-/// the chunk of its newest run, which the resource's own chunk need not be.
+/// the chunk of its newest run, which the resource's own chunk need not be. A chunk the manifest
+/// names not at all is one the write starts ([`unloaded`]): there is nothing to load, and the plan
+/// it was made from stands.
 pub(super) fn planned_unheld(inner: &Inner, planned: &Planned) -> Vec<ChunkNo> {
     let mut needed: Vec<ChunkNo> = Vec::new();
     for edit in &planned.edits {
         let chunk = edit
             .chunk()
             .unwrap_or_else(|| inner.chunks.chunk(edit.resource()));
-        if inner.chunks.mirror(chunk).is_none() && !needed.contains(&chunk) {
+        if unloaded(inner, chunk) && !needed.contains(&chunk) {
             needed.push(chunk);
         }
     }

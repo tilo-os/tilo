@@ -94,7 +94,7 @@ postcard = { workspace = true, optional = true }
 # What the players on the session bus are, as the audio service publishes
 # them: the now-playing reading is made from it. No browser has that bus, and
 # no browser build links it.
-audio = { package = "tilo-audio-service", path = "../audio-service", default-features = false }
+audio = { package = "tilo-audio-service", version = "0.1.0", path = "../audio-service", default-features = false }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Search's palette is drawn and answered by the chrome over the windows: the

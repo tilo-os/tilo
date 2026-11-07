@@ -254,6 +254,13 @@ export function createLiveLayer(peer, runtime, workspace, {
   /** What each member last said of itself, merged: the presence frame its
    * messages add up to. */
   const said = new Map();
+  /** The parts of that frame a shell message carries whole: who the member
+   * is, the window they work in, their caret, their place, chat, reaction and
+   * windows. A shell message that does not name one is one they no longer
+   * have (their caret left the channel with the call), never the part their
+   * previous message left behind. What other messages carry — their pointer,
+   * their wave, who they follow — is theirs to keep saying. */
+  const SHELL_SAID = ['focus', 'selection', 'participant', 'place', 'chat', 'reaction', 'layout'];
   const members = new Set();
   const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
   const emit = (kind, value) => { for (const listener of [...listeners[kind]]) { try { listener(value); } catch {} } };
@@ -361,7 +368,13 @@ export function createLiveLayer(peer, runtime, workspace, {
         case 'durable': durableChanged(event.record); break;
         case 'arrived': member(event.publisher, true); break;
         case 'left': member(event.publisher, false); break;
-        case 'shell': member(event.publisher, true); heard(event.publisher, {...event.frame}, nowMs); break;
+        case 'shell': {
+          member(event.publisher, true);
+          const whole = {...event.frame};
+          for (const part of SHELL_SAID) whole[part] ??= null;
+          heard(event.publisher, whole, nowMs);
+          break;
+        }
         case 'pointer': member(event.publisher, true); heard(event.publisher, {pointer: {tile: {tab: event.tab}, at: event.at}, sentAtMs: event.sentAtMs}, nowMs); break;
         case 'pointerLeft': heard(event.publisher, {pointer: null}, nowMs); break;
         case 'wave': heard(event.publisher, {wave: event.wave}, nowMs); break;

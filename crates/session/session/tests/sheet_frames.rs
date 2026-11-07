@@ -74,25 +74,24 @@ fn snapshot(session: &mut Session, socket: &Path, path: &Path) -> image::RgbaIma
 /// The controls the socket lists, by name.
 fn targets(session: &mut Session, socket: &Path) -> Vec<String> {
     let answer = common::control(session, socket, &json!({"op": "list_targets"}));
-    let targets = answer["targets"]
+    answer["targets"]
         .as_array()
         .unwrap_or_else(|| panic!("list_targets answers its targets: {answer}"))
         .iter()
         .filter_map(|target: &Value| target["name"].as_str().map(str::to_owned))
-        .collect();
-    targets
+        .collect()
 }
 
 /// Where `after` differs from `before`: what the sheet changed, and how much
 /// of the display that is.
 fn differed(before: &image::RgbaImage, after: &image::RgbaImage) -> (u32, u32, u32, u32, u32) {
     let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
-    let mut changed = 0;
+    let mut changed: u32 = 0;
     for y in 0..after.height() {
         for x in 0..after.width() {
             if before.get_pixel(x, y) != after.get_pixel(x, y) {
                 (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
-                changed += 1;
+                changed = changed.saturating_add(1);
             }
         }
     }

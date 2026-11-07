@@ -860,7 +860,6 @@ workspace-settings-agent-model-in-use = In Verwendung
 workspace-settings-agent-model-keeper = Nur { $name } wählt das Modell, mit dem es läuft
 workspace-settings-agent-model-keeper-you = Du wählst das Modell, mit dem es läuft
 workspace-settings-agent-spend-of = { $spent } von { $limit } heute
-workspace-settings-agent-subtitle = { $status } · { $spend }
 workspace-settings-agent-spend = { $spent } heute
 workspace-settings-agent-limit = Tageslimit
 workspace-settings-agent-limit-amount = { $limit } pro Tag

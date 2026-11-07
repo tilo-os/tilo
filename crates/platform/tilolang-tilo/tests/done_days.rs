@@ -56,7 +56,7 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
     let (mut ada, root) = workspace();
     let finish = |ada: &mut Replica, title: &str, at: &str| {
         let at = at.to_owned();
-        ada.host.runtime().set_clock(move || at.clone());
+        ada.host.set_clock(move || at.clone());
         let made = call(ada, "new_task", crate::tasks::create(&root, title));
         call(ada, "check", vec![made.clone()]);
         ada.commit();
@@ -73,9 +73,7 @@ fn done_stands_what_was_finished_under_the_day_it_was_finished() {
     );
     ada.commit();
 
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let mut view = ada.view(APP);
     go_to(&mut view, "Done");
     assert_eq!(
@@ -120,9 +118,7 @@ fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
     const BEFORE: &str = include_str!("tasks_before_done_at/app.tl");
     const BEFORE_IDS: &str = include_str!("tasks_before_done_at/app.ids");
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &[(BEFORE, BEFORE_IDS)]);
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-26T09:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-26T09:00:00Z".to_owned());
     let all = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     let old = call(&ada, "add", vec![all, Value::text("Send the invoice")]);
@@ -141,10 +137,7 @@ fn a_task_finished_before_the_app_kept_its_moment_keeps_its_day() {
     for done in later.host.take_committed() {
         later.apply(&done.action);
     }
-    later
-        .host
-        .runtime()
-        .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    later.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let mut view = later.view(APP);
     go_to(&mut view, "Done");
     assert_eq!(

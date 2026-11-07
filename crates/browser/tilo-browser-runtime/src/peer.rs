@@ -786,7 +786,9 @@ struct JsWindow {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct JsPresence {
-    seq: u64,
+    /// This view's sequence, as the shell wire carries it: receivers order
+    /// views by it, and one at or below the last they took is a repeat.
+    seq: u32,
     sent_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     focus: Option<JsRecord>,
@@ -889,7 +891,7 @@ fn shell_to_js(shell: collab_types::presence::ShellPresence) -> JsPresence {
             record: window.record.clone(),
         });
     JsPresence {
-        seq: u64::from(shell.seq),
+        seq: shell.seq,
         sent_at_ms: shell.sent_at_ms,
         focus,
         pointer: None,
@@ -973,7 +975,7 @@ fn shell_from_js(
         }
     }
     Ok(Some(collab_types::presence::ShellPresence {
-        seq: u32::try_from(value.seq).unwrap_or(u32::MAX),
+        seq: value.seq,
         sent_at_ms: value.sent_at_ms,
         label: participant.label.clone(),
         agent: participant.kind == "agent",

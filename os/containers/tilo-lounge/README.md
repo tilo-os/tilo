@@ -118,8 +118,10 @@ bash os/containers/tilo-lounge/test-integration.sh \
 ```
 
 It needs buildah (it starts the image chrooted, as `test-image.sh` does),
-node, a headless Chrome (`CHROME`, else Playwright's cache), openssl and
-curl, and the artifacts `publish-site` builds: `lounge-binaries.sh` +
+node, a headless Chrome (`CHROME`, else Playwright's cache), curl and a Rust
+toolchain (the image's own `tilo-crypto` mints the site's certificate;
+`TILO_CRYPTO_BIN` names a built one instead), and the artifacts
+`publish-site` builds: `lounge-binaries.sh` +
 `lounge-context.sh` + `publish/oci-build.sh` for the image, and
 `web-desktop-bundle.sh wasm` + `web-desktop-bundle.sh bundle` for the bundle.
 `integration/previous-state.tar.b64` is the state one fresh start of the

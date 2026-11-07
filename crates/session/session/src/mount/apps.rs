@@ -343,7 +343,7 @@ impl Apps {
             .connection(app, origin, &workspace.id, &|origin| {
                 self.plan_connector(app, origin, workspace)
             })
-            .map_err(|error| DoorError::Failed(error.to_string()))?;
+            .map_err(DoorError::Failed)?;
         // The connection is the caller's to read: here nothing does, since the reader that
         // needed it attached through its own call. Dropped, it is the connector's alone.
         drop(connection);
@@ -388,7 +388,7 @@ impl Apps {
         };
         let planned = Planned::of(
             &Launch::Package {
-                app: installed.package_id.clone(),
+                app: installed.package_id,
                 open: None,
             },
             &context,
@@ -657,6 +657,18 @@ impl Apps {
                 continue;
             }
             tracing::warn!(app = %event.app, end = %event.end, "an app stopped");
+            // What the app itself said before it ended, at warn beside the
+            // end: a launch that never opened is otherwise a warning with no
+            // reason in it, and the app's own account is the only one there is.
+            for said in &event.said.stderr {
+                tracing::warn!(
+                    target: tilo_startup_metrics::APP_OUTPUT_TARGET,
+                    app = %event.app,
+                    stream = "stderr",
+                    "{}",
+                    tilo_app_launch::output::line(&event.app, "stderr", said)
+                );
+            }
             // Reopen asks for the app the way it was asked for this time: a
             // host app by its desktop id, a Tilo app by its package id.
             let asked = self.state.borrow_mut().running.remove(&event.id);
@@ -1453,6 +1465,7 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_launch::output::OutputTail;
     use tilo_app_launch::{End, Event};
 
     const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
@@ -1577,6 +1590,7 @@ mod tests {
             app: "so.tilo.agent".to_owned(),
             title: "Agent".to_owned(),
             end: End::exited(1),
+            said: OutputTail::default(),
         });
         apps.follow();
         assert!(
@@ -1620,6 +1634,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
+            said: OutputTail::default(),
         });
         apps.follow();
         desktop.with_widgets(|widgets| {

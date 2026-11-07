@@ -81,28 +81,45 @@ impl ConnectorHost {
         let (ours, door) = origin_connector::pair()
             .map_err(|error| format!("no door for {app}'s {origin} connector: {error}"))?;
         let planned = plan(origin)?;
-        let child = self.start(&planned, door)?;
+        let child = Self::start(&planned, &door)?;
         origin_connector::send_attachment(&ours, &theirs)
             .map_err(|error| format!("{app}'s {origin} connector took no connection: {error}"))?;
         running.insert(key, Running { door: ours, child });
+        drop(running);
         Ok(instance)
     }
 
     /// Start the connector `planned` ran, releasing the door `door` to it through the
     /// launcher's registration gate, and following it on a thread of its own.
-    fn start(&self, planned: &Planned, door: OwnedFd) -> Result<Child, String> {
+    fn start(planned: &Planned, door: &OwnedFd) -> Result<Child, String> {
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
             .env_clear()
             .envs(&planned.env)
-            .stdin(Stdio::null());
+            .stdin(Stdio::null())
+            // The connector's own account of a service that refused it: the
+            // session's log keeps it, the same as a window's app's.
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
         let gate = launcher::registration_gate::install(&mut command)
             .map_err(|error| format!("{} has no launch gate: {error}", planned.app))?;
-        let child = command
+        let mut child = command
             .spawn()
             .map_err(|error| format!("{}'s connector did not start: {error}", planned.app))?;
         drop(command);
+        // The connector is a launch of the app's own, and says what went wrong
+        // on its standard streams: the session's log keeps them.
+        let output = std::sync::Arc::new(tilo_app_launch::output::AppOutput::new(
+            planned.app.clone(),
+            None,
+        ));
+        if let Some(stdout) = child.stdout.take() {
+            output.relay_stdout(stdout);
+        }
+        if let Some(stderr) = child.stderr.take() {
+            output.relay_stderr(stderr);
+        }
         // The connector's door reaches it as a window's does: the launcher hands it into the
         // sandbox as the connector's own service.
         gate.release_with_window_door(door.as_fd())
@@ -114,7 +131,8 @@ impl ConnectorHost {
 
 impl Drop for ConnectorHost {
     fn drop(&mut self) {
-        for (_, mut running) in std::mem::take(&mut *self.running.lock_recover()) {
+        let started = std::mem::take(&mut *self.running.lock_recover());
+        for (_, mut running) in started {
             let _ = running.child.kill();
             let _ = running.child.wait();
         }
@@ -131,7 +149,7 @@ impl Drop for ConnectorHost {
 /// whether or not a window of the app is open, so what the service says meanwhile waits in it.
 /// A session that cannot start one says why and goes on: the app's records then stand as they
 /// are, and its views show what they last held.
-pub(crate) fn start_all(session: &mut crate::Session) {
+pub(crate) fn start_all(session: &crate::Session) {
     // An origin's own crate registers how the platform reaches its connector, so a session
     // reaches one without naming the crate that keeps the service.
     tilolang_mail::register();

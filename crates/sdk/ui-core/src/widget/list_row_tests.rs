@@ -124,6 +124,26 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
+/// A note is a line of the row's own under its text: the builder reaches the face, the line
+/// is measured, and the reader is told it with the row.
+#[test]
+fn a_rows_note_is_a_line_of_its_own_under_its_text() {
+    let row = ListRow::new("note-row", "Claude")
+        .secondary("Kept by you")
+        .note("$0.42 of $5 today");
+    assert_eq!(
+        row.with_face(|face| face.note.map(str::to_owned)),
+        Some("$0.42 of $5 today".to_owned()),
+        "the builder's note is the face's"
+    );
+    let plain = ListRowFace::new("Claude").secondary("Kept by you");
+    let noted = plain.clone().note("$0.42 of $5 today");
+    assert!(
+        face_height(&noted, 1.0) > face_height(&plain, 1.0),
+        "the note is a line under the row's text, not on it"
+    );
+}
+
 /// A dense row is a quiet reference under content: one line at the caption's size with the
 /// small glyph, as tall as that line and its inset rather than the list's row height, and a
 /// finger's press on one still grows it to its target.
@@ -1542,6 +1562,37 @@ fn delete_runs_the_destructive_action_the_row_swipes_to() {
     let mut harness = FrameHarness::for_root(crate::State::new(), kept, (420, 80), Theme::dark());
     harness.key("Delete");
     assert_eq!(ran.get(), 0, "a plain row action is not destructive");
+}
+
+/// The swipe a view bound to an action runs that action once, through the row's control door.
+#[test]
+fn a_swipe_bound_to_an_action_runs_it_once_as_the_person_swipes_to_it() {
+    let mut spec = tilo_actions::ResourceSpec::new("res-milk", "test.errand", "Errand");
+    spec = spec.with_action(
+        tilo_actions::ActionSpec::operation(
+            "delete",
+            "Delete",
+            tilo_actions::OperationKind::Effect,
+            "test.errand.effect",
+            &(),
+        )
+        .expect("a test action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&spec, "delete").expect("published");
+    let address = binding.address().clone();
+    let mut row =
+        ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
+    row.swipe.as_mut().expect("a swipe").run();
+    let taken = crate::widget::controls::take_control_invocation(&mut row);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one swipe runs the action once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut row).is_none(),
+        "the swipe is taken once"
+    );
 }
 
 #[test]

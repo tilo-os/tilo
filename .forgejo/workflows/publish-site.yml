@@ -126,16 +126,11 @@ jobs:
           bash os/containers/tilo-lounge/test-image.sh "$dir/image.oci.tar"
 
       - name: Install a browser for the integration test
-        # The gate opens the built web entry in a real headless Chromium and
-        # mints the certificate its own site is served with.
+        # The gate opens the built web entry in a real headless Chromium.
         run: |
           set -euo pipefail
-          missing=()
-          for package in chromium openssl; do
-            rpm -q "$package" >/dev/null || missing+=("$package")
-          done
-          if ((${#missing[@]})); then
-            dnf install -y --setopt=install_weak_deps=False "${missing[@]}"
+          if ! rpm -q chromium >/dev/null; then
+            dnf install -y --setopt=install_weak_deps=False chromium
           fi
           command -v chromium-browser >/dev/null && echo "CHROME=$(command -v chromium-browser)" >> "$GITHUB_ENV"
 

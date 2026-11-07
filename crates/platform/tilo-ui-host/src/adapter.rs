@@ -440,10 +440,11 @@ impl NodeSource<'_> {
     /// The action the event `name` of the node runs, when it runs one the app published and
     /// that action takes nothing: the control is bound to it, so it offers the action the way
     /// every control offers one. An event that runs no action, an action the app has not
-    /// published yet, and an event its control does not hold as its own
-    /// ([`ui::component::presses`]) are the view's own.
+    /// published yet, and an event that is not its control's own action
+    /// ([`ui::component::Event::press`], or one of the actions a control offers by a prop)
+    /// are the view's own.
     fn published(&self, name: &str) -> Option<tilo_actions::ActionBinding<()>> {
-        if !ui::component::presses(&self.description.name, name) {
+        if !self.presses(name) {
             return None;
         }
         let (resource, action) = self.node.events.get(name)?.invokes.as_ref()?;
@@ -452,6 +453,20 @@ impl NodeSource<'_> {
             resource,
             action,
         )
+    }
+
+    /// Whether the event `name` is a press of its control: the event the description declares
+    /// for it, or one of the actions the control offers by a prop (`add`, `actions`), whose
+    /// event runs the action it offers.
+    fn presses(&self, name: &str) -> bool {
+        if self
+            .description
+            .event(name)
+            .is_some_and(|event| event.press)
+        {
+            return true;
+        }
+        tilo_render_protocol::patch::validate::offers(self.description, name)
     }
 }
 
@@ -502,16 +517,11 @@ impl Source for NodeSource<'_> {
             if let Some(binding) = self.published(name) {
                 return Event::Action(binding);
             }
-            let intent = Intent::new(&self.reconciler.adapter().fired, &self.node.key, name);
-            let runs = self
-                .node
-                .events
-                .get(name)
-                .and_then(|event| event.invokes.as_ref());
-            Event::View(match runs {
-                Some((resource, action)) => intent.invoking_action(resource, action),
-                None => intent,
-            })
+            Event::View(Intent::new(
+                &self.reconciler.adapter().fired,
+                &self.node.key,
+                name,
+            ))
         } else {
             Event::None
         }

@@ -129,7 +129,9 @@ fn a_tile_is_a_reachable_target_at_scale_2() {
         wifi.height() >= 39.5,
         "a tile is the Large control height, not a row: {wifi:?}"
     );
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    // The panel fills the window the desk gives a popover, so the app's root
+    // area is the card's rect (as `layout.rs` reads it too).
+    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]");
     assert!(
         (wifi.x0 - card.x0).abs() < 40.0 || (wifi.x1 - card.x1).abs() < 40.0,
         "a tile stands inside the card's inset: {wifi:?} in {card:?}"

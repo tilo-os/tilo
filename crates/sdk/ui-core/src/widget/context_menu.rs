@@ -83,6 +83,9 @@ pub enum MenuItem {
         /// The published action choosing the row runs, when it is one
         /// ([`MenuItem::for_action`]).
         address: Option<tilo_actions::ActionAddress>,
+        /// What a press of the row does, when the view bound it: the action runs through the
+        /// menu's custody, as a control's own press does.
+        press: crate::widget::Press,
     },
     Separator,
     /// A line of secondary text about the rows around it ("Hosted by
@@ -126,6 +129,7 @@ impl MenuItem {
             group: None,
             asks_first: false,
             address: None,
+            press: crate::widget::Press::default(),
         }
     }
 
@@ -243,10 +247,32 @@ impl MenuItem {
         self
     }
 
-    /// The published action choosing the row runs, if it is one.
-    pub fn action_address(&self) -> Option<&tilo_actions::ActionAddress> {
+    /// Say that choosing the row presses what the view bound to it (`press`): the row runs the
+    /// action itself, through the menu's custody.
+    #[must_use]
+    pub fn for_press(mut self, press: crate::widget::Press) -> Self {
+        if let MenuItem::Action {
+            press: item_press, ..
+        } = &mut self
+        {
+            *item_press = press;
+        }
+        self
+    }
+
+    /// The press choosing the row does, when the view bound it.
+    pub fn press(&self) -> Option<&crate::widget::Press> {
         match self {
-            MenuItem::Action { address, .. } => address.as_ref(),
+            MenuItem::Action { press, .. } if !press.is_none() => Some(press),
+            _ => None,
+        }
+    }
+
+    /// The published action choosing the row runs, if it is one: the action the view bound to
+    /// the row's press, else the one it named ([`Self::for_action`]).
+    pub fn action_address(&self) -> Option<tilo_actions::ActionAddress> {
+        match self {
+            MenuItem::Action { address, press, .. } => press.address().or_else(|| address.clone()),
             MenuItem::Separator | MenuItem::Caption(_) | MenuItem::Emoji(_) => None,
         }
     }
@@ -2526,6 +2552,120 @@ impl crate::widget::Decorator for MenuButton {
 
     fn name(&self) -> &str {
         "MenuButton"
+    }
+
+    /// The menu button answers for the button's own press and for every row its menu offers,
+    /// open or closed: a row runs the action the view bound to it as the button runs its own,
+    /// and the rows it publishes reach the host through the button that stands in the tree.
+    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn crate::resources::PublishesResources>() {
+            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else {
+            Widget::provide(&self.button, request);
+        }
+    }
+
+    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn crate::resources::PublishesResources>() {
+            request.provide::<dyn crate::resources::PublishesResources>(self);
+        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
+            request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else {
+            Widget::provide_mut(&mut self.button, request);
+        }
+    }
+}
+
+/// The menu is drawn over the button and stands against it, not in the button's subtree, so
+/// the rows it publishes are the button's to publish and its rows' operations the button's to
+/// start.
+impl crate::resources::PublishesResources for MenuButton {
+    fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
+        let mut resources = crate::resources::resources(&self.button, doc);
+        resources.extend(crate::resources::resources(&self.menu, doc));
+        resources
+    }
+}
+
+impl crate::widget::ResourceOperations for MenuButton {
+    fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
+        let mut handlers =
+            crate::widget::resource_operation::resource_operation_handlers(&self.button);
+        handlers.extend(crate::widget::resource_operation::resource_operation_handlers(&self.menu));
+        handlers
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut crate::widget::Edits<'_>,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        if let Some(started) =
+            crate::widget::resource_operation::start_operation(&mut self.button, op, doc, path)?
+        {
+            return Ok(Some(started));
+        }
+        crate::widget::resource_operation::start_operation(&mut self.menu, op, doc, path)
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        crate::widget::resource_operation::poll_resource_operation(
+            &mut self.button,
+            invocation,
+            cancellation_requested,
+            doc,
+            path,
+        )
+        .or_else(|| {
+            crate::widget::resource_operation::poll_resource_operation(
+                &mut self.menu,
+                invocation,
+                cancellation_requested,
+                doc,
+                path,
+            )
+        })
+    }
+}
+
+impl crate::widget::controls::ActionControls for MenuButton {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        crate::widget::controls::install_control_custody(&mut self.button, domain, attachment);
+        crate::widget::controls::install_control_custody(&mut self.menu, domain, attachment);
+    }
+
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        crate::widget::controls::take_control_invocation(&mut self.button)
+            .or_else(|| crate::widget::controls::take_control_invocation(&mut self.menu))
+    }
+
+    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+        let mut bindings = crate::widget::controls::control_action_bindings(&self.button);
+        bindings.extend(crate::widget::controls::control_action_bindings(&self.menu));
+        bindings
+    }
+
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        crate::widget::controls::refresh_control_action_availability(&mut self.button, allowed);
+        crate::widget::controls::refresh_control_action_availability(&mut self.menu, allowed);
     }
 }
 

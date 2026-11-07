@@ -20,7 +20,7 @@
 use serde::{Deserialize, Serialize};
 
 /// The version of the description format: a change to the shape of [`Description`] bumps it.
-pub const FORMAT_VERSION: u32 = 6;
+pub const FORMAT_VERSION: u32 = 7;
 
 /// Every described component of one toolkit version.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -327,6 +327,12 @@ pub struct Event {
     /// what it was dropped on, counted from 0. An event with one carries `[value, at]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub at: Option<Type>,
+    /// Whether the event is the action of the control that raises it: a press of the control
+    /// runs the action the view bound to it, through the door, so the press and an agent's
+    /// invocation of that action are the one route. An event that is not is the view's own: it
+    /// is reported to the view, which decides what it does.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub press: bool,
 }
 
 /// A two-way binding to a resource field or view state.

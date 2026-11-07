@@ -841,7 +841,6 @@ workspace-settings-agent-model-in-use = In use
 workspace-settings-agent-model-keeper = Only { $name } chooses the model it runs on their devices
 workspace-settings-agent-model-keeper-you = You choose the model it runs on your devices
 workspace-settings-agent-spend-of = { $spent } of { $limit } today
-workspace-settings-agent-subtitle = { $status } · { $spend }
 workspace-settings-agent-spend = { $spent } today
 workspace-settings-agent-limit = Daily limit
 workspace-settings-agent-limit-amount = { $limit } a day

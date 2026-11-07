@@ -236,6 +236,17 @@ fn window_over(
     }
 }
 
+/// The window driven by hand takes in the index its load builds: without frames of its own,
+/// nothing wakes it to poll for it, as a running window's next frame would.
+fn settle(window: &mut Window) {
+    window.instance.sync(Some(window.workspace.doc()));
+    if let Some(host) = window.instance.host() {
+        host.wait_index();
+    }
+    window.instance.sync(Some(window.workspace.doc()));
+    window.instance.update();
+}
+
 #[test]
 fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
@@ -259,6 +270,8 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
         &platform,
         automerge::AutoCommit::new(),
     );
+
+    settle(&mut ada);
 
     // Ada's window opens over the empty workspace: its runtime plans the counter's root, and the
     // workspace path commits it to her record and sends it.
@@ -288,6 +301,7 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
         "the workspace relayed the change"
     );
     assert!(grace.workspace.receive(&mut grace.instance));
+    settle(&mut grace);
     assert_eq!(
         grace.workspace.doc().clone().get_heads(),
         ada.workspace.doc().clone().get_heads(),
@@ -364,6 +378,7 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once
         &platform,
         automerge::AutoCommit::new(),
     );
+    settle(&mut ada);
     for _ in 0..100 {
         ada.instance.sync(Some(ada.workspace.doc()));
         ada.instance.update();
@@ -373,7 +388,7 @@ fn what_the_collab_client_cannot_take_yet_is_kept_and_reaches_the_workspace_once
     }
     let root = ada.instance.host().unwrap().root_of(APP).unwrap();
     assert!(grace.workspace.receive(&mut grace.instance));
-    grace.instance.update();
+    settle(&mut grace);
 
     // Ada's collab client is full: what she does is committed to her record all the same, and
     // waits there for the workspace.
@@ -441,6 +456,7 @@ fn made_by_ada(
         platform,
         automerge::AutoCommit::new(),
     );
+    settle(&mut ada);
     for _ in 0..100 {
         ada.instance.sync(Some(ada.workspace.doc()));
         ada.instance.update();
@@ -503,6 +519,12 @@ fn a_tilolang_edit_in_a_workspace_another_host_governs_is_undone() {
         Rc::new(Alone),
         Box::new(app_end),
     );
+    instance.sync(Some(record.doc()));
+    if let Some(host) = instance.host() {
+        // Driven by hand, this window has no frames to take in the index its load builds off
+        // them: it waits for it, as a running window's frames would.
+        host.wait_index();
+    }
     instance.sync(Some(record.doc()));
     instance.update();
     assert_eq!(

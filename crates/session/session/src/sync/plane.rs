@@ -11,9 +11,9 @@ use iroh::{EndpointAddr, EndpointId};
 use tilo_endpoint_reachability::Reachability;
 use tilo_network_actor::{HostIdentity, NetCmd, NetEvent};
 
+use super::adopt::{enter, redeem};
 use super::{
-    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, enter, heard,
-    redeem,
+    ChannelLink, DeviceActions, Engine, Enrolled, Outgoing, carry_out, endpoint_for, heard,
 };
 
 /// The runtime the collaboration plane's thread runs on: two workers of its

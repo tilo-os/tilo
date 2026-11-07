@@ -31,6 +31,7 @@ mod common;
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -47,7 +48,8 @@ use tilo_desktop_model::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
-use tilo_session::{Options, Session};
+use tilo_session::mount::apps::Apps;
+use tilo_session::{AppActions, Options, Session};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -100,6 +102,19 @@ impl Room {
     /// and execs `tilo-relay`, so the test starts exactly what the image
     /// starts and cannot drift from it.
     fn start() -> Self {
+        Self::with_admission("invite")
+    }
+
+    /// The room as tip's own Lounge runs it: the same entrypoint and the same
+    /// environment, with `admission` open or by invitation. The Lounge's door
+    /// is open — its directory lists it and anyone who asks is admitted as its
+    /// default role, an editor — so a person joins it with no invitation of
+    /// their own.
+    fn open() -> Self {
+        Self::with_admission("open")
+    }
+
+    fn with_admission(admission: &str) -> Self {
         let state = tempfile::tempdir().expect("a state volume");
         let owner = ed25519_dalek::SigningKey::from_bytes(&random_key());
         let root_file = state.path().join("root");
@@ -114,7 +129,7 @@ impl Room {
             // eu1's environment, as apps/tilo-eu1/deployment.yaml sets it.
             .env("TILO_ROOMS_PERSISTENT", "lounge")
             .env("TILO_ROOMS_NAME", "Lounge")
-            .env("TILO_ROOMS_ADMISSION", "invite")
+            .env("TILO_ROOMS_ADMISSION", admission)
             // The origin the ingress publishes. The listeners below stand
             // where it forwards to, each on a port the kernel picks: the
             // plain one's is announced once the room has bound it, and the
@@ -1091,4 +1106,219 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
 
     // The member's pointer is drawn on their window and follows a move.
     the_pointer_follows(&mut session, &member_page, &room);
+}
+
+/// An installed app in this computer's own store: a package whose entrypoint
+/// is the launcher's to start, as `tilo-install` writes one.
+fn installed(home: &mut tilo_test_env::TestHome, app: &str, name: &str) {
+    let store = home.data().join("tilo-apps");
+    let payload = store.join("payload").join(app);
+    std::fs::create_dir_all(payload.join("bin")).expect("the app's payload");
+    let manifest = payload.join("manifest.toml");
+    std::fs::write(
+        &manifest,
+        format!(
+            "[package]\n\
+             id = \"{app}\"\n\
+             version = \"1.0.0\"\n\
+             kind = \"app\"\n\
+             name = \"{name}\"\n\
+             \n\
+             [publisher]\n\
+             identity = \"ed25519:{key}\"\n\
+             signature = \"\"\n\
+             \n\
+             [sandbox]\n\
+             namespaces = [\"user\"]\n\
+             seccomp = \"tilo-default\"\n\
+             landlock = \"strict\"\n\
+             \n\
+             [sandbox.net]\n\
+             mode = \"off\"\n\
+             \n\
+             [entrypoint]\n\
+             bin = \"bin/app\"\n\
+             type = \"gui\"\n\
+             \n\
+             [providers]\n\
+             schemes = [\"probe\"]\n",
+            key = "33".repeat(32),
+        ),
+    )
+    .expect("the app's manifest");
+    std::fs::write(
+        store.join("registry.toml"),
+        format!(
+            "[[entry]]\nid = \"{app}\"\nversion = \"1.0.0\"\n\
+             payload_root = \"{payload}\"\nmanifest_path = \"{manifest}\"\n",
+            payload = payload.display(),
+            manifest = manifest.display(),
+        ),
+    )
+    .expect("the store's registry");
+    home.env().set("TILO_APPS_DATA_DIR", &store);
+}
+
+/// What the launcher the test starts was handed: its arguments, and the
+/// display it maps the app's window on.
+const LAUNCH_WINDOWS: &str = "TILO_LOUNGE_TEST_WINDOWS";
+
+/// The child side, run in a copy of this test binary in the launcher's place:
+/// it records what it was handed, maps one window of the app named there, as a
+/// package's window does, and stays up until its session ends. Without
+/// [`LAUNCH_WINDOWS`] it is not the launcher and has nothing to do.
+#[test]
+fn the_launchers_child() {
+    let Some(records) = std::env::var_os(LAUNCH_WINDOWS) else {
+        return;
+    };
+    let arguments = std::env::var("TILO_LOUNGE_TEST_ARGS").unwrap_or_default();
+    std::fs::write(&records, &arguments).expect("the launcher records its launch");
+    let app = arguments
+        .split_whitespace()
+        .skip_while(|argument| *argument != "--app-id")
+        .nth(1)
+        .unwrap_or("so.tilo.probe")
+        .to_owned();
+    // The display the session handed the launch: `WAYLAND_DISPLAY` inside the
+    // `XDG_RUNTIME_DIR` the session runs in, as an app's own window finds it.
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").expect("the session's runtime directory");
+    let display = std::env::var_os("WAYLAND_DISPLAY").expect("the display the session handed");
+    let socket = std::path::Path::new(&runtime).join(display);
+    let title = app.clone();
+    let _window = common::window::Window::on(&socket, &app, &title);
+}
+
+/// The launcher a session starts packages through: this test binary, in the
+/// launcher's place, which records what it was handed and maps the app's
+/// window on the display it was given.
+fn the_launchers_place(
+    home: &tilo_test_env::TestHome,
+) -> (tilo_test_env::StandIn, std::path::PathBuf) {
+    let records = home.home().join("launches");
+    let launcher = tilo_test_env::stand_in(
+        home.home().join("tilo-launcher"),
+        &format!(
+            "export {LAUNCH_WINDOWS}='{records}'\n\
+             export TILO_LOUNGE_TEST_ARGS=\"$*\"\n\
+             exec '{exe}' --exact the_launchers_child --nocapture --test-threads=1\n",
+            records = records.display(),
+            exe = std::env::current_exe()
+                .expect("this test's program")
+                .display(),
+        ),
+    )
+    .expect("a launcher");
+    (launcher, records)
+}
+
+/// A session that opens apps through `launcher`, in the workspaces it holds,
+/// taking part in the collaboration plane as [`collaborative_session`] does.
+fn session_opening(
+    state: &std::path::Path,
+    home: &tilo_test_env::TestHome,
+    launcher: &tilo_test_env::StandIn,
+) -> (Session, Rc<Apps>) {
+    let mut environment = tilo_app_launch::SessionEnvironment::from_process();
+    environment.wayland_socket = Some(home.runtime().join("wayland-7"));
+    let apps = Rc::new(Apps::with_launcher(
+        environment,
+        None,
+        Some(launcher.path().to_owned()),
+    ));
+    let session = Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            collab: true,
+            state: Some(state.to_path_buf()),
+            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+            launch: Some(Rc::clone(&apps)),
+            ..Options::default()
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session");
+    (session, apps)
+}
+
+/// An app opened in a workspace joined from a real room service shows its
+/// window there.
+///
+/// The room's door admits this person by itself — the Lounge's open door, a
+/// person joining it with no invitation of their own — so the join is the one
+/// the live Lounge makes (`member=false`). The app is opened the way the
+/// launchpad and the applications list open one: through the session's own
+/// launch path, into the workspace in front.
+#[test]
+fn an_app_opened_in_a_joined_lounge_shows_its_window() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let _person = this_computer_with_an_identity(&mut home);
+    let app = "so.tilo.probe";
+    installed(&mut home, app, "Probe");
+    let (launcher, records) = the_launchers_place(&home);
+
+    let room = Room::open();
+    let site = site(&room);
+    let site_url = format!("{}/", site.url());
+    let _config = community_site(home.env(), "");
+    let state = tempfile::tempdir().expect("a directory for this computer's desk");
+    let (mut session, apps) = session_opening(state.path(), &home, &launcher);
+    session.step(Duration::from_millis(1)).unwrap();
+
+    // The person joins the Lounge through its open door: no invitation, and
+    // the door admits them as an editor of a workspace that is not theirs.
+    open_directory(&mut session);
+    look_up_site(&mut session, &site_url);
+    ask_to_join(&mut session, &room.workspace);
+    wait_until(&mut session, "the Lounge is held here", |session| {
+        held(session)
+            .iter()
+            .any(|(_, _, workspace)| workspace == &room.workspace)
+    });
+    wait_until(
+        &mut session,
+        "the Lounge is the workspace in front",
+        |session| {
+            session.handle().read(|tree| {
+                tree.active_workspace()
+                    .is_some_and(|workspace| workspace.id().to_string() == room.workspace)
+            })
+        },
+    );
+
+    // The person opens Probe there, as the applications list opens one.
+    apps.open(&tilo_app_launch::Launch::Package {
+        app: app.to_owned(),
+        open: None,
+    })
+    .expect("Probe opens in the Lounge");
+    let started = common::wait_maybe_past(&mut session, tilo_session::sync::JOIN_PATIENCE, |_| {
+        records.exists().then_some(())
+    });
+    assert!(
+        started.is_some(),
+        "the launcher the session starts packages through was asked to start {app}"
+    );
+    let launch = std::fs::read_to_string(&records).unwrap_or_default();
+    assert!(
+        launch.contains(&format!("--app-id {app}")),
+        "the launch names the app the person opened: {launch}"
+    );
+    assert!(
+        launch.contains(&format!("--workspace-id {}", room.workspace)),
+        "the app is started in the workspace the person opened it in: {launch}"
+    );
+    // The app's window is a window of the Lounge: its ticket is the one the
+    // desk makes for the workspace the person opened it in, not for their own.
+    wait_until(
+        &mut session,
+        "the app shows its window in the Lounge",
+        |session| {
+            desk_layout(session, &room.workspace)
+                .iter()
+                .any(|(_, windows)| windows.iter().any(|title| title == app || title == "Probe"))
+        },
+    );
 }

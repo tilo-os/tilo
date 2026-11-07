@@ -527,13 +527,29 @@ impl ChangedBuilder {
             return;
         }
         let Some(Some(doc)) = keys.get(2).copied() else {
-            self.structure = true;
-            self.layout = true;
+            // `tl` and `tl/<app>`, the maps above the resources: every chunk makes them with
+            // its first write. Making one creates no resource and moves none, so nothing read of
+            // any resource changed; removing one takes away every resource it held.
+            if !made {
+                self.structure = true;
+                self.layout = true;
+            }
             return;
         };
         if keys.len() <= 3 {
-            self.structure = true;
-            self.whole(doc);
+            // A resource's own map, made when it is created or moved into this chunk. What it
+            // holds is written below it in this same change, and named there; a resource the
+            // index does not know yet is read again whole.
+            if index.get(doc).is_none() {
+                self.structure = true;
+                self.whole(doc);
+                return;
+            }
+            if !made {
+                // Its map was removed: the resource is gone, and with it everything it held.
+                self.structure = true;
+                self.whole(doc);
+            }
             return;
         }
         let Some((app, ty)) = index.get(doc) else {
@@ -562,7 +578,11 @@ impl ChangedBuilder {
         made: bool,
     ) {
         let Some(Some(item)) = below.first().copied() else {
-            self.whole(doc);
+            // The map the record's items sit in, made with the first of them and removed with
+            // the last: the items it gains or loses are named by their own writes.
+            if !made {
+                self.whole(doc);
+            }
             return;
         };
         let resource = format!("{doc}/{item}");

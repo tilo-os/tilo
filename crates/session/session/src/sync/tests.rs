@@ -1,5 +1,6 @@
 use super::*;
 use collab_types::PeerPresencePayload;
+use collab_types::presence::{DESKTOP_APP, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};

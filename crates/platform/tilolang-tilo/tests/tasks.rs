@@ -39,9 +39,7 @@ pub(crate) fn call(r: &Replica, action: &str, args: Vec<Value>) -> Value {
 /// Ada's replica of an empty workspace at 10:00 on Thursday 2026-10-29, and the tasks root.
 pub(crate) fn workspace() -> (Replica, Value) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), PACKAGES);
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     let root = Value::resource(&ada.host.root_of(APP).unwrap());
     ada.commit();
     (ada, root)
@@ -172,10 +170,8 @@ fn an_entry_adds_what_was_typed_and_nothing_for_an_empty_entry() {
 fn an_entry_reads_when_it_is_due_in_the_persons_zone() {
     // 20:00 UTC on Thursday 2026-10-29 is 05:00 on Friday the 30th in Tokyo.
     let (mut ada, _) = workspace();
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-29T20:00:00Z".to_owned());
-    ada.host.runtime().set_zone(|| 9 * 3600);
+    ada.host.set_clock(|| "2026-10-29T20:00:00Z".to_owned());
+    ada.host.set_zone(|| 9 * 3600);
     let mut view = ada.view(APP);
     for text in [
         "Call the landlord tomorrow 9am",
@@ -327,9 +323,7 @@ fn inbox_today_and_upcoming_are_read_when_they_are_asked() {
         "Done holds what is done with"
     );
     // A day later, what was upcoming is today's: the window opened then asks for that day.
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T10:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T10:00:00Z".to_owned());
     let mut view = ada.view(APP);
     assert_eq!(count(&view, "Today"), Some(3), "{:?}", places(&view));
     go_to(&mut view, "Today");
@@ -415,9 +409,7 @@ fn a_window_open_over_midnight_moves_what_today_lists_without_the_record_changin
     assert_eq!(home_list_titles(&ada, &mut view), ["Order a present"]);
     // The record did not change; the clock did. The same window runs again and lists the day
     // it is now.
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T10:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T10:00:00Z".to_owned());
     assert!(
         !view.poll_patches().unwrap().is_empty(),
         "the window woke for the time it read"

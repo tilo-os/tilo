@@ -2071,8 +2071,12 @@ impl Published<'_> {
 
     /// Apply the steps of the listing of the collection `field` of the resource at `path` to
     /// its published children: an item inserted is built (and taken out of `nodes`), one removed
-    /// dropped, one moved kept. False when the steps do not fit the children, or the children
-    /// are then not as many as the items: they are brought in line with the listing instead.
+    /// dropped, one moved kept. A change that says no step moved changed no item for those who
+    /// read the mirror, and the rows the collection gained are the items the change names: one
+    /// a person placed was where they read it before the record held it
+    /// ([`crate::store::TiloStore::sync_from`]), and it goes where the listing has it. False
+    /// when the steps do not fit the children, or the children are then not as many as the
+    /// items: they are brought in line with the listing instead.
     fn splice_members(
         &self,
         tree: &mut ResourceSpec,
@@ -2121,7 +2125,52 @@ impl Published<'_> {
                 }
             }
         }
+        if splices.is_empty() {
+            self.place_named(node, (path, field), &at, before, nodes);
+        }
         node.children.len() == before.saturating_add(len).saturating_add(after)
+    }
+
+    /// Place in `node`'s children the items `nodes` names that the collection `field` of the
+    /// resource at `at` holds, each where its listing has it: what a change names says where
+    /// its own rows stand.
+    fn place_named(
+        &self,
+        node: &mut ResourceSpec,
+        (path, field): (&str, &str),
+        at: &tilolang_runtime::value::ResourceRef,
+        before: usize,
+        nodes: &mut std::collections::BTreeSet<String>,
+    ) {
+        let app = &self.types.meta().app;
+        let mut named: Vec<(usize, String)> = nodes
+            .iter()
+            .filter(|item| {
+                self.holder(item)
+                    .is_some_and(|(holder, held)| holder == path && held == field)
+            })
+            .filter_map(|item| {
+                let id = crate::index::derive::id_of(item)?;
+                let place = self.store.position(at, field, id)?;
+                Some((before.saturating_add(place), item.clone()))
+            })
+            .collect();
+        // Placed at the index each has in the listing now, from the first on: one placed
+        // before another does not move the place the listing gives it.
+        named.sort();
+        for (index, item) in named {
+            let id = resource_id(app, &item);
+            if node.children.iter().any(|child| child.id.as_str() == id) {
+                // Already there, where it stands: `rebuild` reads the item again in place.
+                continue;
+            }
+            let Some(child) = self.item(&item) else {
+                continue;
+            };
+            let index = index.min(node.children.len());
+            node.children.insert(index, child);
+            nodes.remove(&item);
+        }
     }
 
     /// How many published children of `at` the collections before `field` hold, `field`

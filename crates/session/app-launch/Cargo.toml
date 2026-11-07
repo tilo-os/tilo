@@ -39,6 +39,9 @@ fs-protocol = { path = "../../system/fs-protocol" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-service = { path = "../service" }
+# The log target an app's own output is relayed under, which the session log
+# always keeps.
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 tilo-paths.workspace = true
 # The type a document's path names, for the app that claims it.
@@ -61,6 +64,8 @@ libc.workspace = true
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# The subscriber a test reads what an app wrote back through.
+tracing-subscriber = { workspace = true }
 tilo-test-env = { path = "../../dev/test-env" }
 
 [lints]
