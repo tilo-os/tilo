@@ -16,74 +16,19 @@
 
 mod common;
 
-use std::sync::{Arc, Mutex};
+use common::audio::Card;
+use std::sync::Arc;
 
-use media::audio::{AudioDevice, AudioGraph, GraphControl};
+use media::audio::{AudioDevice, AudioGraph};
 use runtime_collab::CollabClient;
 use runtime_collab::wire::Receipt;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::crash_records::{self as wire, CrashKind, CrashRecord, CrashRecordText};
-use tilo_audio_service::sound::{Graph, Read, SoundService};
+use tilo_audio_service::sound::{Graph, SoundService};
 use tilo_compositor::OutputConfig;
 use tilo_crash_records::CrashRecords;
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Options, Service, Session};
-
-/// A sound card in memory: one output at 40%, in use.
-struct Card {
-    graph: Mutex<AudioGraph>,
-}
-
-impl Graph for Card {
-    fn read(&self) -> Read {
-        Read {
-            graph: self.graph.lock().unwrap().clone(),
-            uses: Vec::new(),
-        }
-    }
-
-    fn control(&self) -> &dyn GraphControl {
-        self
-    }
-}
-
-impl GraphControl for Card {
-    fn set_default_sink(&self, node_id: u32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            sink.is_default = sink.id == node_id;
-        }
-        Ok(())
-    }
-
-    fn set_default_source(&self, _node_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn route_stream(&self, _stream_id: u32, _target_serial: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn unroute_stream(&self, _stream_id: u32) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_node_volume(&self, node_id: u32, perceptual: f32) -> Result<(), String> {
-        for sink in &mut self.graph.lock().unwrap().sinks {
-            if sink.id == node_id {
-                sink.volume = Some(perceptual);
-            }
-        }
-        Ok(())
-    }
-
-    fn set_node_mute(&self, _node_id: u32, _muted: bool) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn set_device_profile(&self, _device_id: u32, _profile_index: u32) -> Result<(), String> {
-        Ok(())
-    }
-}
 
 /// The session the app talks to: headless, hosting the services `services`
 /// makes for its loop, and the plane on a socket of its own.
@@ -122,22 +67,20 @@ fn session_hosting(
 /// memory.
 fn session(socket: &std::path::Path) -> Session {
     session_hosting(socket, |wake| {
-        let card: Arc<dyn Graph> = Arc::new(Card {
-            graph: Mutex::new(AudioGraph {
-                sinks: vec![AudioDevice {
-                    id: 40,
-                    serial: 40,
-                    name: "node-40".into(),
-                    description: "Speakers".into(),
-                    is_default: true,
-                    volume: Some(0.4),
-                    muted: Some(false),
-                    channels: 2,
-                    codec: None,
-                }],
-                ..AudioGraph::default()
-            }),
-        });
+        let card: Arc<dyn Graph> = Arc::new(Card::new(AudioGraph {
+            sinks: vec![AudioDevice {
+                id: 40,
+                serial: 40,
+                name: "node-40".into(),
+                description: "Speakers".into(),
+                is_default: true,
+                volume: Some(0.4),
+                muted: Some(false),
+                channels: 2,
+                codec: None,
+            }],
+            ..AudioGraph::default()
+        }));
         let sound = SoundService::new(card, Some(wake.handle())).expect("a sound service");
         vec![Box::new(sound)]
     })
@@ -231,19 +174,9 @@ fn reading_of(reading: &str) -> Value {
     serde_json::from_str(reading).expect("a reading is JSON")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 #[test]
 fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -281,7 +214,7 @@ fn an_app_reads_watches_and_invokes_the_sound_the_session_publishes() {
 
 #[test]
 fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -332,7 +265,7 @@ fn an_app_reads_what_the_session_does_not_publish_as_nothing() {
 
 #[test]
 fn an_app_that_invokes_what_the_session_cannot_do_is_told_why() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let mut session = session(&socket);
 
@@ -407,7 +340,7 @@ fn crash_dir() -> tempfile::TempDir {
 /// the record it names.
 #[test]
 fn the_settings_app_lists_and_reads_a_crash_record_the_session_publishes() {
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("collab.sock");
     let records = crash_dir();
     let dir = records.path().to_path_buf();

@@ -126,21 +126,11 @@ fn copy(session: &mut Session, text: &str) {
     }
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 /// What the person copied reaches the panel's launch, and an app the workspace
 /// grants nothing reads nothing.
 #[test]
 fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
-    let root = private_home();
+    let root = common::private_home();
     let panel_socket = root.path().join("panel.sock");
     let app_socket = root.path().join("app.sock");
     // Both apps speak from this process, and a session admits one app of it,

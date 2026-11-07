@@ -16,6 +16,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::BTreeMap;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -868,75 +870,60 @@ impl Service for Allowances {
     }
 }
 
+/// An app allowed for good is shown its allowance at once, and the sheet's
+/// two answers either take it back through the portal's own action or leave
+/// it standing.
 #[test]
-fn the_allowance_given_for_good_is_taken_back_through_the_ports_action() {
-    let _settled = ui::motion::testing::settled();
-    let kept = Arc::new(Mutex::new(vec![(
-        "org.example.Recorder".to_owned(),
-        "screencast".to_owned(),
-    )]));
-    let (mut session, questions) = asking(vec![Box::new(Allowances {
-        kept: Arc::clone(&kept),
-    })]);
-    let asked = ask(
-        &questions,
-        Some("org.example.Recorder"),
-        "org.example.Recorder",
-        "portal.access",
-        serde_json::to_value(access(true, None)).expect("details"),
-    );
-    pump(&mut session, |_| questions.pending().len() == 1);
-    press(&mut session, PortalEffect::SELECT.id, json!({"index": 2}));
-    press(&mut session, PortalEffect::CONFIRM.id, json!({}));
-    let _answer = answered(&mut session, &questions, asked);
-    assert_eq!(
-        dialog(&session).confirm_label,
-        "Revoke",
-        "the allowance is shown at once"
-    );
+fn the_allowance_given_for_good_is_revoked_or_left_standing() {
+    for revoke in [true, false] {
+        let _settled = ui::motion::testing::settled();
+        let kept = Arc::new(Mutex::new(vec![(
+            "org.example.Recorder".to_owned(),
+            "screencast".to_owned(),
+        )]));
+        let (mut session, questions) = asking(vec![Box::new(Allowances {
+            kept: Arc::clone(&kept),
+        })]);
+        let asked = ask(
+            &questions,
+            Some("org.example.Recorder"),
+            "org.example.Recorder",
+            "portal.access",
+            serde_json::to_value(access(true, None)).expect("details"),
+        );
+        pump(&mut session, |_| questions.pending().len() == 1);
+        press(&mut session, PortalEffect::SELECT.id, json!({"index": 2}));
+        press(&mut session, PortalEffect::CONFIRM.id, json!({}));
+        let _answer = answered(&mut session, &questions, asked);
+        assert_eq!(
+            dialog(&session).confirm_label,
+            "Revoke",
+            "the allowance is shown at once"
+        );
 
-    press(&mut session, PortalEffect::CONFIRM.id, json!({}));
-    assert!(
-        kept.lock().expect("kept").is_empty(),
-        "the portal forgot what it was told to forget"
-    );
-    assert!(
-        session.portal().expect("portal sheet").dialog().is_none(),
-        "the sheet is done"
-    );
-}
-
-#[test]
-fn keeping_the_allowance_leaves_it_standing() {
-    let _settled = ui::motion::testing::settled();
-    let kept = Arc::new(Mutex::new(vec![(
-        "org.example.Recorder".to_owned(),
-        "screencast".to_owned(),
-    )]));
-    let (mut session, questions) = asking(vec![Box::new(Allowances {
-        kept: Arc::clone(&kept),
-    })]);
-    let asked = ask(
-        &questions,
-        Some("org.example.Recorder"),
-        "org.example.Recorder",
-        "portal.access",
-        serde_json::to_value(access(true, None)).expect("details"),
-    );
-    pump(&mut session, |_| questions.pending().len() == 1);
-    press(&mut session, PortalEffect::SELECT.id, json!({"index": 2}));
-    press(&mut session, PortalEffect::CONFIRM.id, json!({}));
-    let _answer = answered(&mut session, &questions, asked);
-    press(&mut session, PortalEffect::CANCEL.id, json!({}));
-    assert_eq!(
-        kept.lock().expect("kept").len(),
-        1,
-        "keeping it revokes nothing"
-    );
-    assert!(
-        session.portal().expect("portal sheet").dialog().is_none(),
-        "the sheet is done"
-    );
+        let answer = if revoke {
+            PortalEffect::CONFIRM.id
+        } else {
+            PortalEffect::CANCEL.id
+        };
+        press(&mut session, answer, json!({}));
+        if revoke {
+            assert!(
+                kept.lock().expect("kept").is_empty(),
+                "the portal forgot what it was told to forget"
+            );
+        } else {
+            assert_eq!(
+                kept.lock().expect("kept").len(),
+                1,
+                "keeping it revokes nothing"
+            );
+        }
+        assert!(
+            session.portal().expect("portal sheet").dialog().is_none(),
+            "the sheet is done"
+        );
+    }
 }
 
 /// A picture editor asking for the name to save its picture under.
@@ -1023,16 +1010,6 @@ fn closing_the_chooser_leaves_the_file_question_unanswered() {
         !picker.presentation().is_open(),
         "the chooser sheet went away"
     );
-}
-
-/// A directory only this user reaches: the broker refuses to serve a socket
-/// anybody else could open, and the agent door is this account's alone.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the session in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the session's directory is this user's");
-    root
 }
 
 /// What the agents the desk's workspace holds, as Settings lists them.
@@ -1161,7 +1138,7 @@ fn seated_agents(session: &Session) -> Vec<String> {
 #[test]
 fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
     let mut session = Session::headless(
@@ -1251,7 +1228,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
 #[test]
 fn a_program_the_person_refuses_works_nowhere() {
     let _settled = ui::motion::testing::settled();
-    let root = private_home();
+    let root = common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
     let mut session = Session::headless(

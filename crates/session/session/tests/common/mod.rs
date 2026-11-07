@@ -17,6 +17,7 @@
     reason = "test fixtures shared by the session's test binaries: a helper a binary does not use is not an error, and a failed step is the assertion"
 )]
 
+pub mod audio;
 pub mod dev_apps;
 pub mod people;
 pub mod window;

@@ -171,16 +171,6 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
-fn private_home() -> tempfile::TempDir {
-    use std::os::unix::fs::PermissionsExt as _;
-    let root = tempfile::tempdir().expect("a directory to serve the plane in");
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("the plane's directory is this user's");
-    root
-}
-
 /// A connection to the session's plane as `app` in the workspace, as the
 /// launcher hands an app one.
 fn connect(socket: &Path) -> CollabClient {
@@ -328,7 +318,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 #[test]
 fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     let _settled = ui::motion::testing::settled();
-    let home = private_home();
+    let home = common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();
     let (mut session, apps) = session(&socket, &fixture);
