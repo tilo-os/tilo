@@ -55,7 +55,7 @@ use serde_json::Value as Json;
 use tilo_resource::{Model, Segment};
 use tilolang_runtime::DOC_VERSIONS as VERSIONS;
 use tilolang_runtime::Journal;
-use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
@@ -2089,6 +2089,47 @@ impl Inner {
         )
     }
 
+    /// The items of the collection `field` of `at` under `node` (above it, for `down` false)
+    /// by the reference field `parent`, in the collection's order, each with the type it is:
+    /// what [`View::relatives`] answers, for a collection of one record type. `None` when the
+    /// index does not hold the collection's items, or holds them of several types: one column
+    /// per type's field answers no walk over both.
+    fn relatives(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        parent: &str,
+        node: &ResourceRef,
+        down: bool,
+    ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
+        let (app, _) = self.locate(at)?;
+        let Some(view) = self.view(&app) else {
+            return Ok(None);
+        };
+        let resource = at.id_string();
+        let Some(ty) = view.type_of(&resource).map_err(backend)? else {
+            return Ok(None);
+        };
+        let Some(schema) = lookup(&ty) else {
+            return Ok(None);
+        };
+        let Some(spec) = schema
+            .field(field)
+            .filter(|f| f.kind == MergeKind::Collection)
+        else {
+            return Ok(None);
+        };
+        let Some(item) = spec.record.as_deref().and_then(lookup) else {
+            return Ok(None);
+        };
+        let path = node.id_string();
+        let Some(node) = crate::index::derive::id_of(&path) else {
+            return Ok(None);
+        };
+        view.relatives((&resource, field), item, parent, node, down)
+            .map_err(backend)
+    }
+
     /// The listing of the collection `field` of `at` (of items of the type `item`), filtered
     /// by `pred` and in `order`, read once in this state of the store.
     fn listed_in(
@@ -2576,6 +2617,17 @@ impl Store for TiloStore {
 
     fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
         self.held().listed(at, &field.id, None)
+    }
+
+    fn relatives(
+        &self,
+        at: &ResourceRef,
+        field: &FieldId,
+        parent: &FieldId,
+        node: &ResourceRef,
+        down: bool,
+    ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
+        self.held().relatives(at, field, parent, node, down)
     }
 
     fn listing_where(

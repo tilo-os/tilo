@@ -1312,6 +1312,25 @@ pub trait Store {
         }
     }
 
+    /// The items of the collection `field` of `at` under the item `node` (above it, for
+    /// `down` false) by the reference field `parent`, those under it in the order the
+    /// collection keeps them and those above it from the nearest, each with the type it is.
+    /// `None` when the store cannot follow that field, and the caller's own walk runs instead.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::read`].
+    fn relatives(
+        &self,
+        _at: &ResourceRef,
+        _field: &FieldId,
+        _parent: &FieldId,
+        _node: &ResourceRef,
+        _down: bool,
+    ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
+        Ok(None)
+    }
+
     /// The items of the collection `field` of `at` (whose items are of the type `item`) that
     /// `pred` holds of, in order, shared. A store that keeps what it read keeps this too, and
     /// brings it up to date as the items change rather than evaluating every item again.
