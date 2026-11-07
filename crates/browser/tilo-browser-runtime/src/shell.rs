@@ -1037,7 +1037,7 @@ impl BrowserShell {
         self.top.activity_by(None);
     }
 
-    fn invite(&mut self) {
+    fn invite(&self) {
         if self.offers.invite.is_some() {
             self.invite.open();
         }
@@ -1579,7 +1579,7 @@ impl BrowserShell {
     /// A verb of the empty desk's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
-    fn launchpad(&mut self, action: LaunchpadAction) {
+    fn launchpad(&self, action: LaunchpadAction) {
         match action {
             LaunchpadAction::Invite => self.invite(),
             LaunchpadAction::Activity => self.activity(),
