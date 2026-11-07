@@ -170,9 +170,15 @@ fn a_section_that_does_not_fold_stays_open() {
 
 #[test]
 fn the_list_publishes_a_tree_with_selection_state() {
-    let h = harness(NavList::new(mailboxes()).selected("inbox"), Theme::dark());
+    let h = harness(
+        NavList::new(mailboxes())
+            .with_semantic_key("mail.places")
+            .selected("inbox"),
+        Theme::dark(),
+    );
     let node = h.root::<NavList>().accessibility().expect("semantics");
     assert_eq!(node.role, crate::a11y::Role::Tree);
+    assert_eq!(node.semantic_key.as_deref(), Some("mail.places"));
     let inbox = node
         .children
         .iter()
