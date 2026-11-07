@@ -49,6 +49,10 @@ pub struct QrWidget {
     matrix_size: usize,
     quiet_modules: usize,
     error_correction: EcLevel,
+    /// How wide each module is drawn, when the caller asked for a code dense
+    /// enough that its squares must be counted rather than guessed at: the
+    /// code then takes the room its payload needs instead of a fixed box.
+    module_px: Option<u32>,
     /// Encoding error, if any. Surfaced inline (the widget paints a
     /// `"QR: <error>"` label) rather than panicking so a too-large
     /// payload doesn't kill the host app.
@@ -74,6 +78,7 @@ impl QrWidget {
             matrix_size: 0,
             quiet_modules: DEFAULT_QUIET_MODULES,
             error_correction: EcLevel::M,
+            module_px: None,
             error: None,
         };
         w.set_payload(payload);
@@ -113,6 +118,23 @@ impl QrWidget {
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.test_id = id.into();
         self
+    }
+
+    /// Draw each module `px` pixels across, and make the box as large as the
+    /// payload needs: what a code carries can run to a kilobyte, and a
+    /// kilobyte's modules in a fixed box are too small to tell apart on a
+    /// screen. A code that fits the usual box keeps it without asking.
+    #[must_use]
+    pub fn with_module_px(mut self, px: u32) -> Self {
+        self.dirty = true;
+        self.module_px = Some(px.max(1));
+        self
+    }
+
+    /// The width each module is drawn at, when the caller asked for one.
+    #[must_use]
+    pub fn module_px(&self) -> Option<u32> {
+        self.module_px
     }
 
     /// Place the code at `rect`, for a painter that lays out by hand rather
@@ -195,16 +217,29 @@ impl QrWidget {
 }
 
 impl Widget for QrWidget {
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "QR module counts are capped by the QR spec at 177"
+    )]
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        // Default 240x240 box; callers can wrap us in a sized container.
-        // The module side recomputes in draw from the resolved rect.
+        // 240x240 unless the caller named a module size: then the box is as
+        // large as the modules the code carries need, and a card gives it the
+        // line that room takes.
+        let side = self
+            .module_px
+            .and_then(|px| {
+                u32::try_from(self.total_modules())
+                    .ok()
+                    .map(|mods| mods.saturating_mul(px))
+            })
+            .map_or(240.0, |side| side as f32);
         let style = Style {
-            size: Size::from_lengths(240.0, 240.0),
+            size: Size::from_lengths(side, side),
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
@@ -264,14 +299,21 @@ impl Widget for QrWidget {
 
         let total = self.total_modules() as f64;
         let side = (self.rect.width().min(self.rect.height())).max(0.0);
-        let module = side / total;
+        // Whole pixels per module, unless the caller named the width: a
+        // module rounded to a fraction draws wider on one side than the other,
+        // and a code of a thousand modules then reads as speckle.
+        let module = match self.module_px {
+            Some(px) => f64::from(px),
+            None => (side / total).floor(),
+        };
         if module <= 0.0 {
             return;
         }
         // The code is square; centre it in a non-square allocation so the
         // white surround stays symmetric instead of piling up on one side.
-        let origin_x = self.rect.x0 + (self.rect.width() - side) / 2.0;
-        let origin_y = self.rect.y0 + (self.rect.height() - side) / 2.0;
+        let drawn = module * total;
+        let origin_x = self.rect.x0 + (self.rect.width() - drawn) / 2.0;
+        let origin_y = self.rect.y0 + (self.rect.height() - drawn) / 2.0;
         let quiet = self.quiet_modules as f64 * module;
         for y in 0..self.matrix_size {
             for x in 0..self.matrix_size {
@@ -288,6 +330,11 @@ impl Widget for QrWidget {
 
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
+    }
+    /// A code drawn at a named module size takes the room its payload needs,
+    /// so a new payload lays it out again as well as paints it.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty && self.module_px.is_some()
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -412,6 +459,27 @@ mod tests {
             assert!(!w.module(usize::MAX, 0));
             assert!(!w.module(0, usize::MAX));
         }
+    }
+
+    #[test]
+    fn a_dense_code_takes_the_room_its_modules_need() {
+        let px = 4u32;
+        let mut code = QrWidget::new(vec![b'i'; 1000]).with_module_px(px);
+        assert!(code.error().is_none(), "an invitation-sized payload fits");
+        assert_eq!(code.module_px(), Some(px));
+        let want = u32::try_from(code.total_modules()).expect("the code's modules fit") * px;
+        let mut taffy = TaffyTree::new();
+        let node = code.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
+        let laid = taffy.style(node).expect("the code is laid out").size;
+        let want = taffy::Dimension::length(want as f32);
+        assert_eq!(laid.width, want);
+        assert_eq!(laid.height, want);
+
+        // A code that fits the usual box keeps it without asking.
+        let mut small = QrWidget::new(b"hello".to_vec());
+        let node = small.build_layout(&mut taffy, &Theme::dark(), &mut HashMap::new());
+        let laid = taffy.style(node).expect("the code is laid out").size;
+        assert_eq!(laid.width, taffy::Dimension::length(240.0));
     }
 
     #[test]

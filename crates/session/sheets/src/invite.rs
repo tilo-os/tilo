@@ -24,6 +24,13 @@ use crate::presentation::Presentation;
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
 
+/// How wide each module of the made link's code is drawn: an invitation's
+/// signed bytes run to about a kilobyte, and a code that dense turns to
+/// speckle unless its squares are counted rather than guessed at. The code
+/// takes the line this width asks for; the test that scans the sheet's code
+/// draws it at the same width.
+pub const CODE_MODULE_PX: u32 = 4;
+
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -418,42 +425,37 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
         .with_accessible_name(&created.link_label);
     let code = QrWidget::new(created.code.clone())
         .with_id("invite-code")
+        .with_module_px(CODE_MODULE_PX)
         .with_alt(created.alt.clone());
+    // The code stands on a line of its own: the room its modules need is
+    // wider than what is left beside a field.
     vec![
         caption(&created.link_label),
+        Box::new(code),
         Box::new(
-            Row::new()
-                .with_rhythm(Rhythm::Section)
-                .push(Box::new(code))
+            Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_rhythm(Rhythm::Related)
+                .push(Box::new(text))
+                .push(caption(&created.brings))
+                .push(caption(&created.lasts))
                 .push(Box::new(
-                    Column::new()
-                        .with_intrinsic_height()
-                        .with_no_padding()
-                        .with_rhythm(Rhythm::Related)
-                        .push(Box::new(text))
-                        .push(caption(&created.brings))
-                        .push(caption(&created.lasts))
+                    Row::new()
+                        .with_rhythm(Rhythm::Tight)
                         .push(Box::new(
-                            Row::new()
-                                .with_rhythm(Rhythm::Tight)
-                                .push(Box::new(
-                                    Button::new("invite-copy-link", &created.copy).on_view(
-                                        move || {
-                                            copying(InviteEffect::Copy {
-                                                link: copied.clone(),
-                                            });
-                                        },
-                                    ),
-                                ))
-                                .push(Box::new(
-                                    Button::new("invite-revoke-made", &created.revoke).on_view(
-                                        move || {
-                                            revoking(InviteEffect::Revoke {
-                                                invite: invite_id.clone(),
-                                            });
-                                        },
-                                    ),
-                                )),
+                            Button::new("invite-copy-link", &created.copy).on_view(move || {
+                                copying(InviteEffect::Copy {
+                                    link: copied.clone(),
+                                });
+                            }),
+                        ))
+                        .push(Box::new(
+                            Button::new("invite-revoke-made", &created.revoke).on_view(move || {
+                                revoking(InviteEffect::Revoke {
+                                    invite: invite_id.clone(),
+                                });
+                            }),
                         )),
                 )),
         ),

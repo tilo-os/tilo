@@ -295,7 +295,10 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
 fn scanned(code: &[u8]) -> Result<Vec<u8>, String> {
     use ui::widget::QrWidget;
 
-    let widget = QrWidget::new(code.to_vec()).with_id("invite-code");
+    let px = tilo_sheets::invite::CODE_MODULE_PX;
+    let widget = QrWidget::new(code.to_vec())
+        .with_id("invite-code")
+        .with_module_px(px);
     if let Some(error) = widget.error() {
         return Err(format!("the code does not fit: {error}"));
     }
@@ -306,8 +309,9 @@ fn scanned(code: &[u8]) -> Result<Vec<u8>, String> {
     if modules == 0 {
         return Err("the code draws nothing".to_owned());
     }
-    // Each module is a clean square a scanner has no trouble with.
-    let scale = 8usize;
+    // The code is drawn at the width the sheet draws it: a scanner reads it
+    // there or it is unreadable on the screen.
+    let scale = usize::try_from(px).map_err(|_| "no module width".to_owned())?;
     let side = u32::try_from(widget.total_modules().saturating_mul(scale))
         .map_err(|_| "the code is too wide to draw".to_owned())?;
     let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
