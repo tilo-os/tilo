@@ -485,23 +485,22 @@ pub struct Hosted {
     /// answers read moved ([`Answers`]).
     answers: Answers,
     registry: ActionRegistry,
-    /// What the instance last published to the session's persistent search index, and what it
-    /// published from: it publishes the app's resources' entries when the record's heads move,
-    /// so a Mail message is found by a word of its body through the system's one search,
-    /// whether or not the window runs. [`None`] until it has published once.
+    /// What the instance last published to the session's persistent search index: it publishes
+    /// the entries of the resources the publication moved, so a Mail message is found by a word
+    /// of its body through the system's one search, whether or not the window runs.
     search_index: tilo_resource::search_index::Publisher,
-    search_index_from: Option<Vec<String>>,
     /// Where the publication's journal stood when the index last took it: what the change since
-    /// moved, so the index reads the resources it moved and not the workspace.
+    /// moved, so the index reads the resources it moved and not the workspace. [`None`] until it
+    /// has published once.
     search_index_moved: Option<u64>,
     /// The entry each resource has in the index, by its published id: what a change replaces,
     /// and what a resource that is gone takes away, its own entries and those under it.
     search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
-    /// The whole of the index being read off the frame: the record's heads it was read at, what
-    /// the publication had moved then, and the read. The frame after it ends sends it.
-    search_index_whole: Option<(Vec<String>, u64, tilolang_tilo::search::WholeIndex)>,
+    /// The whole of the index being read off the frame: what the publication had moved when it
+    /// was read, and the read. The frame after it ends sends it.
+    search_index_whole: Option<(u64, tilolang_tilo::search::WholeIndex)>,
     /// The invocation the person's last step ran in, when they asked to undo it: the host takes
     /// the action back in every unit that holds a change of it, all under one commit, whether
     /// this endpoint's logs still remember the action or only the records do.
@@ -609,7 +608,6 @@ impl Hosted {
             answers: Answers::default(),
             registry,
             search_index: tilo_resource::search_index::Publisher::default(),
-            search_index_from: None,
             search_index_moved: None,
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
@@ -844,14 +842,6 @@ impl Hosted {
         if self.index_read_off_frame() {
             return;
         }
-        let generation: Vec<String> = tilo_resource::heads_of(self.record.doc())
-            .unwrap_or_default()
-            .into_iter()
-            .map(|hash| hash.to_string())
-            .collect();
-        if self.search_index_from.as_deref() == Some(generation.as_slice()) {
-            return;
-        }
         if self.record.route().app_id != self.spec.app {
             return;
         }
@@ -864,31 +854,34 @@ impl Hosted {
         if !host.index_ready() {
             return;
         }
-        self.search_index_build = self.search_index_build.saturating_add(1);
-        let state = tilo_resource::search_index::IndexState {
-            generation: self.search_index_build,
-            secrets_unlocked: None,
+        let Some(surface) = self.surface.borrow().clone() else {
+            return;
         };
-        let moved = {
-            let surface = self.surface.borrow().clone();
-            surface.and_then(|surface| {
-                let publications = surface.publications.borrow();
-                let since = self.search_index_moved?;
-                publications.text_since(since)
-            })
-        };
+        // What the workspace moved since the index last took it, read from the publication the
+        // window reads rather than from the record: a change becomes a publication at the frame
+        // that reads it from the store, and the index publishes that frame's changes, not the
+        // ones before.
+        surface.update();
+        // A publication no earlier frame took ([`Self::search_index_moved`] is `None`) has no
+        // journal to read from: the whole index is read off the frame, as it is when the
+        // journal no longer reaches back to it.
+        let moved = self
+            .search_index_moved
+            .and_then(|since| surface.publications.borrow().text_since(since));
         // What a hit's address names opens at its resource; the entries carry the package's
         // `open`. A change sends the entries it moved; a whole publication reads the workspace
         // off the frame instead.
-        let deltas = match moved {
-            Some(tilolang_tilo::publish::TextMoves::These { texts, gone }) => {
-                let (upsert, remove) = self.moved_entries(&host, &texts, &gone);
-                self.search_index.publish_moved(state, upsert, remove)
-            }
-            _ => None,
+        let Some(tilolang_tilo::publish::TextMoves::These { texts, gone }) = moved else {
+            self.read_index_whole(&host);
+            return;
         };
-        let Some(deltas) = deltas else {
-            self.read_index_whole(&host, state, generation);
+        if texts.is_empty() && gone.is_empty() {
+            return;
+        }
+        let state = self.index_state();
+        let (upsert, remove) = self.moved_entries(&host, &texts, &gone);
+        let Some(deltas) = self.search_index.publish_moved(state, upsert, remove) else {
+            self.read_index_whole(&host);
             return;
         };
         for delta in deltas {
@@ -899,32 +892,33 @@ impl Hosted {
                 .manager_mut()
                 .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
         }
-        self.search_index_moved = self
-            .surface
-            .borrow()
-            .as_ref()
-            .map(|surface| surface.publications.borrow().moved());
-        self.search_index_from = Some(generation);
+        self.search_index_moved = Some(surface.publications.borrow().moved());
     }
 
-    /// Read every entry of the workspace off the frame, at `state` and the record's `generation`:
-    /// what a first publication, a new route and a change the journal no longer reaches send.
-    /// Nothing is sent this turn; the frame the read ends on sends it ([`Self::index_read_off_frame`]).
-    fn read_index_whole(
-        &mut self,
-        host: &Host,
-        state: tilo_resource::search_index::IndexState,
-        generation: Vec<String>,
-    ) {
+    /// The state the entries are published at: a generation of its own for every publication.
+    fn index_state(&mut self) -> tilo_resource::search_index::IndexState {
+        self.search_index_build = self.search_index_build.saturating_add(1);
+        tilo_resource::search_index::IndexState {
+            generation: self.search_index_build,
+            secrets_unlocked: None,
+        }
+    }
+
+    /// Read every entry of the workspace off the frame: what a first publication, a new route
+    /// and a change the journal no longer reaches send. Nothing is sent this turn; the frame the
+    /// read ends on sends it ([`Self::index_read_off_frame`]).
+    fn read_index_whole(&mut self, host: &Host) {
         let publisher = std::mem::take(&mut self.search_index);
         let wake = self
             .surface
             .borrow()
             .as_ref()
             .map(|surface| surface.wake.clone());
+        let state = self.index_state();
+        // The publication as it stands now: what a change from here on moves is published by
+        // the frames after the read, not read with it.
         let moved = self.moved();
         self.search_index_whole = Some((
-            generation,
             moved,
             tilolang_tilo::search::WholeIndex::start(host, publisher, state, wake),
         ));
@@ -934,12 +928,12 @@ impl Hosted {
     /// leaves the frame with nothing else to publish. The thread that read it ended without an
     /// answer only by panicking, and then the frame reads it.
     fn index_read_off_frame(&mut self) -> bool {
-        let Some((generation, moved, read)) = self.search_index_whole.take() else {
+        let Some((moved, read)) = self.search_index_whole.take() else {
             return false;
         };
         let published = match read.poll() {
             tilolang_tilo::background::Poll::Running => {
-                self.search_index_whole = Some((generation, moved, read));
+                self.search_index_whole = Some((moved, read));
                 return true;
             }
             tilolang_tilo::background::Poll::Ready(published) => published,
@@ -967,7 +961,6 @@ impl Hosted {
                 .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
         }
         self.search_index_moved = Some(moved);
-        self.search_index_from = Some(generation);
         true
     }
 
