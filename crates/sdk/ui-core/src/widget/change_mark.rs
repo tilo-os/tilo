@@ -437,8 +437,6 @@ impl component::Described for ChangeMark {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     /// A window's mark names one change in the singular and several in the type's plural:
     /// "Mia changed one message", never "changed one messages".
     #[test]
