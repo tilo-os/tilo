@@ -33,6 +33,7 @@ fn named(name: &str) -> Option<Icon> {
         "settings" => Icon::Settings,
         "store" => Icon::ShoppingBag,
         "calendar" => Icon::Calendar,
+        "tasks" => Icon::ListChecks,
         "mail" => Icon::Mail,
         "contacts" => Icon::Users,
         "chat" | "messages" => Icon::MessageSquare,

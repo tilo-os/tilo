@@ -12,7 +12,10 @@
 
 pub mod component_pins;
 pub mod gc;
+pub mod record;
 pub mod verity;
+
+pub use record::VerificationRecord;
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::{BTreeMap, BTreeSet};
@@ -22,6 +25,7 @@ use std::path::{Path, PathBuf};
 use tilo_clock::unix_now;
 
 use serde::{Deserialize, Serialize};
+use tilo_files::native::checked::Identity as FileIdentity;
 
 /// Standard bundle manifest filename inside a bundle directory.
 pub const BUNDLE_MANIFEST_FILENAME: &str = "bundle.toml";
@@ -826,7 +830,7 @@ pub fn verify_bundle_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, PayloadMode::Hash).map(|(manifest, _)| manifest)
+    verify_bundle_impl(root, opts, PayloadMode::Hash).map(|(manifest, _, _)| manifest)
 }
 
 /// How a verification established the payload bytes.
@@ -834,6 +838,9 @@ pub fn verify_bundle_with(
 pub struct PayloadCheck {
     /// Files accepted by their kernel-measured fs-verity digest, unread.
     pub by_verity: usize,
+    /// Files accepted by the identity a full verification recorded for them
+    /// ([`VerificationRecord`]), unread.
+    pub by_record: usize,
     /// Files whose bytes were read and BLAKE3-hashed.
     pub hashed: usize,
     /// Payload bytes read to hash them.
@@ -864,7 +871,62 @@ pub fn verify_bundle_verity_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<(BundleManifest, PayloadCheck), BundleError> {
-    verify_bundle_impl(root, opts, PayloadMode::Verity)
+    verify_bundle_impl(root, opts, PayloadMode::Recorded(None))
+        .map(|(manifest, check, _)| (manifest, check))
+}
+
+/// [`verify_bundle_with`] for a bundle a person installed into their own
+/// store, on a launch's critical path.
+///
+/// Reads no payload byte a previous launch already proved: a file is
+/// accepted unread when the kernel vouches for it (as
+/// [`verify_bundle_verity_with`]) or when `records` holds a record proving
+/// that the file is still the file that was verified — same inode, size and
+/// modification and change times ([`VerificationRecord`]). Everything else is
+/// hashed, and the verification that proved every file is recorded in
+/// `records` for the next launch. `records` is a directory the sandboxed apps
+/// of this user cannot write; `None` verifies without recording or trusting a
+/// record.
+///
+/// # Errors
+///
+/// Everything [`verify_bundle_with`] returns.
+pub fn verify_bundle_recorded_with(
+    root: &Path,
+    opts: &VerifyOptions,
+    records: Option<&Path>,
+) -> Result<(BundleManifest, PayloadCheck), BundleError> {
+    let record = records.and_then(|dir| {
+        bundle_root_hash(root)
+            .ok()
+            .and_then(|hash| record::VerificationRecord::read(dir, &hash))
+    });
+    let (manifest, check, fresh) =
+        verify_bundle_impl(root, opts, PayloadMode::Recorded(record.as_ref()))?;
+    if let (Some(dir), Some(fresh)) = (records, fresh) {
+        // The bundle is verified either way; what a failed write costs is the
+        // next launch's skip, and the next launch logs the full hash again.
+        fresh.write(dir).ok();
+    }
+    Ok((manifest, check))
+}
+
+/// The root hash a bundle's manifest names, without verifying anything: what
+/// names its record.
+fn bundle_root_hash(root: &Path) -> Result<String, BundleError> {
+    let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
+    let text = fs::read_to_string(&manifest_path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            BundleError::ManifestMissing {
+                path: manifest_path,
+            }
+        } else {
+            BundleError::Io(error)
+        }
+    })?;
+    let manifest: BundleManifest =
+        toml::from_str(&text).map_err(|e| BundleError::ManifestParse(e.to_string()))?;
+    Ok(manifest.root_hash)
 }
 
 /// Enable fs-verity on every payload file of the bundle at `root` that
@@ -910,25 +972,34 @@ pub fn verify_bundle_metadata_with(
     root: &Path,
     opts: &VerifyOptions,
 ) -> Result<BundleManifest, BundleError> {
-    verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _)| manifest)
+    verify_bundle_impl(root, opts, PayloadMode::Size).map(|(manifest, _, _)| manifest)
 }
 
 /// How [`verify_bundle_impl`] establishes each payload file.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum PayloadMode {
+enum PayloadMode<'a> {
     /// Read and hash every byte.
     Hash,
     /// Compare sizes only; the caller proves immutability.
     Size,
-    /// Trust a signed, kernel-measured fs-verity digest; hash otherwise.
-    Verity,
+    /// Trust a signed, kernel-measured fs-verity digest where the kernel has
+    /// one, then the identity a full verification recorded where `Some`
+    /// holds one for the file, and hash every other file.
+    Recorded(Option<&'a record::VerificationRecord>),
 }
 
 fn verify_bundle_impl(
     root: &Path,
     opts: &VerifyOptions,
-    mode: PayloadMode,
-) -> Result<(BundleManifest, PayloadCheck), BundleError> {
+    mode: PayloadMode<'_>,
+) -> Result<
+    (
+        BundleManifest,
+        PayloadCheck,
+        Option<record::VerificationRecord>,
+    ),
+    BundleError,
+> {
     let manifest_path = root.join(BUNDLE_MANIFEST_FILENAME);
     if !manifest_path.exists() {
         return Err(BundleError::ManifestMissing {
@@ -953,7 +1024,12 @@ fn verify_bundle_impl(
     // under it; the other modes check it last, after the signature they
     // always checked. Every mode refuses a bad one, so the install-time
     // verification vouches for what a launch trusts.
-    let verity_signed = mode == PayloadMode::Verity && verify_verity_signature(&manifest)?;
+    let recorded = matches!(mode, PayloadMode::Recorded(_));
+    let verity_signed = recorded && verify_verity_signature(&manifest)?;
+    let record = match mode {
+        PayloadMode::Recorded(record) => record,
+        _ => None,
+    };
     let mut check = PayloadCheck::default();
 
     // Recompute per-file hashes and compare against disk: a listed file
@@ -964,8 +1040,105 @@ fn verify_bundle_impl(
     // The manifest itself lives at the root; don't treat it as payload.
     on_disk.remove(BUNDLE_MANIFEST_FILENAME);
 
+    let mut unread = list_payload(
+        root,
+        &manifest,
+        &mut on_disk,
+        mode,
+        verity_signed,
+        record,
+        &mut check,
+    )?;
+    if let Some((path, _)) = on_disk.into_iter().next() {
+        return Err(BundleError::FileUnlisted { path });
+    }
+    unread.prove(&mut check)?;
+    let UnreadPayload {
+        identities,
+        identities_complete,
+        ..
+    } = unread;
+
+    // Root hash is what the signature covers, so it's checked BEFORE the
+    // signature — a tampered manifest that shifts root_hash without
+    // updating files (or vice versa) fails here.
+    let mut sorted = manifest.files.clone();
+    sorted.sort_by(|a, b| a.path.cmp(&b.path));
+    let computed = compute_root_hash(&sorted);
+    if computed != manifest.root_hash {
+        return Err(BundleError::HashMismatch {
+            expected: manifest.root_hash.clone(),
+            computed,
+        });
+    }
+    verify_abi_digest(&manifest)?;
+
+    verify_manifest_signature(&manifest, opts)?;
+    if !recorded {
+        verify_verity_signature(&manifest)?;
+    }
+    // A record is written only for what this verification proved from the
+    // bytes themselves: one made of identities a record vouched for would
+    // renew evidence for a file nothing has read in a long time.
+    let fresh = (recorded && identities_complete && check.hashed > 0)
+        .then(|| record::VerificationRecord::new(&manifest.root_hash, identities));
+    Ok((manifest, check, fresh))
+}
+
+/// What the listed files of a payload still owe this verification.
+struct UnreadPayload<'a> {
+    /// The files whose bytes have to be read.
+    to_hash: Vec<(PathBuf, &'a BundleFile)>,
+    /// The identity of every listed file, as this verification found it: what
+    /// the record a later launch reads is made of. A file whose bytes are
+    /// read gets its identity from the descriptor it was read through; one
+    /// accepted unread is identified where it was listed.
+    identities: Vec<(String, FileIdentity)>,
+    /// Whether every listed file got that identity here, rather than through
+    /// something that vouched for it.
+    identities_complete: bool,
+}
+
+impl UnreadPayload<'_> {
+    /// Read every file that was not accepted unread, and refuse the first one
+    /// whose bytes differ from the manifest.
+    fn prove(&mut self, check: &mut PayloadCheck) -> Result<(), BundleError> {
+        for (digests, expected) in hash_payload_files(&self.to_hash)? {
+            check.hashed = check.hashed.saturating_add(1);
+            check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
+            if digests.blake3 != expected.hash {
+                return Err(BundleError::HashMismatch {
+                    expected: expected.hash.clone(),
+                    computed: digests.blake3,
+                });
+            }
+            match digests.identity {
+                Some(identity) => self.identities.push((expected.path.clone(), identity)),
+                None => self.identities_complete = false,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Check that every listed file is on disk as a regular file, take the ones
+/// that must be read into an [`UnreadPayload`], and leave in `on_disk` what
+/// the payload holds beyond the manifest.
+fn list_payload<'a>(
+    root: &Path,
+    manifest: &'a BundleManifest,
+    on_disk: &mut BTreeMap<String, PathBuf>,
+    mode: PayloadMode<'_>,
+    verity_signed: bool,
+    record: Option<&record::VerificationRecord>,
+    check: &mut PayloadCheck,
+) -> Result<UnreadPayload<'a>, BundleError> {
+    let mut unread = UnreadPayload {
+        to_hash: Vec::new(),
+        identities: Vec::new(),
+        identities_complete: true,
+    };
     let mut listed = BTreeSet::new();
-    let mut to_hash: Vec<(PathBuf, &BundleFile)> = Vec::new();
     for expected in &manifest.files {
         if !valid_payload_path(&expected.path) || !listed.insert(expected.path.as_str()) {
             return Err(BundleError::InvalidPayloadPath {
@@ -983,60 +1156,69 @@ fn verify_bundle_impl(
                 path: expected.path.clone(),
             });
         }
-        let by_verity = verity_signed
-            && expected
-                .verity
-                .as_deref()
-                .is_some_and(|digest| verity_vouches(&abs, expected.size, digest));
-        if by_verity {
-            check.by_verity = check.by_verity.saturating_add(1);
-        } else if mode == PayloadMode::Size {
-            let actual = abs.metadata()?.len();
-            if actual != expected.size {
-                return Err(BundleError::SizeMismatch {
-                    path: expected.path.clone(),
-                    expected: expected.size,
-                    actual,
-                });
-            }
-        } else {
-            to_hash.push((abs, expected));
-        }
         on_disk.remove(&expected.path);
+        let now = FileIdentity::of_path(&abs).ok().flatten();
+        match accept_unread(expected, &abs, mode, verity_signed, record, now, check)? {
+            Accepted::Unread(identity) => match identity {
+                Some(identity) => unread.identities.push((expected.path.clone(), identity)),
+                None => unread.identities_complete = false,
+            },
+            Accepted::Read => unread.to_hash.push((abs, expected)),
+        }
     }
-    if let Some((path, _)) = on_disk.into_iter().next() {
-        return Err(BundleError::FileUnlisted { path });
+    Ok(unread)
+}
+
+/// What [`accept_unread`] decided about one listed file.
+enum Accepted {
+    /// Established without reading it, with the file's identity as this pass
+    /// saw it.
+    Unread(Option<FileIdentity>),
+    /// Its bytes have to be read.
+    Read,
+}
+
+/// Establish one listed file without reading it: by the kernel's fs-verity
+/// digest, by the identity a record kept, or by size alone for a caller that
+/// proved the payload is immutable.
+fn accept_unread(
+    expected: &BundleFile,
+    abs: &Path,
+    mode: PayloadMode<'_>,
+    verity_signed: bool,
+    record: Option<&record::VerificationRecord>,
+    now: Option<FileIdentity>,
+    check: &mut PayloadCheck,
+) -> Result<Accepted, BundleError> {
+    let by_verity = verity_signed
+        && expected
+            .verity
+            .as_deref()
+            .is_some_and(|digest| verity_vouches(abs, expected.size, digest));
+    let by_record = !by_verity
+        && record.is_some_and(|record| {
+            now.is_some_and(|now| now.len == expected.size && record.holds(&expected.path, now))
+        });
+    if by_verity {
+        check.by_verity = check.by_verity.saturating_add(1);
+        return Ok(Accepted::Unread(now));
     }
-    for (digests, expected) in hash_payload_files(&to_hash)? {
-        check.hashed = check.hashed.saturating_add(1);
-        check.hashed_bytes = check.hashed_bytes.saturating_add(digests.size);
-        if digests.blake3 != expected.hash {
-            return Err(BundleError::HashMismatch {
-                expected: expected.hash.clone(),
-                computed: digests.blake3,
+    if by_record {
+        check.by_record = check.by_record.saturating_add(1);
+        return Ok(Accepted::Unread(now));
+    }
+    if mode == PayloadMode::Size {
+        let actual = abs.metadata()?.len();
+        if actual != expected.size {
+            return Err(BundleError::SizeMismatch {
+                path: expected.path.clone(),
+                expected: expected.size,
+                actual,
             });
         }
+        return Ok(Accepted::Unread(now));
     }
-
-    // Root hash is what the signature covers, so it's checked BEFORE the
-    // signature — a tampered manifest that shifts root_hash without
-    // updating files (or vice versa) fails here.
-    let mut sorted = manifest.files.clone();
-    sorted.sort_by(|a, b| a.path.cmp(&b.path));
-    let computed = compute_root_hash(&sorted);
-    if computed != manifest.root_hash {
-        return Err(BundleError::HashMismatch {
-            expected: manifest.root_hash.clone(),
-            computed,
-        });
-    }
-    verify_abi_digest(&manifest)?;
-
-    verify_manifest_signature(&manifest, opts)?;
-    if mode != PayloadMode::Verity {
-        verify_verity_signature(&manifest)?;
-    }
-    Ok((manifest, check))
+    Ok(Accepted::Read)
 }
 
 /// Whether the file at `path` is a regular file of `size` bytes whose
@@ -1223,6 +1405,11 @@ struct FileDigests {
     /// fs-verity digest, hex, when asked for.
     verity: Option<String>,
     size: u64,
+    /// The identity of the inode these bytes were read from, when it held
+    /// still across the read: what a record may claim was verified. `None`
+    /// when the file changed while it was read, or this platform cannot
+    /// identify an open file.
+    identity: Option<FileIdentity>,
 }
 
 /// Read `path` once, BLAKE3-hashing it and, with `with_verity`, computing its
@@ -1320,6 +1507,10 @@ const MAX_HASH_WORKERS: usize = 8;
 
 fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleError> {
     let mut f = fs::File::open(path)?;
+    // Taken from the open descriptor, before and after the read: what a
+    // record may name is the inode these bytes came from, and only while it
+    // held still.
+    let before = FileIdentity::of_file(&f).ok();
     let mut hasher = blake3::Hasher::new();
     let mut verity = with_verity.then(verity::VerityHasher::new);
     // Large reads let BLAKE3 hash many chunks in parallel SIMD lanes.
@@ -1340,10 +1531,12 @@ fn digest_file(path: &Path, with_verity: bool) -> Result<FileDigests, BundleErro
         }
         total = total.saturating_add(n as u64);
     }
+    let after = FileIdentity::of_file(&f).ok();
     Ok(FileDigests {
         blake3: hasher.finalize().to_hex().to_string(),
         verity: verity.map(|verity| hex::encode(verity.finalize())),
         size: total,
+        identity: before.filter(|before| Some(*before) == after),
     })
 }
 

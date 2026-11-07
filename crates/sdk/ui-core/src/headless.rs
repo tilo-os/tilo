@@ -602,6 +602,12 @@ pub struct FrameHarness {
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
     last_relayout: RelayoutStats,
+    /// Whether every widget of the tree was placed and where focus stood then:
+    /// a frame that solves, builds and remounts nothing, with focus where it
+    /// stood, places only what moved
+    /// ([`crate::widget::layout::placing_again_in`]).
+    placed_all: bool,
+    placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
     /// Layout nodes built since construction: every node of each rebuilt
@@ -693,6 +699,11 @@ pub struct RelayoutStats {
     pub measured: bool,
     pub marked_dirty: usize,
     pub marked_leaves: usize,
+    /// The frame placed the widgets the views moved, not every widget of the
+    /// tree: nothing was solved, built or remounted since they were placed, so
+    /// what stood still stands where it stood and a long collection places only
+    /// what stands near its clip ([`crate::widget::layout::placing_again_in`]).
+    pub placed_partly: bool,
 }
 
 /// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
@@ -1656,6 +1667,8 @@ impl FrameHarness {
             layout_built: false,
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
+            placed_all: false,
+            placed_focus: None,
             relayout_frames: 0,
             layout_nodes_built: 0,
             retained_frames: 0,
@@ -3581,6 +3594,8 @@ impl FrameHarness {
             || self.remount
             || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
+        // Whether any pass placed every widget (`RelayoutStats::placed_partly`).
+        let mut placed_all_widgets = false;
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
         // What arrives in the window's first frame shows at rest.
@@ -3784,6 +3799,12 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
             let t_apply = self.profiler.as_ref().map(|_| crate::time::now());
+            // Nothing was solved, built or remounted since the widgets were last placed and
+            // focus stayed: only views moved, and a collection places only what it shows.
+            let again = !(must_compute || rebuilt_this_pass || remounted)
+                && self.placed_all
+                && self.placed_focus == self.focused
+                && self.history.is_none();
             if let Some(history) = &mut self.history {
                 history.apply_composition(
                     self.root.as_mut(),
@@ -3791,9 +3812,18 @@ impl FrameHarness {
                     self.child_node,
                     Point::ORIGIN,
                 );
+            } else if again {
+                let tree = crate::widget::layout::TreeId::of(&self.taffy);
+                crate::widget::layout::placing_again_in(tree, || {
+                    self.root
+                        .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+                });
             } else {
+                placed_all_widgets = true;
                 self.root
                     .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+                self.placed_all = true;
+                self.placed_focus = self.focused;
             }
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
@@ -3811,6 +3841,7 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_layout_scale = Some(self.input_scale);
+        stats.placed_partly = !placed_all_widgets;
         self.last_relayout = stats;
         if stats.rebuilt
             || stats.remounted

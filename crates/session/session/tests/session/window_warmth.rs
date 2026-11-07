@@ -34,7 +34,7 @@ fn warmed(workspace: WorkspaceSlot, degrees: f64) {
 
 /// A window's own shell-ui connection: the end it writes its frames on, and
 /// the end it reads the session's from, with what of a line it read so far.
-struct Window {
+pub(super) struct Window {
     to_session: UnixStream,
     from_session: UnixStream,
     unread: Vec<u8>,
@@ -42,7 +42,12 @@ struct Window {
 
 impl Window {
     /// The connection of a window of `app`, run by the launch `pid`.
-    fn open(launches: &Arc<tilo_session::Launches>, app: &str, workspace: &str, pid: u32) -> Self {
+    pub(super) fn open(
+        launches: &Arc<tilo_session::Launches>,
+        app: &str,
+        workspace: &str,
+        pid: u32,
+    ) -> Self {
         let stream: UnixStream =
             tilo_session::mount::app_tabs::ServiceLinks::new(Arc::clone(launches))
                 .window(app, workspace, 7, Some(pid))
@@ -61,18 +66,22 @@ impl Window {
     }
 
     /// Say the version this window speaks, as every app does once.
-    fn hello(&mut self) {
-        let mut frame = serde_json::to_vec(&FloatingSurfaceClientMessage::Hello {
+    pub(super) fn hello(&mut self) {
+        self.say(&FloatingSurfaceClientMessage::Hello {
             version: FLOATING_SURFACE_PROTOCOL_VERSION,
-        })
-        .expect("a hello");
+        });
+    }
+
+    /// Write `message` to the session, as this window says something.
+    pub(super) fn say(&mut self, message: &FloatingSurfaceClientMessage) {
+        let mut frame = serde_json::to_vec(message).expect("a message");
         frame.push(b'\n');
-        self.to_session.write_all(&frame).expect("the hello");
-        self.to_session.flush().expect("the hello");
+        self.to_session.write_all(&frame).expect("the message");
+        self.to_session.flush().expect("the message");
     }
 
     /// The next message the session wrote, or `None` while it wrote none.
-    fn next(&mut self) -> Option<FloatingSurfaceHostMessage> {
+    pub(super) fn next(&mut self) -> Option<FloatingSurfaceHostMessage> {
         loop {
             if let Some(at) = self.unread.iter().position(|byte| *byte == b'\n') {
                 let line: Vec<u8> = self.unread.drain(..=at).collect();
@@ -99,7 +108,7 @@ impl Window {
 
 /// Step the session until the window is told something, or it stays silent
 /// for `steps` frames.
-fn told(
+pub(super) fn told(
     window: &mut Window,
     session: &mut Session,
     steps: usize,

@@ -2447,10 +2447,10 @@ impl App {
 
     /// A printable key no widget took, with a selection in focus and nothing
     /// focused that takes text: the person is talking about the selection.
-    /// The desktop's agent composer opens on it with the key in its field,
-    /// where their typing goes on. Shortcuts, a text field, a terminal and
-    /// an input method all take their keys first, and without a desktop
-    /// agent nothing happens.
+    /// A send-to box opens on it with the key in its message, where their
+    /// typing goes on. Shortcuts, a text field, a terminal and an input
+    /// method all take their keys first, and without a desktop that sends
+    /// nothing happens.
     #[cfg(feature = "native")]
     pub(crate) fn handle_unconsumed_typed_key(&self, event: &winit::event::WindowEvent) -> bool {
         let winit::event::WindowEvent::KeyboardInput {
@@ -2472,7 +2472,7 @@ impl App {
             || modifiers.control_key()
             || modifiers.alt_key()
             || modifiers.super_key()
-            || !crate::shared_selection::agent_host_available()
+            || !crate::shared_selection::send_host_available()
             || self.actions.action_palette.is_some()
             || self.ime_window_state().is_some()
         {
@@ -2482,7 +2482,8 @@ impl App {
         else {
             return false;
         };
-        crate::shared_selection::ask_agent_typing(selection, text);
+        // A key nothing took over a selection begins a message about it.
+        crate::shared_selection::open_send_box(Some(selection), None, Some(text));
         true
     }
 

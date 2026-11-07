@@ -626,6 +626,40 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
     fed.handle.read(|tree| tree.active_workspace().cloned())
 }
 
+impl Feeding<'_> {
+    /// Make an agent called `name` in the workspace `workspace_id` names (the
+    /// one in front when it names none), kept by the person: the record is
+    /// the agent's admission, and Chat's grants decide who may make one.
+    ///
+    /// # Errors
+    /// The workspace is not open here, or Chat's grants refuse the record.
+    pub(crate) fn make_agent(
+        &self,
+        workspace_id: Option<&str>,
+        name: &str,
+        model: &str,
+        colour: Option<u8>,
+    ) -> Result<String, String> {
+        let tree = self.handle.read(Clone::clone);
+        let at = match workspace_id {
+            Some(id) => tree
+                .workspaces
+                .iter()
+                .position(|held| held.id().to_string() == id),
+            None => tree
+                .workspaces
+                .iter()
+                .position(|held| held.slot == tree.active),
+        };
+        let Some(workspace) = at.and_then(|at| tree.workspaces.get(at)) else {
+            return Err(t("workspace-settings-agents-unavailable"));
+        };
+        self.tabs
+            .agents
+            .create(Some(workspace), self.person, name, model, colour)
+    }
+}
+
 /// Make an agent called `name` where the workspace keeps its agents: the
 /// record is the agent's admission, and Chat's grants decide who may make
 /// one.
@@ -636,16 +670,11 @@ fn add_agent(
     model: &str,
     colour: &str,
 ) {
-    let workspace = workspace_in_front(fed);
     let colour =
         ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok());
     // The record is the admission: the agent works here because Chat's
     // record names it and this person keeps it.
-    if let Err(reason) = fed
-        .tabs
-        .agents
-        .create(workspace.as_ref(), fed.person, name, model, colour)
-    {
+    if let Err(reason) = fed.make_agent(None, name, model, colour) {
         refuse(seat, fed, &reason);
     }
 }

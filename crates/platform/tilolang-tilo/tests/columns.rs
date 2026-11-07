@@ -929,6 +929,110 @@ fn a_snooze_ending_moves_its_thread_into_the_inbox_without_reading_the_workspace
     );
 }
 
+/// The inbox filter's answers for a clock that runs behind the process's own, as a test's pinned
+/// clock and a device whose clock was corrected backwards do.
+#[test]
+fn a_read_at_an_instant_behind_the_one_the_index_wrote_at_answers_for_that_instant() {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    let clock = Rc::new(RefCell::new(NOW.to_owned()));
+    let read = Rc::clone(&clock);
+    // One of the two conversations is snoozed until a moment the fake instant is before and the
+    // process's own clock is after: out of the inbox at the fake one, in it at the later one.
+    let snoozed = "2026-11-01T00:00:00Z";
+    let (mut ada, meta, mail) = inbox_workspace_of(SNOOZED, 2, |i, item, meta| {
+        use serde_json::json;
+        use tilolang_tilo::record::DynValue;
+        if i == 0
+            && let Some(DynValue::Register(until)) =
+                item.get_mut(&field_id(meta, "Thread", "snoozed_until"))
+        {
+            until.clone_from(&json!(snoozed));
+        }
+    });
+    ada.host.set_clock(move || read.borrow().clone());
+    assert_eq!(
+        inbox_listing(&ada, &meta, &mail).count(),
+        1,
+        "at the fake instant the snoozed conversation is out of the inbox"
+    );
+
+    // Read at the process's own clock, which is past the snooze's moment: the conversation is in
+    // the inbox, and the index records the instant it wrote the columns at.
+    let own = tilolang_tilo::host::system_time();
+    assert!(
+        tilolang::calendar::instant(&own) > tilolang::calendar::instant(snoozed),
+        "the process's clock runs past the moment the fake instant snoozes until: {own}"
+    );
+    *clock.borrow_mut() = own;
+    assert_eq!(
+        inbox_listing(&ada, &meta, &mail).count(),
+        2,
+        "at the process's clock the snooze's moment has passed"
+    );
+
+    // Read again at an instant behind the one the index wrote at: what the filter holds is what
+    // that instant asks for, not what the later one did.
+    *clock.borrow_mut() = NOW.to_owned();
+    assert_eq!(
+        inbox_listing(&ada, &meta, &mail).count(),
+        1,
+        "a read behind the instant the index wrote at answers for its own"
+    );
+
+    // A conversation written at the fake instant, after the index wrote at the later one, is
+    // written at the instant the write read: the read between the two answers for its own.
+    let thread_id = meta
+        .types
+        .iter()
+        .find(|t| t.name == "Thread")
+        .unwrap()
+        .id
+        .clone();
+    let mut late =
+        tilolang_tilo::DynRecord::empty(tilolang_tilo::schema::lookup(&thread_id).unwrap())
+            .unwrap();
+    if let Some(tilolang_tilo::record::DynValue::Register(until)) =
+        late.get_mut(&field_id(&meta, "Thread", "snoozed_until"))
+    {
+        until.clone_from(&serde_json::json!("2026-11-05T00:00:00Z"));
+    }
+    if let Some(tilolang_tilo::record::DynValue::Set(boxes)) =
+        late.get_mut(&field_id(&meta, "Thread", "boxes"))
+    {
+        boxes.insert(serde_json::json!("inbox"));
+    }
+    ada.apply(&tilolang_tilo::action::DynAction {
+        app: INBOX_APP.to_owned(),
+        kind: "tl.so.tilo.inbox.thread".to_owned(),
+        action_id: "$add".to_owned(),
+        args: serde_json::Value::Null,
+        authorship: tilolang_tilo::Authorship::default(),
+        edits: vec![tilolang_tilo::action::DynEdit::Insert {
+            id: mail.id_string(),
+            item: "thread-late".to_owned(),
+            record: tilo_resource::Model::to_json(&late),
+            at: tilolang_tilo::runtime::place::Placement::At {
+                place: tilolang_tilo::runtime::place::Place {
+                    parent: None,
+                    field: field_id(&meta, "Mail", "threads"),
+                    key: "0000000002".to_owned(),
+                },
+                was: None,
+            }
+            .encode(),
+        }],
+    });
+    ada.commit();
+    *clock.borrow_mut() = "2026-11-06T00:00:00Z".to_owned();
+    assert_eq!(
+        inbox_listing(&ada, &meta, &mail).count(),
+        3,
+        "a write at the fake instant holds of its filter from there, not from the later one"
+    );
+}
+
 /// A list filtered by a set's member and more, of conversations the person's device has just
 /// written: the inbox of a mailbox seeded a moment ago.
 const JUST_WRITTEN: &str = r#"app so.tilo.inbox "Inbox"

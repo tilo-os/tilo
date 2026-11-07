@@ -54,7 +54,7 @@ fn context_menu(ran: &Rc<RefCell<Vec<&'static str>>>) -> ContextMenu {
 
 #[test]
 fn typing_narrows_the_rows_best_first_and_enter_runs_the_best_match() {
-    crate::shared_selection::set_agent_host_available(false);
+    crate::shared_selection::set_send_host_available(false);
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
     menu.open_anchored(
@@ -102,49 +102,57 @@ fn typing_narrows_the_rows_best_first_and_enter_runs_the_best_match() {
 }
 
 #[test]
-fn a_sentence_no_row_answers_is_asked_and_never_reported_as_a_row() {
-    crate::shared_selection::set_agent_host_available(true);
-    let _ = crate::shared_selection::take_agent_requests();
+fn a_sentence_no_row_answers_is_sent_from_the_box_and_never_reported_as_a_row() {
+    crate::shared_selection::set_send_host_available(true);
+    let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
     let item = crate::shared_selection::SharedSelection::of_text("Report.pdf")
         .at(tilo_actions::SelectionPlace::item("file-9"));
     menu.set_about(Some(item.clone()));
     menu.open_at([120.0, 80.0]);
-    crate::shared_selection::set_agent_host_available(false);
     assert_eq!(
         menu.shown_rows(),
         &(0..=COMMANDS.len()).collect::<Vec<_>>(),
-        "no row to ask until something is typed"
+        "no row to send with until something is typed"
     );
     type_into(&mut menu, "rename");
-    let asked_at = menu.items().len() - 1;
+    let send_at = menu.items().len() - 1;
     assert_eq!(
         menu.shown_rows(),
-        &[1, asked_at],
-        "a match, then asking the sentence"
+        &[1, send_at],
+        "a match, then the row that sends the sentence"
     );
+    crate::shared_selection::set_send_host_available(false);
     assert_eq!(menu.hovered(), Some(1), "Enter would rename");
     menu.set_query("summarise this for Ana");
-    assert_eq!(menu.shown_rows(), &[asked_at], "only asking");
+    assert_eq!(menu.shown_rows(), &[send_at], "only sending it");
     assert_eq!(
-        menu.items()[asked_at].label(),
-        Some("Ask: summarise this for Ana")
+        menu.items()[send_at].label(),
+        Some(crate::i18n!("menu-ask-typed", "text" => "summarise this for Ana").as_str())
     );
     dispatch(&mut menu, &named_key(NamedKey::Enter));
     assert!(ran.borrow().is_empty(), "no row ran");
     assert_eq!(menu.take_selection(), None);
-    assert!(!menu.is_open());
-    let asked = crate::shared_selection::take_agent_requests();
-    assert_eq!(asked.len(), 1);
-    assert_eq!(asked[0].about, Some(item));
-    assert_eq!(asked[0].ask.as_deref(), Some("summarise this for Ana"));
-    assert_eq!(asked[0].at, Some(Point::new(120.0, 80.0)));
+    assert!(
+        menu.is_open(),
+        "the menu stays under the person's eyes, with the box beside it"
+    );
+    let box_ = menu.send_to();
+    assert!(box_.is_open());
+    assert_eq!(box_.text(), "summarise this for Ana");
+    assert_eq!(box_.subjects(), std::slice::from_ref(&item));
+    assert!(
+        box_.rect().x0 >= menu.get_rect().x1,
+        "the box stands beside the menu, {} against {}",
+        box_.rect(),
+        menu.get_rect()
+    );
 }
 
 #[test]
 fn an_owner_that_answers_typing_takes_the_sentence_itself() {
-    crate::shared_selection::set_agent_host_available(false);
+    crate::shared_selection::set_send_host_available(false);
     // Opened with the keyboard, not the context-menu gesture: an owner that
     // answers typing still gets a field, however short the menu.
     note_input(&crate::synthetic_input::mouse_input(
@@ -168,7 +176,7 @@ fn an_owner_that_answers_typing_takes_the_sentence_itself() {
 
 #[test]
 fn a_menu_of_a_few_commands_opens_as_a_plain_list() {
-    crate::shared_selection::set_agent_host_available(false);
+    crate::shared_selection::set_send_host_available(false);
     note_input(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
@@ -192,14 +200,14 @@ fn a_menu_of_a_few_commands_opens_as_a_plain_list() {
 
 #[test]
 fn a_menu_a_button_opened_takes_no_typing() {
-    crate::shared_selection::set_agent_host_available(true);
+    crate::shared_selection::set_send_host_available(true);
     note_input(&crate::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));
     let mut menu = ContextMenu::with_items(vec![MenuItem::action("Sort by name", || {})]);
     menu.open_at([10.0, 10.0]);
-    crate::shared_selection::set_agent_host_available(false);
+    crate::shared_selection::set_send_host_available(false);
     assert!(!menu.takes_typing());
     assert_eq!(menu.items().len(), 1, "and adds no row");
     assert!(

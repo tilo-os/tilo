@@ -193,6 +193,10 @@ tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # A host's own questions to a member, asked on the collaboration endpoint:
 # what an agent asks before it acts on a workspace, answered by the person.
 tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+# What a message sent from a window's box carries beside its words: the
+# references and files the window attached, as the app that keeps them reads
+# them.
+tilo-reference = { path = "../../collab/reference" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }

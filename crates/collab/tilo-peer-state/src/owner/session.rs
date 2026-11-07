@@ -73,6 +73,22 @@ impl Connect {
         &self,
         identity: &HostIdentity,
     ) -> Result<(TransportHint, DeviceCert, RevocationList, u64), String> {
+        let (cert, revocations, continuity) = self.custody(identity)?;
+        let hint = self
+            .owner
+            .with_current(self.workspace, |view| Ok(view.transport_hint()?.clone()))?;
+        Ok((hint, cert, revocations, continuity))
+    }
+    /// What this device must be, now, to act as `workspace`'s own member: the
+    /// certificate it holds for the workspace is the one the workspace's
+    /// record names, admitted in the workspace's roster, and neither it nor
+    /// the workspace's host is revoked. What a workspace this device hosts
+    /// needs to commit there: its host is in this process, so there is no
+    /// address to reach it at.
+    pub fn custody(
+        &self,
+        identity: &HostIdentity,
+    ) -> Result<(DeviceCert, RevocationList, u64), String> {
         self.owner.with_current(self.workspace, |view| {
             let (cert, entries) = identity.current_native_material(view.workspace_id())?;
             if &cert != view.device() {
@@ -88,15 +104,10 @@ impl Connect {
             for entry in entries.into_iter().chain(view.peer().revocations()) {
                 revocations.insert(entry).map_err(|e| e.to_string())?;
             }
-            if revocations.is_revoked(&view.transport_hint()?.host.device_public_key) {
+            if revocations.is_revoked(&view.workspace_host().device_public_key) {
                 return Err("native relay host is revoked".into());
             }
-            Ok((
-                view.transport_hint()?.clone(),
-                cert,
-                revocations,
-                view.continuity(),
-            ))
+            Ok((cert, revocations, view.continuity()))
         })
     }
     /// The hosts the workspace's governor named besides itself

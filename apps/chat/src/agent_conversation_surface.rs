@@ -12,8 +12,8 @@ use crate::app::ChatApp;
 
 pub(crate) struct AgentConversationSurface {
     pub(crate) id: String,
-    /// The person the conversation shown is with.
-    pub(crate) peer: String,
+    /// What the card is called: the conversation's own name.
+    pub(crate) title: String,
     pub(crate) view: Box<ChatApp>,
     pub(crate) placement: FloatingPlacement,
     pub(crate) source: Rect,
@@ -25,7 +25,25 @@ pub(crate) struct AgentConversationSurface {
 }
 
 impl AgentConversationSurface {
+    /// The conversation this window shows, as a card attached to the window:
+    /// what dragging it out of the window makes.
     pub(crate) fn from_attached(parent: &mut ChatApp, public_key: &str) -> Self {
+        let title = parent.person_display_name(public_key);
+        Self::of(parent, title)
+    }
+
+    /// The conversation this window shows, as a card of its own standing at
+    /// `at` on the desk: where the box that sent the message stood, so the
+    /// message it posted stands in front of the person where they wrote it.
+    pub(crate) fn at(parent: &mut ChatApp, title: String, at: Rect) -> Self {
+        let mut surface = Self::of(parent, title);
+        surface.source = at;
+        surface.view.rect = at;
+        surface.placement.detach_to_desktop(at);
+        surface
+    }
+
+    fn of(parent: &mut ChatApp, title: String) -> Self {
         let mut view = ChatApp::conversation_instance(parent);
         std::mem::swap(&mut view.composer_main, &mut parent.composer_main);
         parent
@@ -47,7 +65,7 @@ impl AgentConversationSurface {
         let compact = f64::from(ui::tokens::Metrics::BASE.panel_width_sheet);
         Self {
             id: format!("chat-conversation:{}", uuid::Uuid::new_v4()),
-            peer: public_key.to_owned(),
+            title,
             view: Box::new(view),
             placement,
             source,
@@ -91,7 +109,7 @@ impl AgentConversationSurface {
     pub(crate) fn request(&self) -> FloatingSurfaceRequest {
         FloatingSurfaceRequest {
             id: self.id.clone(),
-            title: self.view.person_display_name(&self.peer),
+            title: self.title.clone(),
             role: FloatingRole::Conversation,
             source: FloatingSource::AppElement {
                 app_id: "so.tilo.chat".into(),

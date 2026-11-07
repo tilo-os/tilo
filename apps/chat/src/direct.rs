@@ -112,9 +112,14 @@ impl ChatApp {
         }))
     }
 
-    /// Post `text` to the conversation `id` now, as the record's `post`
-    /// does, and say whether it was taken.
-    pub(crate) fn post_to_conversation(&self, id: &Id, text: &str) -> Result<(), String> {
+    /// Post `text`, with what it carries, to the conversation `id` now, as
+    /// the record's `post` does, and say whether it was taken.
+    pub(crate) fn post_to_conversation(
+        &self,
+        id: &Id,
+        text: &str,
+        attachments: Vec<tilo_reference::Attached>,
+    ) -> Result<(), String> {
         let Some(chain) = &self.chain else {
             return Err(crate::i18n::t("chat-direct-unavailable"));
         };
@@ -125,13 +130,94 @@ impl ChatApp {
                     text: text.to_owned(),
                     parent: None,
                     body: None,
-                    attachments: Vec::new(),
+                    attachments,
                     mentions: None,
                     written: None,
                 },
             }))
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    /// Send what a window's box held: the words and everything they carry go
+    /// to the conversation with whom it names — a person, an agent, several of
+    /// them, or a conversation that is already there — and the window opens
+    /// where the message landed.
+    ///
+    /// # Errors
+    /// The box names nobody this chat knows, a conversation beside other
+    /// recipients, or a message with neither words nor anything to carry.
+    pub(crate) fn send_from_box(
+        &mut self,
+        to: &[ui::floating_surface::Recipient],
+        attached: Vec<tilo_reference::Attached>,
+        text: &str,
+        bounds: Option<[f64; 4]>,
+        chat: &Chat,
+    ) -> Result<Effected, String> {
+        if text.trim().is_empty() && attached.is_empty() {
+            return Err(crate::i18n::t("chat-send-empty"));
+        }
+        let id = self.conversation_named(to, chat)?;
+        self.post_to_conversation(&id, text, attached)?;
+        self.open_conversation(&id, chat);
+        // The conversation stands where the box stood: the message the person
+        // wrote and the conversation it landed in are one gesture.
+        if let Some(at) = bounds.and_then(|place| ui::floating_surface::protocol_rect(place).ok()) {
+            self.float_conversation_at(&id.to_string(), at, chat);
+        }
+        Ok(Effected::value(
+            serde_json::json!({"conversation": id.to_string(), "accepted": true}),
+        ))
+    }
+
+    /// The conversation a message to `to` lands in: the one a recipient names,
+    /// or the one between this person and everyone else the box holds — the
+    /// same id on every device, so a message to someone already talked to
+    /// reopens their conversation rather than making a second.
+    ///
+    /// # Errors
+    /// A conversation is named beside other recipients, the box names nobody,
+    /// or it names a person this chat does not know.
+    fn conversation_named(
+        &self,
+        to: &[ui::floating_surface::Recipient],
+        chat: &Chat,
+    ) -> Result<Id, String> {
+        use ui::floating_surface::RecipientKind;
+        if let Some(conversation) = to
+            .iter()
+            .find(|recipient| recipient.kind == RecipientKind::Conversation)
+        {
+            if to.len() > 1 {
+                return Err(crate::i18n::t("chat-send-one-conversation"));
+            }
+            return Ok(Id::from_raw(conversation.id.clone()));
+        }
+        let mut participants = vec![Participant::person(self.me.id.clone())];
+        for recipient in to {
+            match recipient.kind {
+                RecipientKind::Person => {
+                    if !chat.people.iter().any(|person| person.id.0 == recipient.id) {
+                        return Err(crate::i18n::t("chat-person-unknown"));
+                    }
+                    participants.push(Participant::person(recipient.id.clone()));
+                }
+                RecipientKind::Agent => {
+                    participants.push(Participant::agent(recipient.id.clone()));
+                }
+                // What a box holds of a new agent is made before it sends
+                // ([`crate::effects::ChatEffect::Send`]): an agent still
+                // nameless here is one the workspace never listed.
+                RecipientKind::NewAgent | RecipientKind::Conversation => {
+                    return Err(crate::i18n::t("chat-send-needs-recipient"));
+                }
+            }
+        }
+        if participants.len() < 2 {
+            return Err(crate::i18n::t("chat-send-needs-recipient"));
+        }
+        Ok(Chat::direct_id(participants))
     }
 
     /// The person the direct conversation `channel` is with, when it is one

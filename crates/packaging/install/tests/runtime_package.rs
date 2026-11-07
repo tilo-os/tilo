@@ -426,6 +426,7 @@ fn an_installed_runtime_is_sealed_so_a_launch_reads_none_of_it() {
         check,
         runtime_bundle::PayloadCheck {
             by_verity: files,
+            by_record: 0,
             hashed: 0,
             hashed_bytes: 0,
         }

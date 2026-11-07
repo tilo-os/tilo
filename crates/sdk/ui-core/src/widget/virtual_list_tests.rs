@@ -1489,6 +1489,57 @@ fn a_reveal_a_click_asked_for_glides_and_the_wheel_takes_over() {
     assert!(list.scroll.to.opacity(at(2400)) >= 1.0);
 }
 
+/// A row's menu carries what the app says the row is about: the send-to box beside it starts
+/// with that subject, standing at the row. A list that names nothing for its rows opens the
+/// same menu with no box.
+#[test]
+fn a_rows_menu_carries_what_the_app_names_for_the_row() {
+    use crate::shared_selection::{SharedSelection, set_send_host_available};
+    set_send_host_available(true);
+    fn open_item(_: &VecListModel<u32, u32>, _: Option<&u32>) -> Vec<MenuItem> {
+        vec![MenuItem::action("Open", || {})]
+    }
+    let mut list = plain_rows(10)
+        .with_context_menu(open_item, |_, _| {})
+        .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
+    lay_out(&mut list, 300.0);
+    assert!(list.open_row_menu(3, Point::new(40.0, 40.0)));
+    let subjects = list
+        .menus
+        .owned()
+        .expect("the list owns its menu")
+        .context_menu()
+        .send_to()
+        .subjects()
+        .to_vec();
+    assert_eq!(subjects.len(), 1, "the menu is about the row the app named");
+    assert_eq!(
+        subjects[0].anchor,
+        SharedSelection::of_text("issue 3").anchor
+    );
+    assert!(
+        subjects[0].bounds.is_some(),
+        "the box beside the menu stands at the row"
+    );
+
+    let mut plain = plain_rows(3).with_context_menu(open_item, |_, _| {});
+    lay_out(&mut plain, 300.0);
+    assert!(plain.open_row_menu(0, Point::new(40.0, 40.0)));
+    assert!(
+        plain
+            .menus
+            .owned()
+            .expect("the list owns its menu")
+            .context_menu()
+            .send_to()
+            .subjects()
+            .is_empty(),
+        "a row the app does not name opens a menu with no subject"
+    );
+    set_send_host_available(false);
+}
+
+/// A second click activates and a right click opens the rows menu.
 #[test]
 fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
     let activated = Rc::new(RefCell::new(Vec::new()));
@@ -1540,6 +1591,49 @@ fn a_second_click_activates_and_a_right_click_opens_the_rows_menu() {
             .is_some_and(|menu| menu.contains(Point::new(20.0, row_three))),
         "the menu stands where the press was"
     );
+}
+
+#[test]
+fn a_right_click_opened_rows_menu_keeps_its_send_to_box_after_the_release() {
+    use crate::shared_selection::{SharedSelection, set_send_host_available};
+    use winit::event::{ElementState, MouseButton};
+
+    set_send_host_available(true);
+    let mut list = plain_rows(10)
+        .with_context_menu(
+            |_: &VecListModel<u32, u32>, _| vec![MenuItem::action("Open issue", || {})],
+            |_, _| {},
+        )
+        .with_row_about(|key: &u32| Some(SharedSelection::of_text(&format!("issue {key}"))));
+    let (taffy, node) = lay_out(&mut list, 300.0);
+    let row = list.rect.y0
+        + list.viewport.item_view_top(3).unwrap()
+        + list.viewport.item_height(3).unwrap() / 2.0;
+    dispatch(&mut list, &cursor(row), &taffy, node);
+    dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        &taffy,
+        node,
+    );
+    dispatch(
+        &mut list,
+        &crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+        &taffy,
+        node,
+    );
+    let menu = list
+        .menus
+        .owned()
+        .expect("the list owns its menu")
+        .context_menu();
+    assert!(list.context_menu_is_open(), "the menu stays open");
+    assert!(
+        menu.send_to().is_open(),
+        "the box beside it stays open once the button is up"
+    );
+    assert_eq!(menu.send_to().subjects().len(), 1);
+    set_send_host_available(false);
 }
 
 #[test]

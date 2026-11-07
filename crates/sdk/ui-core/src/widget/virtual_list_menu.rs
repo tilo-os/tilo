@@ -15,6 +15,7 @@ use super::Choosing;
 use super::{ListModel, VirtualList};
 use crate::a11y::AccessNode;
 use crate::presence::PresenceCtx;
+use crate::shared_selection::SharedSelection;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
@@ -30,9 +31,23 @@ type MenuChosen<K> = Box<dyn FnMut(Option<K>, usize)>;
 pub(super) struct ListMenu<M: ListModel> {
     items: MenuItems<M>,
     chosen: MenuChosen<M::Key>,
+    /// What a row is about, as its own record names it: the app says, the list only knows keys.
+    about: Option<RowAbout<M::Key>>,
     menu: ContextMenu,
     /// The row the menu is about: its row's key, or `None` for the list itself.
     target: Option<M::Key>,
+}
+
+/// What a row is about: the selection the app names for the row's key, so the menu opened on it
+/// carries a subject (its send-to box docks beside it, about the row).
+pub(super) type RowAbout<K> = Box<dyn Fn(&K) -> Option<SharedSelection>>;
+
+impl<M: ListModel> ListMenu<M> {
+    /// The menu this list paints, as it stands.
+    #[cfg(test)]
+    pub(super) fn context_menu(&self) -> &ContextMenu {
+        &self.menu
+    }
 }
 
 /// Where a host opens its own menu for a row: the row's key, its box on screen, and the point
@@ -89,9 +104,25 @@ impl<M: ListModel> VirtualList<M> {
         self.menus = RowMenus::Owned(ListMenu {
             items: Box::new(items),
             chosen: Box::new(chosen),
+            about: None,
             menu: ContextMenu::new(),
             target: None,
         });
+        self
+    }
+
+    /// Name what each row is about: `about` answers a row's key with the selection the app keeps
+    /// for it (a task's issue, a note, a file), so a menu opened on that row carries it as its
+    /// subject — the send-to box beside the menu starts with it, and its box stands at the row.
+    /// The list only knows the row's key, so the app names the record.
+    #[must_use]
+    pub fn with_row_about(
+        mut self,
+        about: impl Fn(&M::Key) -> Option<SharedSelection> + 'static,
+    ) -> Self {
+        if let Some(menu) = self.menus.owned_mut() {
+            menu.about = Some(Box::new(about));
+        }
         self
     }
 
@@ -129,6 +160,21 @@ impl<M: ListModel> VirtualList<M> {
     /// The row is chosen and given the keyboard first, as a secondary click does. Whether a
     /// menu opened: none is offered, or it has no items for that row.
     pub fn open_context_menu(&mut self, key: Option<&M::Key>, at: Point) -> bool {
+        // What the menu is about, and where that stands on screen, read before the menu is
+        // taken: the subject's box is the row's, so the box beside the menu stands at the row.
+        let row = key
+            .and_then(|key| self.model.index_of(key))
+            .and_then(|index| self.row_box(index));
+        let subject = key.and_then(|key| {
+            let menu = self.menus.owned()?;
+            let about = menu.about.as_ref()?;
+            let mut subject = about(key)?;
+            subject.bounds = subject.bounds.or(row);
+            Some(subject)
+        });
+        if key.is_some() && subject.is_none() {
+            tracing::debug!("this row's menu is about nothing: the app named no subject for it");
+        }
         let Some(menu) = self.menus.owned_mut() else {
             return false;
         };
@@ -140,6 +186,7 @@ impl<M: ListModel> VirtualList<M> {
         for item in items {
             opened.push(item);
         }
+        opened.set_about(subject);
         opened.open_at([crate::num::f32_of_f64(at.x), crate::num::f32_of_f64(at.y)]);
         menu.menu = opened;
         menu.target = key.cloned();
@@ -241,9 +288,9 @@ impl<M: ListModel> VirtualList<M> {
     /// Whether the open menu needs a frame: it arrives, leaves, or a key moved its highlight.
     /// A closed menu paints nothing, so it asks for none.
     pub(super) fn menu_needs_redraw(&self) -> bool {
-        self.menus
-            .owned()
-            .is_some_and(|menu| menu.menu.is_open() && menu.menu.needs_redraw())
+        self.menus.owned().is_some_and(|menu| {
+            (menu.menu.is_open() && menu.menu.needs_redraw()) || menu.menu.send_to().is_drawn()
+        })
     }
 
     /// The open menu's semantics, its targets namespaced into the list's.

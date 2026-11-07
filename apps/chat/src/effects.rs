@@ -10,6 +10,7 @@
 //! reach this device's files and voice service: outside effects, decided by
 //! the person's answers like any other.
 
+use ui::floating_surface::Recipient;
 use ui::framework::{EffectAnswer, EffectStatus, Effected, LiveRow};
 use ui::native_media::Command;
 use ui::tilo_actions::{ResourceViewRangeSpec, ResourceViewSpec};
@@ -50,7 +51,7 @@ pub(crate) fn item_views(field: &str, _item: &tilo_resource::Id) -> Vec<Resource
 }
 
 /// Chat's effects. See the [module docs](self).
-#[derive(Clone, Debug, PartialEq, Eq, Effect)]
+#[derive(Clone, Debug, PartialEq, Effect)]
 #[effect(operation = "chat.effects")]
 pub enum ChatEffect {
     /// Ask the device's model about the latest message.
@@ -104,6 +105,24 @@ pub enum ChatEffect {
     /// Read the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
     ReadDirectConversation { public_key: String },
+    /// Send a message
+    ///
+    /// Sends the words and everything they carry to the conversation with
+    /// whom it names — people, agents, or a conversation that is already
+    /// there — and opens where it landed. A window sends through this: one
+    /// action posts the message, under the sender's own grants, and shows the
+    /// conversation it reached.
+    #[effect(returns, kind = "undoable")]
+    Send {
+        #[param("Who the message goes to")]
+        to: Vec<Recipient>,
+        #[param("What it carries besides its words")]
+        attached: Vec<tilo_reference::Attached>,
+        #[param("The message")]
+        text: String,
+        #[param("Where the box stood on the desk, as left, top, right and bottom")]
+        bounds: Option<[f64; 4]>,
+    },
     /// Read message
     ///
     /// The message as a value: who wrote it, whether that is an agent, its
@@ -299,7 +318,8 @@ impl ChatApp {
             ChatEffect::OpenDirectConversation { .. }
             | ChatEffect::OpenAgent { .. }
             | ChatEffect::SendDirectMessage { .. }
-            | ChatEffect::ReadDirectConversation { .. } => {
+            | ChatEffect::ReadDirectConversation { .. }
+            | ChatEffect::Send { .. } => {
                 return Err("a direct conversation answers where the chat is held".into());
             }
             ChatEffect::ReadMessage { message } => {

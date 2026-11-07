@@ -986,7 +986,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
         tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-            .material(&self.identity)
+            .custody(&self.identity)
             .map(drop)
     }
 
@@ -1024,9 +1024,9 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
             .ok_or_else(|| format!("{app} is not installed on this device"))?;
         let route =
             tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
-        let (_, cert, _, _) =
+        let (cert, _, _) =
             tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-                .material(&self.identity)?;
+                .custody(&self.identity)?;
         let key = self.identity.device_signing_key.clone();
         owner
             .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())
@@ -1141,6 +1141,28 @@ mod tests {
             engine.may_invite(&workspace.to_string()),
             "its owner may invite into it"
         );
+    }
+
+    #[test]
+    fn a_workspace_this_device_hosts_commits_here_without_a_host_address() {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk");
+
+        assert!(
+            engine
+                .owner
+                .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+                .expect("the workspace is held here"),
+            "a workspace this device founded names no host to dial"
+        );
+        engine
+            .check_custody(&engine.owner, workspace)
+            .expect("its own member acts there, its host being in this process");
     }
 
     #[test]

@@ -539,7 +539,10 @@ mod tests {
     #[test]
     fn the_font_index_is_one_directory_for_every_app() {
         let mut argv = Vec::new();
-        push_font_index(&mut argv, Path::new("/home/ada/.local/share/tilo-font-index"));
+        push_font_index(
+            &mut argv,
+            Path::new("/home/ada/.local/share/tilo-font-index"),
+        );
         assert_eq!(
             argv,
             vec![
@@ -553,7 +556,11 @@ mod tests {
         );
         let mut rules = Vec::new();
         push_font_index_landlock(&mut rules);
-        assert_eq!(rules, vec!["--rw", SANDBOX_FONT_INDEX], "the bind is writable");
+        assert_eq!(
+            rules,
+            vec!["--rw", SANDBOX_FONT_INDEX],
+            "the bind is writable"
+        );
     }
 
     #[test]

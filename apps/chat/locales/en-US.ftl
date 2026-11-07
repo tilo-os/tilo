@@ -8,6 +8,9 @@ chat-person-card = { $name }, profile
 chat-person-chat-placeholder = Write a private message
 chat-person-chat-unavailable = Private conversation unavailable. Choose someone in this workspace.
 chat-person-chat-empty = Write a message before sending.
+chat-send-empty = Write a message, or attach something to send.
+chat-send-needs-recipient = Choose who the message goes to.
+chat-send-one-conversation = A conversation goes on its own: choose it, or the people to send to.
 chat-person-chat-empty-conversation = Messages here are private to you and this person.
 chat-header-search = Search
 

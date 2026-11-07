@@ -1,7 +1,7 @@
-//! What the person has selected in a window, for asking an agent about it.
+//! What the person has selected in a window, for sending it somewhere.
 //!
-//! A person who selects a sentence, a range of cells or a row and asks an
-//! agent "rewrite this" means that selection. The toolkit derives it once,
+//! A person who selects a sentence, a range of cells or a row and sends it to
+//! an agent or a person means that selection. The toolkit derives it once,
 //! from the focused widget, so every app gets it without code of its own: the
 //! place in the resource's terms (an item and character offsets, the form an
 //! action's place argument takes), the resource it is in, and a short
@@ -9,25 +9,25 @@
 //! says so through [`PublishesPresence::shared_selection`].
 //!
 //! Every context menu takes typing ([`crate::widget::ContextMenu`]): a
-//! sentence none of its entries answers is asked of an agent about what the
-//! menu acts on: a row's item, the selection, else the window.
-//! Asking goes through the desktop: [`ask_agent`] and [`ask_agent_at`] queue
-//! the request, and the app runner hands it to the session shell with a typed
-//! reference ([`AgentRequest::resolve`]), which opens its agent composer
+//! sentence none of its entries answers goes into the send-to box docked
+//! beside it ([`crate::widget::SendToBox`]), where the person names whom to
+//! send it to. The box queues the request ([`send_to`]), and the app runner
+//! hands it to the session with a typed reference ([`resolve_selection`]),
+//! which the session acts on as the person: it makes a new agent when one is
+//! a recipient, opens or makes the one conversation, and posts the message
 //! there. The reference names a place; it grants nothing, so an agent reaches
-//! it only through the app's published actions, as every task does. Outside a
-//! Tilo session nothing can answer, so [`agent_host_available`] is false and
-//! a menu's typing only filters it.
+//! it only through the app's published actions, as every task does.
 //!
 //! [`PublishesPresence::shared_selection`]: crate::presence::capability::PublishesPresence::shared_selection
 
 use std::cell::{Cell, RefCell};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use tilo_actions::{ActionResource, SelectionAnchor, SelectionPlace};
 
 use crate::collaboration::PresencePayload;
+use crate::floating_surface::Recipient;
 use crate::presence::PresenceKey;
 use crate::presence::capability::PublishesPresence;
 use crate::widget::Widget;
@@ -129,14 +129,20 @@ impl SharedSelection {
     /// or the run of characters it names, or — when the app publishes no
     /// resource to go with the words — the words quoted.
     ///
-    /// `app` and `record` are the app the person is in and its record of the
-    /// workspace (`None`: its own), which is where what they selected lives.
+    /// `app` names the app that publishes that record and `record` its
+    /// workspace record (`None`: the app's own); `app` is `None` when nobody
+    /// says which app's record it is, and what travels then is the words
+    /// alone: a reference to no app addresses nothing.
     /// A selection of several items travels as those items; a range inside
     /// one travels as that item and its character span, in the app's own
     /// unit, so the app can address the run again when the chip is opened.
     /// `None` when the person selected nothing worth sending.
     #[must_use]
-    pub fn to_attached(&self, app: &str, record: Option<&str>) -> Option<tilo_reference::Attached> {
+    pub fn to_attached(
+        &self,
+        app: Option<&str>,
+        record: Option<&str>,
+    ) -> Option<tilo_reference::Attached> {
         use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
 
         let excerpt = self
@@ -152,7 +158,7 @@ impl SharedSelection {
             .iter()
             .map(|item| item.item.clone())
             .collect();
-        let Some(resource) = self.resource.as_ref() else {
+        let (Some(resource), Some(app)) = (self.resource.as_ref(), app) else {
             // Nothing but the words: worth reading, opening nothing.
             return excerpt.map(|text| Attached::Text {
                 text: text.to_owned(),
@@ -335,82 +341,120 @@ pub fn pointed_selection(
 }
 
 /// Upper bound on undelivered requests: a repeated chord or menu choice
-/// faster than frames are drawn must not queue unbounded composers.
-const MAX_PENDING: usize = 4;
+/// faster than frames are drawn must not queue unbounded boxes.
+const MAX_PENDING: usize = 8;
 
-/// Someone asked to tell an agent about something in this window.
+/// The longest message a box sends, in characters: well inside a protocol
+/// frame, and more than anyone types into one.
+pub const MAX_SEND_CHARS: usize = 20_000;
+
+/// Someone asked to send a message from this window to these recipients
+/// about what they selected.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct AgentRequest {
-    /// What it is about, when its asker knew: a selection, or an item a
-    /// menu was opened on. `None` leaves it to [`AgentRequest::resolve`].
-    pub about: Option<SharedSelection>,
-    /// Where the person pointed, in window coordinates, when a context menu
-    /// asked: the composer opens there.
-    pub at: Option<vello::kurbo::Point>,
-    /// What the person typed into a context menu that none of its entries
-    /// answered: the composer opens asking it.
-    pub ask: Option<String>,
-    /// What the person began typing over a selection in a window that takes
-    /// no text itself: the composer opens with it in its field, to go on.
-    pub draft: Option<String>,
+pub struct SendToRequest {
+    /// Whom it goes to: the box's recipients, a new agent among them when
+    /// the person is making one.
+    pub to: Vec<Recipient>,
+    /// What it is about: the chips, in the order they show.
+    pub about: Vec<SharedSelection>,
+    /// What the person wrote.
+    pub text: String,
+    /// Where the box stood in the window, as the protocol carries it.
+    pub bounds: Option<[f64; 4]>,
 }
 
-impl AgentRequest {
-    /// The typed reference the request travels with, and where in the
-    /// window (protocol bounds) the composer opens beside.
-    ///
-    /// What its asker named wins. Otherwise the `focused` selection, when
-    /// the person pointed at it (or did not point at all). Otherwise the
-    /// window itself: the first resource the app `published`, as one whole
-    /// item. Its resource is named from `published` when the reference does
-    /// not name one.
-    #[must_use]
-    pub fn resolve(
-        self,
-        focused: Option<SharedSelection>,
-        published: &[tilo_actions::ResourceSpec],
-    ) -> (Option<SharedSelection>, Option<[f64; 4]>) {
-        let at = self.at;
-        let focused = pointed_selection(focused, at);
-        let mut about = self
-            .about
-            .filter(|about| !about.is_empty())
-            .or(focused)
-            .or_else(|| {
-                let window = published.first()?;
-                Some(
-                    SharedSelection::of_text(&window.label)
-                        .at(SelectionPlace::item(window.id.0.as_str()))
-                        .in_resource(ActionResource {
-                            id: window.id.0.clone(),
-                            kind: window.kind.clone(),
-                            label: window.label.clone(),
-                        }),
-                )
-            });
-        if let Some(about) = about.as_mut() {
-            about.resolve_resource(published);
-        }
-        let pointed = at.map(|at| {
-            crate::floating_surface::protocol_rect_array(vello::kurbo::Rect::from_center_size(
-                at,
-                (1.0, 1.0),
-            ))
+/// Where in the window a request points, and what it is about: the reference
+/// the app runner hands the session, resolved against what the window
+/// shows.
+///
+/// What its asker named wins. Otherwise the `focused` selection, when the
+/// person pointed at it (or did not point at all). Otherwise the window
+/// itself: the first resource the app `published`, as one whole item. Its
+/// resource is named from `published` when the reference does not name one.
+#[must_use]
+pub fn resolve_selection(
+    about: Option<SharedSelection>,
+    at: Option<vello::kurbo::Point>,
+    focused: Option<SharedSelection>,
+    published: &[tilo_actions::ResourceSpec],
+) -> (Option<SharedSelection>, Option<[f64; 4]>) {
+    let focused = pointed_selection(focused, at);
+    let mut about = about
+        .filter(|about| !about.is_empty())
+        .or(focused)
+        .or_else(|| {
+            let window = published.first()?;
+            Some(
+                SharedSelection::of_text(&window.label)
+                    .at(SelectionPlace::item(window.id.0.as_str()))
+                    .in_resource(ActionResource {
+                        id: window.id.0.clone(),
+                        kind: window.kind.clone(),
+                        label: window.label.clone(),
+                    }),
+            )
         });
-        let bounds = about
-            .as_ref()
-            .and_then(SharedSelection::protocol_bounds)
-            .or(pointed);
-        (about, bounds)
+    if let Some(about) = about.as_mut() {
+        about.resolve_resource(published);
     }
+    let pointed = at.map(|at| {
+        crate::floating_surface::protocol_rect_array(vello::kurbo::Rect::from_center_size(
+            at,
+            (1.0, 1.0),
+        ))
+    });
+    let bounds = about
+        .as_ref()
+        .and_then(SharedSelection::protocol_bounds)
+        .or(pointed);
+    (about, bounds)
 }
 
 thread_local! {
-    static PENDING: RefCell<VecDeque<AgentRequest>> = const { RefCell::new(VecDeque::new()) };
+    static PENDING: RefCell<VecDeque<SendToRequest>> = const { RefCell::new(VecDeque::new()) };
+    /// Whether a desktop is connected that can send what a box holds.
     static HOSTED: Cell<bool> = const { Cell::new(false) };
+    static FOCUSED: RefCell<Option<SharedSelection>> = const { RefCell::new(None) };
+    /// Whether a send-to box is open, so the app runner reads the window's
+    /// selection each pass for its "+".
+    static BOX_OPEN: Cell<bool> = const { Cell::new(false) };
+    /// The searches the boxes asked for, waiting for the app runner.
+    static SEARCHES: RefCell<VecDeque<(u64, String)>> = const { RefCell::new(VecDeque::new()) };
+    /// The next request number: one per search, answered by number.
+    static NEXT_SEARCH: Cell<u64> = const { Cell::new(1) };
+    /// What the search answered, by request, waiting for the box that asked.
+    static ROWS: RefCell<HashMap<u64, Vec<Recipient>>> = RefCell::new(HashMap::new());
+    /// A box asked for with no menu around it: what is selected, where to
+    /// stand, and what is already typed.
+    static ALONE: RefCell<Option<(Option<SharedSelection>, Option<[f64; 4]>, Option<String>)>> =
+        const { RefCell::new(None) };
 }
 
-fn queue(request: AgentRequest) {
+/// Open the box with no menu: what a window's own key does over a selection,
+/// and what the shell's send key asks of an app.
+pub fn open_send_box(
+    about: Option<SharedSelection>,
+    bounds: Option<[f64; 4]>,
+    draft: Option<&str>,
+) {
+    ALONE.with(|alone| {
+        *alone.borrow_mut() = Some((
+            about,
+            bounds,
+            draft.map(|draft| draft.chars().take(MAX_SEND_CHARS).collect()),
+        ));
+    });
+}
+
+/// A box asked for with no menu since the last call. For the area that
+/// carries one.
+pub fn take_open_send_box() -> Option<(Option<SharedSelection>, Option<[f64; 4]>, Option<String>)> {
+    ALONE.with(|alone| alone.borrow_mut().take())
+}
+
+/// Send what a box holds: the app runner hands it to the session, which acts
+/// on it as the person.
+pub fn send_to(request: SendToRequest) {
     PENDING.with(|pending| {
         let mut pending = pending.borrow_mut();
         if pending.len() < MAX_PENDING {
@@ -419,65 +463,82 @@ fn queue(request: AgentRequest) {
     });
 }
 
-/// Ask the desktop's agent about `selection` (or about this window, with
-/// nothing selected). The app runner hands the request to the shell.
-pub fn ask_agent(selection: Option<SharedSelection>) {
-    queue(AgentRequest {
-        about: selection.filter(|selection| !selection.is_empty()),
-        at: None,
-        ask: None,
-        draft: None,
-    });
-}
-
-/// The person began typing `typed` with `selection` in focus, in a window
-/// that takes no text itself: the composer opens on the selection with what
-/// they typed in its field, and their typing goes on there.
-pub fn ask_agent_typing(selection: SharedSelection, typed: &str) {
-    if selection.is_empty() || typed.is_empty() {
-        return;
-    }
-    queue(AgentRequest {
-        about: Some(selection),
-        at: None,
-        ask: None,
-        draft: Some(typed.chars().take(MAX_ASK_CHARS).collect()),
-    });
-}
-
-/// The longest sentence a menu asks, in characters: what one message to an
-/// agent holds, well inside a protocol frame.
-pub const MAX_ASK_CHARS: usize = 4000;
-
-/// Ask an agent `ask` about `about`, pointed at `at` (window coordinates):
-/// what a context menu does with a sentence none of its entries answers.
-/// With nothing named, the app runner attaches what is under the pointer,
-/// else the window.
-pub fn ask_agent_at(about: Option<SharedSelection>, at: vello::kurbo::Point, ask: &str) {
-    let ask: String = ask.trim().chars().take(MAX_ASK_CHARS).collect();
-    queue(AgentRequest {
-        about: about.filter(|about| !about.is_empty()),
-        at: Some(at),
-        ask: (!ask.is_empty()).then_some(ask),
-        draft: None,
-    });
-}
-
 /// Requests made since the last call, oldest first. For the app runner.
-pub fn take_agent_requests() -> Vec<AgentRequest> {
+pub fn take_send_to() -> Vec<SendToRequest> {
     PENDING.with(|pending| pending.borrow_mut().drain(..).collect())
 }
 
-/// Whether a desktop is connected that can hand a request to an agent, so
-/// a sentence typed into a context menu can be asked.
-pub fn agent_host_available() -> bool {
+/// Whether a desktop is connected that can send what a box holds, so a menu
+/// offers it. Outside a session the box is not offered.
+#[must_use]
+pub fn send_host_available() -> bool {
     HOSTED.with(Cell::get)
 }
 
-/// Record whether a desktop that can answer [`ask_agent`] is connected.
+/// Record whether a desktop that can send what a box holds is connected.
 /// For the app runner.
-pub fn set_agent_host_available(available: bool) {
+pub fn set_send_host_available(available: bool) {
     HOSTED.with(|hosted| hosted.set(available));
+}
+
+/// What the person has selected in this window now, as the app runner last
+/// read it: what a box's "+" adds as a subject.
+#[must_use]
+pub fn focused_selection() -> Option<SharedSelection> {
+    FOCUSED.with(|focused| focused.borrow().clone())
+}
+
+/// Record the window's selection, read each pass by the app runner.
+pub fn set_focused_selection(selection: Option<SharedSelection>) {
+    FOCUSED.with(|focused| *focused.borrow_mut() = selection);
+}
+
+/// Whether a send-to box is open in this window.
+#[must_use]
+pub fn box_open() -> bool {
+    BOX_OPEN.with(Cell::get)
+}
+
+/// Record whether a send-to box is open. For the box itself.
+pub fn set_box_open(open: bool) {
+    BOX_OPEN.with(|box_open| box_open.set(open));
+}
+
+/// Ask the one search for the recipients matching `query`; the answer comes
+/// back through [`answer_recipients`] under the number returned. Empty
+/// queries ask for the ones the person reached for last.
+pub fn search_recipients(query: &str) -> u64 {
+    let request = NEXT_SEARCH.with(|next| {
+        let request = next.get();
+        next.set(request.saturating_add(1));
+        request
+    });
+    SEARCHES.with(|searches| {
+        let mut searches = searches.borrow_mut();
+        if searches.len() < MAX_PENDING {
+            searches.push_back((request, query.chars().take(200).collect()));
+        }
+    });
+    request
+}
+
+/// The searches boxes asked for since the last call, oldest first. For the
+/// app runner, which asks the session.
+pub fn take_recipient_searches() -> Vec<(u64, String)> {
+    SEARCHES.with(|searches| searches.borrow_mut().drain(..).collect())
+}
+
+/// What the search found for `request`, waiting for the box that asked.
+pub fn answer_recipients(request: u64, rows: Vec<Recipient>) {
+    ROWS.with(|rows_by_request| {
+        rows_by_request.borrow_mut().insert(request, rows);
+    });
+}
+
+/// The rows for `request`, if the search has answered: taken once, so a box
+/// never draws the same answer twice.
+pub fn take_recipients(request: u64) -> Option<Vec<Recipient>> {
+    ROWS.with(|rows| rows.borrow_mut().remove(&request))
 }
 
 #[cfg(test)]
@@ -529,7 +590,7 @@ mod tests {
             record: Some("uuid:7".into()),
             reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
         };
-        let sent = run.to_attached("so.tilo.notes", Some("uuid:7"));
+        let sent = run.to_attached(Some("so.tilo.notes"), Some("uuid:7"));
         let run_at = ResourceAt {
             reference: ResourceRef::ranged(
                 "notes.page",
@@ -561,7 +622,7 @@ mod tests {
         let rows = SharedSelection::of_items([("row-1", "One"), ("row-2", "Two")])
             .in_resource(page.clone());
         assert_eq!(
-            rows.to_attached("so.tilo.tasks", None),
+            rows.to_attached(Some("so.tilo.tasks"), None),
             Some(Attached::resource(
                 ResourceAt {
                     app: "so.tilo.tasks".into(),
@@ -576,7 +637,7 @@ mod tests {
         // Words the app reports no resource for are quoted, alone.
         let words = SharedSelection::of_text("ship on Friday");
         assert_eq!(
-            words.to_attached("so.tilo.terminal", None),
+            words.to_attached(Some("so.tilo.terminal"), None),
             Some(Attached::Text {
                 text: "ship on Friday".into(),
                 from: None,
@@ -587,7 +648,7 @@ mod tests {
         // so a chip can still open it.
         let unplaced = SharedSelection::of_text("ship on Friday").in_resource(page);
         assert_eq!(
-            unplaced.to_attached("so.tilo.notes", Some("uuid:7")),
+            unplaced.to_attached(Some("so.tilo.notes"), Some("uuid:7")),
             Some(Attached::Text {
                 text: "ship on Friday".into(),
                 from: Some(ResourceAt {
@@ -598,8 +659,26 @@ mod tests {
             })
         );
 
+        // A record nobody says the app of travels as its words: the message
+        // still carries what the person read, and points at no app's record.
+        let unowned = SharedSelection::of_text("One").in_resource(ActionResource {
+            id: "row-1".into(),
+            kind: "tasks.issue".into(),
+            label: "One".into(),
+        });
+        assert_eq!(
+            unowned.to_attached(None, None),
+            Some(Attached::Text {
+                text: "One".into(),
+                from: None,
+            })
+        );
+
         // Nothing selected, nothing to send.
-        assert_eq!(SharedSelection::default().to_attached("a.b", None), None);
+        assert_eq!(
+            SharedSelection::default().to_attached(Some("a.b"), None),
+            None
+        );
     }
 
     #[test]
@@ -740,29 +819,29 @@ mod tests {
     }
 
     #[test]
-    fn a_sentence_typed_into_a_context_menu_asks_about_the_selection_it_was_opened_in() {
+    fn a_sentence_typed_into_a_context_menu_sends_about_the_selection_it_was_opened_in() {
         let editor = || Editor {
             text: "late results",
             selected: (0, 4),
             protected: false,
         };
-        let _ = take_agent_requests();
+        let _ = take_send_to();
         let mut area = crate::widget::ContextMenuArea::new(Box::new(editor()), |_| {
             vec![crate::widget::MenuEntry::new("Copy", || {})]
         });
-        set_agent_host_available(false);
+        set_send_host_available(false);
         crate::widget::context_menu::note_input(&right_press());
         assert!(area.open_at(vec2_point(), false));
         assert_eq!(
             area.menu().items().len(),
             1,
-            "no desktop agent: no row to ask"
+            "no desktop to send from: no row to send with"
         );
         assert!(
             !area.menu().takes_typing(),
-            "one row and no agent to ask: nothing typing could do"
+            "one row and nothing to send from: nothing typing could do"
         );
-        set_agent_host_available(true);
+        set_send_host_available(true);
         crate::widget::context_menu::note_input(&left_press());
         assert!(area.open_at(vec2_point(), false));
         assert!(
@@ -780,24 +859,22 @@ mod tests {
         assert_eq!(
             area.menu().shown_rows(),
             &[1],
-            "no entry answers it: only asking"
+            "no entry answers it: only sending it"
         );
         crate::testing::dispatch(
             &mut area,
             &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
-        set_agent_host_available(false);
-        assert!(!area.menu().is_open());
-        let asked = take_agent_requests();
-        assert_eq!(asked.len(), 1);
-        assert_eq!(asked[0].at, Some(vec2_point()));
-        assert_eq!(asked[0].ask.as_deref(), Some("make this a heading"));
-        let about = asked[0].about.clone().expect("the selection");
+        let box_ = area.menu().send_to();
+        assert!(box_.is_open(), "the box carries the sentence");
+        assert_eq!(box_.text(), "make this a heading");
+        let about = box_.subjects().first().expect("the selection");
         assert_eq!(about.anchor.excerpt.as_deref(), Some("late"));
         assert_eq!(
             about.anchor.place,
             Some(SelectionPlace::range("para-3", 0, 4))
         );
+        set_send_host_available(false);
     }
 
     #[test]
@@ -827,60 +904,12 @@ mod tests {
     }
 
     #[test]
-    fn a_menu_with_nothing_else_to_offer_still_asks_and_reports_no_choice() {
-        let _ = take_agent_requests();
-        set_agent_host_available(true);
-        crate::widget::context_menu::note_input(&right_press());
-        let mut menu = crate::widget::ContextMenu::new();
-        let row = SharedSelection::of_text("Invoice")
-            .at(SelectionPlace::item("row-4"))
-            .in_resource(ActionResource {
-                id: "inbox".into(),
-                kind: "mailbox".into(),
-                label: "Inbox".into(),
-            });
-        menu.set_about(Some(row.clone()));
-        menu.open_at([30.0, 40.0]);
-        menu.open_at([30.0, 40.0]);
-        set_agent_host_available(false);
-        assert_eq!(menu.items().len(), 1, "one row to ask, added once");
-        assert!(
-            menu.shown_rows().is_empty(),
-            "shown once something is typed"
-        );
-        type_into(&mut menu, "archive it");
-        menu.click_item(0);
-        assert_eq!(menu.take_selection(), None, "the owner has no row 0");
-        let asked = take_agent_requests();
-        assert_eq!(
-            asked,
-            vec![AgentRequest {
-                about: Some(row),
-                at: Some(vello::kurbo::Point::new(30.0, 40.0)),
-                ask: Some("archive it".into()),
-                draft: None,
-            }]
-        );
-    }
-
-    fn published() -> Vec<tilo_actions::ResourceSpec> {
-        vec![tilo_actions::ResourceSpec::new(
-            "doc:1", "notebook", "Notebook",
-        )]
-    }
-
-    #[test]
-    fn with_nothing_named_under_the_pointer_the_window_is_attached_where_it_was_clicked() {
+    fn the_reference_resolves_the_window_when_nothing_is_selected() {
         let at = vello::kurbo::Point::new(200.0, 300.0);
         let focused = SharedSelection::of_text("elsewhere")
             .within(vello::kurbo::Rect::new(0.0, 0.0, 50.0, 20.0));
-        let (about, bounds) = AgentRequest {
-            about: None,
-            at: Some(at),
-            ask: None,
-            draft: None,
-        }
-        .resolve(Some(focused.clone()), &published());
+        let (about, bounds) =
+            resolve_selection(None, Some(at), Some(focused.clone()), &published());
         let about = about.expect("the window");
         assert_eq!(
             about.resource.as_ref().map(|resource| resource.id.as_str()),
@@ -888,13 +917,12 @@ mod tests {
         );
         assert_eq!(about.anchor.place, Some(SelectionPlace::item("doc:1")));
         assert_eq!(bounds, Some([199.5, 299.5, 200.5, 300.5]));
-        let (about, bounds) = AgentRequest {
-            about: None,
-            at: Some(vello::kurbo::Point::new(10.0, 10.0)),
-            ask: None,
-            draft: None,
-        }
-        .resolve(Some(focused), &published());
+        let (about, bounds) = resolve_selection(
+            None,
+            Some(vello::kurbo::Point::new(10.0, 10.0)),
+            Some(focused),
+            &published(),
+        );
         let about = about.expect("the selection");
         assert_eq!(about.anchor.excerpt.as_deref(), Some("elsewhere"));
         assert_eq!(
@@ -904,15 +932,15 @@ mod tests {
         assert_eq!(bounds, Some([0.0, 0.0, 50.0, 20.0]));
         // An app that publishes nothing has only its window to point at.
         assert_eq!(
-            AgentRequest {
-                about: None,
-                at: Some(at),
-                ask: None,
-                draft: None,
-            }
-            .resolve(None, &[]),
+            resolve_selection(None, Some(at), None, &[]),
             (None, Some([199.5, 299.5, 200.5, 300.5]))
         );
+    }
+
+    fn published() -> Vec<tilo_actions::ResourceSpec> {
+        vec![tilo_actions::ResourceSpec::new(
+            "doc:1", "notebook", "Notebook",
+        )]
     }
 
     fn vec2_point() -> vello::kurbo::Point {
@@ -920,15 +948,44 @@ mod tests {
     }
 
     #[test]
-    fn requests_queue_boundedly_and_drop_empty_selections() {
-        let _ = take_agent_requests();
-        ask_agent(Some(SharedSelection::default()));
-        for _ in 0..10 {
-            ask_agent(Some(SharedSelection::of_text("a")));
+    fn send_requests_queue_boundedly() {
+        let _ = take_send_to();
+        let _ = take_recipient_searches();
+        for index in 0..(MAX_PENDING + 4) {
+            send_to(SendToRequest {
+                to: vec![Recipient::new_agent("Ana")],
+                about: vec![SharedSelection::of_text("a")],
+                text: format!("note {index}"),
+                bounds: None,
+            });
+            let _ = search_recipients(&format!("ad{index}"));
         }
-        let requests = take_agent_requests();
+        let requests = take_send_to();
         assert_eq!(requests.len(), MAX_PENDING);
-        assert_eq!(requests[0].about, None);
-        assert!(take_agent_requests().is_empty());
+        assert_eq!(requests[0].text, "note 0");
+        assert!(take_send_to().is_empty());
+        assert!(take_recipient_searches().len() <= MAX_PENDING);
+    }
+
+    #[test]
+    fn a_search_answers_the_box_that_asked() {
+        let _ = take_recipient_searches();
+        let first = search_recipients("ad");
+        let second = search_recipients("ada");
+        assert_eq!(
+            take_recipient_searches(),
+            vec![(first, "ad".to_owned()), (second, "ada".to_owned()),]
+        );
+        assert_eq!(take_recipients(second), None, "not answered yet");
+        answer_recipients(
+            second,
+            vec![Recipient::found(
+                crate::floating_surface::RecipientKind::Person,
+                "u_ada",
+                "Ada",
+            )],
+        );
+        assert_eq!(take_recipients(second).map(|rows| rows.len()), Some(1));
+        assert_eq!(take_recipients(second), None, "taken once");
     }
 }

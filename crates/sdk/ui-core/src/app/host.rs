@@ -185,9 +185,11 @@ fn draw_frame_content_owning(
     // Everything from here on paints outside the widgets' layout boxes, where
     // their damage cannot describe it.
     let layer_start = scene.encoding().draw_tags.len();
-    // The overlay pass sees the whole window too: what escapes a scrolled
-    // list's box (a menu opened in it) may go anywhere in the window.
-    app.presence_ctx.pop_viewport(prev_vp);
+    // The overlay pass sees the whole window: what escapes a scrolled list's
+    // box (a menu opened in it) may go anywhere in the window, and a menu
+    // flips and shifts to stay inside it. A scrolled list's clip is not the
+    // window, so this replaces the viewport rather than keeping it.
+    app.presence_ctx.push_viewport(window_rect);
     // The first of the layers below that painted anything.
     let mut top_layer = history_shown.then_some("history mode");
     let mut painted = |scene: &Scene, layer: &'static str, before: &mut usize| {

@@ -231,3 +231,93 @@ fn a_frame_that_left_out_what_it_repaints_draws_its_widgets_again() {
         "most frames that leave something out hold ({twins:?})"
     );
 }
+
+/// A root widget that writes down the viewport each pass draws it in.
+struct WholeWindow {
+    rect: Rect,
+    seen: std::rc::Rc<std::cell::RefCell<Vec<(&'static str, Option<Rect>)>>>,
+}
+
+impl Widget for WholeWindow {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        use crate::widget::TaffyTreeExt as _;
+        let style = taffy::Style {
+            size: taffy::Size {
+                width: taffy::Dimension::length(640.0_f32),
+                height: taffy::Dimension::length(400.0_f32),
+            },
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    crate::rect_geometry!();
+
+    fn draw(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.seen
+            .borrow_mut()
+            .push(("content", presence.viewport()));
+    }
+
+    fn draw_overlay(
+        &mut self,
+        _scene: &mut Scene,
+        _transform: Affine,
+        _text_renderer: &mut TextRenderer,
+        _theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.seen
+            .borrow_mut()
+            .push(("overlay", presence.viewport()));
+    }
+
+    fn name(&self) -> &'static str {
+        "WholeWindow"
+    }
+}
+
+/// The overlay pass draws in the window too: a menu opened inside a scrolled
+/// list flips and shifts to stay in it, and what it opens beside it does the
+/// same.
+#[test]
+fn an_overlay_draws_in_the_window_the_content_draws_in() {
+    let window = Scaled(1.0);
+    let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let root = Box::new(WholeWindow {
+        rect: Rect::ZERO,
+        seen: std::rc::Rc::clone(&seen),
+    });
+    let mut app = app(root, &Theme::dark(), &window);
+    let mut scene = Scene::new();
+    let mut damage = SurfaceDamage::copying();
+    app.surface_frame_with_damage(&window, &mut scene, &mut damage);
+    let seen = seen.borrow();
+    let pass = |name: &str| {
+        seen.iter()
+            .find(|(pass, _)| *pass == name)
+            .unwrap_or_else(|| panic!("the {name} pass draws ({seen:?})"))
+            .1
+    };
+    assert_eq!(
+        pass("content"),
+        pass("overlay"),
+        "the overlay draws in the same window as the content ({seen:?})"
+    );
+    assert!(
+        pass("overlay").is_some_and(|rect| rect.width() > 0.0 && rect.height() > 0.0),
+        "the overlay knows the window ({seen:?})"
+    );
+}
