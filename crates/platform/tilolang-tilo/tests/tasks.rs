@@ -2008,6 +2008,9 @@ fn spec_commands() -> Vec<&'static str> {
         "Next week",
         "Pick date…",
         "No date",
+        // It says when the task comes back to the person, once, as they are told of it: it
+        // stands with the commands that say when a task is due, before how much it matters.
+        "Remind",
         "No priority",
         "Low",
         "Medium",
@@ -2116,8 +2119,8 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 }
 
 /// A task's row menu is every command a person can run on that task, worded once, in one order:
-/// it takes something away before it adds, dates before priorities, and a move a gesture also
-/// runs among the commands like any other.
+/// it takes something away before it adds, dates before priorities, a reminder with the dates,
+/// and a move a gesture also runs among the commands like any other.
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
@@ -2141,19 +2144,19 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "the dates are one run"
     );
     assert_eq!(commands[6].group.as_deref(), Some("Due"));
-    assert_eq!(commands[7].group.as_deref(), Some("Priority"));
+    assert_eq!(commands[8].group.as_deref(), Some("Priority"));
     assert!(
         !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
         "a command that cannot run stays listed and says why: {:?}",
         commands[6]
     );
     assert!(
-        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no priority"),
+        !commands[8].enabled && commands[8].reason.as_deref() == Some("It has no priority"),
         "what it already is cannot be chosen: {:?}",
-        commands[7]
+        commands[8]
     );
     assert_eq!(
-        commands[16].key.as_deref(),
+        commands[17].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );
