@@ -175,8 +175,10 @@ fn place_header(
     let lead = g.lead_end(column, m);
     let mut trail = g.trail_start(column, m).max(lead);
     // The window has one bar over its columns: a section takes the room of the columns after
-    // it while they have nothing to say (no title, no controls, no actions), so that the bar's
-    // actions stand at the window's end rather than at a column edge nothing follows.
+    // it while nothing stands there (no shown column, no title, no controls, no actions), so
+    // that the bar's actions stand at the window's end rather than at a column edge nothing
+    // follows. A column that stands keeps the room its own section takes: its edge is where
+    // the next section begins, whatever that section says.
     let quiet = |other: Column| {
         !inputs.titled.get(other.index()).copied().unwrap_or(false)
             && inputs.actions.get(other.index()).copied().unwrap_or(0) == 0
@@ -187,7 +189,7 @@ fn place_header(
             .into_iter()
             .skip(ci + 1)
             .filter(|other| *other != Column::Inspector || g.header(*other) != Rect::ZERO)
-            .all(&quiet);
+            .all(|other| (g.floating(other) || g.column(other).width() <= 0.0) && quiet(other));
         if after_quiet {
             let mut end = if g.window_controls.width() > 0.0 {
                 g.window_controls.x0 - m.gap + m.inset
