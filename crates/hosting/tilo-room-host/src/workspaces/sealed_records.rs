@@ -21,7 +21,8 @@ use ed25519_dalek::SigningKey;
 #[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
 #[cfg(feature = "agents")]
-use tilo_peer_state::{StatePeer, UnmergedReason};
+use tilo_peer_state::StatePeer;
+use tilo_peer_state::UnmergedReason;
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
