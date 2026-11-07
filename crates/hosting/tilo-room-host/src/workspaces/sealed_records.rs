@@ -21,7 +21,7 @@ use ed25519_dalek::SigningKey;
 #[cfg(feature = "agents")]
 use neighbour_wire::NeighbourMsg;
 #[cfg(feature = "agents")]
-use tilo_peer_state::StatePeer;
+use tilo_peer_state::{StatePeer, UnmergedReason};
 
 use super::{GovernedWorkspace, SystemTime, Workspaces};
 
@@ -161,15 +161,32 @@ impl GovernedWorkspace {
             return Ok(None);
         };
         if !opened.unmerged.is_empty() {
+            // One writer wrote a sequence twice: the record keeps the change
+            // that reached it first, nothing is lost, and no operator has to
+            // act. A write left out for any other reason is a loss.
+            let forked = opened
+                .unmerged
+                .iter()
+                .all(|write| matches!(write.reason, UnmergedReason::AlreadyHeld { .. }));
             let writes: Vec<String> = opened.unmerged.iter().map(ToString::to_string).collect();
-            tracing::warn!(
-                workspace = %self.workspace(),
-                %app,
-                %record,
-                left_out = writes.len(),
-                writes = ?writes,
-                "a sealed record is read without writes of its history that do not merge; they are kept"
-            );
+            if forked {
+                tracing::info!(
+                    workspace = %self.workspace(),
+                    %app,
+                    %record,
+                    writes = ?writes,
+                    "a sealed record keeps the change that reached it first of a writer's sequence"
+                );
+            } else {
+                tracing::warn!(
+                    workspace = %self.workspace(),
+                    %app,
+                    %record,
+                    left_out = writes.len(),
+                    writes = ?writes,
+                    "a sealed record is read without writes of its history that do not merge; they are kept"
+                );
+            }
         }
         Ok(Some(opened.document))
     }
