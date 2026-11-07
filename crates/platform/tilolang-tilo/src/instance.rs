@@ -808,7 +808,7 @@ impl Instance {
         host.runtime()
             .set_web(PlatformWeb(Rc::clone(&self.platform)));
         let platform = Rc::clone(&self.platform);
-        host.runtime().set_zone(move || platform.zone());
+        host.set_zone(move || platform.zone());
         let platform = Rc::clone(&self.platform);
         host.runtime().set_zone_name(move || platform.zone_name());
         let platform = Rc::clone(&self.platform);

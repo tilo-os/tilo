@@ -44,9 +44,7 @@ fn week() -> (Replica, Replica) {
     ada.commit();
     let ben = ada.fork("ben", PACKAGES);
     ben.host.sync_from(&ben.doc);
-    ben.host
-        .runtime()
-        .set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
     (ada, ben)
 }
 

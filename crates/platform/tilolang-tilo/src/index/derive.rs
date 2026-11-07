@@ -285,6 +285,18 @@ pub trait Sink {
     /// Whether it keeps filter columns, or (the store's open writes) fields and membership
     /// alone.
     fn keeps_columns(&self) -> bool;
+
+    /// Record the instant the columns of `ty` that read the clock are written at
+    /// ([`super::clock`]), unless the index records one: the first one written is the one every
+    /// later one is past. A sink that keeps no columns of its own (`keeps_columns`) records
+    /// nothing.
+    ///
+    /// # Errors
+    /// It cannot be written.
+    fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
+        let _ = (ty, clock);
+        Ok(())
+    }
 }
 
 impl Sink for Writer<'_> {
@@ -434,6 +446,10 @@ impl Sink for Writer<'_> {
     fn keeps_columns(&self) -> bool {
         true
     }
+
+    fn set_written_at(&mut self, ty: &str, clock: super::Clock) -> Result<(), IndexError> {
+        Writer::note_written_at(self, ty, clock)
+    }
 }
 
 /// What derivation read of the record, counted: work that does not depend on the machine.
@@ -471,10 +487,10 @@ pub struct Derive<'d> {
     pub reads: DocReads,
     /// Resources derived whole in this pass: a change naming them again is done.
     done: BTreeSet<String>,
-    /// While a whole package is derived into an empty index: the entries of its types'
-    /// columns across the workspace, each list written whole at the end rather than entry by
-    /// entry.
-    bulk: Option<BTreeMap<String, Vec<Entry>>>,
+    /// The columns written as the fields are, and the time a column reading the clock is
+    /// written at.
+    columns: Columns,
+    clock: super::Clock,
     /// The collections whose items it added, removed or moved, with those items: what a
     /// listing of each is brought in line by.
     pub moved: BTreeMap<FieldKey, BTreeSet<String>>,
@@ -696,6 +712,93 @@ pub(super) fn field_value(
         .unwrap_or_else(|| default_value(field)))
 }
 
+/// Writing the columns of a resource as its fields are: what a derivation does, and what the
+/// index does again for the items a later clock changes the answer of a filter for
+/// ([`super::clock`]).
+#[derive(Default)]
+pub(super) struct Columns {
+    /// While a whole package is derived into an empty index: the entries of its types'
+    /// columns across the workspace, each list written whole at the end rather than entry by
+    /// entry.
+    bulk: Option<BTreeMap<String, Vec<Entry>>>,
+}
+
+impl Columns {
+    /// Bring the entries of one column of the resource at `path` (of the type `schema`) in line
+    /// with the values `now` it holds: the column's across the workspace, the collection's, the
+    /// open counts a place reads, and what it held.
+    pub(super) fn write(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        schema: &TypeSchema,
+        column: &crate::schema::ColumnSchema,
+        scope: Option<Scope<'_>>,
+        now: &[String],
+    ) -> Result<(), IndexError> {
+        let held = sink
+            .text(path, &column_field(&column.name))?
+            .map(|h| split_values(&h));
+        if held.as_deref() == Some(now) {
+            return Ok(());
+        }
+        let before = held.unwrap_or_default();
+        if column.filter {
+            let ty = &schema.id;
+            for value in before.iter().filter(|v| !now.contains(v)) {
+                sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
+                if column.kind == crate::schema::ColumnKind::Ident {
+                    sink.remove_entry(
+                        &columns::reversed_list(ty, &column.name),
+                        &type_entry(&reversed(value), path),
+                    )?;
+                }
+            }
+            for value in now.iter().filter(|v| !before.contains(v)) {
+                self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
+                if column.kind == crate::schema::ColumnKind::Ident {
+                    self.add(
+                        sink,
+                        columns::reversed_list(ty, &column.name),
+                        type_entry(&reversed(value), path),
+                    )?;
+                }
+            }
+        }
+        if let Some((parent, coll, key)) = scope
+            && let Some(id) = id_of(path)
+        {
+            let list = scope_list(parent, coll, &column.name);
+            let counted = columns::counted(column);
+            for value in before.iter().filter(|v| !now.contains(v)) {
+                sink.remove_entry(&list, &scope_entry(value, key, id))?;
+                if counted {
+                    sink.count(&list, value, -1)?;
+                }
+            }
+            for value in now.iter().filter(|v| !before.contains(v)) {
+                sink.insert(&list, scope_entry(value, key, id))?;
+                if counted {
+                    sink.count(&list, value, 1)?;
+                }
+            }
+        }
+        sink.put_text(path, &column_field(&column.name), &join_values(now))?;
+        Ok(())
+    }
+
+    /// Put `entry` in `list`: now, or with the rest of a whole derivation's.
+    fn add(&mut self, sink: &mut impl Sink, list: String, entry: Entry) -> Result<(), IndexError> {
+        match &mut self.bulk {
+            Some(bulk) => {
+                bulk.entry(list).or_default().push(entry);
+                Ok(())
+            }
+            None => sink.insert(&list, entry),
+        }
+    }
+}
+
 /// The version that removed the item at `path` from the collection `key` names, with where it
 /// stood: what a list shows of it struck ([`super::REMOVED`]).
 fn left_version(stamp: &Stamp, path: &str, key: &FieldKey, ty: Option<String>) -> LeftRow {
@@ -718,6 +821,7 @@ impl<'d> Derive<'d> {
         chunks: &'d Chunks,
         docs: &'d BTreeMap<DocId, (AppId, TypeId)>,
         nested: &'d Nested,
+        clock: super::Clock,
     ) -> Self {
         Self {
             chunks,
@@ -725,7 +829,8 @@ impl<'d> Derive<'d> {
             nested,
             reads: DocReads::default(),
             done: BTreeSet::new(),
-            bulk: None,
+            columns: Columns::default(),
+            clock,
             moved: BTreeMap::new(),
             wholes: BTreeSet::new(),
             chunks_of: BTreeMap::new(),
@@ -763,11 +868,11 @@ impl<'d> Derive<'d> {
             .filter(|(_, (a, _))| a == app)
             .map(|(doc, (_, ty))| (doc.clone(), ty.clone()))
             .collect();
-        self.bulk = Some(BTreeMap::new());
+        self.columns.bulk = Some(BTreeMap::new());
         for (doc, ty) in records {
             self.record(sink, app, &doc, &ty)?;
         }
-        for (list, mut entries) in self.bulk.take().unwrap_or_default() {
+        for (list, mut entries) in self.columns.bulk.take().unwrap_or_default() {
             entries.sort();
             entries.dedup();
             sink.replace(&list, entries)?;
@@ -1182,84 +1287,25 @@ impl<'d> Derive<'d> {
             if changed.is_some_and(|field| !columns::reads(column, field)) {
                 continue;
             }
-            let now = columns::values(column, schema, &mut |field| field_value(sink, path, field))?;
-            self.column(sink, path, schema, column, scope, &now)?;
+            let now = columns::values(column, schema, self.clock, &mut |field| {
+                field_value(sink, path, field)
+            })?;
+            self.columns
+                .write(sink, path, schema, column, scope, &now)?;
+            // The index says what it wrote the column at, so that it writes again only what the
+            // clock passes later ([`super::clock`]). The first item written fixes it: every
+            // item written after it holds of the filter at its own instant, which is past this
+            // one, and what the clock passes between them is written again either way.
+            if column
+                .pred
+                .as_ref()
+                .is_some_and(tilolang::pred::Pred::reads_clock)
+            {
+                sink.set_written_at(&schema.id, self.clock)?;
+            }
             out.push((column.name.clone(), now));
         }
         Ok(out)
-    }
-
-    /// Bring the entries of one column of the resource at `path` (of the type `schema`) in line
-    /// with the values `now` it holds: the column's across the workspace, the collection's, the
-    /// open counts a place reads, and what it held.
-    fn column(
-        &mut self,
-        sink: &mut impl Sink,
-        path: &str,
-        schema: &TypeSchema,
-        column: &crate::schema::ColumnSchema,
-        scope: Option<Scope<'_>>,
-        now: &[String],
-    ) -> Result<(), IndexError> {
-        let held = sink
-            .text(path, &column_field(&column.name))?
-            .map(|h| split_values(&h));
-        if held.as_deref() != Some(now) {
-            let before = held.unwrap_or_default();
-            if column.filter {
-                let ty = &schema.id;
-                for value in before.iter().filter(|v| !now.contains(v)) {
-                    sink.remove_entry(&type_list(ty, &column.name), &type_entry(value, path))?;
-                    if column.kind == crate::schema::ColumnKind::Ident {
-                        sink.remove_entry(
-                            &columns::reversed_list(ty, &column.name),
-                            &type_entry(&reversed(value), path),
-                        )?;
-                    }
-                }
-                for value in now.iter().filter(|v| !before.contains(v)) {
-                    self.add(sink, type_list(ty, &column.name), type_entry(value, path))?;
-                    if column.kind == crate::schema::ColumnKind::Ident {
-                        self.add(
-                            sink,
-                            columns::reversed_list(ty, &column.name),
-                            type_entry(&reversed(value), path),
-                        )?;
-                    }
-                }
-            }
-            if let Some((parent, coll, key)) = scope
-                && let Some(id) = id_of(path)
-            {
-                let list = scope_list(parent, coll, &column.name);
-                let counted = columns::counted(column);
-                for value in before.iter().filter(|v| !now.contains(v)) {
-                    sink.remove_entry(&list, &scope_entry(value, key, id))?;
-                    if counted {
-                        sink.count(&list, value, -1)?;
-                    }
-                }
-                for value in now.iter().filter(|v| !before.contains(v)) {
-                    sink.insert(&list, scope_entry(value, key, id))?;
-                    if counted {
-                        sink.count(&list, value, 1)?;
-                    }
-                }
-            }
-            sink.put_text(path, &column_field(&column.name), &join_values(now))?;
-        }
-        Ok(())
-    }
-
-    /// Put `entry` in `list`: now, or with the rest of a whole derivation's.
-    fn add(&mut self, sink: &mut impl Sink, list: String, entry: Entry) -> Result<(), IndexError> {
-        match &mut self.bulk {
-            Some(bulk) => {
-                bulk.entry(list).or_default().push(entry);
-                Ok(())
-            }
-            None => sink.insert(&list, entry),
-        }
     }
 
     /// Take the item at `child` (order key `key`) out of the lists of the columns of the

@@ -131,9 +131,7 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
             (TASKS, TASKS_IDS),
         ],
     );
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T09:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     let notes = Value::resource(&ada.host.root_of(NOTES_APP).unwrap());
     let tasks = Value::resource(&ada.host.root_of(TASKS_APP).unwrap());
     ada.commit();
@@ -177,9 +175,7 @@ pub(crate) fn a_run_in_notes_and_tasks() -> Tidied {
 
     // The agent's run: a note made, one renamed and one deleted; a task added, one checked off
     // and one removed.
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T09:10:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T09:10:00Z".to_owned());
     let made = call(&ada, AGENT, NOTES_APP, "new_note", vec![notes.clone()]);
     call(
         &ada,

@@ -179,6 +179,7 @@ pub(super) fn build(
     app: &str,
     heads: &Stamps,
     schemas: &Arc<crate::schema::Schemas>,
+    clock: crate::index::Clock,
 ) -> Result<DocReads, IndexError> {
     // This build may run on a thread of its own, where no store installed its table: the
     // record's types resolve by the store's package versions, never by another store's.
@@ -195,7 +196,7 @@ pub(super) fn build(
     }
     let nested = Nested::default();
     index.write(|writer| {
-        let mut derive = Derive::new(chunks, docs, &nested);
+        let mut derive = Derive::new(chunks, docs, &nested, clock);
         derive.all_with_versions(writer, app, &ends, &removed)?;
         writer.set_heads(heads)?;
         Ok(derive.reads)
