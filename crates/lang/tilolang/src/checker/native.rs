@@ -252,6 +252,31 @@ impl Checker<'_> {
         let Some(list) = self.list_rows(n, list, c, row_view.clone()) else {
             return;
         };
+        // A card shows its list's first rows and says how many it has
+        // ([`prims::PREVIEW_ROWS`]): where the rows are built in place, the list reads those
+        // rows of what it lists and no more, and carries the count of the whole, as a list
+        // whose rows render as the host shows them does.
+        let list = if self.st.ui.in_card {
+            let ty = list.ty.clone();
+            let held = self.fresh(ty.clone());
+            self.emit(Stmt::Set(held, list));
+            let held = Ex::local(held, ty);
+            self.emit(host(
+                Imp::UiPropI,
+                vec![
+                    Ex::local(n, Ty::View),
+                    Ex::str("len"),
+                    Ex::host(Imp::ListLen, vec![held.clone()], Ty::Int),
+                ],
+            ));
+            Ex::host(
+                Imp::Take,
+                vec![held, Ex::int(prims::PREVIEW_ROWS)],
+                Ty::List(Box::new(elem.clone())),
+            )
+        } else {
+            list
+        };
         let mut fl = self.new_for(list, &elem);
         let item = Ex::local(fl.item_local, elem.clone());
         self.push_sink();
