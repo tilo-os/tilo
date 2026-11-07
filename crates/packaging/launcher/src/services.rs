@@ -105,7 +105,7 @@ pub const DEFAULT_BLOB_SOCKET: &str = "/run/tilo/fs-blobs.sock";
 /// Overrides [`DEFAULT_BLOB_SOCKET`] for sessions whose daemon runs elsewhere.
 pub const BLOB_SOCKET_ENV: &str = "TILO_FS_BLOB_SOCKET";
 /// Prefix of the handoff that fixes the connection's scope before the app
-/// holds the descriptor; the daemon reads it before any Cap'n Proto.
+/// holds the descriptor; the daemon reads it before any filesystem request.
 pub const BLOB_HANDOFF_MAGIC: [u8; 4] = *b"QBL1";
 const BLOB_HANDOFF_PROTOCOL: u16 = 1;
 const BLOB_HANDOFF_FRAMING: Framing = Framing::little_endian(4096).reject_empty();

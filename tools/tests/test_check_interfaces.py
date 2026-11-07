@@ -68,7 +68,7 @@ def schema_from(source, roots=("Message",), encoding="json", opaque=None):
         (root / "wire.rs").write_text(source)
         spec = interfaces.Spec(
             name="test", version=3, version_const="wire.rs:PROTOCOL", encoding=encoding,
-            sources=["wire.rs"], roots=list(roots), capnp=[], opaque=opaque or {},
+            sources=["wire.rs"], roots=list(roots), opaque=opaque or {},
             serves=False, path=root / "interface.toml",
         )
         return interfaces.schema_of(spec, root), interfaces.code_version(spec, root)
@@ -133,27 +133,6 @@ class SchemaTests(unittest.TestCase):
         self.assertEqual(interfaces.renamed("splash_budget", "kebab-case"), "splash-budget")
         self.assertEqual(interfaces.renamed("splash_budget", "camelCase"), "splashBudget")
 
-    def test_capnp_members_carry_their_ordinals(self):
-        with tempfile.TemporaryDirectory() as root:
-            Path(root, "s.capnp").write_text(textwrap.dedent('''
-                @0xdeadbeefdeadbeef;
-                # A comment with { braces }.
-                interface Store {
-                  get @0 (key :Text) -> (value :Data);
-                }
-                struct Entry {
-                  key @0 :Text;
-                  union { none @1 :Void; size @2 :UInt64; }
-                  kind @3 :Kind;
-                  enum Kind { file @0; dir @1; }
-                }
-            '''))
-            schema = interfaces.capnp_schema("s.capnp", Path(root))
-        self.assertEqual(schema["capnp:s.capnp:Store.get"], "@0 (key:Text)->(value:Data)")
-        self.assertEqual(schema["capnp:s.capnp:Entry.size"], "@2 :UInt64 union")
-        self.assertEqual(schema["capnp:s.capnp:Entry.key"], "@0 :Text")
-        self.assertEqual(schema["capnp:s.capnp:Entry.Kind.dir"], "@1")
-
 
 class CompatibilityTests(unittest.TestCase):
     BEFORE = {
@@ -196,15 +175,6 @@ class CompatibilityTests(unittest.TestCase):
         self.assertTrue(interfaces.incompatible(before, moved, "postcard"))
         retyped = {"S": "struct", "S.new": "#0 u64", "S.kept": "#1 Uuid"}
         self.assertTrue(interfaces.incompatible(before, retyped, "postcard"))
-
-    def test_capnp_fields_may_be_added_and_methods_and_union_members_may_not(self):
-        before = {"capnp:s.capnp:Entry": "struct", "capnp:s.capnp:Store": "interface"}
-        field = dict(before, **{"capnp:s.capnp:Entry.size": "@1 :UInt64"})
-        member = dict(before, **{"capnp:s.capnp:Entry.size": "@1 :UInt64 union"})
-        method = dict(before, **{"capnp:s.capnp:Store.put": "@1 (key:Text)->()"})
-        self.assertEqual(interfaces.incompatible(before, field, "postcard"), [])
-        self.assertTrue(interfaces.incompatible(before, member, "postcard"))
-        self.assertTrue(interfaces.incompatible(before, method, "postcard"))
 
 
 class AgainstMainTests(unittest.TestCase):

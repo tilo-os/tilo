@@ -1,16 +1,15 @@
-//! `runtime-portal` — service discovery and connected transport → RPC plumbing for
-//! Tilo apps.
+//! `runtime-portal` — service discovery and connected transports for Tilo apps.
 //!
 //! Tilo apps run inside a launcher-managed sandbox. The launcher opens a Unix
 //! socket per system service (collab, fs, ...) and passes the connected fd
 //! to the child via `TILO_SVC_<NAME>_FD`. This crate provides:
 //!
 //! - [`service_fd`] — pull the raw fd out of the environment.
+//! - [`connect_service_fd`] — take the process's connection to a service, once.
 //! - [`is_tilo_native`] — heuristic: running under a Tilo compositor, or as a
 //!   stock Flatpak on a vanilla desktop?
-//! - [`CapnpClient`] — lift an owned connected transport into a tokio Cap'n Proto
-//!   two-party RPC client; higher-level service crates build typed clients
-//!   on top of the bootstrap returned here.
+//! - [`DescriptorStreamSource`] — a connected stream that carries the
+//!   descriptor lane; higher-level service crates speak their own wire on it.
 //! - [`NotAvailable`] — the single error type service clients surface when
 //!   the platform can't provide the requested service.
 //! - [`tools`] — typed requests asking the shell to open a tool, such as
@@ -73,22 +72,14 @@ use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(not(unix))]
 pub type RawFd = i32;
 
-#[cfg(feature = "rpc")]
-use capnp_rpc::twoparty;
-#[cfg(feature = "rpc")]
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp};
 #[cfg(unix)]
-use rustix::io::fcntl_getfd;
-#[cfg(all(unix, feature = "rpc"))]
-use rustix::io::{FdFlags, fcntl_setfd};
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 #[cfg(test)]
 use tilo_lock::RwLockRecover as _;
-#[cfg(feature = "rpc")]
+#[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncWrite};
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 use tokio::net::UnixStream;
-#[cfg(feature = "rpc")]
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 /// All ways a system service can be unavailable to an app.
 #[derive(Debug, thiserror::Error)]
@@ -106,22 +97,6 @@ pub enum NotAvailable {
     /// The service read the request and refused it, saying why.
     #[error("refused: {0}")]
     Refused(String),
-}
-
-/// A Cap'n Proto service's failure, in the terms every service shares: a
-/// connection that went away is a failed connection, anything else the
-/// service said is its refusal.
-#[cfg(feature = "rpc")]
-impl From<capnp::Error> for NotAvailable {
-    fn from(error: capnp::Error) -> Self {
-        match error.kind {
-            capnp::ErrorKind::Disconnected => Self::ConnectionFailed(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                error.extra,
-            )),
-            _ => Self::Refused(error.extra),
-        }
-    }
 }
 
 /// True iff we appear to be running inside a Tilo session. Heuristic only —
@@ -188,276 +163,49 @@ pub unsafe fn take_service_fd(name: &str) -> Option<OwnedFd> {
     service_fd(name).map(|fd| unsafe { OwnedFd::from_raw_fd(fd) })
 }
 
-#[cfg(feature = "rpc")]
-/// A tokio Cap'n Proto two-party RPC client wrapped around an owned,
-/// already-connected transport. Typed service crates call
-/// [`Self::bootstrap`] for the root capability; this owns the driver task.
-pub struct CapnpClient {
-    rpc_system: RpcSystem<rpc_twoparty_capnp::Side>,
-    bootstrap_side: rpc_twoparty_capnp::Side,
-}
-
-#[cfg(feature = "rpc")]
-/// Resolves once a [`CapnpClient`]'s connection has ended (see
-/// [`CapnpClient::bootstrap_until_closed`]); either outcome means it ended.
-pub type ConnectionEnd = tokio::sync::oneshot::Receiver<()>;
-
-#[cfg(feature = "rpc")]
-/// Compatibility name for clients using launcher-provided Unix descriptors.
-pub type UnixCapnpClient = CapnpClient;
-
-#[cfg(feature = "rpc")]
-impl CapnpClient {
-    /// Take ownership of a connected asynchronous byte stream. Platform launch
-    /// adapters supply the connection; this constructor does not discover a
-    /// service, authenticate either peer, or grant app/workspace authority.
-    ///
-    /// Uses the same protocol and local driver as the Unix descriptor adapter.
-    /// Windows adapters can supply an owned named pipe without casting handles
-    /// to Unix descriptors. Call [`Self::bootstrap`] inside a tokio `LocalSet`.
-    pub fn from_connected_io<S>(stream: S, side: rpc_twoparty_capnp::Side) -> Self
-    where
-        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-    {
-        Self {
-            rpc_system: rpc_system(stream, side, None),
-            bootstrap_side: match side {
-                rpc_twoparty_capnp::Side::Client => rpc_twoparty_capnp::Side::Server,
-                rpc_twoparty_capnp::Side::Server => rpc_twoparty_capnp::Side::Client,
-            },
-        }
-    }
-
-    /// Wrap an owned `RawFd` for a connected Unix stream socket; takes
-    /// ownership, so the caller must not close it afterwards. A descriptor
-    /// named by `TILO_SVC_<NAME>_FD` is shared by the whole process and is
-    /// never owned by one client: open those with [`connect_service`]. `side` is which
-    /// end of the two-party protocol we are — SDK clients are `Client`, services are `Server`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable::ConnectionFailed`] if the fd cannot be put in
-    /// non-blocking mode or handed to tokio's reactor.
-    pub fn from_connected_fd(
-        fd: RawFd,
-        side: rpc_twoparty_capnp::Side,
-    ) -> Result<Self, NotAvailable> {
-        #[cfg(not(unix))]
-        {
-            let _ = (fd, side);
-            Err(NotAvailable::ServiceFdMissing)
-        }
-        #[cfg(unix)]
-        {
-            // Hands exclusive ownership to tokio.
-            // SAFETY: the launcher guarantees the fd is a connected
-            // SOCK_STREAM Unix socket. We checked F_GETFD on it before
-            // this call (via service_fd) so the slot is at least open.
-            let owned = unsafe { OwnedFd::from_raw_fd(fd) };
-            // The launcher clears CLOEXEC only for the initial app exec. Once
-            // the SDK owns the connection, later children must not retain it.
-            fcntl_setfd(&owned, FdFlags::CLOEXEC)
-                .map_err(io::Error::from)
-                .map_err(NotAvailable::ConnectionFailed)?;
-            let std_stream = std::os::unix::net::UnixStream::from(owned);
-            std_stream
-                .set_nonblocking(true)
-                .map_err(NotAvailable::ConnectionFailed)?;
-            let stream =
-                UnixStream::from_std(std_stream).map_err(NotAvailable::ConnectionFailed)?;
-            Ok(Self::from_connected_io(stream, side))
-        }
-    }
-
-    /// Take the remote bootstrap capability as a typed client, spawning the RPC
-    /// driver task on the current tokio `LocalSet` (capnp-rpc needs `!Send`
-    /// futures, so callers must run this from a `LocalSet`-aware context).
-    /// Service availability must be established by a service call: capability
-    /// resolution alone is not a health or admission check.
-    pub fn bootstrap<C>(self) -> C
-    where
-        C: capnp::capability::FromClientHook,
-    {
-        self.bootstrap_until_closed().0
-    }
-
-    /// [`Self::bootstrap`], with what resolves once the connection has
-    /// ended: the peer hung up or the transport failed. Every later call on
-    /// the client then fails with Disconnected, so a caller holding one
-    /// long-lived connection learns of its end here instead of from each
-    /// call it goes on making.
-    pub fn bootstrap_until_closed<C>(mut self) -> (C, ConnectionEnd)
-    where
-        C: capnp::capability::FromClientHook,
-    {
-        let client: C = self.rpc_system.bootstrap(self.bootstrap_side);
-        let (ended, end) = tokio::sync::oneshot::channel();
-        // capnp-rpc futures are !Send, so the driver is spawned via `spawn_local`.
-        tokio::task::spawn_local(async move {
-            // Resolves when the connection closes; higher layers observe a
-            // Disconnected error on outstanding or subsequent service calls.
-            if let Err(error) = self.rpc_system.await {
-                eprintln!("tilo-portal: a portal connection ended with an error: {error}");
-            }
-            // Nobody may be waiting for the end; the calls see Disconnected.
-            let _ = ended.send(());
-        });
-        (client, end)
-    }
-}
-
-#[cfg(feature = "rpc")]
-/// Serve `bootstrap` as the root capability to the peer on an owned,
-/// already-connected transport; the server-side counterpart of
-/// [`CapnpClient::from_connected_io`]. The returned system is the connection's
-/// driver: await or `spawn_local` it, and it resolves when the peer hangs up.
-pub fn serve_connected_io<S>(
-    stream: S,
-    bootstrap: capnp::capability::Client,
-) -> RpcSystem<rpc_twoparty_capnp::Side>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-{
-    rpc_system(stream, rpc_twoparty_capnp::Side::Server, Some(bootstrap))
-}
-
-#[cfg(feature = "rpc")]
-fn rpc_system<S>(
-    stream: S,
-    side: rpc_twoparty_capnp::Side,
-    bootstrap: Option<capnp::capability::Client>,
-) -> RpcSystem<rpc_twoparty_capnp::Side>
-where
-    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + 'static,
-{
-    // Buffered: a message is a segment table plus segments, which would
-    // otherwise be one syscall each. The protocol flushes after every message.
-    let (read_half, write_half) = tokio::io::split(stream);
-    let network = Box::new(twoparty::VatNetwork::new(
-        tokio::io::BufReader::new(read_half).compat(),
-        tokio::io::BufWriter::new(write_half).compat_write(),
-        side,
-        capnp::message::ReaderOptions::default(),
-    ));
-    RpcSystem::new(network, bootstrap)
-}
-
-#[cfg(feature = "rpc")]
-/// A client connection of its own to the launcher-inherited service `name`.
+#[cfg(unix)]
+/// Take the process's connection to the launcher-inherited service `name`.
 ///
-/// The process inherits one socket per service, which never belongs to a
-/// single client: every call returns a private connection whose calls are
-/// forwarded over that socket, so any number of clients (one per record,
-/// say) may be open and dropped in any order.
+/// The launcher hands a process one connected socket per service, so this
+/// takes it once: every client of the service builds on that connection, and a
+/// second call reports it as taken instead of opening a second stream on the
+/// same socket, which two peers driving it would corrupt.
 ///
 /// # Errors
 ///
-/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
-/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up
-/// or the inherited one has ended.
-pub fn connect_service(name: &str) -> Result<CapnpClient, NotAvailable> {
-    #[cfg(unix)]
-    {
-        CapnpClient::from_connected_fd(
-            std::os::fd::IntoRawFd::into_raw_fd(connect_service_fd(name)?),
-            rpc_twoparty_capnp::Side::Client,
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = name;
-        Err(NotAvailable::ServiceFdMissing)
-    }
-}
-
-#[cfg(all(unix, feature = "rpc"))]
-/// [`connect_service`] for a client that drives its own RPC system: the
-/// connected socket of its own, speaking Cap'n Proto two-party as the client.
-///
-/// # Errors
-///
-/// As [`connect_service`].
+/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`, or
+/// [`NotAvailable::ConnectionFailed`] if the connection is already taken or
+/// cannot be marked close-on-exec.
 pub fn connect_service_fd(name: &str) -> Result<OwnedFd, NotAvailable> {
+    static TAKEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
     let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
-    shared::connect(name, fd)
-}
-
-#[cfg(all(unix, feature = "rpc"))]
-/// The descriptor lane of the launcher-inherited service `name`: a descriptor
-/// sent on it reaches the service ahead of every call any client of `name`
-/// in this process makes afterwards, numbered as [`descriptor_lane`] says.
-///
-/// # Errors
-///
-/// As [`connect_service`].
-pub fn service_descriptors(name: &str) -> Result<descriptor_lane::DescriptorSender, NotAvailable> {
-    let fd = service_fd(name).ok_or(NotAvailable::ServiceFdMissing)?;
-    shared::descriptors(name, fd)
-}
-
-#[cfg(feature = "rpc")]
-/// Helper for service crates: open a connection to an inherited service
-/// ([`connect_service`]) and pull out the bootstrap.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ServiceFdMissing`] if no fd is open for `name`,
-/// or [`NotAvailable::ConnectionFailed`] if the connection can't be set up.
-pub fn try_open_service<C>(name: &str) -> Result<C, NotAvailable>
-where
-    C: capnp::capability::FromClientHook,
-{
-    Ok(connect_service(name)?.bootstrap::<C>())
-}
-
-#[cfg(feature = "rpc")]
-/// The same, for a caller that already holds the connection.
-/// [`try_open_service`] reads its fd from the environment, right for a
-/// launched process; a caller with its own connection reaching for the
-/// environment anyway risks two clients racing `set_var`, which is unsound
-/// while any other thread reads the environment.
-///
-/// # Errors
-///
-/// Returns [`NotAvailable::ConnectionFailed`] if `fd` can't be lifted to an
-/// RPC connection.
-pub fn open_service_on_fd<C>(fd: RawFd) -> Result<C, NotAvailable>
-where
-    C: capnp::capability::FromClientHook,
-{
-    let client = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    Ok(client.bootstrap::<C>())
+    let first = {
+        let mut taken = TAKEN.get_or_init(Default::default).lock().map_err(|_| {
+            NotAvailable::ConnectionFailed(io::Error::other(
+                "the service connection registry poisoned",
+            ))
+        })?;
+        taken.insert(name.to_owned())
+    };
+    if !first {
+        return Err(NotAvailable::ConnectionFailed(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("the {name} service connection is already taken"),
+        )));
+    }
+    // SAFETY: `service_fd` verified the slot is open, and the registry above
+    // makes this the only owner of it.
+    let owned = unsafe { OwnedFd::from_raw_fd(fd) };
+    // The launcher clears close-on-exec only for this process's exec; children
+    // it starts later must not inherit the service connection.
+    fcntl_setfd(&owned, FdFlags::CLOEXEC).map_err(io::Error::from)?;
+    Ok(owned)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[cfg(feature = "rpc")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn connected_io_reports_peer_close() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let (connection, peer) = tokio::io::duplex(512);
-                let client: capnp::capability::Client =
-                    CapnpClient::from_connected_io(connection, rpc_twoparty_capnp::Side::Client)
-                        .bootstrap();
-                drop(peer);
-                // Service clients await RPC responses. Exercise that public
-                // failure path, including a call queued before the driver polls.
-                let request = client
-                    .new_call::<capnp::any_pointer::Owned, capnp::any_pointer::Owned>(0, 0, None);
-                let error = tilo_test_env::within(
-                    "the closed peer to resolve the outstanding RPC",
-                    request.send().promise,
-                )
-                .await
-                .err()
-                .expect("closed transport cannot complete a service call");
-                assert_eq!(error.kind, capnp::ErrorKind::Disconnected);
-            })
-            .await;
-    }
 
     fn clear_tilo_env() -> tilo_test_env::ScopedEnv {
         let mut scoped = tilo_test_env::ScopedEnv::new();
@@ -490,33 +238,58 @@ mod tests {
             assert!(service_fd("collab").is_none(), "case {case}");
         }
     }
+
+    /// One inherited socket is one connection: the first caller takes it
+    /// close-on-exec, and a second sees it taken instead of driving the same
+    /// stream alongside the first.
+    #[cfg(unix)]
+    #[test]
+    fn a_service_connection_is_taken_once() {
+        let mut env = clear_tilo_env();
+        let (ours, _service) = std::os::unix::net::UnixStream::pair().expect("a socket pair");
+        let fd = std::os::fd::IntoRawFd::into_raw_fd(OwnedFd::from(ours));
+        env.set("TILO_SVC_PORTALTEST_FD", fd.to_string());
+
+        let taken = connect_service_fd("portaltest").expect("the inherited connection");
+        assert!(
+            fcntl_getfd(&taken)
+                .expect("the connection's flags")
+                .contains(FdFlags::CLOEXEC),
+            "a child must not inherit the service connection"
+        );
+        let error = connect_service_fd("portaltest").expect_err("the connection is taken");
+        assert!(
+            matches!(error, NotAvailable::ConnectionFailed(_)),
+            "{error:?}"
+        );
+    }
 }
 
 #[cfg(unix)]
 pub mod fd_transport;
 
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 pub mod descriptor_lane;
 
 /// The descriptor lane of a connected stream, when the host has one: what a
 /// client hands a service rides that stream as `SCM_RIGHTS`
 /// ([`descriptor_lane`]). A host without descriptors carries none.
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 pub type DescriptorLane = Option<descriptor_lane::DescriptorSender>;
 /// A host without descriptors has no lane value to send.
-#[cfg(all(not(unix), feature = "rpc"))]
+#[cfg(not(unix))]
 pub type DescriptorLane = Option<std::convert::Infallible>;
 
 /// A connected stream that carries a descriptor lane on the hosts that have
 /// one. The wrapping lives here, beside the lane it makes, so a caller never
 /// selects a target to hand a service what the person selected.
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
     /// `self` with a lane its writes carry, and the lane to hand the peer.
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
 }
 
-#[cfg(all(unix, feature = "rpc"))]
+#[cfg(unix)]
 impl DescriptorStreamSource for UnixStream {
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
         let lane = descriptor_lane::DescriptorSender::new();
@@ -528,13 +301,13 @@ impl DescriptorStreamSource for UnixStream {
 }
 
 /// A host without descriptors carries every stream unchanged.
-#[cfg(all(not(unix), feature = "rpc"))]
+#[cfg(not(unix))]
 pub trait DescriptorStreamSource: AsyncRead + AsyncWrite + Sized {
     /// `self` unchanged: this host has no lane to hand the peer.
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane);
 }
 
-#[cfg(all(not(unix), feature = "rpc"))]
+#[cfg(not(unix))]
 impl<T: AsyncRead + AsyncWrite> DescriptorStreamSource for T {
     fn with_descriptor_lane(self) -> (impl AsyncRead + AsyncWrite, DescriptorLane) {
         (self, None)
@@ -565,8 +338,5 @@ pub(crate) fn no_spawns() -> std::sync::RwLockWriteGuard<'static, ()> {
 }
 
 pub mod editor;
-
-#[cfg(all(unix, feature = "rpc"))]
-mod shared;
 
 pub mod native;

@@ -1981,37 +1981,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "capnp"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58ddce707ad9fb2ae92770523cd0e17a0cf34e79b66a9ca4db2dd993535fe718"
-dependencies = [
- "embedded-io 0.7.1",
-]
-
-[[package]]
-name = "capnp-futures"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e2a0655816a8c19628e54f9f9c373549e4a7166effd0cf92c3d05e3426e85d4e"
-dependencies = [
- "capnp",
- "futures-channel",
- "futures-util",
-]
-
-[[package]]
-name = "capnp-rpc"
-version = "0.26.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea82a287f0c2abac618a94f17ad93097fefc7368196f33f4635ed08236ee7bd9"
-dependencies = [
- "capnp",
- "capnp-futures",
- "futures",
-]
-
-[[package]]
 name = "castaway"
 version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4443,12 +4412,6 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
-
-[[package]]
-name = "embedded-io"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9eb1aa714776b75c7e67e1da744b81a129b3ff919c8712b5e1b32252c1f07cc7"
 
 [[package]]
 name = "emoji"
@@ -14267,8 +14230,6 @@ dependencies = [
 name = "runtime-portal"
 version = "0.1.0"
 dependencies = [
- "capnp",
- "capnp-rpc",
  "libc",
  "rustix 1.1.4",
  "serde",
@@ -14281,7 +14242,6 @@ dependencies = [
  "tilo-paths",
  "tilo-test-env",
  "tokio",
- "tokio-util",
  "wire-frame",
  "workspace-hack",
 ]
@@ -27047,9 +27007,6 @@ dependencies = [
  "cap-fs-ext",
  "cap-primitives",
  "cap-std",
- "capnp",
- "capnp-futures",
- "capnp-rpc",
  "castaway",
  "cbc",
  "cc",

@@ -1,5 +1,5 @@
 //! Bounded bridge to the existing filesystem capability on a connected fd.
-//! The Cap'n Proto client stays on its `LocalSet`; FUSE never receives source fds.
+//! The filesystem client stays on its `LocalSet`; FUSE never receives source fds.
 
 use crate::{
     Metadata, OpenMode,

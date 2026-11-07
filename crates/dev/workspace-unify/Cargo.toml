@@ -151,9 +151,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "castaway-0_2_4" = { package = "castaway", version = "^0.2.4", default-features = false, features = ["alloc"] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -911,7 +908,7 @@ doc = false
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
@@ -1683,9 +1680,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "cc-1_2_56" = { package = "cc", version = "^1.2.56", default-features = false, features = ["parallel"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -2213,7 +2207,7 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
@@ -2741,9 +2735,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "castaway-0_2_4" = { package = "castaway", version = "^0.2.4", default-features = false, features = ["alloc"] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -3501,7 +3492,7 @@ doc = false
 "runtime-fs" = { path = "../../../crates/runtime/runtime-fs", default-features = false, features = [] }
 "runtime-fs-fuse" = { path = "../../../crates/runtime/runtime-fs-fuse", default-features = false, features = [] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
 "runtime-update" = { path = "../../../crates/packaging/runtime-update", default-features = false, features = [] }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
@@ -4272,9 +4263,6 @@ doc = false
 "cap-fs-ext-3_4_6" = { package = "cap-fs-ext", version = "^3.4.6", default-features = false, features = ["cap-std", "default", "std"] }
 "cap-primitives-3_4_6" = { package = "cap-primitives", version = "^3.4.6", default-features = false, features = [] }
 "cap-std-3_4_6" = { package = "cap-std", version = "^3.4.6", default-features = false, features = ["default"] }
-"capnp-0_26_2" = { package = "capnp", version = "^0.26.2", default-features = false, features = ["alloc", "default", "std"] }
-"capnp-futures-0_26_1" = { package = "capnp-futures", version = "^0.26.1", default-features = false, features = [] }
-"capnp-rpc-0_26_1" = { package = "capnp-rpc", version = "^0.26.1", default-features = false, features = [] }
 "cbc-0_2_1" = { package = "cbc", version = "^0.2.1", default-features = false, features = ["alloc", "block-padding", "default", "zeroize"] }
 "cc-1_2_56" = { package = "cc", version = "^1.2.56", default-features = false, features = ["parallel"] }
 "census-0_4_2" = { package = "census", version = "^0.4.2", default-features = false, features = [] }
@@ -4801,7 +4789,7 @@ doc = false
 "runtime-bundle" = { path = "../../../crates/packaging/runtime-bundle", default-features = false, features = [] }
 "runtime-collab" = { path = "../../../crates/runtime/runtime-collab", default-features = false, features = ["client", "default", "settings-host"] }
 "runtime-identity" = { path = "../../../crates/runtime/runtime-identity", default-features = false, features = [] }
-"runtime-portal" = { path = "../../../crates/runtime/runtime-portal", default-features = false, features = ["default", "rpc"] }
+"runtime-portal" = { path = "../../../crates/runtime/runtime-portal" }
 "rusqlite-0_37_0" = { package = "rusqlite", version = "^0.37.0", default-features = false, features = ["bundled", "hooks", "modern_sqlite"] }
 "russh-0_63_3" = { package = "russh", version = "^0.63.3", default-features = false, features = ["flate2", "ring"] }
 "russh-cryptovec-0_62_0" = { package = "russh-cryptovec", version = "^0.62.0", default-features = false, features = ["ssh-encoding"] }
