@@ -358,7 +358,10 @@ impl ResourceRoot {
             return None;
         }
         let surface = self.has_surface();
-        let current = if self.typed.follows(doc) {
+        // The session keeps the record: the state is the one the view synced
+        // from the reading, never a reading of a document this process
+        // lent an empty pass (`one-app-model.md` §4).
+        let current = if self.source.is_connection() || self.typed.follows(doc) {
             None
         } else {
             Some(self.typed.read(doc).ok()?)

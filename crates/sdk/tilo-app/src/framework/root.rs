@@ -423,7 +423,7 @@ impl ResourceRoot {
     }
 
     /// The app's view: what the root asks the view for ([`app_view_in`]).
-    fn app_view(&self) -> &dyn Widget {
+    pub(crate) fn app_view(&self) -> &dyn Widget {
         app_view_in(self.content.as_ref()).unwrap_or_else(|| self.content.as_ref())
     }
 
@@ -564,11 +564,11 @@ impl ResourceRoot {
         }
     }
 
-    /// Read the resource's state from `source` rather than from a document a
-    /// host lends each pass ([`super::Source::Connection`]): the session
-    /// keeps the record, and the view syncs from the reading it publishes.
-    pub(crate) fn reading_from(mut self, source: super::Source) -> Self {
-        self.source = source;
+    /// Take the source the dispatcher submits over as the root's too, so the
+    /// view syncs from the reading the session publishes when the record is
+    /// the session's ([`super::Source::Connection`]).
+    pub(crate) fn reading_from_source(mut self) -> Self {
+        self.source = self.dispatch.source().clone();
         self
     }
 
@@ -1008,7 +1008,11 @@ impl ResourceRoot {
     /// this view last synced.
     #[inline(never)]
     fn current_publication(&self, doc: &AutoCommit) -> ResourceSpec {
-        if !self.typed.follows(doc)
+        // The session keeps the record: there is no document here to read
+        // the resource from, so what it publishes is the state the view
+        // syncs from the reading (`one-app-model.md` §4).
+        if !self.source.is_connection()
+            && !self.typed.follows(doc)
             && let Ok(current) = self.typed.read(doc)
         {
             // Publication can run after an edit and before the view syncs.
@@ -1175,7 +1179,12 @@ impl ResourceRoot {
     /// Answers the document-owned head the bindings were refreshed from, for
     /// the refresh after the view synced to reuse.
     fn refresh(&self, doc: &AutoCommit) -> BindingHead {
-        if let Err(error) = self.typed.sync(doc) {
+        // The session keeps the record: the state follows the reading
+        // (`sync_remote_state`), never a document this process lent an empty
+        // pass (`one-app-model.md` §4).
+        if !self.source.is_connection()
+            && let Err(error) = self.typed.sync(doc)
+        {
             tracing::warn!(%error, kind = self.resource.kind, "resource unreadable");
         }
         // Refresh the same declarations the host publishes before rebuilt
@@ -2311,7 +2320,15 @@ impl RootControls for ResourceRoot {
         if let Some((invocation, _)) = &taken {
             self.share.note_view_invocation(invocation);
         }
-        taken
+        let connection_submits = self.source.is_connection();
+        match taken {
+            Some((invocation, None)) if connection_submits => {
+                self.dispatch
+                    .submit_view_control(&invocation.address, invocation.arguments);
+                None
+            }
+            taken => taken,
+        }
     }
     /// An edit this resource's dispatcher submitted was refused, or is held
     /// for the user's confirmation. Nothing changed in the document, so a

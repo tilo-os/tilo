@@ -500,6 +500,16 @@ impl DispatchCore {
         self.source.is_connection()
     }
 
+    /// Submit a control the app's view pressed, over the connection that
+    /// keeps the record, as the person's gesture (`one-app-model.md` §4).
+    pub(crate) fn submit_view_control(
+        &self,
+        address: &ActionAddress,
+        arguments: serde_json::Map<String, serde_json::Value>,
+    ) {
+        self.submit_remote(address.clone(), arguments, true);
+    }
+
     /// Submit `address` with `arguments` over the connection, as the person's
     /// gesture when `in_person`; the refusal is told in
     /// [`Self::refuse`] as an edit applied now is.
@@ -952,6 +962,12 @@ impl DispatchCore {
 
     pub(crate) fn app_id(&self) -> &'static str {
         self.app_id
+    }
+
+    /// Where this dispatcher's resource's state comes from and where its
+    /// edits go ([`super::Source`]).
+    pub(crate) fn source(&self) -> &super::Source {
+        &self.source
     }
 }
 

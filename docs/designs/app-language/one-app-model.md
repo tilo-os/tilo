@@ -110,6 +110,15 @@ read (`TypedRoot::adopt`) and reports the change as everything. So a view is
 a function of the state wherever the state came from, and only `Source`
 knows the difference.
 
+**How a launch becomes a `Source::Connection`.** The launcher names the
+resource the session keeps (`ui::application::HOSTED_RESOURCE_ENV`); the app
+that declares `ResourceApp::HOSTED_BY_SESSION` opens no record
+(`HostContext::prepare_hosted`) and builds its root over
+`Connection::launcher()`. A host that runs the app inside itself — a test's
+document host, a capture's fixture — supplies its own connection instead
+(`HostContext::provide_connection`), and the same root, the same views and the
+same submissions run.
+
 ## 5. What a Rust developer writes
 
 ```rust
