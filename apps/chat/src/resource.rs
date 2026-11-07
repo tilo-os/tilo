@@ -28,10 +28,13 @@ use crate::record::chat;
 
 impl Chat {
     /// What search finds in the chat record: the workspace's channels,
-    /// categories, reviewed reports and people, each opening the item it
-    /// names. The messages are the window's to offer
-    /// (`ChatApp::search_entries`): they are kept in parts the record
-    /// does not hold.
+    /// conversations, categories, reviewed reports and people, each opening
+    /// the item it names.
+    ///
+    /// The messages are the messages' own record to offer
+    /// ([`ChatPart::search`](crate::parts::ChatPart::search)): they are kept
+    /// in parts beside this record, and a device that never opened Chat finds
+    /// them there.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
         let anchor = |field: &str, id: &Id| item_resource_id::<Self>(field, id);
@@ -41,6 +44,17 @@ impl Chat {
             .filter(|(_, channel)| channel.is_channel())
             .map(|(id, channel)| {
                 SearchEntry::new(channel.name.clone(), channel.topic.clone())
+                    .anchored(anchor("channels", id))
+            });
+        // A conversation the record holds as an item: a group of people, or a
+        // person and an agent. What it is called is what its participants are
+        // called, until they name it.
+        let conversations = self
+            .channels
+            .iter()
+            .filter(|(_, conversation)| !conversation.is_channel())
+            .map(|(id, _)| {
+                SearchEntry::new(self.display_names(id, None), "Conversation")
                     .anchored(anchor("channels", id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
@@ -57,6 +71,7 @@ impl Chat {
                 .anchored(anchor("people", &Id::from_raw(person.id.0.clone())))
         });
         channels
+            .chain(conversations)
             .chain(categories)
             .chain(feedback)
             .chain(people)
@@ -235,15 +250,13 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
-        let entries = chat;
         let window = cx.publishing(
             Publishes::new()
                 // The effects offered on the channels, categories, messages,
                 // reports and people the window shows: merged into the item
                 // resources the record publishes.
                 .live_rows(move || rows.borrow().published_rows())
-                .live_row(move |id| row.borrow().published_row(id))
-                .search_entries(move || entries.borrow().search_entries()),
+                .live_row(move |id| row.borrow().published_row(id)),
             Box::new(window),
         );
         Box::new(
@@ -655,6 +668,12 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             chat.open_conversation(&id, &state);
             return Ok(chat.read_direct_answer(public_key, &id, &state));
         }
+        ChatEffect::OpenAgent { agent } => {
+            let state = cx.live().get();
+            let mut chat = chat.borrow_mut();
+            chat.open_agent(agent, &state);
+            return Ok(ui::framework::Effected::done());
+        }
         ChatEffect::SendDirectMessage { public_key, text } => {
             let state = cx.live().get();
             let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
@@ -720,27 +739,6 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         ));
     }
     chat.borrow_mut().answer_effect(effect)
-}
-
-impl ChatApp {
-    /// The messages this window holds, across the parts of the chat it
-    /// has: each hit reveals the message it names.
-    pub(crate) fn search_entries(&self) -> Vec<SearchEntry> {
-        self.search_messages
-            .iter()
-            .map(|message| {
-                let author = self
-                    .search_users
-                    .iter()
-                    .find(|user| user.id == message.author)
-                    .map_or(message.author.as_str(), |user| user.name.as_str());
-                SearchEntry::new(author, &message.text).anchored(item_resource_id::<Chat>(
-                    "messages",
-                    &Id::from_raw(message.id.clone()),
-                ))
-            })
-            .collect()
-    }
 }
 
 impl ChatApp {

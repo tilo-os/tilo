@@ -278,6 +278,18 @@ impl Engine {
         })
     }
 
+    /// Every record `workspace` holds here, by its app and id: what a reader
+    /// of the workspace's records is asked to index, without being told each
+    /// route. A workspace this device does not hold lists nothing.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its documents cannot be listed now.
+    pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        self.owner
+            .with_current(workspace, |view| Ok(view.peer().records()))
+    }
+
     /// Take part in the channel of `record` of `workspace`, whose keys this
     /// device reads it with: the channel service asks the workspace's devices
     /// for access the first time, and its governance answers with the group.

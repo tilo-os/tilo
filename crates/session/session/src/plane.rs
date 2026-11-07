@@ -317,6 +317,9 @@ pub struct Hosted {
     /// `join-call` reaches.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
+    /// The records' content in that index, read from the records themselves:
+    /// what search finds of an app that never opened them here.
+    pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
@@ -434,6 +437,9 @@ pub fn serve(
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
+    // What search reads of the records themselves, for the changes this
+    // session commits and takes in below.
+    let records = hosted.records.clone();
     let services = host_services(
         link,
         launches,
@@ -442,7 +448,7 @@ pub fn serve(
         Some(certificates),
         memberships,
     );
-    let publisher = owner_publisher(engine);
+    let publisher = owner_publisher(engine, records);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
@@ -460,12 +466,16 @@ pub fn serve(
 /// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
+    let records = records.map(|records| {
+        records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+    });
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
             None,
             std::sync::Arc::new(tilo_action_broker::owner_commits::NativeOwnerCommits::new(
-                engine,
+                engine, records,
             )),
         )
     })
@@ -732,6 +742,7 @@ fn seams(
         live_activities,
         native_media,
         content,
+        records,
         desk,
         shortcuts,
         activity,
@@ -880,6 +891,11 @@ fn seams(
         // it runs, once it is closed and after a restart.
         search_index: Seam::when(content.map(|content| {
             std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
+        })),
+        // The records' content in that index, read from the records
+        // themselves: a change to a workspace's record is indexed here.
+        record_index_changes: Seam::when(records.map(|records| {
+            records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
         })),
         // Content a record references is kept on this device beside the
         // workspace's records, and asked of the workspace's other devices.
@@ -1246,6 +1262,7 @@ mod tests {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             content,
+            records: None,
             desk: std::sync::Arc::new(DeskAuthority::new(
                 tilo_desktop_model::DesktopTree::default(),
                 crate::engine::revocations_of(None),

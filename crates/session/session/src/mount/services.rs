@@ -147,6 +147,8 @@ pub(crate) struct Collaboration<'a> {
     pub fanout: std::sync::Arc<FanoutState>,
     /// The records' content this session keeps and asks the workspaces for.
     pub content: Option<std::sync::Arc<crate::content::Plane>>,
+    /// The records' content in search's index, read from the records.
+    pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
     /// The programs agents write in this session's tasks, run by its door.
     pub task_programs: Option<std::sync::Arc<crate::task_programs::TaskPrograms>>,
     /// This session's Nearby Send: the fabric it reaches the person's other
@@ -280,6 +282,7 @@ pub(crate) fn start_action_plane(
         sealed,
         fanout,
         content,
+        records,
         task_programs,
         nearby,
     } = collaboration;
@@ -333,6 +336,7 @@ pub(crate) fn start_action_plane(
             // The index search reads is the one apps publish into: a closed
             // app's content is found from here on.
             content: options.search.content.clone(),
+            records,
             desk: std::sync::Arc::clone(&desk),
             shortcuts,
             activity: activity_wire,

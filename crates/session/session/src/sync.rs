@@ -2539,6 +2539,8 @@ fn endpoint_for(
 pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
     fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+    /// What search reads again of a record a peer wrote.
+    changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
 }
 
 impl PeerDocuments {
@@ -2548,8 +2550,13 @@ impl PeerDocuments {
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+        changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
     ) -> Self {
-        Self { channels, fanout }
+        Self {
+            channels,
+            fanout,
+            changes,
+        }
     }
 
     /// Hand one admitted input's app document to this device's apps on its
@@ -2559,6 +2566,8 @@ impl PeerDocuments {
             return;
         };
         let author = input.author();
+        let workspace = input.workspace().to_string();
+        let (app, record) = (write.app_id.clone(), write.record_id.clone());
         tilo_action_broker::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
@@ -2572,6 +2581,11 @@ impl PeerDocuments {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
+        // What search holds of the record is read again from what the peer
+        // wrote into it.
+        if let Some(changes) = &self.changes {
+            changes.changed(&workspace, &app, &record);
+        }
     }
 }
 

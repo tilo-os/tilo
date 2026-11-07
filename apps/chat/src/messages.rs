@@ -19,7 +19,10 @@ use std::rc::Rc;
 use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
-use ui::tilo_resource::{self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, Segment};
+use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::{
+    self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, SearchEntry, Segment,
+};
 
 use crate::parts::{self, ChatPart};
 use crate::record::{
@@ -62,6 +65,27 @@ fn written_at(cx: &ActionCx, written: Option<i64>, brought: bool) -> i64 {
     written
         .filter(|_| brought)
         .map_or(now, |written| written.clamp(0, now))
+}
+
+impl ChatPart {
+    /// What search finds in the messages this part keeps: each message's
+    /// words, opening the message in the chat it was posted in.
+    ///
+    /// The window offers none of its own: messages are kept here, in the
+    /// record, so a device that never opened Chat still finds them, and one
+    /// that deletes a message has it gone from search with it.
+    #[must_use]
+    pub fn search(&self) -> Vec<SearchEntry> {
+        self.messages
+            .iter()
+            .filter_map(|(id, message)| {
+                let text = message.text.trim();
+                (!text.is_empty()).then(|| {
+                    SearchEntry::new(text, "").anchored(item_resource_id::<Chat>("messages", id))
+                })
+            })
+            .collect()
+    }
 }
 
 impl ChatPart {
@@ -162,6 +186,7 @@ pub struct NewMessage {
     kind = "chat.messages",
     label = "Messages",
     params = chat_part,
+    search = ChatPart::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
     version = 4,

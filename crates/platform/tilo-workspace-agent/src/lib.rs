@@ -22,8 +22,10 @@ use std::fmt;
 
 use collab_types::presence::{PRESENCE_LEN, PresenceHue};
 use serde::{Deserialize, Serialize};
+use tilo_resource::items::item_resource_id;
 use tilo_resource::{
-    ActionCx, Atom, Id, Identified, JsonSchema, Keyed, Model, NonBlank, Refusal, resource,
+    ActionCx, Atom, Id, Identified, JsonSchema, Keyed, Model, NonBlank, Refusal, SearchEntry,
+    resource,
 };
 
 #[cfg(test)]
@@ -212,7 +214,27 @@ pub struct WorkspaceAgents {
     pub agents: Keyed<Agent>,
 }
 
-#[resource(kind = "chat.agent", label = "Agents")]
+impl WorkspaceAgents {
+    /// What search finds in the workspace's agents: each by the name people
+    /// know it by, opening it at its item of the record.
+    #[must_use]
+    pub fn search(&self) -> Vec<SearchEntry> {
+        self.agents
+            .iter()
+            .filter_map(|agent| {
+                let name = agent.name.trim();
+                (!name.is_empty()).then(|| {
+                    SearchEntry::new(name, "Agent").anchored(item_resource_id::<Self>(
+                        "agents",
+                        &Id::from(agent.id.0.as_str()),
+                    ))
+                })
+            })
+            .collect()
+    }
+}
+
+#[resource(kind = "chat.agent", label = "Agents", search = WorkspaceAgents::search)]
 impl WorkspaceAgents {
     /// Make an agent.
     ///

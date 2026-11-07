@@ -1489,6 +1489,16 @@ impl StatePeer {
             })
             .map(|entry| entry.doc.saved())
     }
+    /// Every record this peer holds, by the app whose document it is and its
+    /// id: what a host of the workspace reads without being told each route.
+    #[must_use]
+    pub fn records(&self) -> Vec<(String, String)> {
+        self.core
+            .documents
+            .keys()
+            .map(|route| (route.app.clone(), route.record.clone()))
+            .collect()
+    }
     fn certificate(
         &self,
         source: &[u8; 32],

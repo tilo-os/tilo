@@ -132,6 +132,7 @@ mod projection;
 mod projection_video;
 mod questions;
 pub mod quick_settings;
+mod record_index;
 mod records;
 pub mod recovery;
 mod rotation;
@@ -1079,6 +1080,20 @@ impl Session {
         let channels_fanout =
             std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
         let channel_link = channels::ChannelLink::new();
+        // Search reads the workspaces' records off the records themselves,
+        // with no window of their app running: what this device holds is
+        // found before anything changes, and every change after it.
+        let record_index = engine.as_ref().map(|engine| {
+            crate::record_index::RecordIndex::start(
+                std::sync::Arc::clone(engine)
+                    as std::sync::Arc<dyn crate::record_index::RecordSource>,
+                std::sync::Arc::new(crate::record_index::AppReader::of_device()),
+                options.search.content.clone(),
+            )
+        });
+        let record_changes = record_index.clone().map(|index| {
+            index as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+        });
         let channels = engine.as_ref().and_then(|engine| {
             channels::Channels::open(
                 engine,
@@ -1096,6 +1111,7 @@ impl Session {
             Some(sync::PeerDocuments::new(
                 std::sync::Arc::clone(&channels_broker),
                 std::sync::Arc::clone(&channels_fanout),
+                record_changes.clone(),
             )),
         );
         // The content the workspaces' records reference: kept beside their
@@ -1490,6 +1506,7 @@ impl Session {
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(std::sync::Arc::clone(&record_content)),
+                records: record_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),

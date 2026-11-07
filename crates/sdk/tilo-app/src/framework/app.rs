@@ -1966,6 +1966,15 @@ pub fn run<A: ResourceApp>() {
     if args.iter().skip(1).any(|arg| arg == SURFACE_FLAG) {
         print_surface_report(&super::headless::surface_report::<A>());
     }
+    // A record search reads, with no window of this app: its document in,
+    // what search finds in it out.
+    if let Some(code) = super::record_index::serve::<A>() {
+        #[allow(
+            clippy::exit,
+            reason = "the record reader is the whole run of the binary"
+        )]
+        std::process::exit(code);
+    }
     if let Some(code) = run_helper::<A>(&args) {
         #[allow(
             clippy::exit,

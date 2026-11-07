@@ -91,6 +91,9 @@ pub enum ChatEffect {
     /// Open person
     #[effect(view, row, item = people)]
     OpenPerson { user: String },
+    /// Open the conversation with an agent: where search's agent hit goes.
+    #[effect(view, returns, participant)]
+    OpenAgent { agent: String },
     /// Open the conversation with a certified person public key, as the read
     /// of it is answered: it changes only whose view is showing what.
     #[effect(view, returns, audience = "agents", participant)]
@@ -294,6 +297,7 @@ impl ChatApp {
             // parts, which the effect context holds: one invoked without it
             // cannot answer.
             ChatEffect::OpenDirectConversation { .. }
+            | ChatEffect::OpenAgent { .. }
             | ChatEffect::SendDirectMessage { .. }
             | ChatEffect::ReadDirectConversation { .. } => {
                 return Err("a direct conversation answers where the chat is held".into());
@@ -1214,6 +1218,16 @@ impl ChatApp {
 
 /// The view effect that shows the item `anchor` names.
 fn opening(anchor: &str) -> Option<ChatEffect> {
+    // An agent is an item of the workspace's own record of agents, not of
+    // the chat's: search finds it there, and it opens the conversation it is
+    // in here.
+    if let Some((_, agent)) =
+        tilo_resource::items::item_of_resource::<ui::tilo_workspace_agent::WorkspaceAgents>(anchor)
+    {
+        return Some(ChatEffect::OpenAgent {
+            agent: agent.as_str().to_owned(),
+        });
+    }
     let (field, item) = tilo_resource::items::item_of_resource::<Chat>(anchor)?;
     let id = item.as_str().to_owned();
     Some(match field {
