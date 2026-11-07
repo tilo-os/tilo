@@ -217,6 +217,8 @@ impl QrWidget {
 }
 
 impl Widget for QrWidget {
+    crate::described!();
+
     #[allow(
         clippy::cast_precision_loss,
         reason = "QR module counts are capped by the QR spec at 177"

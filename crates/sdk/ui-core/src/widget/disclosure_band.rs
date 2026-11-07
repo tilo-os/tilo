@@ -136,6 +136,8 @@ impl DisclosureBand {
 }
 
 impl Widget for DisclosureBand {
+    crate::described!();
+
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let changed = self.child.update(state, path);
         // A band that has come to rest takes its place in the layout.

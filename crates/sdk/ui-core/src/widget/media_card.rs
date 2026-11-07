@@ -1762,6 +1762,8 @@ impl MediaGrid {
 }
 
 impl Widget for MediaGrid {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -147,6 +147,8 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

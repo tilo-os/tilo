@@ -146,6 +146,8 @@ impl Default for Spinner {
 }
 
 impl Widget for Spinner {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

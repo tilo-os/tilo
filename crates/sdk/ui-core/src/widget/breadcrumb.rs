@@ -510,6 +510,8 @@ impl crate::widget::controls::ActionControls for Breadcrumb {
 }
 
 impl Widget for Breadcrumb {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

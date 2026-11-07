@@ -960,6 +960,8 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

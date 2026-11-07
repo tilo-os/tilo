@@ -425,6 +425,8 @@ pub enum ExternalDatePickerHit {
 }
 
 impl Widget for DatePicker {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
@@ -443,10 +445,6 @@ impl Widget for DatePicker {
 
     fn update(&mut self, _state: &AppModel, _path: &ModelPath) -> bool {
         self.pull_feed()
-    }
-
-    fn as_any(&self) -> Option<&dyn std::any::Any> {
-        Some(self)
     }
 
     fn build_layout(
@@ -1374,6 +1372,25 @@ mod tests {
             picker.selected(),
             NaiveDate::from_ymd_opt(2026, 7, 4).unwrap(),
             "a day set elsewhere shows in place"
+        );
+    }
+
+    #[test]
+    fn a_change_of_props_stays_on_the_month_the_person_walked_to() {
+        let mut picker = DatePicker::new(NaiveDate::from_ymd_opt(2026, 6, 15).unwrap());
+        picker.advance_month();
+        let walked_to = picker.month_view();
+        assert!(
+            <DatePicker as crate::component::Described>::set_props(
+                &mut picker,
+                crate::widget::DatePickerProps::default()
+            ),
+            "a day set elsewhere is taken where it stands"
+        );
+        assert_eq!(
+            picker.month_view(),
+            walked_to,
+            "the calendar stays on the month it was walked to"
         );
     }
 }

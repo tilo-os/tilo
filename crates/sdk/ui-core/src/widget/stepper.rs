@@ -580,6 +580,8 @@ impl Stepper {
 }
 
 impl Widget for Stepper {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

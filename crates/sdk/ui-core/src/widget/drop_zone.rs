@@ -405,6 +405,8 @@ impl DropZone {
 }
 
 impl Widget for DropZone {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

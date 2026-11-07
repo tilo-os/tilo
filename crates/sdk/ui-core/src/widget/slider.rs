@@ -1133,6 +1133,8 @@ fn thumb_colors(
 }
 
 impl Widget for Slider {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::permissions::capability::PermissionGated,
@@ -2516,5 +2518,32 @@ mod tests {
                 "the release leaves the thumb where it is"
             );
         }
+    }
+
+    #[test]
+    fn a_change_of_props_keeps_the_hand_on_the_knob() {
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        dispatch(&mut s, &cursor_moved(150.0, 15.0));
+        dispatch(&mut s, &mouse_press());
+        assert!(s.is_held(), "the press holds the knob");
+        let held_from = s.drag_from;
+        let bound = crate::component::Bound::<f64>::default();
+        bound.state.set(0.2);
+        let props = crate::widget::SliderProps {
+            value: bound,
+            ..Default::default()
+        };
+        assert!(
+            <Slider as crate::component::Described>::set_props(&mut s, props),
+            "a value set elsewhere is taken where it stands"
+        );
+        assert_eq!(s.value, 0.2, "the value the view holds shows");
+        assert!(s.is_held(), "the hand still holds the knob");
+        assert_eq!(
+            s.drag_from, held_from,
+            "the drag goes on as the one gesture it was, from where it began"
+        );
+        dispatch(&mut s, &mouse_release());
+        assert!(!s.is_held(), "the release lets go");
     }
 }

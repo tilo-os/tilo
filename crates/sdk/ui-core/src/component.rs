@@ -1066,7 +1066,8 @@ impl<L: crate::widget::arrange::Layout + 'static> SlotViews
 ///
 /// A described widget answers its own type through [`crate::widget::Widget::as_any_mut`]: the
 /// adapter reaches it with that to change its props in place, and a widget that answers no
-/// type is built again on every change it is told about.
+/// type is built again on every change it is told about. Declare the answer inside its
+/// [`Widget`](crate::widget::Widget) impl with [`crate::described!`].
 pub trait Described: crate::widget::Widget + Sized + 'static {
     type Props: Component;
 
@@ -1094,6 +1095,26 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
         let _ = (slot, key, of);
         None
     }
+}
+
+/// Say that a described widget is its own type, inside its [`Widget`](crate::widget::Widget)
+/// impl: `described!();`.
+///
+/// Without it the adapter reaches the widget as `dyn Widget`, cannot downcast it, and builds it
+/// again on every change it is told about, so what the person was doing with it — the focus in a
+/// field, a drag, the menu a press opened — goes with it. Every described component of the
+/// toolkit answers this; `component::tests` builds each one from the catalogue and holds it to it.
+#[macro_export]
+macro_rules! described {
+    () => {
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    };
 }
 
 /// One described widget, as the generic adapter reaches it.
