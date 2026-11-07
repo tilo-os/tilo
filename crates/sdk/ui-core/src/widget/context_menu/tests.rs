@@ -761,3 +761,47 @@ fn a_menu_is_as_wide_as_its_longest_label_and_longest_trailing_text_together() {
     );
     assert!(both.measured_width >= label_alone.max(detail_alone));
 }
+
+/// A row near the window's trailing edge opens its menu where the pointer
+/// is, and the box beside it is placed in the window the menu stands in —
+/// not past its edge, where a person cannot reach it.
+#[test]
+fn a_menu_near_the_trailing_edge_keeps_its_send_to_box_in_the_window() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    crate::shared_selection::set_send_host_available(true);
+    let window = Rect::new(0.0, 0.0, 604.0, 708.0);
+    let theme = Theme::dark();
+    let mut text = TextRenderer::new();
+    let mut menu = ContextMenu::with_items(vec![
+        MenuItem::action("Open issue", || {}),
+        MenuItem::action("Complete", || {}),
+    ]);
+    menu.set_about(Some(
+        crate::shared_selection::SharedSelection::of_items([(
+            "tasks.tracker/issues/one",
+            "Ship the launch notes",
+        )])
+        .in_kind("tasks.tracker"),
+    ));
+    // Right-click on a row whose right end is well inside the window.
+    menu.open_at([560.0, 178.0]);
+    let presence = PresenceCtx::default();
+    presence.viewport.set(Some(window));
+    let mut scene = Scene::new();
+    menu.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    let menu_rect = menu.get_rect();
+    let box_rect = menu.send_to_box().rect();
+    assert!(
+        menu.send_to_box().is_open(),
+        "a menu about something carries the box"
+    );
+    assert!(
+        box_rect.x0 >= window.x0
+            && box_rect.x1 <= window.x1
+            && box_rect.y0 >= window.y0
+            && box_rect.y1 <= window.y1,
+        "the box {box_rect:?} stands past the window {window:?} beside the menu {menu_rect:?}"
+    );
+    crate::shared_selection::set_send_host_available(false);
+}

@@ -1002,6 +1002,12 @@ impl ContextMenu {
         self.scroll.offset().y
     }
 
+    /// The box that docks beside this menu, for the placement it takes.
+    #[cfg(test)]
+    pub(crate) fn send_to_box(&self) -> &super::SendToBox {
+        &self.send_to
+    }
+
     /// Painted (clipped) geometry of an action row, in host coordinates.
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         if !matches!(self.items.get(index), Some(MenuItem::Action { .. })) {
@@ -1942,6 +1948,13 @@ impl Widget for ContextMenu {
         if self.send_to.is_open() {
             self.send_to.drain_answer();
             self.send_to.place(self.rect, self.viewport);
+            tracing::debug!(
+                menu = ?self.rect,
+                viewport = ?self.viewport,
+                window = ?presence.viewport.get(),
+                box_rect = ?self.send_to.rect(),
+                "the box stands beside its menu"
+            );
             self.send_to.paint(scene, transform, text_renderer, theme);
         }
     }
