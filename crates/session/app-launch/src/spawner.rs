@@ -259,6 +259,7 @@ impl Spawner {
         mut door: Option<HeldDoor>,
         record: &dyn Fn(u32),
     ) -> Result<(Started, Option<HeldDoor>), SpawnError> {
+        crate::name_surface(planned);
         let mut command = Command::new(&planned.program);
         command
             .args(&planned.args)
