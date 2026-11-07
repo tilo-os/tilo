@@ -26,11 +26,6 @@ label = "Integration tests are compiled by a test target"
 run = "python3 tools/policy/check_integration_test_modules.py"
 
 [[step]]
-name = "capnp-bindings"
-label = "Checked-in capnp bindings match their schemas"
-run = "python3 tools/policy/check_capnp_bindings.py"
-
-[[step]]
 name = "interfaces"
 label = "Interface schemas match the code and their versions"
 run = "python3 tools/policy/check_interfaces.py check"

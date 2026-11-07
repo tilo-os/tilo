@@ -32,11 +32,11 @@ pub enum Frame {
     Call {
         call: u64,
         object: u64,
-        request: Request,
+        request: FsRequest,
     },
     Reply {
         call: u64,
-        reply: Result<Reply, String>,
+        reply: Result<FsReply, String>,
     },
     /// The caller dropped the last handle to `object`.
     Release { object: u64 },
@@ -54,7 +54,7 @@ pub enum NativeEntryStatus {
 pub type Ack = NativeEntryStatus;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Request {
+pub enum FsRequest {
     // WorkspaceFs
     Open {
         path: String,
@@ -268,7 +268,7 @@ pub enum Request {
 /// variant it asked for and treats anything else as a lost capability. The
 /// `Option` inside a payload variant is the native refusal under live scope.
 #[derive(Debug, Serialize, Deserialize)]
-pub enum Reply {
+pub enum FsReply {
     /// Done, with nothing to report.
     Empty,
     /// Done, with the native outcome alone.

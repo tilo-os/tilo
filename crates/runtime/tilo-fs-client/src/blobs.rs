@@ -14,7 +14,7 @@ use wire_frame::Framing;
 
 use crate::{
     connection::{Connection as Transport, Object},
-    wire::{ROOT, Reply, Request},
+    wire::{FsReply, FsRequest, ROOT},
 };
 
 /// Where the root filesystem daemon listens for document-media connections.
@@ -1219,14 +1219,14 @@ async fn run_job(job: Job, session: &Session) {
             let result = async {
                 let client = session.scopes(target)?;
                 match client
-                    .call(Request::Get {
+                    .call(FsRequest::Get {
                         hash,
                         offset,
                         max_len,
                     })
                     .await?
                 {
-                    Reply::BlobRead(outcome) => Ok(outcome),
+                    FsReply::BlobRead(outcome) => Ok(outcome),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1240,8 +1240,8 @@ async fn run_job(job: Job, session: &Session) {
         } => {
             let result = async {
                 let client = session.scopes(target)?;
-                match client.call(Request::Has { hash }).await? {
-                    Reply::Present(present) => Ok(present),
+                match client.call(FsRequest::Has { hash }).await? {
+                    FsReply::Present(present) => Ok(present),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1255,8 +1255,8 @@ async fn run_job(job: Job, session: &Session) {
         } => {
             let result = async {
                 let client = session.scopes(target)?;
-                match client.call(Request::Size { hash }).await? {
-                    Reply::Size(len) => Ok(len),
+                match client.call(FsRequest::Size { hash }).await? {
+                    FsReply::Size(len) => Ok(len),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1267,13 +1267,13 @@ async fn run_job(job: Job, session: &Session) {
             let result = async {
                 match session
                     .root
-                    .call(Request::SessionScope {
+                    .call(FsRequest::SessionScope {
                         workspace: scope.workspace().to_owned(),
                         app: scope.app().to_owned(),
                     })
                     .await?
                 {
-                    Reply::Scope(id) => Ok(session.issue_id_for(
+                    FsReply::Scope(id) => Ok(session.issue_id_for(
                         crate::handle_reply(Some(id), &session.root).map_err(BlobError::from)?,
                     )),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
@@ -1298,7 +1298,7 @@ async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(
     let color = attribution.color;
     match session
         .root
-        .call(Request::SessionAttributeWrites {
+        .call(FsRequest::SessionAttributeWrites {
             paths: attribution.paths,
             actor: attribution.actor,
             label: attribution.label,
@@ -1307,7 +1307,7 @@ async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(
         })
         .await?
     {
-        Reply::Empty => Ok(()),
+        FsReply::Empty => Ok(()),
         _ => Err(BlobError::Refused("unexpected media reply".into())),
     }
 }
@@ -1320,12 +1320,12 @@ async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(
 async fn public_copy(session: &Session, target: u64, name: &str) -> Result<Arc<Object>, BlobError> {
     let client = session.scopes(target)?;
     match client
-        .call(Request::PublicContent {
+        .call(FsRequest::PublicContent {
             name: name.to_owned(),
         })
         .await?
     {
-        Reply::Handle(handle) => session.child(handle),
+        FsReply::Handle(handle) => session.child(handle),
         _ => Err(BlobError::Refused("unexpected media reply".into())),
     }
 }
@@ -1343,8 +1343,8 @@ async fn public(job: PublicJob, session: &Session) {
         } => {
             let result = async {
                 let copy = public_copy(session, target, &name).await?;
-                match copy.call(Request::PublicKeep).await? {
-                    Reply::Empty => Ok(()),
+                match copy.call(FsRequest::PublicKeep).await? {
+                    FsReply::Empty => Ok(()),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1358,8 +1358,8 @@ async fn public(job: PublicJob, session: &Session) {
         } => {
             let result = async {
                 let copy = public_copy(session, target, &name).await?;
-                match copy.call(Request::PublicRelease).await? {
-                    Reply::Empty => Ok(()),
+                match copy.call(FsRequest::PublicRelease).await? {
+                    FsReply::Empty => Ok(()),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1375,8 +1375,8 @@ async fn public(job: PublicJob, session: &Session) {
         } => {
             let result = async {
                 let copy = public_copy(session, target, &name).await?;
-                match copy.call(Request::PublicRead { offset, max_len }).await? {
-                    Reply::PublicRead { read, hash } => Ok(PublicRead {
+                match copy.call(FsRequest::PublicRead { offset, max_len }).await? {
+                    FsReply::PublicRead { read, hash } => Ok(PublicRead {
                         outcome: read,
                         hash: valid_hash(&hash).then_some(hash),
                     }),
@@ -1388,8 +1388,8 @@ async fn public(job: PublicJob, session: &Session) {
         }
         PublicJob::Refresh { reply } => {
             let result = async {
-                match session.root.call(Request::SessionRefreshPublic).await? {
-                    Reply::Refreshed(refreshed) => Ok(refreshed),
+                match session.root.call(FsRequest::SessionRefreshPublic).await? {
+                    FsReply::Refreshed(refreshed) => Ok(refreshed),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1413,8 +1413,8 @@ async fn store(job: StoreJob, session: &Session) {
         } => {
             let result = async {
                 let client = session.scopes(target)?;
-                match client.call(Request::Put { bytes, mime }).await? {
-                    Reply::Blob(reference) => Ok(reference),
+                match client.call(FsRequest::Put { bytes, mime }).await? {
+                    FsReply::Blob(reference) => Ok(reference),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1428,8 +1428,8 @@ async fn store(job: StoreJob, session: &Session) {
         } => {
             let result = async {
                 let client = session.scopes(target)?;
-                match client.call(Request::Upload { mime }).await? {
-                    Reply::Handle(handle) => {
+                match client.call(FsRequest::Upload { mime }).await? {
+                    FsReply::Handle(handle) => {
                         let upload = session.child(handle)?;
                         let id = session.issue_id();
                         session.uploads.borrow_mut().insert(id, upload);
@@ -1448,8 +1448,8 @@ async fn store(job: StoreJob, session: &Session) {
         } => {
             let result = async {
                 let upload = session.upload(upload)?;
-                match upload.call(Request::UploadWrite { bytes }).await? {
-                    Reply::Empty => Ok(()),
+                match upload.call(FsRequest::UploadWrite { bytes }).await? {
+                    FsReply::Empty => Ok(()),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }
@@ -1460,8 +1460,8 @@ async fn store(job: StoreJob, session: &Session) {
             let result = async {
                 let client = session.upload(upload)?;
                 session.uploads.borrow_mut().remove(&upload);
-                match client.call(Request::UploadFinish).await? {
-                    Reply::Blob(reference) => Ok(reference),
+                match client.call(FsRequest::UploadFinish).await? {
+                    FsReply::Blob(reference) => Ok(reference),
                     _ => Err(BlobError::Refused("unexpected media reply".into())),
                 }
             }

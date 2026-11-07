@@ -4,12 +4,12 @@ use std::sync::Mutex;
 
 use runtime_portal::NotAvailable;
 use tilo_fs_client::connection::{Capabilities, Connection, Object, ServeObject};
-use tilo_fs_client::wire::Reply;
+use tilo_fs_client::wire::FsReply;
 
 use super::*;
 
 /// What one served capability answers with.
-type Dispatch = Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>>;
+type Dispatch = Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 
 /// Scope-checked in-memory backend: the protocol's contract, not the
 /// daemon's storage.
@@ -443,29 +443,29 @@ impl Recording {
     }
 }
 
-fn ready(reply: Result<Reply, String>) -> Dispatch {
+fn ready(reply: Result<FsReply, String>) -> Dispatch {
     Box::pin(std::future::ready(reply))
 }
 
 impl ServeObject for Recording {
-    fn dispatch(self: Arc<Self>, capabilities: &Capabilities, request: Request) -> Dispatch {
+    fn dispatch(self: Arc<Self>, capabilities: &Capabilities, request: FsRequest) -> Dispatch {
         match request {
-            Request::Put { bytes, mime } => ready(Ok(Reply::Blob(self.keep(bytes, mime)))),
-            Request::Upload { mime } => {
+            FsRequest::Put { bytes, mime } => ready(Ok(FsReply::Blob(self.keep(bytes, mime)))),
+            FsRequest::Upload { mime } => {
                 let upload = RecordingUpload {
                     store: Arc::clone(&self),
                     mime,
                     buffer: Mutex::new(Vec::new()),
                 };
-                ready(Ok(Reply::Handle(Some(
+                ready(Ok(FsReply::Handle(Some(
                     capabilities.register(Arc::new(upload)),
                 ))))
             }
-            Request::Get {
+            FsRequest::Get {
                 hash,
                 offset,
                 max_len,
-            } => ready(Ok(Reply::BlobRead(self.read(&hash, offset, max_len)))),
+            } => ready(Ok(FsReply::BlobRead(self.read(&hash, offset, max_len)))),
             _ => ready(Err("unexpected document media request".into())),
         }
     }
@@ -492,16 +492,16 @@ struct RecordingUpload {
 }
 
 impl ServeObject for RecordingUpload {
-    fn dispatch(self: Arc<Self>, _: &Capabilities, request: Request) -> Dispatch {
+    fn dispatch(self: Arc<Self>, _: &Capabilities, request: FsRequest) -> Dispatch {
         match request {
-            Request::UploadWrite { bytes } => {
+            FsRequest::UploadWrite { bytes } => {
                 self.store.writes.lock().unwrap().push(bytes.len());
                 self.buffer.lock().unwrap().extend_from_slice(&bytes);
-                ready(Ok(Reply::Empty))
+                ready(Ok(FsReply::Empty))
             }
-            Request::UploadFinish => {
+            FsRequest::UploadFinish => {
                 let bytes = std::mem::take(&mut *self.buffer.lock().unwrap());
-                ready(Ok(Reply::Blob(self.store.keep(bytes, self.mime.clone()))))
+                ready(Ok(FsReply::Blob(self.store.keep(bytes, self.mime.clone()))))
             }
             _ => ready(Err("unexpected upload request".into())),
         }
@@ -698,19 +698,19 @@ where
 
 async fn open_upload(blobs: &Arc<Object>) -> Arc<Object> {
     let answered = blobs
-        .call(Request::Upload {
+        .call(FsRequest::Upload {
             mime: String::new(),
         })
         .await;
-    let Ok(Reply::Handle(Some(upload))) = answered else {
+    let Ok(FsReply::Handle(Some(upload))) = answered else {
         panic!("the server did not hand back an upload: {answered:?}");
     };
     blobs.capability(upload)
 }
 
-async fn write_upload(upload: &Arc<Object>, bytes: &[u8]) -> Result<Reply, NotAvailable> {
+async fn write_upload(upload: &Arc<Object>, bytes: &[u8]) -> Result<FsReply, NotAvailable> {
     upload
-        .call(Request::UploadWrite {
+        .call(FsRequest::UploadWrite {
             bytes: bytes.to_vec(),
         })
         .await
@@ -758,7 +758,7 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
             let upload = open_upload(&blobs).await;
             assert!(matches!(
                 write_upload(&upload, &[7; 1000]).await,
-                Ok(Reply::Empty)
+                Ok(FsReply::Empty)
             ));
             drop(upload);
         });
@@ -775,7 +775,7 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
                 write_upload(&upload, &chunk).await.unwrap();
             }
             assert!(write_upload(&upload, &[1]).await.is_err());
-            assert!(upload.call(Request::UploadFinish).await.is_err());
+            assert!(upload.call(FsRequest::UploadFinish).await.is_err());
         });
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());
@@ -798,7 +798,7 @@ fn the_upload_server_streams_pieces_and_stores_nothing_unfinished() {
             );
             assert!(first.is_err(), "a refused pipeline ends its upload");
             drop(stall);
-            assert!(upload.call(Request::UploadFinish).await.is_err());
+            assert!(upload.call(FsRequest::UploadFinish).await.is_err());
         });
         await_abandoned(&harness.backend, 1);
         assert!(harness.backend.bytes.lock().unwrap().is_empty());

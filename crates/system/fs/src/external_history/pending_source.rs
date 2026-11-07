@@ -5,13 +5,13 @@ use super::{
     AsRawFd, AtomicBool, Duration, ExternalSourceAdmission, File, Instant, LocalFuture,
     MetadataExt, Ordering, Read, Seek, UnixStream, Write, io, nonce, process_binding, refused,
 };
-use capnp_rpc::{RpcSystem, rpc_twoparty_capnp::Side, twoparty::VatNetwork};
 use runtime_fs::{
-    directory_client::PendingReplacementClient, external_history::NativeReservationDescription,
+    connection::{Connection, Object},
+    directory_client::PendingReplacementClient,
+    external_history::NativeReservationDescription,
 };
 use runtime_portal::retained_role::NativeHistoryPendingHandoff;
 use std::{cell::RefCell, rc::Rc};
-use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 
 pub(super) struct AuthenticatedPendingSource {
     pub(super) pending: PendingReplacementClient,
@@ -44,10 +44,6 @@ fn sealed_handoff(mut file: File) -> io::Result<NativeHistoryPendingHandoff> {
 impl AuthenticatedPendingSource {
     /// Caller is the actual same-lane enrolled admission; there is no public
     /// constructor from a source observation, caller UID, path or raw capability.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "fixed sealed-source expectation, exact worker kernel proof and pending-only bootstrap are one admission sequence before any effects"
-    )]
     pub(super) fn receive(
         admission: Rc<RefCell<ExternalSourceAdmission>>,
         sealed: File,
@@ -106,20 +102,11 @@ impl AuthenticatedPendingSource {
                 return Err(refused());
             }
             ExternalSourceAdmission::refresh_shared(&admission, cancel, deadline).await?;
-            stream.set_nonblocking(true)?;
-            let socket = tokio::net::UnixStream::from_std(stream)?;
-            let (reader, writer) = socket.into_split();
-            let network = VatNetwork::new(
-                reader.compat(),
-                writer.compat_write(),
-                Side::Client,
-                capnp::message::ReaderOptions::default(),
-            );
-            let mut rpc = RpcSystem::new(Box::new(network), None);
-            let raw: runtime_fs::fs_capnp::pending_replacement::Client =
-                rpc.bootstrap(Side::Server);
-            let pending = PendingReplacementClient::from_authenticated_source_capability(raw);
-            let driver = tokio::task::spawn_local(rpc);
+            let connection = Connection::connect("history-pending-source", stream)?;
+            let pending = PendingReplacementClient::from_object(Object::root(
+                std::sync::Arc::clone(&connection),
+            ));
+            let driver = SourceRpcDriver::new(connection);
             // Keep driver ownership immediately, including every parse/refusal path.
             let Ok(observation) = within(cancel, deadline, async {
                 pending.check_scope().await.map_err(io::Error::other)?;
@@ -129,8 +116,6 @@ impl AuthenticatedPendingSource {
             })
             .await
             else {
-                driver.abort();
-                let _ = driver.await;
                 return Err(refused());
             };
             let description = NativeReservationDescription::decode(
@@ -146,8 +131,6 @@ impl AuthenticatedPendingSource {
                 || observation.intent_digest != expected.intent_digest
                 || description.is_err()
             {
-                driver.abort();
-                let _ = driver.await;
                 return Err(refused());
             }
             let result = Self {
@@ -157,7 +140,7 @@ impl AuthenticatedPendingSource {
                 expected,
                 observation,
                 description: description?,
-                driver: SourceRpcDriver::new(driver),
+                driver,
             };
             result.check_peer()?;
             ExternalSourceAdmission::refresh_shared(&admission, cancel, deadline).await?;
@@ -194,36 +177,32 @@ impl AuthenticatedPendingSource {
     }
 }
 
-/// Keep the exact `JoinHandle` in shared source custody across cancellation of
-/// the retirement future. Abort is a request; only await proves task exit.
+/// Keep the source's own connection in shared custody across cancellation of
+/// the retirement future: retiring closes it at once, and the worker sees its
+/// custody end without touching the shared native source.
 struct SourceRpcDriver {
-    task: RefCell<Option<tokio::task::JoinHandle<Result<(), capnp::Error>>>>,
+    connection: RefCell<Option<std::sync::Arc<Connection>>>,
 }
 impl SourceRpcDriver {
-    fn new(task: tokio::task::JoinHandle<Result<(), capnp::Error>>) -> Self {
+    fn new(connection: std::sync::Arc<Connection>) -> Self {
         Self {
-            task: RefCell::new(Some(task)),
+            connection: RefCell::new(Some(connection)),
         }
     }
     fn is_finished(&self) -> bool {
-        self.task.try_borrow().map_or(true, |task| {
-            task.as_ref()
-                .is_none_or(tokio::task::JoinHandle::is_finished)
+        self.connection.try_borrow().map_or(true, |connection| {
+            connection
+                .as_ref()
+                .is_none_or(|connection| !connection.live())
         })
     }
     fn retire(&self) -> LocalFuture<'_, io::Result<()>> {
-        Box::pin(std::future::poll_fn(move |cx| {
-            let Ok(mut slot) = self.task.try_borrow_mut() else {
+        Box::pin(std::future::poll_fn(move |_| {
+            let Ok(mut slot) = self.connection.try_borrow_mut() else {
                 return std::task::Poll::Ready(Err(refused()));
             };
-            if let Some(task) = slot.as_mut() {
-                task.abort();
-                // Poll under a short borrow, retaining the exact handle in its
-                // original slot if this retirement future is cancelled.
-                if std::future::Future::poll(std::pin::Pin::new(task), cx).is_pending() {
-                    return std::task::Poll::Pending;
-                }
-                slot.take();
+            if let Some(connection) = slot.take() {
+                connection.close();
             }
             std::task::Poll::Ready(Ok(()))
         }))
@@ -231,8 +210,8 @@ impl SourceRpcDriver {
 }
 impl Drop for SourceRpcDriver {
     fn drop(&mut self) {
-        if let Some(task) = self.task.get_mut().as_ref() {
-            task.abort();
+        if let Some(connection) = self.connection.get_mut().take() {
+            connection.close();
         }
     }
 }
@@ -366,53 +345,26 @@ mod retirement_tests {
     use tokio::io::AsyncReadExt;
 
     #[test]
-    fn exact_rpc_task_is_observed_stopped_before_retirement_returns() {
+    fn the_source_connection_is_closed_once_before_retirement_returns() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
-        tokio::task::LocalSet::new().block_on(&runtime, async {
-            struct Exit(Arc<AtomicBool>);
-            impl Drop for Exit {
-                fn drop(&mut self) {
-                    self.0.store(true, Ordering::Release);
-                }
-            }
-            let (mut owned, mut peer) = tokio::net::UnixStream::pair().unwrap();
-            let stopped = Arc::new(AtomicBool::new(false));
-            let exit = Arc::clone(&stopped);
-            let (started, ready) = tokio::sync::oneshot::channel();
-            let task = tokio::task::spawn_local(async move {
-                let _observed_exit = Exit(exit);
-                started.send(()).unwrap();
-                let mut bytes = [0_u8; 16];
-                owned
-                    .read_exact(&mut bytes)
-                    .await
-                    .map_err(|error| capnp::Error::failed(error.to_string()))?;
-                Ok(())
-            });
-            ready.await.unwrap();
-            let driver = SourceRpcDriver::new(task);
+        runtime.block_on(async {
+            let (owned, mut peer) = tokio::net::UnixStream::pair().unwrap();
+            let owned = owned.into_std().unwrap();
+            let connection = Connection::connect("test-pending-source", owned).unwrap();
+            let driver = SourceRpcDriver::new(Arc::clone(&connection));
             assert!(!driver.is_finished());
-            assert!(!stopped.load(Ordering::Acquire));
-            let mut retirement = driver.retire();
-            std::future::poll_fn(|cx| {
-                assert!(std::future::Future::poll(retirement.as_mut(), cx).is_pending());
-                std::task::Poll::Ready(())
-            })
-            .await;
-            drop(retirement);
-            // Cancellation keeps the exact aborting task in canonical custody
-            // without leaving a RefCell borrow alive across the suspension.
-            assert!(driver.task.borrow().is_some());
             driver.retire().await.unwrap();
-            assert!(stopped.load(Ordering::Acquire));
             assert!(driver.is_finished());
-            assert!(driver.task.borrow().is_none());
+            assert!(driver.connection.borrow().is_none());
+            // The worker sees this source end rather than the shared native
+            // source staying open.
             let mut byte = [0_u8; 1];
             assert_eq!(peer.read(&mut byte).await.unwrap(), 0);
-            // Retry observes the same actual stopped slot; no new task is made.
+            assert!(!connection.live());
+            // Retiring again observes the same closed slot; no new connection is made.
             driver.retire().await.unwrap();
         });
     }

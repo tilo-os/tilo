@@ -7,7 +7,7 @@ use std::time::Duration;
 
 pub use tilo_fs_client::blobs::*;
 use tilo_fs_client::connection::{Capabilities, ServeObject, serve_connected};
-use tilo_fs_client::wire::{Reply, Request};
+use tilo_fs_client::wire::{FsReply, FsRequest};
 
 const HANDOFF_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -293,13 +293,13 @@ impl ServeObject for ScopedBlobs {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             let scope = &self.scope;
             match request {
-                Request::Put { bytes, mime } => {
+                FsRequest::Put { bytes, mime } => {
                     if bytes.len() > MAX_PUT_CHUNK {
                         return Err(BlobError::TooLarge {
                             len: bytes.len() as u64,
@@ -313,9 +313,9 @@ impl ServeObject for ScopedBlobs {
                     )
                     .await?
                     .map_err(|error| error.to_string())?;
-                    Ok(Reply::Blob(stored))
+                    Ok(FsReply::Blob(stored))
                 }
-                Request::Upload { mime } => {
+                FsRequest::Upload { mime } => {
                     // The backend consumes the upload as it is written, so the
                     // store hashes and imports it piece by piece and nothing
                     // here ever holds the whole payload.
@@ -335,9 +335,9 @@ impl ServeObject for ScopedBlobs {
                         })),
                         ended,
                     });
-                    Ok(Reply::Handle(Some(capabilities.register(upload))))
+                    Ok(FsReply::Handle(Some(capabilities.register(upload))))
                 }
-                Request::Get {
+                FsRequest::Get {
                     hash,
                     offset,
                     max_len,
@@ -349,34 +349,34 @@ impl ServeObject for ScopedBlobs {
                         Arc::clone(&self.backend).read(scope.clone(), hash, offset, max_len),
                     )
                     .await?;
-                    Ok(Reply::BlobRead(outcome))
+                    Ok(FsReply::BlobRead(outcome))
                 }
-                Request::Has { hash } => {
+                FsRequest::Has { hash } => {
                     let hash = checked_hash(hash)?;
                     let present = on_runtime(
                         &self.runtime,
                         Arc::clone(&self.backend).has(scope.clone(), hash),
                     )
                     .await?;
-                    Ok(Reply::Present(present))
+                    Ok(FsReply::Present(present))
                 }
-                Request::Size { hash } => {
+                FsRequest::Size { hash } => {
                     let hash = checked_hash(hash)?;
                     let size = on_runtime(
                         &self.runtime,
                         Arc::clone(&self.backend).size(scope.clone(), hash),
                     )
                     .await?;
-                    Ok(Reply::Size(size))
+                    Ok(FsReply::Size(size))
                 }
-                Request::PublicContent { name } => {
+                FsRequest::PublicContent { name } => {
                     let copy = Arc::new(PublicContentServer {
                         scope: scope.clone(),
                         name,
                         backend: Arc::clone(&self.backend),
                         runtime: self.runtime.clone(),
                     });
-                    Ok(Reply::Handle(Some(capabilities.register(copy))))
+                    Ok(FsReply::Handle(Some(capabilities.register(copy))))
                 }
                 _ => Err("unexpected document media request".into()),
             }
@@ -396,25 +396,25 @@ impl ServeObject for PublicContentServer {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             match request {
-                Request::PublicKeep => on_runtime(
+                FsRequest::PublicKeep => on_runtime(
                     &self.runtime,
                     Arc::clone(&self.backend).public_keep(self.scope.clone(), self.name.clone()),
                 )
                 .await?
                 .map_err(|error| error.to_string())
-                .map(|()| Reply::Empty),
-                Request::PublicRelease => on_runtime(
+                .map(|()| FsReply::Empty),
+                FsRequest::PublicRelease => on_runtime(
                     &self.runtime,
                     Arc::clone(&self.backend).public_release(self.scope.clone(), self.name.clone()),
                 )
                 .await?
                 .map_err(|error| error.to_string())
-                .map(|()| Reply::Empty),
-                Request::PublicRead { offset, max_len } => {
+                .map(|()| FsReply::Empty),
+                FsRequest::PublicRead { offset, max_len } => {
                     let max_len = max_len.min(MAX_READ_CHUNK);
                     let read = on_runtime(
                         &self.runtime,
@@ -422,7 +422,7 @@ impl ServeObject for PublicContentServer {
                     )
                     .await?
                     .map_err(|error| error.to_string())?;
-                    Ok(Reply::PublicRead {
+                    Ok(FsReply::PublicRead {
                         read: read.outcome,
                         hash: read.hash.unwrap_or_default(),
                     })
@@ -475,11 +475,11 @@ impl ServeObject for Upload {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             match request {
-                Request::UploadWrite { bytes } => {
+                FsRequest::UploadWrite { bytes } => {
                     let Ok(mut state) = self.state.try_lock() else {
                         return Err(self.refuse("an upload takes one write at a time"));
                     };
@@ -511,9 +511,9 @@ impl ServeObject for Upload {
                             return Err(Self::busy("upload already finished"));
                         }
                     }
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::UploadFinish => {
+                FsRequest::UploadFinish => {
                     let Ok(mut state) = self.state.try_lock() else {
                         return Err(self.refuse("an upload finishes after its last write"));
                     };
@@ -529,7 +529,7 @@ impl ServeObject for Upload {
                         .map_err(|error| format!("document media backend failed: {error}"))?
                         .and_then(|stored| ended.map(|()| stored))
                         .map_err(|error| error.to_string())?;
-                    Ok(Reply::Blob(stored))
+                    Ok(FsReply::Blob(stored))
                 }
                 _ => Err("unexpected upload request".into()),
             }
@@ -546,12 +546,12 @@ impl ServeObject for SessionServer {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             match request {
-                Request::SessionScope { workspace, app } => {
+                FsRequest::SessionScope { workspace, app } => {
                     let scope =
                         BlobScope::new(workspace, app).map_err(|error| error.to_string())?;
                     let blobs = Arc::new(ScopedBlobs {
@@ -559,15 +559,15 @@ impl ServeObject for SessionServer {
                         backend: Arc::clone(&self.backend),
                         runtime: self.runtime.clone(),
                     });
-                    Ok(Reply::Scope(capabilities.register(blobs)))
+                    Ok(FsReply::Scope(capabilities.register(blobs)))
                 }
-                Request::SessionRefreshPublic => {
+                FsRequest::SessionRefreshPublic => {
                     let refreshed =
                         on_runtime(&self.runtime, Arc::clone(&self.backend).refresh_public())
                             .await?;
-                    Ok(Reply::Refreshed(refreshed))
+                    Ok(FsReply::Refreshed(refreshed))
                 }
-                Request::SessionAttributeWrites {
+                FsRequest::SessionAttributeWrites {
                     paths,
                     actor,
                     label,
@@ -587,7 +587,7 @@ impl ServeObject for SessionServer {
                     self.backend
                         .attribute_writes(attribution)
                         .map_err(|error| error.to_string())?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
                 _ => Err("unexpected session media request".into()),
             }

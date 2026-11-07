@@ -1,7 +1,7 @@
 //! Raw-name clients on the capability connection. No native authority is
 //! serialized. Append/mutation replies must not be blindly retried after loss.
 use crate::directory_types::{DirectoryRows, DirectoryStat, JobPoll, JobUpdate};
-use crate::wire::{CommittedPin, Reply, Request};
+use crate::wire::{CommittedPin, FsReply, FsRequest};
 use crate::{EntryName, FileHandle, OpenMode};
 use crate::{connection::Object, native_reply::refused};
 use runtime_portal::NotAvailable;
@@ -62,7 +62,7 @@ fn observed(stat: DirectoryStat) -> Result<DirectoryStat, NotAvailable> {
     Ok(stat)
 }
 
-async fn call(object: &Arc<Object>, request: Request) -> Result<Reply, NotAvailable> {
+async fn call(object: &Arc<Object>, request: FsRequest) -> Result<FsReply, NotAvailable> {
     object.call(request).await
 }
 
@@ -92,7 +92,7 @@ impl DirectoryClient {
         }
         let bytes = match call(
             &self.object,
-            Request::HistoryQuery {
+            FsRequest::HistoryQuery {
                 name: component(name)?,
                 expected,
                 query: query.to_vec(),
@@ -100,7 +100,7 @@ impl DirectoryClient {
         )
         .await?
         {
-            Reply::Bytes(bytes) => bytes.ok_or_else(refused)?,
+            FsReply::Bytes(bytes) => bytes.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         crate::directory_types::validate_history_response(query, &bytes)
@@ -114,9 +114,9 @@ impl DirectoryClient {
         &self,
         name: &EntryName,
     ) -> Result<HistoryReadSubjectClient, NotAvailable> {
-        let Reply::Handle(handle) = call(
+        let FsReply::Handle(handle) = call(
             &self.object,
-            Request::HistoryReadSubject {
+            FsRequest::HistoryReadSubject {
                 name: component(name)?,
             },
         )
@@ -134,8 +134,8 @@ impl DirectoryClient {
     /// # Errors
     /// Refuses native metadata scope, durability failure or invalid transport.
     pub async fn sync_directory(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::SyncDirectory).await? {
-            Reply::Ack(status) => crate::native_reply::check(status),
+        match call(&self.object, FsRequest::SyncDirectory).await? {
+            FsReply::Ack(status) => crate::native_reply::check(status),
             _ => Err(crate::unexpected()),
         }
     }
@@ -153,9 +153,9 @@ impl DirectoryClient {
         if expected[1] == 0 || old[1] == 0 || expected == old || expected[0] != old[0] {
             return Err(invalid("Invalid replacing inode observations"));
         }
-        let Reply::Handle(handle) = call(
+        let FsReply::Handle(handle) = call(
             &self.object,
-            Request::PrepareReplace {
+            FsRequest::PrepareReplace {
                 temporary: component(temporary)?,
                 temporary_expected: expected,
                 victim: component(victim)?,
@@ -178,8 +178,8 @@ impl DirectoryClient {
     pub async fn statfs(
         &self,
     ) -> Result<crate::directory_types::DirectoryFilesystemStats, NotAvailable> {
-        match call(&self.object, Request::Statfs).await? {
-            Reply::FilesystemStats(stats) => {
+        match call(&self.object, FsRequest::Statfs).await? {
+            FsReply::FilesystemStats(stats) => {
                 let stats = stats.ok_or_else(refused)?;
                 stats.validate().map_err(|error| invalid(&error))?;
                 Ok(stats)
@@ -191,8 +191,8 @@ impl DirectoryClient {
     /// # Errors
     /// Refuses enumeration admission or transport/authority failure.
     pub async fn open_cursor(&self) -> Result<DirectoryCursorClient, NotAvailable> {
-        match call(&self.object, Request::OpenCursor).await? {
-            Reply::Handle(handle) => Ok(DirectoryCursorClient {
+        match call(&self.object, FsRequest::OpenCursor).await? {
+            FsReply::Handle(handle) => Ok(DirectoryCursorClient {
                 object: crate::handle_reply(handle, &self.object)?,
             }),
             _ => Err(crate::unexpected()),
@@ -208,14 +208,14 @@ impl DirectoryClient {
     ) -> Result<Vec<u8>, NotAvailable> {
         let target = match call(
             &self.object,
-            Request::Readlink {
+            FsRequest::Readlink {
                 name: component(name)?,
                 expected,
             },
         )
         .await?
         {
-            Reply::Bytes(target) => target.ok_or_else(refused)?,
+            FsReply::Bytes(target) => target.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         if target.is_empty() || target.len() > 4096 || target.contains(&0) {
@@ -227,8 +227,8 @@ impl DirectoryClient {
     /// # Errors
     /// Refuses revoked scope or transport failure.
     pub async fn metadata(&self) -> Result<DirectoryStat, NotAvailable> {
-        match call(&self.object, Request::DirectoryMetadata).await? {
-            Reply::Stat(stat) => observed(stat.ok_or_else(refused)?),
+        match call(&self.object, FsRequest::DirectoryMetadata).await? {
+            FsReply::Stat(stat) => observed(stat.ok_or_else(refused)?),
             _ => Err(crate::unexpected()),
         }
     }
@@ -238,13 +238,13 @@ impl DirectoryClient {
     pub async fn stat(&self, name: &EntryName) -> Result<Option<DirectoryStat>, NotAvailable> {
         match call(
             &self.object,
-            Request::StatEntry {
+            FsRequest::StatEntry {
                 name: component(name)?,
             },
         )
         .await?
         {
-            Reply::EntryStat(stat) => stat.ok_or_else(refused)?.map(observed).transpose(),
+            FsReply::EntryStat(stat) => stat.ok_or_else(refused)?.map(observed).transpose(),
             _ => Err(crate::unexpected()),
         }
     }
@@ -257,9 +257,9 @@ impl DirectoryClient {
         name: &EntryName,
         expected: [u64; 2],
     ) -> Result<MetadataPinClient, NotAvailable> {
-        let Reply::Handle(handle) = call(
+        let FsReply::Handle(handle) = call(
             &self.object,
-            Request::PinEntry {
+            FsRequest::PinEntry {
                 name: component(name)?,
                 expected,
             },
@@ -281,8 +281,8 @@ impl DirectoryClient {
     /// # Errors
     /// Refuses stale/foreign continuations, oversized pages, revocation or transport loss.
     pub async fn list(&self, cursor: u64) -> Result<DirectoryRows, NotAvailable> {
-        let rows = match call(&self.object, Request::ListRows { cursor }).await? {
-            Reply::Rows(rows) => rows.ok_or_else(refused)?,
+        let rows = match call(&self.object, FsRequest::ListRows { cursor }).await? {
+            FsReply::Rows(rows) => rows.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         if rows.entries.len() > 256 {
@@ -296,13 +296,13 @@ impl DirectoryClient {
     pub async fn directory(&self, name: &EntryName) -> Result<Self, NotAvailable> {
         match call(
             &self.object,
-            Request::OpenDirectory {
+            FsRequest::OpenDirectory {
                 name: component(name)?,
             },
         )
         .await?
         {
-            Reply::Handle(handle) => Ok(Self {
+            FsReply::Handle(handle) => Ok(Self {
                 object: crate::handle_reply(handle, &self.object)?,
             }),
             _ => Err(crate::unexpected()),
@@ -335,7 +335,7 @@ impl DirectoryClient {
         identity(expected)?;
         let opened = match call(
             &self.object,
-            Request::OpenFile {
+            FsRequest::OpenFile {
                 name: component(name)?,
                 mode,
                 expected,
@@ -343,7 +343,7 @@ impl DirectoryClient {
         )
         .await?
         {
-            Reply::OpenedFile(opened) => opened.ok_or_else(refused)?,
+            FsReply::OpenedFile(opened) => opened.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         if identity([opened.device, opened.inode])? != expected {
@@ -368,7 +368,7 @@ impl DirectoryClient {
         }
         match call(
             &self.object,
-            Request::SetCreatedPermissions {
+            FsRequest::SetCreatedPermissions {
                 name: component(name)?,
                 expected,
                 mode,
@@ -376,7 +376,7 @@ impl DirectoryClient {
         )
         .await?
         {
-            Reply::Ack(status) => crate::native_reply::check(status),
+            FsReply::Ack(status) => crate::native_reply::check(status),
             _ => Err(crate::unexpected()),
         }
     }
@@ -391,7 +391,7 @@ impl DirectoryClient {
         if expected[1] == 0 {
             return Err(invalid("native expected identity missing"));
         }
-        self.job(Request::RetireCreated {
+        self.job(FsRequest::RetireCreated {
             name: name.as_os_str().as_bytes().to_vec(),
             expected,
         })
@@ -401,7 +401,7 @@ impl DirectoryClient {
     /// # Errors
     /// Refuses missing owner store, queue admission, revoked scope or transport loss.
     pub async fn create_file(&self, name: &EntryName) -> Result<NativeJobClient, NotAvailable> {
-        self.job(Request::CreateFile {
+        self.job(FsRequest::CreateFile {
             name: component(name)?,
         })
         .await
@@ -413,15 +413,15 @@ impl DirectoryClient {
         &self,
         name: &EntryName,
     ) -> Result<NativeJobClient, NotAvailable> {
-        self.job(Request::CreateDirectory {
+        self.job(FsRequest::CreateDirectory {
             name: component(name)?,
         })
         .await
     }
 
-    async fn job(&self, request: Request) -> Result<NativeJobClient, NotAvailable> {
+    async fn job(&self, request: FsRequest) -> Result<NativeJobClient, NotAvailable> {
         match call(&self.object, request).await? {
-            Reply::Handle(handle) => Ok(NativeJobClient {
+            FsReply::Handle(handle) => Ok(NativeJobClient {
                 object: crate::handle_reply(handle, &self.object)?,
             }),
             _ => Err(crate::unexpected()),
@@ -439,13 +439,13 @@ impl DirectoryClient {
         }
         let page = match call(
             &self.object,
-            Request::Recoveries {
+            FsRequest::Recoveries {
                 after: after.to_vec(),
             },
         )
         .await?
         {
-            Reply::Recoveries(page) => page.ok_or_else(refused)?,
+            FsReply::Recoveries(page) => page.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         let next = &page.next;
@@ -469,7 +469,7 @@ impl DirectoryClient {
         if recovery == [0; 16] {
             return Err(invalid("Invalid recovery ID"));
         }
-        self.job(Request::RestoreCaptured {
+        self.job(FsRequest::RestoreCaptured {
             recovery,
             name: component(name)?,
         })
@@ -490,7 +490,7 @@ impl DirectoryClient {
         }
         match call(
             &self.object,
-            Request::AtomicSave {
+            FsRequest::AtomicSave {
                 temporary: component(temporary)?,
                 expected,
                 target: component(target)?,
@@ -498,7 +498,7 @@ impl DirectoryClient {
         )
         .await?
         {
-            Reply::Ack(status) => crate::native_reply::check(status),
+            FsReply::Ack(status) => crate::native_reply::check(status),
             _ => Err(crate::unexpected()),
         }
     }
@@ -510,7 +510,7 @@ impl DirectoryClient {
         name: &EntryName,
         new_name: &EntryName,
     ) -> Result<NativeJobClient, NotAvailable> {
-        self.job(Request::RenameReplace {
+        self.job(FsRequest::RenameReplace {
             name: component(name)?,
             new_name: component(new_name)?,
         })
@@ -524,7 +524,7 @@ impl DirectoryClient {
         name: &EntryName,
         new_name: &EntryName,
     ) -> Result<NativeJobClient, NotAvailable> {
-        self.job(Request::RenameNoReplace {
+        self.job(FsRequest::RenameNoReplace {
             name: component(name)?,
             new_name: component(new_name)?,
         })
@@ -548,7 +548,7 @@ impl NativeJobClient {
     /// Acquires only this actual remote job's held completed-creation capability.
     pub async fn created_temporary(&self) -> Result<CreatedTemporaryClient, NotAvailable> {
         let value = CreatedTemporaryClient {
-            object: self.handle(Request::JobCreatedTemporary).await?,
+            object: self.handle(FsRequest::JobCreatedTemporary).await?,
         };
         value.check().await?;
         Ok(value)
@@ -558,7 +558,7 @@ impl NativeJobClient {
     /// Refuses absent genuine completed replacement custody or failed source scope.
     pub async fn pin_replacement(&self) -> Result<ReplacementPinClient, NotAvailable> {
         let pin = ReplacementPinClient {
-            object: self.handle(Request::JobPinReplacement).await?,
+            object: self.handle(FsRequest::JobPinReplacement).await?,
         };
         pin.check().await?;
         Ok(pin)
@@ -567,19 +567,19 @@ impl NativeJobClient {
     /// # Errors
     /// Refuses unavailable, revoked or disconnected native job scope.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
-        self.empty(Request::JobCheckScope).await
+        self.empty(FsRequest::JobCheckScope).await
     }
 
-    async fn handle(&self, request: Request) -> Result<Arc<Object>, NotAvailable> {
+    async fn handle(&self, request: FsRequest) -> Result<Arc<Object>, NotAvailable> {
         match call(&self.object, request).await? {
-            Reply::Handle(handle) => crate::handle_reply(handle, &self.object),
+            FsReply::Handle(handle) => crate::handle_reply(handle, &self.object),
             _ => Err(crate::unexpected()),
         }
     }
 
-    async fn empty(&self, request: Request) -> Result<(), NotAvailable> {
+    async fn empty(&self, request: FsRequest) -> Result<(), NotAvailable> {
         match call(&self.object, request).await? {
-            Reply::Empty => Ok(()),
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -587,8 +587,8 @@ impl NativeJobClient {
     /// # Errors
     /// Refuses a revoked job or an oversized report.
     pub async fn poll(&mut self) -> Result<JobPoll, NotAvailable> {
-        let poll = match call(&self.object, Request::JobPoll).await? {
-            Reply::Poll(poll) => poll.ok_or_else(refused)?,
+        let poll = match call(&self.object, FsRequest::JobPoll).await? {
+            FsReply::Poll(poll) => poll.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         if poll.updates.len() > 1025 {
@@ -612,13 +612,13 @@ impl NativeJobClient {
         Ok(poll)
     }
 
-    /// Request canonical job cancellation. An in-flight native commit may already
+    /// Ask for canonical job cancellation. An in-flight native commit may already
     /// have happened; callers must consume its actual terminal outcome.
     /// # Errors
     /// Refuses revoked or disconnected native job scope.
     pub async fn cancel(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::JobCancel).await? {
-            Reply::Ack(status) => crate::native_reply::check(status),
+        match call(&self.object, FsRequest::JobCancel).await? {
+            FsReply::Ack(status) => crate::native_reply::check(status),
             _ => Err(crate::unexpected()),
         }
     }
@@ -639,8 +639,8 @@ impl MetadataPinClient {
     /// # Errors
     /// Refuses unavailable, revoked or disconnected metadata custody.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::PinCheckScope).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::PinCheckScope).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -648,8 +648,8 @@ impl MetadataPinClient {
     /// # Errors
     /// Refuses revoked scope, invalid observation or transport failure.
     pub async fn metadata(&self) -> Result<DirectoryStat, NotAvailable> {
-        match call(&self.object, Request::PinStat).await? {
-            Reply::Stat(stat) => {
+        match call(&self.object, FsRequest::PinStat).await? {
+            FsReply::Stat(stat) => {
                 let stat = observed(stat.ok_or_else(refused)?)?;
                 if stat.metadata.kind != crate::EntryKind::File {
                     return Err(invalid("metadata pin must hold regular inode"));
@@ -681,13 +681,13 @@ impl DirectoryCursorClient {
     ) -> Result<crate::directory_types::DirectoryStreamPage, NotAvailable> {
         let page = match call(
             &self.object,
-            Request::CursorPage {
+            FsRequest::CursorPage {
                 expected_sequence: expected,
             },
         )
         .await?
         {
-            Reply::StreamPage(page) => page.ok_or_else(refused)?,
+            FsReply::StreamPage(page) => page.ok_or_else(refused)?,
             _ => return Err(crate::unexpected()),
         };
         if page.next_sequence
@@ -728,13 +728,13 @@ impl ReplacementPinClient {
         }
         match call(
             &self.object,
-            Request::ReplacementCommit {
+            FsRequest::ReplacementCommit {
                 receipt: receipt.to_vec(),
             },
         )
         .await?
         {
-            Reply::Empty => Ok(()),
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -742,8 +742,8 @@ impl ReplacementPinClient {
     /// # Errors
     /// Refuses dead source scope or changed native inode custody.
     pub async fn check(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::ReplacementCheck).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::ReplacementCheck).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -753,8 +753,8 @@ impl ReplacementPinClient {
     pub async fn observe(
         &self,
     ) -> Result<crate::directory_types::ReplacementObservation, NotAvailable> {
-        match call(&self.object, Request::ReplacementObserve).await? {
-            Reply::ReplacementObservation(observation) => closed_observation(observation),
+        match call(&self.object, FsRequest::ReplacementObserve).await? {
+            FsReply::ReplacementObservation(observation) => closed_observation(observation),
             _ => Err(crate::unexpected()),
         }
     }
@@ -789,8 +789,8 @@ impl PendingReplacementClient {
     }
 
     async fn committed(&self) -> Result<CommittedPin, NotAvailable> {
-        match call(&self.object, Request::PendingCommittedPin).await? {
-            Reply::CommittedPin(pin) => {
+        match call(&self.object, FsRequest::PendingCommittedPin).await? {
+            FsReply::CommittedPin(pin) => {
                 pin.ok_or_else(|| invalid("Incomplete committed source acknowledgment"))
             }
             _ => Err(crate::unexpected()),
@@ -830,9 +830,9 @@ impl PendingReplacementClient {
         if *challenge == [0; 32] {
             return Err(invalid("empty handoff challenge"));
         }
-        let Reply::Ticket(ticket) = call(
+        let FsReply::Ticket(ticket) = call(
             &self.object,
-            Request::PendingArm {
+            FsRequest::PendingArm {
                 challenge: *challenge,
             },
         )
@@ -852,8 +852,8 @@ impl PendingReplacementClient {
     /// # Errors
     /// Unknown on lost reply; no capability release may be inferred from EOF.
     pub async fn retire_daemon_handoff(&self, ticket: [u8; 16]) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::PendingRetireHandoff { ticket }).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::PendingRetireHandoff { ticket }).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -861,8 +861,8 @@ impl PendingReplacementClient {
     /// # Errors
     /// Refuses retired or consumed genuine prepared work.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::PendingCheckScope).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::PendingCheckScope).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -872,8 +872,8 @@ impl PendingReplacementClient {
     pub async fn observe(
         &self,
     ) -> Result<crate::directory_types::PendingReplacementObservation, NotAvailable> {
-        let Reply::PendingObservation(observation) =
-            call(&self.object, Request::PendingObserve).await?
+        let FsReply::PendingObservation(observation) =
+            call(&self.object, FsRequest::PendingObserve).await?
         else {
             return Err(crate::unexpected());
         };
@@ -892,13 +892,13 @@ impl PendingReplacementClient {
         }
         match call(
             &self.object,
-            Request::PendingStart {
+            FsRequest::PendingStart {
                 receipt: receipt.to_vec(),
             },
         )
         .await?
         {
-            Reply::Handle(handle) => Ok(NativeJobClient {
+            FsReply::Handle(handle) => Ok(NativeJobClient {
                 object: crate::handle_reply(handle, &self.object)?,
             }),
             _ => Err(crate::unexpected()),
@@ -908,8 +908,8 @@ impl PendingReplacementClient {
     /// # Errors
     /// Releases unsubmitted work only, never rolls back effects.
     pub async fn cancel(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::PendingCancel).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::PendingCancel).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -932,8 +932,8 @@ impl CreatedTemporaryClient {
         if mode & !0o7777 != 0 {
             return Err(invalid("invalid own-created mode"));
         }
-        match call(&self.object, Request::TemporarySetPermissions { mode }).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::TemporarySetPermissions { mode }).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -944,11 +944,11 @@ impl CreatedTemporaryClient {
     ) -> crate::directory_types::AtomicSavePreparation<PendingReplacementClient> {
         use crate::directory_types::AtomicSavePreparation as Outcome;
         let result = async {
-            match call(&self.object, Request::TemporaryPrepareAtomicSave).await? {
-                Reply::Handle(Some(pending)) => Ok(Some(PendingReplacementClient {
+            match call(&self.object, FsRequest::TemporaryPrepareAtomicSave).await? {
+                FsReply::Handle(Some(pending)) => Ok(Some(PendingReplacementClient {
                     object: crate::handle_reply(Some(pending), &self.object)?,
                 })),
-                Reply::Handle(None) => Ok(None),
+                FsReply::Handle(None) => Ok(None),
                 _ => Err(invalid("malformed AtomicSave preparation reply")),
             }
         }
@@ -965,8 +965,8 @@ impl CreatedTemporaryClient {
     /// # Errors
     /// Refuses a non-directory parent, revoked custody or transport loss.
     pub async fn prepare_replace(&self) -> Result<PendingReplacementClient, NotAvailable> {
-        let pending = match call(&self.object, Request::TemporaryPrepareReplace).await? {
-            Reply::Handle(handle) => PendingReplacementClient {
+        let pending = match call(&self.object, FsRequest::TemporaryPrepareReplace).await? {
+            FsReply::Handle(handle) => PendingReplacementClient {
                 object: crate::handle_reply(handle, &self.object)?,
             },
             _ => return Err(crate::unexpected()),
@@ -978,8 +978,8 @@ impl CreatedTemporaryClient {
     /// # Errors
     /// Refuses changed original temp/source scope or failed native custody.
     pub async fn check(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::TemporaryCheckScope).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::TemporaryCheckScope).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -987,8 +987,8 @@ impl CreatedTemporaryClient {
     /// # Errors
     /// One-use submission only. Lost reply has unknown effects; never retry it.
     pub async fn retire(&self) -> Result<NativeJobClient, NotAvailable> {
-        match call(&self.object, Request::TemporaryRetire).await? {
-            Reply::Handle(handle) => Ok(NativeJobClient {
+        match call(&self.object, FsRequest::TemporaryRetire).await? {
+            FsReply::Handle(handle) => Ok(NativeJobClient {
                 object: crate::handle_reply(handle, &self.object)?,
             }),
             _ => Err(crate::unexpected()),
@@ -1011,8 +1011,8 @@ impl HistoryReadSubjectClient {
     /// # Errors
     /// Lost reply remains unknown; worker init lifetime is unchanged.
     pub async fn retire_daemon_handoff(&self, ticket: [u8; 16]) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::SubjectRetireHandoff { ticket }).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::SubjectRetireHandoff { ticket }).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -1023,7 +1023,8 @@ impl HistoryReadSubjectClient {
         if challenge == [0; 32] {
             return Err(invalid("empty history Read challenge"));
         }
-        let Reply::Ticket(ticket) = call(&self.object, Request::SubjectArm { challenge }).await?
+        let FsReply::Ticket(ticket) =
+            call(&self.object, FsRequest::SubjectArm { challenge }).await?
         else {
             return Err(crate::unexpected());
         };
@@ -1039,8 +1040,8 @@ impl HistoryReadSubjectClient {
     /// # Errors
     /// Refuses expired original Read/source scope or transport failure.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::SubjectCheckScope).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::SubjectCheckScope).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -1048,8 +1049,8 @@ impl HistoryReadSubjectClient {
     /// # Errors
     /// Refuses named substitution, source revocation or transport failure.
     pub async fn check(&self) -> Result<(), NotAvailable> {
-        match call(&self.object, Request::SubjectCheck).await? {
-            Reply::Empty => Ok(()),
+        match call(&self.object, FsRequest::SubjectCheck).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(crate::unexpected()),
         }
     }
@@ -1059,8 +1060,8 @@ impl HistoryReadSubjectClient {
     pub async fn observe(
         &self,
     ) -> Result<crate::directory_types::HistoryReadObservation, NotAvailable> {
-        let Reply::HistoryObservation(observation) =
-            call(&self.object, Request::SubjectObserve).await?
+        let FsReply::HistoryObservation(observation) =
+            call(&self.object, FsRequest::SubjectObserve).await?
         else {
             return Err(crate::unexpected());
         };

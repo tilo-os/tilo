@@ -17,7 +17,7 @@ use std::{
 };
 
 use tilo_fs_client::connection::{Capabilities, ServeObject, serve_connected};
-use tilo_fs_client::wire::{NativeEntryStatus, Reply, Request};
+use tilo_fs_client::wire::{FsReply, FsRequest, NativeEntryStatus};
 use tokio::sync::oneshot;
 
 use crate::{DirEntry, EntryKind, MAX_READ_CHUNK, Metadata, OpenMode};
@@ -182,7 +182,7 @@ impl ConnectedWorkspaceServer {
     pub fn wait(mut self) -> io::Result<()> {
         self.join()
     }
-    /// Request stop and report the actual owned worker departure.
+    /// Ask it to stop and report the actual owned worker departure.
     /// # Errors
     /// Returns the connection's own failure, or a panic in its worker.
     pub fn retire(mut self) -> io::Result<()> {
@@ -443,12 +443,12 @@ impl ServeObject for Server {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             match request {
-                Request::Open { path, mode } => {
+                FsRequest::Open { path, mode } => {
                     let selected = path_param(&path);
                     let opened = {
                         let selected = selected.clone();
@@ -482,19 +482,19 @@ impl ServeObject for Server {
                         source,
                         mode,
                     }));
-                    Ok(Reply::Handle(Some(handle)))
+                    Ok(FsReply::Handle(Some(handle)))
                 }
-                Request::List { path } => {
+                FsRequest::List { path } => {
                     let path = path_param(&path);
                     let entries = self.call(move |backend| backend.list(&path)).await?;
-                    Ok(Reply::Entries(Some(entries)))
+                    Ok(FsReply::Entries(Some(entries)))
                 }
-                Request::Stat { path } => {
+                FsRequest::Stat { path } => {
                     let path = path_param(&path);
                     let metadata = self.call(move |backend| backend.stat(&path)).await?;
-                    Ok(Reply::Metadata(Some(metadata)))
+                    Ok(FsReply::Metadata(Some(metadata)))
                 }
-                Request::Directory => {
+                FsRequest::Directory => {
                     let backend = self
                         .call(|backend| {
                             let directory = backend.directory()?;
@@ -509,9 +509,9 @@ impl ServeObject for Server {
                         server: Arc::clone(&self),
                         backend,
                     }));
-                    Ok(Reply::Handle(Some(handle)))
+                    Ok(FsReply::Handle(Some(handle)))
                 }
-                Request::Mkdir { .. } | Request::Remove { .. } => Err(read_only()),
+                FsRequest::Mkdir { .. } | FsRequest::Remove { .. } => Err(read_only()),
                 _ => Err("unexpected workspace request".into()),
             }
         })
@@ -554,11 +554,11 @@ impl ServeObject for File {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             match request {
-                Request::CheckScope => {
+                FsRequest::CheckScope => {
                     let FileSource::Capability(file) = &self.source else {
                         return Err(read_only());
                     };
@@ -569,12 +569,12 @@ impl ServeObject for File {
                         })
                         .await?;
                     live.ok_or_else(|| "live scope unavailable".to_string())?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::Read { offset, max_len } => {
+                FsRequest::Read { offset, max_len } => {
                     if !matches!(self.mode, OpenMode::Read | OpenMode::ReadWriteExisting) {
                         self.refuse_operation().await?;
-                        return Ok(Reply::Bytes(None));
+                        return Ok(FsReply::Bytes(None));
                     }
                     let limit = max_len.min(MAX_READ_CHUNK);
                     let bytes = match &self.source {
@@ -592,7 +592,7 @@ impl ServeObject for File {
                         }
                     };
                     let Some(bytes) = bytes else {
-                        return Ok(Reply::Bytes(None));
+                        return Ok(FsReply::Bytes(None));
                     };
                     if u32::try_from(bytes.len())
                         .ok()
@@ -600,15 +600,15 @@ impl ServeObject for File {
                     {
                         return Err("file backend exceeded read bound".into());
                     }
-                    Ok(Reply::Bytes(Some(bytes)))
+                    Ok(FsReply::Bytes(Some(bytes)))
                 }
-                Request::Write { offset, bytes } => {
+                FsRequest::Write { offset, bytes } => {
                     if !matches!(
                         self.mode,
                         OpenMode::Write | OpenMode::WriteExisting | OpenMode::ReadWriteExisting
                     ) {
                         self.refuse_operation().await?;
-                        return Ok(Reply::Written(None));
+                        return Ok(FsReply::Written(None));
                     }
                     let FileSource::Capability(file) = &self.source else {
                         return Err(read_only());
@@ -628,17 +628,17 @@ impl ServeObject for File {
                         })
                         .await?;
                     let Some(written) = written else {
-                        return Ok(Reply::Written(None));
+                        return Ok(FsReply::Written(None));
                     };
                     if written > length {
                         return Err("invalid write receipt".into());
                     }
-                    Ok(Reply::Written(Some(written)))
+                    Ok(FsReply::Written(Some(written)))
                 }
-                Request::Append { bytes } => {
+                FsRequest::Append { bytes } => {
                     if self.mode != OpenMode::Append {
                         self.refuse_operation().await?;
-                        return Ok(Reply::Written(None));
+                        return Ok(FsReply::Written(None));
                     }
                     let FileSource::Capability(file) = &self.source else {
                         return Err(read_only());
@@ -656,29 +656,29 @@ impl ServeObject for File {
                         })
                         .await?;
                     let Some(written) = written else {
-                        return Ok(Reply::Written(None));
+                        return Ok(FsReply::Written(None));
                     };
                     if written > length {
                         return Err("invalid append count".into());
                     }
-                    Ok(Reply::Written(Some(written)))
+                    Ok(FsReply::Written(Some(written)))
                 }
-                Request::Flush => match &self.source {
-                    FileSource::Path(_) => Ok(Reply::Ack(NativeEntryStatus::Ok)),
+                FsRequest::Flush => match &self.source {
+                    FileSource::Path(_) => Ok(FsReply::Ack(NativeEntryStatus::Ok)),
                     FileSource::Capability(file) => {
                         let flushed = self
                             .server
                             .call_file(Arc::clone(file), WorkspaceFileBackend::flush)
                             .await?
                             .is_some();
-                        Ok(Reply::Ack(if flushed {
+                        Ok(FsReply::Ack(if flushed {
                             NativeEntryStatus::Ok
                         } else {
                             NativeEntryStatus::Refused
                         }))
                     }
                 },
-                Request::HandleMetadata => {
+                FsRequest::HandleMetadata => {
                     let metadata = match &self.source {
                         FileSource::Path(path) => {
                             let path = path.clone();
@@ -693,7 +693,7 @@ impl ServeObject for File {
                                 .await?
                         }
                     };
-                    Ok(Reply::Metadata(metadata))
+                    Ok(FsReply::Metadata(metadata))
                 }
                 _ => Err("unexpected file request".into()),
             }

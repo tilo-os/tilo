@@ -1,24 +1,23 @@
 #![cfg(unix)]
 #![allow(
+    clippy::expect_used,
     clippy::unwrap_used,
     reason = "owned connected native capability assertions"
 )]
+use runtime_fs::directory_backend::{DirectoryStat, JobUpdate};
+use runtime_fs::directory_client::{DirectoryClient, NativeJobClient};
 use runtime_fs::operations::ItemState;
-use runtime_fs::raw::{NativeItemState, native_job};
 use runtime_fs::recovery::{OperationId, OperationOwner, OperationState};
 use runtime_fs::{
-    FsOwner, FsRight, NativeGrantAuthority,
+    EntryName, FileHandle, FsOwner, FsRight, NativeGrantAuthority, OpenMode,
     directory::DirectoryCapability,
     workspace_server::{WorkspaceBackend, serve_workspace_connected},
 };
 use std::{
-    os::{
-        fd::IntoRawFd,
-        unix::{
-            ffi::OsStringExt,
-            fs::{MetadataExt, PermissionsExt},
-            net::UnixStream,
-        },
+    os::unix::{
+        ffi::OsStringExt,
+        fs::{MetadataExt, PermissionsExt},
+        net::UnixStream,
     },
     sync::Arc,
     time::Duration,
@@ -44,9 +43,9 @@ impl WorkspaceBackend for Backend {
 type LocalFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
 fn finish(
-    job: &native_job::Client,
-    state: NativeItemState,
-    failed: u64,
+    job: &mut NativeJobClient,
+    state: ItemState,
+    failed: usize,
 ) -> LocalFuture<'_, OperationId> {
     Box::pin(async move {
         let deadline = tokio::time::Instant::now()
@@ -59,77 +58,77 @@ fn finish(
                 tokio::time::Instant::now() < deadline,
                 "native job did not finish"
             );
-            let reply = tokio::time::timeout_at(deadline, job.poll_request().send().promise)
+            let poll = tokio::time::timeout_at(deadline, job.poll())
                 .await
                 .unwrap()
                 .unwrap();
-            let out = reply.get().unwrap();
-            let bytes: [u8; 16] = out.get_operation_id().unwrap().try_into().unwrap();
             if let Some(previous) = &actual {
-                assert_eq!(previous, &bytes);
+                assert_eq!(previous, &poll.operation_id);
             } else {
-                actual = Some(bytes);
+                actual = Some(poll.operation_id);
             }
-            for row in out.get_updates().unwrap() {
-                match row.which().unwrap() {
-                    runtime_fs::raw::native_job_update::Item(item) => {
-                        assert_eq!(item.unwrap().get_state().unwrap(), state);
+            for update in poll.updates {
+                match update {
+                    JobUpdate::Item { state: actual, .. } => {
+                        assert_eq!(actual, state);
                         saw_item = true;
                     }
-                    runtime_fs::raw::native_job_update::Finished(done) => {
-                        let done = done.unwrap();
-                        assert_eq!(done.get_failed(), failed);
-                        assert_eq!(done.get_cancelled(), 0);
-                        assert_eq!(done.get_completed(), 1_u64.checked_sub(failed).unwrap());
+                    JobUpdate::Finished {
+                        completed,
+                        failed: reported,
+                        cancelled,
+                    } => {
+                        assert_eq!(reported, failed);
+                        assert_eq!(cancelled, 0);
+                        assert_eq!(completed, 1_usize.checked_sub(failed).unwrap());
                         assert!(saw_item, "finished without an actual native item outcome");
-                        return OperationId::from_bytes(bytes);
+                        return OperationId::from_bytes(actual.expect("polled operation"));
                     }
-                    runtime_fs::raw::native_job_update::Progress(_) => {}
+                    JobUpdate::Progress { .. } => {}
                 }
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
 }
-fn assert_raw_listing<'a>(
-    directory: &'a runtime_fs::raw::directory_handle::Client,
-    raw: &'a [u8],
-) -> LocalFuture<'a, ()> {
+fn assert_listing<'a>(directory: &'a DirectoryClient, raw: &'a [u8]) -> LocalFuture<'a, ()> {
     Box::pin(async move {
-        let reply = directory.list_request().send().promise.await.unwrap();
-        let rows = reply.get().unwrap().get_entries().unwrap();
-        assert!(rows.iter().any(|entry| entry.get_name().unwrap() == raw));
-        assert_eq!(rows.len(), 256);
-        let next = reply.get().unwrap().get_next();
-        assert_ne!(next, 0);
-        let mut foreign = directory.list_request();
-        foreign.get().set_cursor(next.checked_add(1).unwrap());
-        assert!(foreign.send().promise.await.is_err());
-        let mut continuation = directory.list_request();
-        continuation.get().set_cursor(next);
-        let second = continuation.send().promise.await.unwrap();
-        assert_eq!(second.get().unwrap().get_entries().unwrap().len(), 3);
-        assert_eq!(second.get().unwrap().get_next(), 0);
-        let mut stale = directory.list_request();
-        stale.get().set_cursor(next);
-        assert!(stale.send().promise.await.is_err());
+        let page = directory.list(0).await.unwrap();
+        assert!(
+            page.entries
+                .iter()
+                .any(|entry| entry.name.as_os_str().as_encoded_bytes() == raw)
+        );
+        assert_eq!(page.entries.len(), 256);
+        assert_ne!(page.next, 0);
+        assert!(
+            directory
+                .list(page.next.checked_add(1).unwrap())
+                .await
+                .is_err()
+        );
+        let second = directory.list(page.next).await.unwrap();
+        assert_eq!(second.entries.len(), 3);
+        assert_eq!(second.next, 0);
+        // A consumed continuation is stale: native custody is read once.
+        assert!(directory.list(page.next).await.is_err());
     })
 }
 
 fn assert_sdk_metadata<'a>(
-    sdk_directory: &'a runtime_fs::directory_client::DirectoryClient,
+    sdk_directory: &'a DirectoryClient,
     disk: &'a std::path::Path,
     name: &'a std::ffi::OsString,
-) -> LocalFuture<'a, runtime_fs::directory_backend::DirectoryStat> {
+) -> LocalFuture<'a, DirectoryStat> {
     Box::pin(async move {
         let sdk_page = sdk_directory.list(0).await.unwrap();
         let root_stat = sdk_directory.metadata().await.unwrap();
         let root_facts = std::fs::metadata(disk).unwrap();
         assert_eq!(root_stat.identity, [root_facts.dev(), root_facts.ino()]);
-        let absent = runtime_fs::EntryName::new("absent".into()).unwrap();
+        let absent = EntryName::new("absent".into()).unwrap();
         assert!(sdk_directory.stat(&absent).await.unwrap().is_none());
         let observed = sdk_directory
-            .stat(&runtime_fs::EntryName::new(name.to_owned()).unwrap())
+            .stat(&EntryName::new(name.to_owned()).unwrap())
             .await
             .unwrap()
             .unwrap();
@@ -145,69 +144,45 @@ fn assert_sdk_metadata<'a>(
     })
 }
 
-fn assert_raw_write<'a>(
-    directory: &'a runtime_fs::raw::directory_handle::Client,
-    raw: &'a [u8],
+fn assert_write<'a>(
+    directory: &'a DirectoryClient,
+    name: &'a EntryName,
     identity: [u64; 2],
-) -> LocalFuture<'a, runtime_fs::raw::file_handle::Client> {
+) -> LocalFuture<'a, FileHandle> {
     Box::pin(async move {
-        let mut open = directory.open_file_request();
-        open.get().set_name(raw);
-        open.get().set_expected_device(identity[0]);
-        open.get().set_expected_inode(identity[1]);
-        open.get()
-            .set_mode(runtime_fs::raw::OpenMode::ReadWriteExisting);
-        let reply = open.send().promise.await.unwrap();
-        let file = reply.get().unwrap().get_handle().unwrap();
-        let mut write = file.write_request();
-        write.get().set_bytes(b"edited!!");
-        assert_eq!(
-            write
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_written(),
-            8
-        );
+        let file = directory
+            .open_file_expected(name, OpenMode::ReadWriteExisting, identity)
+            .await
+            .unwrap();
+        assert_eq!(file.write_at(0, b"edited!!").await.unwrap(), 8);
         file
     })
 }
 
 fn assert_durable_jobs<'a>(
-    directory: &'a runtime_fs::raw::directory_handle::Client,
+    directory: &'a DirectoryClient,
     disk: &'a std::path::Path,
     metadata: &'a std::path::Path,
-    name: &'a std::ffi::OsString,
+    name: &'a EntryName,
     store: &'a OperationOwner,
-) -> LocalFuture<
-    'a,
-    (
-        native_job::Client,
-        runtime_fs::raw::directory_handle::Client,
-    ),
-> {
+) -> LocalFuture<'a, (NativeJobClient, DirectoryClient)> {
     Box::pin(async move {
-        let mut collision = directory.rename_no_replace_request();
-        collision
-            .get()
-            .set_name(std::os::unix::ffi::OsStrExt::as_bytes(name.as_os_str()));
-        collision.get().set_new_name(b"victim");
-        let reply = collision.send().promise.await.unwrap();
-        let job = reply.get().unwrap().get_job().unwrap();
-        let id = finish(&job, NativeItemState::Failed, 1).await;
+        let victim = EntryName::new("victim".into()).unwrap();
+        let mut job = directory.rename_no_replace(name, &victim).await.unwrap();
+        let id = finish(&mut job, ItemState::Failed, 1).await;
         let report = store.report(&id).unwrap();
         assert_eq!(report.state, OperationState::Finished);
         assert_eq!(report.items.first().unwrap().state, ItemState::Failed);
         assert_eq!(std::fs::read(disk.join("victim")).unwrap(), b"victim");
-        assert_eq!(std::fs::read(disk.join(name)).unwrap(), b"edited!!");
-        let mut create = directory.create_file_request();
-        create.get().set_name(b"created");
-        let reply = create.send().promise.await.unwrap();
-        let job = reply.get().unwrap().get_job().unwrap();
-        let id = finish(&job, NativeItemState::Completed, 0).await;
+        assert_eq!(
+            std::fs::read(disk.join(name.as_os_str())).unwrap(),
+            b"edited!!"
+        );
+        let mut create = directory
+            .create_file(&EntryName::new("created".into()).unwrap())
+            .await
+            .unwrap();
+        let id = finish(&mut create, ItemState::Completed, 0).await;
         let report = store.report(&id).unwrap();
         assert_eq!(report.items.first().unwrap().state, ItemState::Completed);
         assert!(
@@ -219,35 +194,22 @@ fn assert_durable_jobs<'a>(
                 .is_file()
         );
         assert_eq!(std::fs::read(disk.join("created")).unwrap(), b"");
-        let mut mkdir = directory.create_directory_request();
-        mkdir.get().set_name(b"folder");
-        let reply = mkdir.send().promise.await.unwrap();
-        let job = reply.get().unwrap().get_job().unwrap();
-        finish(&job, NativeItemState::Completed, 0).await;
-        let mut open = directory.open_directory_request();
-        open.get().set_name(b"folder");
-        let reply = open.send().promise.await.unwrap();
-        let child = reply.get().unwrap().get_handle().unwrap();
-        assert_eq!(
-            child
-                .list_request()
-                .send()
-                .promise
-                .await
-                .unwrap()
-                .get()
-                .unwrap()
-                .get_entries()
-                .unwrap()
-                .len(),
-            0
-        );
+        let mut mkdir = directory
+            .create_directory(&EntryName::new("folder".into()).unwrap())
+            .await
+            .unwrap();
+        finish(&mut mkdir, ItemState::Completed, 0).await;
+        let child = directory
+            .directory(&EntryName::new("folder".into()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(child.list(0).await.unwrap().entries.len(), 0);
         (job, child)
     })
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn raw_directory_rpc_keeps_native_names_rights_and_actual_durable_job_outcomes() {
+async fn directory_rpc_keeps_native_names_rights_and_actual_durable_job_outcomes() {
     let disk = tempfile::tempdir().unwrap();
     let metadata = tempfile::Builder::new()
         .permissions(std::fs::Permissions::from_mode(0o700))
@@ -255,6 +217,7 @@ async fn raw_directory_rpc_keeps_native_names_rights_and_actual_durable_job_outc
         .unwrap();
     let raw = vec![b'f', 0xff];
     let name = std::ffi::OsString::from_vec(raw.clone());
+    let entry = EntryName::new(name.clone()).unwrap();
     std::fs::write(disk.path().join(&name), b"original").unwrap();
     std::fs::write(disk.path().join("victim"), b"victim").unwrap();
     for index in 0..257 {
@@ -298,46 +261,41 @@ async fn raw_directory_rpc_keeps_native_names_rights_and_actual_durable_job_outc
         tokio::runtime::Handle::current(),
     )
     .unwrap();
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let transport = runtime_portal::UnixCapnpClient::from_connected_fd(
-                client_stream.into_raw_fd(),
-                capnp_rpc::rpc_twoparty_capnp::Side::Client,
-            )
+    let connection =
+        runtime_fs::connection::Connection::connect("directory-server-client", client_stream)
             .unwrap();
-            let fs: runtime_fs::WorkspaceFsClient = transport.bootstrap();
-            let sdk = runtime_fs::FsClient::from_raw(fs.clone());
-            let reply = fs.directory_request().send().promise.await.unwrap();
-            let directory = reply.get().unwrap().get_handle().unwrap();
-            assert_raw_listing(&directory, &raw).await;
-            let sdk_directory = sdk.directory().await.unwrap();
-            let observed = assert_sdk_metadata(&sdk_directory, disk.path(), &name).await;
-            let sdk_file = sdk_directory
-                .open_file(
-                    &runtime_fs::EntryName::new(name.clone()).unwrap(),
-                    runtime_fs::OpenMode::ReadWriteExisting,
-                )
-                .await
-                .unwrap();
-            assert_eq!(sdk_file.read_at(0, 8).await.unwrap(), b"original");
-            let file = assert_raw_write(&directory, &raw, observed.identity).await;
-            let mut bad = directory.open_directory_request();
-            bad.get().set_name(b"..");
-            assert!(bad.send().promise.await.is_err());
-            let (job, child) =
-                assert_durable_jobs(&directory, disk.path(), metadata.path(), &name, &store).await;
-            authority.revoke_directory(&root).unwrap();
-            assert!(sdk.directory().await.is_err());
-            assert!(sdk_file.read_at(0, 8).await.is_err());
-            assert!(sdk_directory.list(0).await.is_err());
-            let mut read = file.read_request();
-            read.get().set_max_len(8);
-            assert!(read.send().promise.await.is_err());
-            assert!(child.list_request().send().promise.await.is_err());
-            assert!(directory.list_request().send().promise.await.is_err());
-            assert!(job.cancel_request().send().promise.await.is_err());
-            assert_eq!(std::fs::read(disk.path().join(&name)).unwrap(), b"edited!!");
-        })
-        .await;
+    let sdk = runtime_fs::FsClient::from_object(runtime_fs::connection::Object::root(Arc::clone(
+        &connection,
+    )));
+    let directory = sdk.directory().await.unwrap();
+    assert_listing(&directory, &raw).await;
+    let sdk_directory = sdk.directory().await.unwrap();
+    let observed = assert_sdk_metadata(&sdk_directory, disk.path(), &name).await;
+    let sdk_file = sdk_directory
+        .open_file(&entry, OpenMode::ReadWriteExisting)
+        .await
+        .unwrap();
+    assert_eq!(sdk_file.read_at(0, 8).await.unwrap(), b"original");
+    let file = assert_write(&directory, &entry, observed.identity).await;
+    assert!(
+        runtime_fs::connection::Object::root(Arc::clone(&connection))
+            .call(runtime_fs::wire::FsRequest::OpenDirectory {
+                name: b"..".to_vec(),
+            })
+            .await
+            .is_err(),
+        "a traversal name is refused at the server"
+    );
+    let (dir_job, child) =
+        assert_durable_jobs(&directory, disk.path(), metadata.path(), &entry, &store).await;
+    authority.revoke_directory(&root).unwrap();
+    assert!(sdk.directory().await.is_err());
+    assert!(sdk_file.read_at(0, 8).await.is_err());
+    assert!(sdk_directory.list(0).await.is_err());
+    assert!(file.read_at(0, 8).await.is_err());
+    assert!(child.list(0).await.is_err());
+    assert!(directory.list(0).await.is_err());
+    assert!(dir_job.cancel().await.is_err());
+    assert_eq!(std::fs::read(disk.path().join(&name)).unwrap(), b"edited!!");
     server.retire().unwrap();
 }

@@ -1,8 +1,8 @@
 //! Workspace-path resolution for CLI apps.
 //!
 //! Tilo apps read and write user data through the workspace FUSE at
-//! `/var/workspace/` — from the app's view, a regular filesystem, no capnp
-//! gymnastics for the common "write this file" case. This module gives CLI
+//! `/var/workspace/` — from the app's view, a regular filesystem, no wire
+//! protocol for the common "write this file" case. This module gives CLI
 //! apps a one-line way to compute the right path, plus a graceful
 //! standalone fallback.
 
@@ -109,9 +109,9 @@ impl std::fmt::Debug for WorkspaceHandle {
     }
 }
 
-/// Run a closure with a resolved [`WorkspaceHandle`]: a live capnp FS
+/// Run a closure with a resolved [`WorkspaceHandle`]: a live filesystem
 /// client in Tilo, `None` standalone. Runs on the current tokio `LocalSet`
-/// (capnp-rpc futures are `!Send`); skip this and call
+/// (the client session is `!Send`); skip this and call
 /// [`resolve_workspace_path`] directly if you don't need the FS client.
 ///
 /// # Errors

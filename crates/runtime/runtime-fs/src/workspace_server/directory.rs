@@ -8,7 +8,7 @@ use std::future::Future;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::pin::Pin;
 use tilo_fs_client::connection::{Capabilities, ServeObject};
-use tilo_fs_client::wire::{CommittedPin, OpenedFile, Reply, Request};
+use tilo_fs_client::wire::{CommittedPin, FsReply, FsRequest, OpenedFile};
 
 fn name(raw: Vec<u8>) -> Result<EntryName, String> {
     if raw.len() > 4096 {
@@ -56,12 +56,12 @@ impl ServeObject for Directory {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             match request {
-                Request::HistoryQuery {
+                FsRequest::HistoryQuery {
                     name: raw,
                     expected,
                     query,
@@ -80,9 +80,9 @@ impl ServeObject for Directory {
                             Ok(response)
                         })
                         .await?;
-                    Ok(Reply::Bytes(response))
+                    Ok(FsReply::Bytes(response))
                 }
-                Request::HistoryReadSubject { name: raw } => {
+                FsRequest::HistoryReadSubject { name: raw } => {
                     let selected = name(raw)?;
                     let backend = Arc::clone(&self.backend);
                     let subject = self
@@ -98,24 +98,24 @@ impl ServeObject for Directory {
                         })
                         .await?;
                     let Some((backend, slot)) = subject else {
-                        return Ok(Reply::Handle(None));
+                        return Ok(FsReply::Handle(None));
                     };
                     let subject = Arc::new(HistoryReadSubject {
                         server: Arc::clone(&self.server),
                         backend,
                         _slot: slot,
                     });
-                    Ok(Reply::Handle(Some(capabilities.register(subject))))
+                    Ok(FsReply::Handle(Some(capabilities.register(subject))))
                 }
-                Request::SyncDirectory => {
+                FsRequest::SyncDirectory => {
                     let backend = Arc::clone(&self.backend);
                     let synced = self
                         .server
                         .run_directory(backend.clone(), move || backend.sync_directory())
                         .await?;
-                    Ok(Reply::Ack(super::ack(synced.is_some())))
+                    Ok(FsReply::Ack(super::ack(synced.is_some())))
                 }
-                Request::PrepareReplace {
+                FsRequest::PrepareReplace {
                     temporary,
                     temporary_expected,
                     victim,
@@ -142,14 +142,14 @@ impl ServeObject for Directory {
                             )
                         })
                         .await?;
-                    Ok(Reply::Handle(pending.map(|pending| {
+                    Ok(FsReply::Handle(pending.map(|pending| {
                         capabilities.register(Arc::new(PendingReplacement {
                             server: Arc::clone(&self.server),
                             pending,
                         }))
                     })))
                 }
-                Request::Readlink {
+                FsRequest::Readlink {
                     name: raw,
                     expected,
                 } => {
@@ -165,26 +165,26 @@ impl ServeObject for Directory {
                         })
                         .await?;
                     let Some(target) = target else {
-                        return Ok(Reply::Bytes(None));
+                        return Ok(FsReply::Bytes(None));
                     };
                     if target.is_empty() || target.len() > 4096 || target.contains(&0) {
                         return Err("invalid native symlink target".into());
                     }
-                    Ok(Reply::Bytes(Some(target)))
+                    Ok(FsReply::Bytes(Some(target)))
                 }
-                Request::Statfs => {
+                FsRequest::Statfs => {
                     let backend = Arc::clone(&self.backend);
                     let stats = self
                         .server
                         .run_directory(backend.clone(), move || backend.statfs())
                         .await?;
                     let Some(stats) = stats else {
-                        return Ok(Reply::FilesystemStats(None));
+                        return Ok(FsReply::FilesystemStats(None));
                     };
                     stats.validate()?;
-                    Ok(Reply::FilesystemStats(Some(stats)))
+                    Ok(FsReply::FilesystemStats(Some(stats)))
                 }
-                Request::OpenCursor => {
+                FsRequest::OpenCursor => {
                     let backend = Arc::clone(&self.backend);
                     let cursor = self
                         .server
@@ -196,32 +196,32 @@ impl ServeObject for Directory {
                         })
                         .await;
                     let Ok(backend) = cursor else {
-                        return Ok(Reply::Handle(None));
+                        return Ok(FsReply::Handle(None));
                     };
                     let cursor = Arc::new(Cursor {
                         server: Arc::clone(&self.server),
                         backend,
                     });
-                    Ok(Reply::Handle(Some(capabilities.register(cursor))))
+                    Ok(FsReply::Handle(Some(capabilities.register(cursor))))
                 }
-                Request::DirectoryMetadata => {
+                FsRequest::DirectoryMetadata => {
                     let backend = Arc::clone(&self.backend);
                     let metadata = self
                         .server
                         .run_directory(backend.clone(), move || backend.metadata())
                         .await?;
-                    Ok(Reply::Stat(metadata))
+                    Ok(FsReply::Stat(metadata))
                 }
-                Request::StatEntry { name: raw } => {
+                FsRequest::StatEntry { name: raw } => {
                     let selected = name(raw)?;
                     let backend = Arc::clone(&self.backend);
                     let metadata = self
                         .server
                         .run_directory(backend.clone(), move || backend.stat(&selected))
                         .await?;
-                    Ok(Reply::EntryStat(metadata))
+                    Ok(FsReply::EntryStat(metadata))
                 }
-                Request::PinEntry {
+                FsRequest::PinEntry {
                     name: raw,
                     expected,
                 } => {
@@ -243,14 +243,14 @@ impl ServeObject for Directory {
                             Ok(pin)
                         })
                         .await?;
-                    Ok(Reply::Handle(pin.map(|backend| {
+                    Ok(FsReply::Handle(pin.map(|backend| {
                         capabilities.register(Arc::new(MetadataPin {
                             server: Arc::clone(&self.server),
                             backend,
                         }))
                     })))
                 }
-                Request::ListRows { cursor } => {
+                FsRequest::ListRows { cursor } => {
                     let backend = Arc::clone(&self.backend);
                     let page = self
                         .server
@@ -267,20 +267,20 @@ impl ServeObject for Directory {
                             "directory backend exceeded page bound",
                         )?;
                     }
-                    Ok(Reply::Rows(Some(page)))
+                    Ok(FsReply::Rows(Some(page)))
                 }
-                Request::OpenDirectory { name: raw } => {
+                FsRequest::OpenDirectory { name: raw } => {
                     let selected = name(raw)?;
                     let backend = Arc::clone(&self.backend);
                     let child = self
                         .server
                         .run_directory(backend.clone(), move || backend.directory(&selected))
                         .await?;
-                    Ok(Reply::Handle(child.map(|child| {
+                    Ok(FsReply::Handle(child.map(|child| {
                         capabilities.register(directory_root(&self.server, child))
                     })))
                 }
-                Request::OpenFile {
+                FsRequest::OpenFile {
                     name: raw,
                     mode,
                     expected,
@@ -304,20 +304,20 @@ impl ServeObject for Directory {
                         })
                         .await?;
                     let Some((handle, identity)) = opened else {
-                        return Ok(Reply::OpenedFile(None));
+                        return Ok(FsReply::OpenedFile(None));
                     };
                     let file = File {
                         server: Arc::clone(&self.server),
                         source: FileSource::Capability(handle),
                         mode,
                     };
-                    Ok(Reply::OpenedFile(Some(OpenedFile {
+                    Ok(FsReply::OpenedFile(Some(OpenedFile {
                         handle: capabilities.register(Arc::new(file)),
                         device: identity[0],
                         inode: identity[1],
                     })))
                 }
-                Request::SetCreatedPermissions {
+                FsRequest::SetCreatedPermissions {
                     name: raw,
                     expected,
                     mode,
@@ -333,9 +333,9 @@ impl ServeObject for Directory {
                             backend.set_created_permissions(&selected, expected, mode)
                         })
                         .await?;
-                    Ok(Reply::Ack(super::ack(changed.is_some())))
+                    Ok(FsReply::Ack(super::ack(changed.is_some())))
                 }
-                Request::RetireCreated {
+                FsRequest::RetireCreated {
                     name: raw,
                     expected,
                 } => {
@@ -350,33 +350,33 @@ impl ServeObject for Directory {
                             backend.retire_created(&selected, expected)
                         })
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
-                Request::CreateFile { name: raw } => {
+                FsRequest::CreateFile { name: raw } => {
                     let selected = name(raw)?;
                     let backend = Arc::clone(&self.backend);
                     let job = self
                         .server
                         .run_directory(backend.clone(), move || backend.create_file(selected))
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
-                Request::CreateDirectory { name: raw } => {
+                FsRequest::CreateDirectory { name: raw } => {
                     let selected = name(raw)?;
                     let backend = Arc::clone(&self.backend);
                     let job = self
                         .server
                         .run_directory(backend.clone(), move || backend.create_directory(selected))
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
-                Request::Recoveries { after } => {
+                FsRequest::Recoveries { after } => {
                     if !after.is_empty() && after.len() != 24 {
                         return Err("Invalid recovery continuation".into());
                     }
@@ -387,7 +387,7 @@ impl ServeObject for Directory {
                         .run_directory(backend.clone(), move || backend.recoveries(&requested))
                         .await?;
                     let Some(page) = page else {
-                        return Ok(Reply::Recoveries(None));
+                        return Ok(FsReply::Recoveries(None));
                     };
                     if page.entries.len() > 256
                         || (!page.next.is_empty() && page.next.len() != 24)
@@ -406,9 +406,9 @@ impl ServeObject for Directory {
                             "Recovery name too large",
                         )?;
                     }
-                    Ok(Reply::Recoveries(Some(page)))
+                    Ok(FsReply::Recoveries(Some(page)))
                 }
-                Request::RestoreCaptured {
+                FsRequest::RestoreCaptured {
                     recovery,
                     name: raw,
                 } => {
@@ -423,11 +423,11 @@ impl ServeObject for Directory {
                             backend.restore_captured(recovery, selected)
                         })
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
-                Request::AtomicSave {
+                FsRequest::AtomicSave {
                     temporary,
                     expected,
                     target,
@@ -444,9 +444,9 @@ impl ServeObject for Directory {
                             backend.atomic_save(&temporary, expected, &target)
                         })
                         .await?;
-                    Ok(Reply::Ack(super::ack(saved.is_some())))
+                    Ok(FsReply::Ack(super::ack(saved.is_some())))
                 }
-                Request::RenameReplace {
+                FsRequest::RenameReplace {
                     name: raw,
                     new_name,
                 } => {
@@ -457,11 +457,11 @@ impl ServeObject for Directory {
                         .server
                         .run_directory(backend.clone(), move || backend.rename_replace(&old, new))
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
-                Request::RenameNoReplace {
+                FsRequest::RenameNoReplace {
                     name: raw,
                     new_name,
                 } => {
@@ -474,7 +474,7 @@ impl ServeObject for Directory {
                             backend.rename_no_replace(&old, new)
                         })
                         .await?;
-                    Ok(Reply::Handle(job.map(|job| {
+                    Ok(FsReply::Handle(job.map(|job| {
                         capabilities.register(job_root(&self.server, job))
                     })))
                 }
@@ -488,50 +488,50 @@ impl ServeObject for Job {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             let server = &self.server;
             match request {
-                Request::JobCreatedTemporary => {
+                FsRequest::JobCreatedTemporary => {
                     let job = Arc::clone(&self.job);
                     let temporary = server
                         .run(move || checked(|| job.live_scope(), || job.created_temporary()))
                         .await?;
-                    Ok(Reply::Handle(temporary.map(|backend| {
+                    Ok(FsReply::Handle(temporary.map(|backend| {
                         capabilities.register(Arc::new(CreatedTemporary {
                             server: Arc::clone(server),
                             backend,
                         }))
                     })))
                 }
-                Request::JobPinReplacement => {
+                FsRequest::JobPinReplacement => {
                     let job = Arc::clone(&self.job);
                     let pin = server
                         .run(move || checked(|| job.live_scope(), || job.pin_replacement()))
                         .await?;
-                    Ok(Reply::Handle(pin.map(|pin| {
+                    Ok(FsReply::Handle(pin.map(|pin| {
                         capabilities.register(Arc::new(ReplacementPin {
                             server: Arc::clone(server),
                             pin,
                         }))
                     })))
                 }
-                Request::JobCheckScope => {
+                FsRequest::JobCheckScope => {
                     let job = Arc::clone(&self.job);
                     server
                         .run(move || job.live_scope().ok_or("scope checking unavailable")?)
                         .await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::JobPoll => {
+                FsRequest::JobPoll => {
                     let job = Arc::clone(&self.job);
                     let poll = server
                         .run(move || checked(|| job.live_scope(), || job.poll()))
                         .await?;
                     let Some(poll) = poll else {
-                        return Ok(Reply::Poll(None));
+                        return Ok(FsReply::Poll(None));
                     };
                     bound(poll.updates.len(), 1025, "native job exceeded update bound")?;
                     for update in &poll.updates {
@@ -552,14 +552,14 @@ impl ServeObject for Job {
                             JobUpdate::Finished { .. } => {}
                         }
                     }
-                    Ok(Reply::Poll(Some(poll)))
+                    Ok(FsReply::Poll(Some(poll)))
                 }
-                Request::JobCancel => {
+                FsRequest::JobCancel => {
                     let job = Arc::clone(&self.job);
                     let cancelled = server
                         .run(move || checked(|| job.live_scope(), || job.cancel()))
                         .await?;
-                    Ok(Reply::Ack(super::ack(cancelled.is_some())))
+                    Ok(FsReply::Ack(super::ack(cancelled.is_some())))
                 }
                 _ => Err("unexpected native job request".into()),
             }
@@ -576,24 +576,24 @@ impl ServeObject for MetadataPin {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             match request {
-                Request::PinCheckScope => {
+                FsRequest::PinCheckScope => {
                     let backend = Arc::clone(&self.backend);
                     self.server
                         .run(move || backend.live_scope().ok_or("scope checking unavailable")?)
                         .await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::PinStat => {
+                FsRequest::PinStat => {
                     let backend = Arc::clone(&self.backend);
                     let stat = self
                         .server
                         .run(move || checked(|| backend.live_scope(), || backend.metadata()))
                         .await?;
-                    Ok(Reply::Stat(stat))
+                    Ok(FsReply::Stat(stat))
                 }
                 _ => Err("unexpected metadata pin request".into()),
             }
@@ -610,10 +610,10 @@ impl ServeObject for Cursor {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
-            let Request::CursorPage { expected_sequence } = request else {
+            let FsRequest::CursorPage { expected_sequence } = request else {
                 return Err("unexpected cursor request".into());
             };
             let backend = Arc::clone(&self.backend);
@@ -627,7 +627,7 @@ impl ServeObject for Cursor {
                 })
                 .await;
             let Ok(page) = page else {
-                return Ok(Reply::StreamPage(None));
+                return Ok(FsReply::StreamPage(None));
             };
             bound(page.entries.len(), 128, "cursor page exceeds bound")?;
             for row in &page.entries {
@@ -637,7 +637,7 @@ impl ServeObject for Cursor {
                     "cursor page exceeds bound",
                 )?;
             }
-            Ok(Reply::StreamPage(Some(page)))
+            Ok(FsReply::StreamPage(Some(page)))
         })
     }
 }
@@ -651,11 +651,11 @@ impl ServeObject for ReplacementPin {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             match request {
-                Request::ReplacementCommit { receipt } => {
+                FsRequest::ReplacementCommit { receipt } => {
                     if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
                         return Err("Invalid certified commit receipt length".into());
                     }
@@ -663,14 +663,14 @@ impl ServeObject for ReplacementPin {
                     self.server
                         .run(move || pin.commit_with_history(&receipt))
                         .await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::ReplacementCheck => {
+                FsRequest::ReplacementCheck => {
                     let pin = Arc::clone(&self.pin);
                     self.server.run(move || pin.check()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::ReplacementObserve => {
+                FsRequest::ReplacementObserve => {
                     let pin = Arc::clone(&self.pin);
                     let value = self
                         .server
@@ -692,7 +692,7 @@ impl ServeObject for ReplacementPin {
                     {
                         return Err("invalid native replacement observation".into());
                     }
-                    Ok(Reply::ReplacementObservation(value))
+                    Ok(FsReply::ReplacementObservation(value))
                 }
                 _ => Err("unexpected replacement pin request".into()),
             }
@@ -709,14 +709,14 @@ impl ServeObject for PendingReplacement {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             let server = &self.server;
             let pending = &self.pending;
             match request {
-                Request::PendingRetireHandoff { ticket } => {
+                FsRequest::PendingRetireHandoff { ticket } => {
                     let registry = server.handoffs.clone();
                     let pending = Arc::clone(pending);
                     server
@@ -725,9 +725,9 @@ impl ServeObject for PendingReplacement {
                             None => pending.retire_daemon_handoff(ticket),
                         })
                         .await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::PendingCommittedPin => {
+                FsRequest::PendingCommittedPin => {
                     let pending = Arc::clone(pending);
                     let (pin, job) = server
                         .run(move || {
@@ -745,9 +745,9 @@ impl ServeObject for PendingReplacement {
                         pin,
                     }));
                     let job = capabilities.register(job_root(server, job));
-                    Ok(Reply::CommittedPin(Some(CommittedPin { pin, job })))
+                    Ok(FsReply::CommittedPin(Some(CommittedPin { pin, job })))
                 }
-                Request::PendingArm { challenge } => {
+                FsRequest::PendingArm { challenge } => {
                     let registry = server.handoffs.clone();
                     let pending = Arc::clone(pending);
                     let ticket = server
@@ -761,9 +761,9 @@ impl ServeObject for PendingReplacement {
                             Ok(ticket)
                         })
                         .await?;
-                    Ok(Reply::Ticket(ticket.to_vec()))
+                    Ok(FsReply::Ticket(ticket.to_vec()))
                 }
-                Request::PendingObserve => {
+                FsRequest::PendingObserve => {
                     let pending = Arc::clone(pending);
                     let value = server
                         .run(move || {
@@ -774,19 +774,19 @@ impl ServeObject for PendingReplacement {
                             Ok(value)
                         })
                         .await?;
-                    Ok(Reply::PendingObservation(value))
+                    Ok(FsReply::PendingObservation(value))
                 }
-                Request::PendingCheckScope => {
+                FsRequest::PendingCheckScope => {
                     let pending = Arc::clone(pending);
                     server.run(move || pending.check()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::PendingCancel => {
+                FsRequest::PendingCancel => {
                     let pending = Arc::clone(pending);
                     server.run(move || pending.cancel()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::PendingStart { receipt } => {
+                FsRequest::PendingStart { receipt } => {
                     if receipt.is_empty() || receipt.len() > crate::external_history::LIMIT {
                         return Err("Invalid certified prepare receipt length".into());
                     }
@@ -803,7 +803,7 @@ impl ServeObject for PendingReplacement {
                         .await?;
                     // The pending capability is consumed: no post-check on its
                     // closed reservation and no automatic mutation replay.
-                    Ok(Reply::Handle(Some(
+                    Ok(FsReply::Handle(Some(
                         capabilities.register(job_root(server, job)),
                     )))
                 }
@@ -822,21 +822,21 @@ impl ServeObject for CreatedTemporary {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         let capabilities = capabilities.clone();
         Box::pin(async move {
             let server = &self.server;
             match request {
-                Request::TemporarySetPermissions { mode } => {
+                FsRequest::TemporarySetPermissions { mode } => {
                     if mode & !0o7777 != 0 {
                         return Err("invalid own-created mode".into());
                     }
                     let backend = Arc::clone(&self.backend);
                     server.run(move || backend.set_permissions(mode)).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::TemporaryPrepareAtomicSave => {
+                FsRequest::TemporaryPrepareAtomicSave => {
                     use crate::directory_backend::AtomicSavePreparation as Outcome;
                     let backend = Arc::clone(&self.backend);
                     let outcome = server
@@ -850,39 +850,39 @@ impl ServeObject for CreatedTemporary {
                         })
                         .await?;
                     match outcome {
-                        Outcome::Prepared(pending) => Ok(Reply::Handle(Some(
+                        Outcome::Prepared(pending) => Ok(FsReply::Handle(Some(
                             capabilities.register(Arc::new(PendingReplacement {
                                 server: Arc::clone(server),
                                 pending,
                             })),
                         ))),
-                        Outcome::Refused(_) => Ok(Reply::Handle(None)),
+                        Outcome::Refused(_) => Ok(FsReply::Handle(None)),
                         Outcome::Unknown(error) => Err(error.chars().take(512).collect()),
                     }
                 }
-                Request::TemporaryPrepareReplace => {
+                FsRequest::TemporaryPrepareReplace => {
                     let backend = Arc::clone(&self.backend);
                     let pending = server
                         .run(move || checked(|| backend.live_scope(), || backend.prepare_replace()))
                         .await?;
-                    Ok(Reply::Handle(pending.map(|pending| {
+                    Ok(FsReply::Handle(pending.map(|pending| {
                         capabilities.register(Arc::new(PendingReplacement {
                             server: Arc::clone(server),
                             pending,
                         }))
                     })))
                 }
-                Request::TemporaryCheckScope => {
+                FsRequest::TemporaryCheckScope => {
                     let backend = Arc::clone(&self.backend);
                     server.run(move || backend.check()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::TemporaryRetire => {
+                FsRequest::TemporaryRetire => {
                     let backend = Arc::clone(&self.backend);
                     let job = server
                         .run(move || checked(|| backend.live_scope(), || backend.retire()))
                         .await?;
-                    Ok(Reply::Handle(
+                    Ok(FsReply::Handle(
                         job.map(|job| capabilities.register(job_root(server, job))),
                     ))
                 }
@@ -935,13 +935,13 @@ impl ServeObject for HistoryReadSubject {
     fn dispatch(
         self: Arc<Self>,
         _: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>> {
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>> {
         Box::pin(async move {
             let server = &self.server;
             let backend = &self.backend;
             match request {
-                Request::SubjectRetireHandoff { ticket } => {
+                FsRequest::SubjectRetireHandoff { ticket } => {
                     let registry = server.handoffs.clone();
                     let subject = Arc::clone(backend);
                     server
@@ -950,9 +950,9 @@ impl ServeObject for HistoryReadSubject {
                             None => subject.retire_daemon_handoff(ticket),
                         })
                         .await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::SubjectArm { challenge } => {
+                FsRequest::SubjectArm { challenge } => {
                     let registry = server.handoffs.clone();
                     let subject = Arc::clone(backend);
                     let ticket = server
@@ -966,19 +966,19 @@ impl ServeObject for HistoryReadSubject {
                             Ok(ticket)
                         })
                         .await?;
-                    Ok(Reply::Ticket(ticket.unwrap_or_default().to_vec()))
+                    Ok(FsReply::Ticket(ticket.unwrap_or_default().to_vec()))
                 }
-                Request::SubjectCheckScope => {
+                FsRequest::SubjectCheckScope => {
                     let subject = Arc::clone(backend);
                     server.run(move || subject.check_scope()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::SubjectCheck => {
+                FsRequest::SubjectCheck => {
                     let subject = Arc::clone(backend);
                     server.run(move || subject.check()).await?;
-                    Ok(Reply::Empty)
+                    Ok(FsReply::Empty)
                 }
-                Request::SubjectObserve => {
+                FsRequest::SubjectObserve => {
                     let subject = Arc::clone(backend);
                     let observation = server
                         .run(move || {
@@ -989,7 +989,7 @@ impl ServeObject for HistoryReadSubject {
                             Ok(actual)
                         })
                         .await?;
-                    Ok(Reply::HistoryObservation(observation))
+                    Ok(FsReply::HistoryObservation(observation))
                 }
                 _ => Err("unexpected history Read request".into()),
             }

@@ -14210,8 +14210,6 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "cap-std",
- "capnp",
- "capnp-rpc",
  "ed25519-dalek 3.0.0",
  "fs-protocol",
  "libc",
@@ -18915,7 +18913,6 @@ dependencies = [
 name = "tilo-file-provider"
 version = "0.1.0"
 dependencies = [
- "capnp",
  "libc",
  "runtime-fs",
  "runtime-portal",
@@ -19006,8 +19003,6 @@ dependencies = [
  "bao-tree",
  "blake3",
  "bytes",
- "capnp",
- "capnp-rpc",
  "clap",
  "cloud-source",
  "cloud-source-dav",
@@ -19080,8 +19075,6 @@ name = "tilo-fs-client"
 version = "0.1.0"
 dependencies = [
  "blake3",
- "capnp",
- "capnp-rpc",
  "fs-protocol",
  "libc",
  "postcard",

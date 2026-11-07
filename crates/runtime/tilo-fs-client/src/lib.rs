@@ -24,7 +24,7 @@ use runtime_portal::NotAvailable;
 #[cfg(unix)]
 use crate::connection::{Connection, Object};
 #[cfg(unix)]
-use crate::wire::{Reply, Request};
+use crate::wire::{FsReply, FsRequest};
 
 #[cfg(unix)]
 mod bridge;
@@ -169,16 +169,17 @@ pub struct FsClient {
 }
 
 impl FsClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// The workspace capability rooted at an already connected object.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
-    /// Request independently admitted native directory custody, preserving raw names.
+    /// Open independently admitted native directory custody, preserving raw names.
     /// # Errors
     /// Refuses backends without a directory grant and lost or revoked connections.
     pub async fn directory(&self) -> Result<directory_client::DirectoryClient, NotAvailable> {
-        match self.object.call(Request::Directory).await? {
-            Reply::Handle(handle) => Ok(directory_client::DirectoryClient::from_object(
+        match self.object.call(FsRequest::Directory).await? {
+            FsReply::Handle(handle) => Ok(directory_client::DirectoryClient::from_object(
                 handle_reply(handle, &self.object)?,
             )),
             _ => Err(unexpected()),
@@ -195,13 +196,13 @@ impl FsClient {
     pub async fn open(&self, path: &str, mode: OpenMode) -> Result<FileHandle, NotAvailable> {
         match self
             .object
-            .call(Request::Open {
+            .call(FsRequest::Open {
                 path: path.to_owned(),
                 mode,
             })
             .await?
         {
-            Reply::Handle(handle) => Ok(FileHandle {
+            FsReply::Handle(handle) => Ok(FileHandle {
                 object: handle_reply(handle, &self.object)?,
             }),
             _ => Err(unexpected()),
@@ -219,12 +220,12 @@ impl FsClient {
     pub async fn list(&self, path: &str) -> Result<Vec<DirEntry>, NotAvailable> {
         match self
             .object
-            .call(Request::List {
+            .call(FsRequest::List {
                 path: path.to_owned(),
             })
             .await?
         {
-            Reply::Entries(entries) => entries.ok_or_else(crate::native_reply::refused),
+            FsReply::Entries(entries) => entries.ok_or_else(crate::native_reply::refused),
             _ => Err(unexpected()),
         }
     }
@@ -239,12 +240,12 @@ impl FsClient {
     pub async fn stat(&self, path: &str) -> Result<Metadata, NotAvailable> {
         match self
             .object
-            .call(Request::Stat {
+            .call(FsRequest::Stat {
                 path: path.to_owned(),
             })
             .await?
         {
-            Reply::Metadata(metadata) => metadata.ok_or_else(crate::native_reply::refused),
+            FsReply::Metadata(metadata) => metadata.ok_or_else(crate::native_reply::refused),
             _ => Err(unexpected()),
         }
     }
@@ -260,12 +261,12 @@ impl FsClient {
     pub async fn mkdir(&self, path: &str) -> Result<(), NotAvailable> {
         match self
             .object
-            .call(Request::Mkdir {
+            .call(FsRequest::Mkdir {
                 path: path.to_owned(),
             })
             .await?
         {
-            Reply::Empty => Ok(()),
+            FsReply::Empty => Ok(()),
             _ => Err(unexpected()),
         }
     }
@@ -280,12 +281,12 @@ impl FsClient {
     pub async fn remove(&self, path: &str) -> Result<(), NotAvailable> {
         match self
             .object
-            .call(Request::Remove {
+            .call(FsRequest::Remove {
                 path: path.to_owned(),
             })
             .await?
         {
-            Reply::Empty => Ok(()),
+            FsReply::Empty => Ok(()),
             _ => Err(unexpected()),
         }
     }
@@ -302,8 +303,8 @@ impl FileHandle {
     /// # Errors
     /// Refuses absent authentic scope checking, revocation or transport failure.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
-        match self.object.call(Request::CheckScope).await? {
-            Reply::Empty => Ok(()),
+        match self.object.call(FsRequest::CheckScope).await? {
+            FsReply::Empty => Ok(()),
             _ => Err(unexpected()),
         }
     }
@@ -316,8 +317,12 @@ impl FileHandle {
     /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
     /// reply arrives.
     pub async fn read_at(&self, offset: u64, max_len: u32) -> Result<Vec<u8>, NotAvailable> {
-        let bytes = match self.object.call(Request::Read { offset, max_len }).await? {
-            Reply::Bytes(bytes) => bytes.ok_or_else(crate::native_reply::refused)?,
+        let bytes = match self
+            .object
+            .call(FsRequest::Read { offset, max_len })
+            .await?
+        {
+            FsReply::Bytes(bytes) => bytes.ok_or_else(crate::native_reply::refused)?,
             _ => return Err(unexpected()),
         };
         if bytes.len() > MAX_READ_CHUNK as usize || bytes.len() > max_len as usize {
@@ -356,13 +361,13 @@ impl FileHandle {
     pub async fn write_at(&self, offset: u64, bytes: &[u8]) -> Result<u32, NotAvailable> {
         match self
             .object
-            .call(Request::Write {
+            .call(FsRequest::Write {
                 offset,
                 bytes: bytes.to_vec(),
             })
             .await?
         {
-            Reply::Written(written) => written.ok_or_else(crate::native_reply::refused),
+            FsReply::Written(written) => written.ok_or_else(crate::native_reply::refused),
             _ => Err(unexpected()),
         }
     }
@@ -376,12 +381,12 @@ impl FileHandle {
         }
         let written = match self
             .object
-            .call(Request::Append {
+            .call(FsRequest::Append {
                 bytes: bytes.to_vec(),
             })
             .await?
         {
-            Reply::Written(written) => written.ok_or_else(crate::native_reply::refused)?,
+            FsReply::Written(written) => written.ok_or_else(crate::native_reply::refused)?,
             _ => return Err(unexpected()),
         };
         if written as usize > bytes.len() {
@@ -398,8 +403,8 @@ impl FileHandle {
     /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
     /// reply arrives.
     pub async fn flush(&self) -> Result<(), NotAvailable> {
-        match self.object.call(Request::Flush).await? {
-            Reply::Ack(status) => crate::native_reply::check(status),
+        match self.object.call(FsRequest::Flush).await? {
+            FsReply::Ack(status) => crate::native_reply::check(status),
             _ => Err(unexpected()),
         }
     }
@@ -412,8 +417,8 @@ impl FileHandle {
     /// [`NotAvailable::ConnectionFailed`] if the connection drops before a
     /// reply arrives.
     pub async fn metadata(&self) -> Result<Metadata, NotAvailable> {
-        match self.object.call(Request::HandleMetadata).await? {
-            Reply::Metadata(metadata) => metadata.ok_or_else(crate::native_reply::refused),
+        match self.object.call(FsRequest::HandleMetadata).await? {
+            FsReply::Metadata(metadata) => metadata.ok_or_else(crate::native_reply::refused),
             _ => Err(unexpected()),
         }
     }

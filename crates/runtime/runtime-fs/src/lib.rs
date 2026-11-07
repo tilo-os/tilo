@@ -4,8 +4,8 @@ pub use tilo_fs_client::{
 };
 #[cfg(unix)]
 pub use tilo_fs_client::{
-    EntryName, cloud, connect, connect_stream, directory_client, directory_connection,
-    selected_client,
+    EntryName, cloud, connect, connect_stream, connection, directory_client, directory_connection,
+    selected_client, wire,
 };
 
 #[cfg(unix)]

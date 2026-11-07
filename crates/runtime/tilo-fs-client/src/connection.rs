@@ -24,7 +24,7 @@ use runtime_portal::NotAvailable;
 use tokio::sync::oneshot;
 use wire_frame::{FrameReader, Framing};
 
-use crate::wire::{Frame, MAX_FRAME, ROOT, Reply, Request};
+use crate::wire::{Frame, FsReply, FsRequest, MAX_FRAME, ROOT};
 
 const FRAMING: Framing = Framing::big_endian(MAX_FRAME);
 
@@ -43,7 +43,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 /// A call that waits for its answer.
-type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<Reply, String>>>>;
+type Pending = Mutex<HashMap<u64, oneshot::Sender<Result<FsReply, String>>>>;
 
 struct Inner {
     outgoing: tokio::sync::mpsc::UnboundedSender<Frame>,
@@ -93,7 +93,11 @@ impl Connection {
 
     /// One request to one object, answered or refused. A transport that ended
     /// fails every waiting call instead of blocking it.
-    pub(crate) async fn call(&self, object: u64, request: Request) -> Result<Reply, NotAvailable> {
+    pub(crate) async fn call(
+        &self,
+        object: u64,
+        request: FsRequest,
+    ) -> Result<FsReply, NotAvailable> {
         if !self.0.live.load(Ordering::Acquire) {
             return Err(disconnected("the filesystem connection is closed"));
         }
@@ -118,6 +122,19 @@ impl Connection {
             Ok(Err(message)) => Err(NotAvailable::Refused(message)),
             Err(_) => Err(disconnected("the filesystem connection ended")),
         }
+    }
+
+    /// Whether both ends are still there: a connection whose peer left, or one
+    /// this end closed, fails every later call.
+    pub fn live(&self) -> bool {
+        self.0.live.load(Ordering::Acquire)
+    }
+
+    /// Close now instead of when the last handle goes: the serving side sees
+    /// the end at once and every waiting call fails.
+    pub fn close(&self) {
+        self.0.live.store(false, Ordering::Release);
+        let _ = self.0.transport.shutdown(std::net::Shutdown::Both);
     }
 
     /// Tell the serving side an object is no longer held here.
@@ -215,7 +232,7 @@ impl Object {
     }
 
     /// One request on this capability, answered or refused.
-    pub async fn call(&self, request: Request) -> Result<Reply, NotAvailable> {
+    pub async fn call(&self, request: FsRequest) -> Result<FsReply, NotAvailable> {
         self.connection.call(self.id, request).await
     }
 }
@@ -235,8 +252,8 @@ pub trait ServeObject: Send + Sync + 'static {
     fn dispatch(
         self: Arc<Self>,
         capabilities: &Capabilities,
-        request: Request,
-    ) -> Pin<Box<dyn Future<Output = Result<Reply, String>> + Send + 'static>>;
+        request: FsRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<FsReply, String>> + Send + 'static>>;
 }
 
 struct Registry {
