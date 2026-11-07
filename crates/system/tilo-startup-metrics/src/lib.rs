@@ -183,7 +183,7 @@ pub fn launch_requested(key: impl Into<String>) -> u64 {
     };
     if let Some(retired) = retired {
         retire(
-            retired,
+            &retired,
             "application launch timing retired for a newer launch",
         );
     }
@@ -343,7 +343,7 @@ pub fn launch_window_closed(surface_id: u64) {
         };
         launches.remove(index)
     };
-    retire(retired, "application window closed before its first frame");
+    retire(&retired, "application window closed before its first frame");
 }
 
 /// Surfaces bound to a launch that has not yet presented its first frame.
@@ -359,7 +359,7 @@ pub fn launches_awaiting_first_present() -> Vec<u64> {
 }
 
 /// Log one launch's retirement, and stop counting its surface as awaiting.
-fn retire(launch: PendingLaunch, message: &'static str) {
+fn retire(launch: &PendingLaunch, message: &'static str) {
     if launch.surface_id.is_some() {
         AWAITING_FIRST_PRESENT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -386,7 +386,7 @@ pub fn launch_failed(id: u64) {
         launches.remove(index)
     };
     retire(
-        retired,
+        &retired,
         "application launch timing retired before first frame",
     );
 }
