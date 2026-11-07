@@ -143,17 +143,6 @@ pub fn default_user_root() -> Option<PathBuf> {
     Some(tilo_paths::xdg::data_home()?.join("tilo-apps"))
 }
 
-/// Whether this session was handed an app store of its own.
-///
-/// True exactly when `TILO_APPS_DATA_DIR` names the store and no
-/// `TILO_APPS_SYSTEM_DIR` puts the machine's back beside it. The answer
-/// means "which applications this session has is settled, and this
-/// directory is the whole of it". A production desktop sets neither and
-/// gets `false`.
-pub fn store_is_scoped_to_this_session() -> bool {
-    dev_override(SYSTEM_DIR_ENV).is_none() && std::env::var_os("TILO_APPS_DATA_DIR").is_some()
-}
-
 /// Root of the system store, or `None` when there is no system store to
 /// read.
 ///
@@ -237,7 +226,6 @@ mod tests {
             let mut env = tilo_test_env::ScopedEnv::new();
             env.remove("TILO_APPS_SYSTEM_DIR")
                 .set("TILO_APPS_DATA_DIR", "/tmp/tilo-apps-fixture");
-            assert!(store_is_scoped_to_this_session());
             assert_eq!(system_data_dir(), None);
             assert_eq!(
                 default_user_root(),
@@ -245,11 +233,6 @@ mod tests {
             );
 
             env.set("TILO_APPS_SYSTEM_DIR", "/tmp/tilo-apps-system");
-            assert!(
-                !store_is_scoped_to_this_session(),
-                "naming the system store too asks for both, which is a machine-wide \
-             reading and not a scoped session",
-            );
             assert_eq!(
                 system_data_dir(),
                 Some(PathBuf::from("/tmp/tilo-apps-system"))
@@ -257,7 +240,6 @@ mod tests {
 
             env.remove("TILO_APPS_DATA_DIR")
                 .remove("TILO_APPS_SYSTEM_DIR");
-            assert!(!store_is_scoped_to_this_session());
             assert_eq!(
                 system_data_dir(),
                 Some(PathBuf::from(SYSTEM_DATA_DIR)),
