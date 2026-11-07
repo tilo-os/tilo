@@ -118,6 +118,7 @@ fn an_agent_is_found_from_the_workspace_record() {
                 keeper: None,
                 id: None,
                 model: None,
+                colour: None,
             }),
         )
         .expect("an agent is made");

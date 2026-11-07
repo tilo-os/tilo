@@ -808,13 +808,16 @@ workspace-settings-refused = Der Arbeitsbereich hat die Änderung abgelehnt
 workspace-settings-refused-own-role = Niemand ändert die eigene Rolle.
 workspace-settings-refused-own-membership = Niemand entfernt sich selbst aus dem Arbeitsbereich.
 workspace-settings-agents-count = { $count ->
-    [one] 1 mitwirkender Agent
-   *[other] { $count } mitwirkende Agenten
+    [one] 1 Agent
+   *[other] { $count } Agenten
 }
 workspace-settings-agents-help = Agenten arbeiten hier mit dir. Sie tun nur, was du ihnen erlaubst.
-workspace-settings-add-agent = Agent hinzufügen
-workspace-settings-agents-empty-title = Keine Agenten haben Zugriff
-workspace-settings-agents-empty-detail = Beginne mit einem sicheren Profil und prüfe dann jeden einzelnen Bereich.
+workspace-settings-add-agent = Neuer Agent
+workspace-settings-create-agent = Erstellen
+workspace-settings-cancel = Abbrechen
+workspace-settings-bots-help = Bots führen hier kleine Programme von selbst aus: nach Zeitplan, wenn sich etwas ändert, oder als Brücke zu einem Dienst wie Discord.
+workspace-settings-agents-empty-title = Noch keine Agenten
+workspace-settings-agents-empty-detail = Ein Agent arbeitet hier mit dir, mit dem Zugriff, den du ihm erlaubst.
 workspace-settings-bots-header = Bots
 workspace-settings-add-bot = Bot hinzufügen
 workspace-settings-bots-empty = In diesem Arbeitsbereich laufen keine Bots
@@ -825,8 +828,11 @@ workspace-settings-bot-running = Läuft
 workspace-settings-bot-version = Version { $version }
 workspace-settings-remove-bot = Entfernen
 workspace-settings-agents-header = Agenten
-workspace-settings-retire-agent = Zurückziehen
-workspace-settings-agent-name = Neuen Agenten benennen
+workspace-settings-retire-agent = Entfernen
+workspace-settings-agent-name = Name
+workspace-settings-agent-colour = Farbe
+workspace-settings-agent-colour-hint = Seine Farbe kommt von seinem Namen, bis du eine wählst.
+workspace-settings-agent-model-default-choice = Dein Standardmodell
 workspace-settings-agent-name-number = Agent { $number }
 workspace-settings-agent-yours = Deiner
 workspace-settings-agent-keeper-you = Von dir gehalten

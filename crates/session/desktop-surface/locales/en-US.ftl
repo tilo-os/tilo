@@ -789,14 +789,17 @@ workspace-settings-refused = The workspace refused that change
 workspace-settings-refused-own-role = Nobody changes their own role.
 workspace-settings-refused-own-membership = Nobody removes themselves from the workspace.
 workspace-settings-agents-count = { $count ->
-    [one] 1 agent collaborator
-   *[other] { $count } agent collaborators
+    [one] 1 agent
+   *[other] { $count } agents
 }
 workspace-settings-agents-help = Agents work alongside you here. They only do what you allow.
-workspace-settings-add-agent = Add agent
-workspace-settings-agents-empty-title = No agents have access
-workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
+workspace-settings-add-agent = New agent
+workspace-settings-create-agent = Create
+workspace-settings-cancel = Cancel
+workspace-settings-agents-empty-title = No agents yet
+workspace-settings-agents-empty-detail = An agent works alongside you here, with the access you allow it.
 workspace-settings-bots-header = Bots
+workspace-settings-bots-help = Bots run small programs here on their own: on a schedule, when something changes, or as a bridge to a service like Discord.
 workspace-settings-add-bot = Add a bot
 workspace-settings-bots-empty = No bots run in this workspace
 workspace-settings-bot-tag = Bot
@@ -806,8 +809,10 @@ workspace-settings-bot-running = Running
 workspace-settings-bot-version = Version { $version }
 workspace-settings-remove-bot = Remove
 workspace-settings-agents-header = Agents
-workspace-settings-retire-agent = Retire
-workspace-settings-agent-name = Name a new agent
+workspace-settings-retire-agent = Remove
+workspace-settings-agent-name = Name
+workspace-settings-agent-colour = Colour
+workspace-settings-agent-colour-hint = Its colour comes from its name until you pick one.
 workspace-settings-agent-name-number = Agent { $number }
 workspace-settings-agent-yours = Yours
 workspace-settings-agent-keeper-you = Kept by you
@@ -829,6 +834,7 @@ workspace-settings-agent-access-stop = Ask again
 workspace-settings-agent-model = Model
 workspace-settings-agent-model-default = The default: { $model }
 workspace-settings-agent-model-none = No model chosen in Settings
+workspace-settings-agent-model-default-choice = Your default model
 workspace-settings-agent-model-use = Use
 workspace-settings-agent-model-option = { $model } from { $provider }
 workspace-settings-agent-model-in-use = In use

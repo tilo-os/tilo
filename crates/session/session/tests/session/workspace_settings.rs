@@ -153,8 +153,7 @@ fn show_tab(
     tab: &WorkspaceSettingsEffect,
 ) {
     app.effect(tab).expect("show the tab");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(session, app);
 }
 
 /// The desk's search, as it publishes it while it is open.
@@ -356,8 +355,7 @@ fn workspace_settings_gives_and_revokes_a_permission() {
     press(&mut app, "ws-grant-who");
     activate(&mut app, "ada");
     press(&mut app, "ws-grant");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let given = session
         .workspace_settings()
         .expect("workspace settings")
@@ -381,8 +379,7 @@ fn workspace_settings_gives_and_revokes_a_permission() {
 
     press(&mut app, &format!("ws-permission-revoke-{}", given.key));
     press(&mut app, "ws-settings-decision.primary");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let left = session
         .handle()
         .read(|tree| tree.active_workspace().expect("a workspace").sandbox.len());
@@ -438,6 +435,26 @@ fn answer(
     })
 }
 
+/// Let the session answer an ask the sheet made, and the sheet settle.
+fn settle(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
+    session.step(Duration::from_millis(1)).unwrap();
+    app.settle();
+}
+
+/// Its keeper dresses it from its row: the palette opens under it, and the
+/// colour picked is the one its devices draw it in.
+fn recolour(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>) {
+    press(app, "ws-agents-palette-helper");
+    settle(session, app);
+    activate(app, "Green");
+    settle(session, app);
+    assert_eq!(
+        listed_agent(session, "helper").colour,
+        4,
+        "the keeper's colour lands in the record"
+    );
+}
+
 /// This device's Settings offer one model the agents may plan with.
 fn settings_offer_a_model() {
     let profile = "local".to_owned();
@@ -486,24 +503,29 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     );
     app.effect(&WorkspaceSettingsEffect::AddAgent {
         name: "helper".to_owned(),
+        model: String::new(),
+        colour: "violet".to_owned(),
     })
     .expect("the person makes an agent");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let row = listed_agent(&session, "helper");
     assert_eq!(
         row.name, "helper",
         "the row names the agent the record keeps"
     );
     assert_eq!(
-        row.tag.as_deref(),
-        Some("Yours"),
-        "the person here keeps it"
+        row.status, "Kept by you",
+        "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
+    assert!(
+        row.mine,
+        "the person here keeps it, so its colour is theirs"
+    );
+    assert_eq!(row.colour, 9, "it is drawn in the violet its maker picked");
+    recolour(&mut session, &mut app);
     press(&mut app, "ws-agents-review-helper");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let review = shown_review(&session);
     assert!(
         review
@@ -513,8 +535,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the review lists the app: {review:?}"
     );
     choose(&mut app, "Notes Changes", "Ask first");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let setting = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
     assert!(setting.explicit, "the person's answer is the agent's own");
     assert_eq!(setting.answer, tilo_action_policy::Answer::Ask);
@@ -533,8 +554,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the person who keeps it chooses the model"
     );
     press(&mut app, "ws-agent-use-local/sonnet");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let chosen = shown_review(&session)
         .models
         .expect("the review offers models");
@@ -542,8 +562,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
     capture(&mut app, "workspace-settings-agent-review");
 
     activate(&mut app, "Use defaults");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let back = answer(&session, "helper", "so.tilo.notes", ActionKind::Undoable);
     assert!(!back.explicit, "the app follows the admission again");
     assert_eq!(
@@ -552,9 +571,8 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         "the turn's cap admits changes in the app"
     );
 
-    activate(&mut app, "Retire");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    activate(&mut app, "Remove");
+    settle(&mut session, &mut app);
     let after = agents_shown(&session);
     assert!(after.review.is_none(), "retiring ends the review");
     assert!(after.agents.is_empty(), "the sheet lists no agent again");
@@ -619,8 +637,7 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
             .expect("the tab lists .md files")
     };
     press(&mut app, "ws-apps-workspace-ext:md");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let policy = session.handle().read(|tree| {
         tree.active_workspace()
             .expect("a workspace")
@@ -637,8 +654,7 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
     assert_eq!(shown(&session).workspace, "Notes", "the tab says so");
 
     press(&mut app, "ws-apps-workspace-ext:md");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let policy = session.handle().read(|tree| {
         tree.active_workspace()
             .expect("a workspace")
@@ -654,8 +670,7 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
     );
 
     press(&mut app, "ws-apps-yours-ext:md");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let choice = session.handle().read(|tree| {
         tree.active_workspace()
             .expect("a workspace")
@@ -1036,6 +1051,7 @@ fn agents_tab(session: &mut Session) -> HeadlessApp<WorkspaceSettingsApp> {
 /// `name` typed into the Agents tab's field and added: the tab makes an agent
 /// where Chat's record keeps it.
 fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>, name: &str) {
+    press(app, "ws-agents-new");
     app.harness()
         .perform_named(
             "ws-agents-name",
@@ -1043,7 +1059,8 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
         )
         .expect("name the agent");
     app.settle();
-    press(app, "ws-agents-add");
+    capture(app, "workspace-settings-agents-new");
+    press(app, "ws-agents-create");
     session.step(Duration::from_millis(1)).unwrap();
     pump(session, &mut [], |_, _| {
         app.settle();
@@ -1064,29 +1081,37 @@ fn workspace_settings_makes_the_workspaces_agents() {
     own_workspace(&session, &[]);
     let workspace = front_workspace(&session);
     let mut app = agents_tab(&mut session);
+    capture(&mut app, "workspace-settings-agents-empty");
     make_agent(&mut session, &mut app, "Analyst");
     let row = listed_agent(&session, "analyst");
     assert_eq!(row.name, "Analyst");
-    assert_eq!(
-        row.tag.as_deref(),
-        Some("Yours"),
-        "the person who made it keeps it"
-    );
     assert_eq!(
         row.status, "Kept by you",
         "the row says who keeps it, in one line"
     );
     assert_eq!(row.model, "Model: No model chosen in Settings");
+    assert!(
+        row.mine,
+        "the person here keeps it, so its colour is theirs"
+    );
+    // Its keeper dresses it from its row: the palette opens under it.
+    press(&mut app, "ws-agents-palette-analyst");
+    settle(&mut session, &mut app);
+    capture(&mut app, "workspace-settings-agents-palette");
+    activate(&mut app, "Green");
+    settle(&mut session, &mut app);
+    assert_eq!(
+        listed_agent(&session, "analyst").colour,
+        4,
+        "the keeper's colour lands in the record"
+    );
     // Its keeper chooses the model it plans with, and the row says which.
     press(&mut app, "ws-agents-review-analyst");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     press(&mut app, "ws-agent-use-local/sonnet");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     press(&mut app, "ws-agent-back");
-    session.step(Duration::from_millis(1)).unwrap();
-    app.settle();
+    settle(&mut session, &mut app);
     let row = listed_agent(&session, "analyst");
     assert_eq!(row.model, "Model: Sonnet from Anthropic");
     capture(&mut app, "workspace-settings-agents");

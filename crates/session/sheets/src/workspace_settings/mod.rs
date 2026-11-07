@@ -113,6 +113,18 @@ pub enum WorkspaceSettingsEffect {
     AddAgent {
         #[param("The new agent's name, as people read it")]
         name: String,
+        #[param("The model it plans with; empty for the keeper's default")]
+        model: String,
+        #[param("Its colour: a presence colour; empty for one derived from its name")]
+        colour: String,
+    },
+    /// Draw an agent in the colour its keeper picked
+    #[effect(attended)]
+    SetAgentColour {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("Its colour: one of the presence colours")]
+        colour: String,
     },
     /// Show what an agent may do in the workspace, app by app
     #[effect(own_device, kind = "read")]
@@ -303,6 +315,10 @@ struct Local {
     confirming: Option<Confirm>,
     /// What the permission composer has chosen.
     draft: permissions::Draft,
+    /// Whether a new agent's form is open.
+    creating: bool,
+    /// The agent whose colour palette is open, by its key.
+    palette: String,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -438,6 +454,8 @@ impl ResourceApp for WorkspaceSettingsApp {
         };
         let name = cx.local(initial.name.clone());
         let new_agent = cx.local(String::new());
+        let new_model = cx.local(String::new());
+        let new_colour = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -459,6 +477,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             shown: shown.clone(),
             name,
             new_agent,
+            new_model,
+            new_colour,
             local: local.clone(),
             seat,
         };
@@ -646,6 +666,10 @@ struct Parts {
     name: LocalState<String>,
     /// The name a new agent is given as typed.
     new_agent: LocalState<String>,
+    /// The model a new agent plans with as chosen.
+    new_model: LocalState<String>,
+    /// The colour a new agent is drawn in as chosen, a presence colour's id.
+    new_colour: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
@@ -656,13 +680,16 @@ impl Parts {
     /// decision, as a key is; anyone acting for them goes through the
     /// door, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
-        // A new agent is named by what the field held: the press takes it,
-        // and a press with no name asks nothing.
-        if let WorkspaceSettingsEffect::AddAgent { name } = &effect {
-            self.new_agent.set(String::new());
+        // A new agent is named by what the form held: the press takes it,
+        // and a press with no name asks nothing, leaving the form up.
+        if let WorkspaceSettingsEffect::AddAgent { name, .. } = &effect {
             if name.trim().is_empty() {
                 return;
             }
+            self.new_agent.set(String::new());
+            self.new_model.set(String::new());
+            self.new_colour.set(String::new());
+            self.local.update(|local| local.creating = false);
         }
         match &self.seat {
             Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
@@ -692,10 +719,50 @@ impl Parts {
         });
     }
 
-    /// Ask for an agent called what the name field says.
+    /// Open the form a new agent is named and dressed in.
+    fn start_agent(&self) {
+        self.local.update(|local| local.creating = true);
+    }
+
+    /// Put the new agent's form away, with what was typed in it.
+    fn cancel_agent(&self) {
+        self.new_agent.set(String::new());
+        self.new_model.set(String::new());
+        self.new_colour.set(String::new());
+        self.local.update(|local| local.creating = false);
+    }
+
+    /// Dress the new agent in `colour` as the form shows it.
+    fn pick_new_colour(&self, colour: &str) {
+        self.new_colour.set(colour.to_owned());
+    }
+
+    /// Ask for an agent as the form has it.
     fn add_agent(&self) {
         self.ask(WorkspaceSettingsEffect::AddAgent {
             name: self.new_agent.get(),
+            model: self.new_model.get(),
+            colour: self.new_colour.get(),
+        });
+    }
+
+    /// Open the colour palette under `agent`, or put it away again.
+    fn toggle_palette(&self, agent: &str) {
+        self.local.update(|local| {
+            if local.palette == agent {
+                local.palette.clear();
+            } else {
+                agent.clone_into(&mut local.palette);
+            }
+        });
+    }
+
+    /// Ask for `agent` to be drawn in `colour`, and put the palette away.
+    fn set_colour(&self, agent: &str, colour: &str) {
+        self.local.update(|local| local.palette.clear());
+        self.ask(WorkspaceSettingsEffect::SetAgentColour {
+            agent: agent.to_owned(),
+            colour: colour.to_owned(),
         });
     }
 

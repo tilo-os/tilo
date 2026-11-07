@@ -14,6 +14,7 @@ fn make(name: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: None,
         id: None,
         model: None,
+        colour: None,
     })
 }
 
@@ -25,6 +26,7 @@ fn restore(id: &str, keeper: &str) -> tilo_resource::Invoke<WorkspaceAgents> {
         keeper: Some(keeper.to_owned()),
         id: Some(id.to_owned()),
         model: None,
+        colour: None,
     })
 }
 
@@ -39,6 +41,13 @@ fn set_model(agent: &str, model: Option<&str>) -> tilo_resource::Invoke<Workspac
     WorkspaceAgents::SET_AGENT_MODEL.with(workspace_agents::SetAgentModel {
         agent: id(agent),
         model: model.map(str::to_owned),
+    })
+}
+
+fn set_colour(agent: &str, colour: u8) -> tilo_resource::Invoke<WorkspaceAgents> {
+    WorkspaceAgents::SET_AGENT_COLOUR.with(workspace_agents::SetAgentColour {
+        agent: id(agent),
+        colour,
     })
 }
 
@@ -95,10 +104,54 @@ fn an_agents_colour_follows_its_identity_as_a_persons_does() {
         state.agents[0].clone()
     };
     let hue = collab_types::presence::PresenceHue::of_identity(&format!("agent:{}", agent.id.0));
-    assert_eq!(agent.colour, u8::try_from(hue.slot()).unwrap());
+    assert_eq!(agent.colour, None, "nothing chosen, so its identity's");
+    assert_eq!(agent.slot(), u8::try_from(hue.slot()).unwrap());
     assert_eq!(agent.hue(), hue);
     assert_eq!(agent.rgb(), collab_types::presence::identity_rgb(hue));
     assert_eq!(agent.identity(), format!("agent:{}", agent.id.0));
+}
+
+#[test]
+fn an_agent_is_made_in_the_colour_its_keeper_picks() {
+    let mut record = as_person(ADA);
+    record
+        .apply(
+            WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+                name: NonBlank::parse("Claude").expect("a name"),
+                keeper: None,
+                id: None,
+                model: None,
+                colour: Some(4),
+            }),
+        )
+        .unwrap();
+    assert_eq!(record.state().unwrap().agents[0].colour, Some(4));
+    let beyond = record.apply(
+        WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
+            name: NonBlank::parse("Ada").expect("a name"),
+            keeper: None,
+            id: None,
+            model: None,
+            colour: Some(u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap()),
+        }),
+    );
+    let refused = beyond.unwrap_err();
+    assert!(refused.to_string().contains("palette"), "{refused}");
+}
+
+#[test]
+fn only_the_keeper_chooses_the_colour_it_is_drawn_in() {
+    let mut record = as_person(ADA);
+    record.apply(make("Claude")).unwrap();
+    let agent = record.state().unwrap().agents[0].id.0.clone();
+    let mut grace = record.fork().as_author(GRACE);
+    let refused = grace.apply(set_colour(&agent, 2)).unwrap_err();
+    assert!(refused.to_string().contains("keeper"), "{refused}");
+    record.apply(set_colour(&agent, 2)).unwrap();
+    assert_eq!(record.state().unwrap().agents[0].colour, Some(2));
+    let beyond = u8::try_from(collab_types::presence::PRESENCE_LEN).unwrap();
+    let refused = record.apply(set_colour(&agent, beyond)).unwrap_err();
+    assert!(refused.to_string().contains("palette"), "{refused}");
 }
 
 #[test]
@@ -397,6 +450,7 @@ fn golden_state() -> WorkspaceAgents {
                 keeper: Some(ADA.to_owned()),
                 id: Some("claude".to_owned()),
                 model: Some("anthropic/sonnet".to_owned()),
+                colour: None,
             }),
         )
         .unwrap();

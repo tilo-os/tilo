@@ -140,9 +140,9 @@ pub struct Agent {
     /// Its name, as people read it and search finds it.
     #[model(label)]
     pub name: String,
-    /// Its presence colour: a slot of the palette people are drawn in
-    /// ([`PresenceHue`]), taken from its identity when it is made.
-    pub colour: u8,
+    /// Its presence colour as its keeper chose it: a slot of the palette
+    /// people are drawn in ([`PresenceHue`]). `None` follows its identity.
+    pub colour: Option<u8>,
     /// Who keeps it: the member whose devices run it and whose model
     /// credentials pay. Only they choose its model.
     pub keeper: String,
@@ -171,10 +171,19 @@ impl Agent {
         format!("agent:{}", self.id.0)
     }
 
+    /// Its presence colour's slot: the one its keeper chose, or the one its
+    /// identity gives it.
+    #[must_use]
+    pub fn slot(&self) -> u8 {
+        self.colour.unwrap_or_else(|| {
+            u8::try_from(PresenceHue::of_identity(&self.identity()).slot()).unwrap_or(0)
+        })
+    }
+
     /// Its presence colour, as people's colours are chosen.
     #[must_use]
     pub fn hue(&self) -> PresenceHue {
-        PresenceHue::from_slot(usize::from(self.colour))
+        PresenceHue::from_slot(usize::from(self.slot()))
     }
 
     /// The colour it is drawn in, as sRGB.
@@ -253,9 +262,10 @@ impl WorkspaceAgents {
     ///
     /// A name people read (at most 64 characters), the member who keeps it
     /// (whoever asks here when none is named) and optionally a model as
-    /// `provider/model`. Its colour follows its id, as a person's follows
-    /// theirs. Its id is the caller's (`claude-code` for a client that named
-    /// itself, an agent admitted before records were) or a fresh one.
+    /// `provider/model` and the colour it is drawn in. Its colour follows its
+    /// id, as a person's follows theirs, unless one is named. Its id is the
+    /// caller's (`claude-code` for a client that named itself, an agent
+    /// admitted before records were) or a fresh one.
     #[action]
     pub fn create_agent(
         &mut self,
@@ -265,6 +275,8 @@ impl WorkspaceAgents {
         #[param("Its id: one already in use elsewhere; none to mint one")] id: Option<String>,
         #[param("The model it plans with, as provider/model; none for the keeper's default")]
         model: Option<String>,
+        #[param("Its colour: a slot of the presence palette; none for one derived from its id")]
+        colour: Option<u8>,
     ) -> Result<(), Refusal> {
         if self.agents.len() >= MAX_AGENTS {
             return Err(Refusal::new(format!(
@@ -288,17 +300,42 @@ impl WorkspaceAgents {
             }
         };
         let model = chosen_model(model)?;
-        let hue = PresenceHue::of_identity(&format!("agent:{id}"));
+        let colour = colour_slot(colour)?;
         self.agents.push(Agent {
             id: Atom(id),
             name,
-            colour: u8::try_from(hue.slot()).unwrap_or(0),
+            colour,
             keeper,
             model,
             bound: Vec::new(),
             state: AgentState::Active,
             created_at: cx.now_ms(),
         });
+        Ok(())
+    }
+
+    /// Set the colour an agent is drawn in.
+    ///
+    /// The keeper's to choose, as the model is: it is part of the agent's
+    /// identity, the one its face and presence are drawn in everywhere.
+    #[action(item = agents)]
+    pub fn set_agent_colour(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The agent")] agent: Id,
+        #[param("Its colour: a slot of the presence palette")] colour: u8,
+    ) -> Result<(), Refusal> {
+        let me = author(cx)?;
+        let found = self
+            .agents
+            .find_mut(&agent)
+            .ok_or_else(|| no_such(&agent))?;
+        if !same_person(&found.keeper, &me) {
+            return Err(Refusal::new(
+                "only the agent's keeper chooses the colour it is drawn in",
+            ));
+        }
+        found.colour = colour_slot(Some(colour))?;
         Ok(())
     }
 
@@ -403,7 +440,10 @@ impl WorkspaceAgents {
         for agent in &self.agents {
             check_id(&agent.id.0)?;
             check_name(&agent.name)?;
-            if usize::from(agent.colour) >= PRESENCE_LEN {
+            if agent
+                .colour
+                .is_some_and(|colour| usize::from(colour) >= PRESENCE_LEN)
+            {
                 return Err(Refusal::new(format!(
                     "{:?} wears a colour the palette does not have",
                     agent.name
@@ -563,6 +603,19 @@ fn given_id(id: &str) -> Result<String, Refusal> {
     let id = id.trim();
     check_id(id)?;
     Ok(id.to_owned())
+}
+
+/// A colour the presence palette has, or `None` following the agent's id.
+fn colour_slot(colour: Option<u8>) -> Result<Option<u8>, Refusal> {
+    let Some(colour) = colour else {
+        return Ok(None);
+    };
+    if usize::from(colour) >= PRESENCE_LEN {
+        return Err(Refusal::new(format!(
+            "{colour} is not a colour the presence palette has"
+        )));
+    }
+    Ok(Some(colour))
 }
 
 fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
