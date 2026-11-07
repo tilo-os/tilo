@@ -28,6 +28,9 @@ pub const SESSION_LOG_OUT: &str = "session-log-out";
 pub const SESSION_RESTART: &str = "session-restart";
 /// The host action that shuts the computer down.
 pub const SESSION_SHUT_DOWN: &str = "session-shut-down";
+/// The host action that opens the box a report about Tilo itself is written
+/// in, to the one place this computer sends reports.
+pub const REPORT_PROBLEM: &str = "session-report-problem";
 /// What the host answers about the person at this desktop and the workspace it
 /// shows.
 pub trait DesktopRules {

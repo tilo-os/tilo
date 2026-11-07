@@ -186,9 +186,8 @@ fn on_runner(app: &Path) -> bool {
 fn hosted(app: &Path) -> bool {
     let text = text_of(app);
     text.match_indices("ATTACHES_RUNTIME").any(|(at, _)| {
-        text[at..]
-            .split([';', '\n'])
-            .next()
+        text.get(at..)
+            .and_then(|rest| rest.split([';', '\n']).next())
             .is_some_and(|declaration| declaration.trim_end().ends_with("false"))
     })
 }

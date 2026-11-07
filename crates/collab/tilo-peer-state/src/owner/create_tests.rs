@@ -108,6 +108,44 @@ fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
 }
 
 #[test]
+fn a_workspace_founded_without_an_address_is_held_and_named_later() {
+    let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+    let path = directory.path().join("workspaces.json");
+    let key = SigningKey::from_bytes(&[41; 32]);
+    let device = testing::certificate(&SigningKey::from_bytes(&[42; 32]), &key, "A's desktop");
+    let now = SystemTime::now();
+    let owner = open_file(&path).unwrap();
+    // A session with nowhere other devices reach it founds the workspace all
+    // the same: its governance is held here, and its host is named later.
+    let workspace = WorkspaceId::new();
+    owner
+        .create_workspace(workspace, "Founders", &device, &key, None, now)
+        .unwrap();
+    assert!(
+        owner.hosts_unnamed().contains(&workspace),
+        "a record founded without an address names no host"
+    );
+    assert!(
+        owner
+            .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
+            .unwrap(),
+        "there is nowhere to reach its host at yet"
+    );
+
+    // The next session says where the workspace's own host is reached.
+    let hint = testing::own_host_hint_here(workspace, &device, &key);
+    assert!(owner.name_host(workspace, hint.clone()).unwrap());
+    drop(owner);
+    assert_eq!(
+        open_file(&path)
+            .unwrap()
+            .with_current(workspace, |view| view.transport_hint().cloned())
+            .unwrap(),
+        hint
+    );
+}
+
+#[test]
 fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
     let directory = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = directory.path().join("workspaces.json");
@@ -123,7 +161,7 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
             "Founders",
             &device,
             &key,
-            testing::own_host_hint_here(workspace, &device, &key),
+            Some(testing::own_host_hint_here(workspace, &device, &key)),
             now,
         )
         .unwrap();
@@ -164,7 +202,7 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(unnamed, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(unnamed, "  ", &device, &key, hint, now)
+            .create_workspace(unnamed, "  ", &device, &key, Some(hint), now)
             .unwrap_err(),
         "workspace name must contain 1–80 characters"
     );
@@ -172,7 +210,7 @@ fn a_workspace_is_founded_by_its_own_device_with_a_name() {
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert_eq!(
         owner
-            .create_workspace(workspace, "Founders", &device, &other, hint, now)
+            .create_workspace(workspace, "Founders", &device, &other, Some(hint), now)
             .unwrap_err(),
         "a workspace is founded with its own device's key"
     );

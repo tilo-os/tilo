@@ -83,7 +83,7 @@ pub fn founded(
         name,
         certificate,
         key,
-        own_host_hint_here(workspace, certificate, key),
+        Some(own_host_hint_here(workspace, certificate, key)),
         now,
     )?;
     Ok(workspace)

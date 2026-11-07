@@ -197,6 +197,9 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # references and files the window attached, as the app that keeps them reads
 # them.
 tilo-reference = { path = "../../collab/reference" }
+# What a report is before it is filed: the reviewed submission a channel's
+# `submit-feedback` files, the same one a browser's feedback sheet sends.
+tilo-feedback = { path = "../../collab/feedback" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }

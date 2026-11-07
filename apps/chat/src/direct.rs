@@ -208,8 +208,10 @@ impl ChatApp {
                 }
                 // What a box holds of a new agent is made before it sends
                 // ([`crate::effects::ChatEffect::Send`]): an agent still
-                // nameless here is one the workspace never listed.
-                RecipientKind::NewAgent | RecipientKind::Conversation => {
+                // nameless here is one the workspace never listed. A report's
+                // destination is the session's to address, as a conversation
+                // in the workspace that keeps it.
+                RecipientKind::NewAgent | RecipientKind::Conversation | RecipientKind::Feedback => {
                     return Err(crate::i18n::t("chat-send-needs-recipient"));
                 }
             }

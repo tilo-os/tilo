@@ -353,12 +353,10 @@ impl Action for Keep {
 /// what those records carry, so they stay.
 const SPLIT: [&str; 2] = ["window", "lens"];
 
-/// The map under `key` of `parent`, made when absent.
+/// The map under `key` of `parent`, made when absent; the copies of it a replica made before it
+/// met the others are folded into the one the record keeps ([`crate::containers`]).
 fn ensure_map(doc: &mut Doc, parent: &ObjId, key: &str) -> Result<ObjId, ActionError> {
-    if let Some((automerge::Value::Object(ObjType::Map), id)) = doc.get(parent, key)? {
-        return Ok(id);
-    }
-    Ok(doc.put_object(parent, key, ObjType::Map)?)
+    crate::containers::single(doc, parent, key)
 }
 
 /// The map under `key` of `parent`, when it is there.
@@ -397,38 +395,72 @@ fn view_slot(text: &str) -> Option<Value> {
         .ok()
 }
 
-/// The people the record holds any state of.
-fn people(doc: &Doc) -> Vec<(String, ObjId)> {
-    let Some(personal) = map_at(doc, &ROOT, PERSONAL) else {
-        return Vec::new();
-    };
-    doc.keys(&personal)
-        .filter_map(|person| Some((person.clone(), map_at(doc, &personal, &person)?)))
-        .collect()
+/// The maps `parent` holds at `key`, the one the record keeps first: a replica that kept a map
+/// of its own before it met the others wrote into a copy the record does not keep, and what it
+/// wrote is the person's all the same ([`crate::containers`]).
+fn kept_first(doc: &Doc, parent: &ObjId, key: &str) -> Vec<ObjId> {
+    let mut held = crate::containers::maps(doc, parent, key);
+    held.reverse();
+    held
 }
 
-/// Every slot of view state the record keeps, of everyone: the place this build keeps a
-/// window's state at, then the two maps a record kept before it did, each state once and the
-/// newer place first.
-fn slots(doc: &Doc) -> Vec<Slot> {
+/// The people the record holds any state of, each with a copy of their map, the one the record
+/// keeps first: a person's map is made twice when two devices of theirs wrote it at once.
+fn people(doc: &Doc) -> Vec<(String, ObjId)> {
+    let mut people = Vec::new();
+    for personal in kept_first(doc, &ROOT, PERSONAL) {
+        for person in doc.keys(&personal) {
+            people.extend(
+                kept_first(doc, &personal, &person)
+                    .into_iter()
+                    .map(|held| (person.clone(), held)),
+            );
+        }
+    }
+    people
+}
+
+/// The states a window keeps in `place`: the place this build keeps them at, then the two maps
+/// a record kept before it did, each state once and the newer place first.
+fn place_states(doc: &Doc, place: &ObjId) -> Vec<(String, Value)> {
     let mut found = Vec::new();
-    for (person, held) in people(doc) {
-        let Some(views) = map_at(doc, &held, VIEWS) else {
-            continue;
-        };
-        for window in doc.keys(&views) {
-            let Some(place) = map_at(doc, &views, &window) else {
+    let collect = |slots_of: &ObjId, found: &mut Vec<(String, Value)>| {
+        for state in doc.keys(slots_of) {
+            if found.iter().any(|(known, _)| *known == state) {
                 continue;
-            };
-            let mut kept: Vec<Slot> = Vec::new();
-            let collect = |slots_of: &ObjId, kept: &mut Vec<Slot>| {
-                for state in doc.keys(slots_of) {
-                    if kept.iter().any(|slot| slot.state == state) {
-                        continue;
-                    }
-                    let text = text_at(doc, slots_of, &state).ok().flatten();
-                    if let Some(value) = text.as_deref().and_then(view_slot) {
-                        kept.push(Slot {
+            }
+            let text = text_at(doc, slots_of, &state).ok().flatten();
+            if let Some(value) = text.as_deref().and_then(view_slot) {
+                found.push((state, value));
+            }
+        }
+    };
+    collect(place, &mut found);
+    for split in SPLIT {
+        if let Some(slots_of) = map_at(doc, place, split) {
+            collect(&slots_of, &mut found);
+        }
+    }
+    found
+}
+
+/// Every slot of view state the record keeps, of everyone, each state once. Every copy of a
+/// person's map is read, so a state a replica set before it met the others is theirs, until the
+/// next write keeps it.
+fn slots(doc: &Doc) -> Vec<Slot> {
+    let mut found: Vec<Slot> = Vec::new();
+    for (person, held) in people(doc) {
+        for views in kept_first(doc, &held, VIEWS) {
+            for window in doc.keys(&views) {
+                for place in kept_first(doc, &views, &window) {
+                    for (state, value) in place_states(doc, &place) {
+                        let known = |slot: &Slot| {
+                            slot.person == person && slot.window == window && slot.state == state
+                        };
+                        if found.iter().any(known) {
+                            continue;
+                        }
+                        found.push(Slot {
                             person: person.clone(),
                             window: window.clone(),
                             state,
@@ -436,14 +468,7 @@ fn slots(doc: &Doc) -> Vec<Slot> {
                         });
                     }
                 }
-            };
-            collect(&place, &mut kept);
-            for split in SPLIT {
-                if let Some(slots_of) = map_at(doc, &place, split) {
-                    collect(&slots_of, &mut kept);
-                }
             }
-            found.extend(kept);
         }
     }
     found
@@ -451,24 +476,27 @@ fn slots(doc: &Doc) -> Vec<Slot> {
 
 /// The seen marks the record keeps, of everyone, per resource.
 fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
-    let mut marks = Vec::new();
+    let mut marks: Vec<Seen> = Vec::new();
     for (person, held) in people(doc) {
-        let Some(seen) = map_at(doc, &held, SEEN_MARKS) else {
-            continue;
-        };
-        for resource in doc.keys(&seen) {
-            let Some(at) = map_at(doc, &seen, &resource) else {
-                continue;
-            };
-            let mark = SeenMark {
-                change: text_at(doc, &at, "change")?.unwrap_or_default(),
-                at: text_at(doc, &at, "at")?.unwrap_or_default(),
-            };
-            marks.push(Seen {
-                person: person.clone(),
-                resource,
-                mark,
-            });
+        for seen in kept_first(doc, &held, SEEN_MARKS) {
+            for resource in doc.keys(&seen) {
+                let known = |seen: &Seen| seen.person == person && seen.resource == resource;
+                if marks.iter().any(known) {
+                    continue;
+                }
+                let Some(at) = map_at(doc, &seen, &resource) else {
+                    continue;
+                };
+                let mark = SeenMark {
+                    change: text_at(doc, &at, "change")?.unwrap_or_default(),
+                    at: text_at(doc, &at, "at")?.unwrap_or_default(),
+                };
+                marks.push(Seen {
+                    person: person.clone(),
+                    resource,
+                    mark,
+                });
+            }
         }
     }
     Ok(marks)
@@ -476,15 +504,22 @@ fn marks(doc: &Doc) -> Result<Vec<Seen>, ModelError> {
 
 /// The task runs people reviewed.
 fn reviewed(doc: &Doc) -> Vec<Reviewed> {
-    let mut reviewed = Vec::new();
+    let mut reviewed: Vec<Reviewed> = Vec::new();
     for (person, held) in people(doc) {
-        let Some(runs) = map_at(doc, &held, REVIEWED) else {
-            continue;
-        };
-        reviewed.extend(doc.keys(&runs).map(|run| Reviewed {
-            person: person.clone(),
-            run,
-        }));
+        for runs in kept_first(doc, &held, REVIEWED) {
+            for run in doc.keys(&runs) {
+                if reviewed
+                    .iter()
+                    .any(|known| known.person == person && known.run == run)
+                {
+                    continue;
+                }
+                reviewed.push(Reviewed {
+                    person: person.clone(),
+                    run,
+                });
+            }
+        }
     }
     reviewed
 }
@@ -772,5 +807,102 @@ mod tests {
                 run: "run-2".to_owned()
             }]
         );
+    }
+
+    /// How many of the maps `doc` holds at `key` of `parent` hold anything: a fold empties the
+    /// copies it folded and leaves them in place, so the record holds one map with entries in
+    /// it from that write on.
+    fn holding(doc: &Doc, parent: &ObjId, key: &str) -> usize {
+        crate::containers::maps(doc, parent, key)
+            .iter()
+            .filter(|held| doc.keys(held).next().is_some())
+            .count()
+    }
+
+    /// Two devices of ada's, each keeping her state before they met: each made the `$personal`
+    /// map, her map and the maps below of its own, and Automerge keeps one of each.
+    fn kept_apart(keeps: &[Keep], other: &[Keep]) -> Doc {
+        use tilo_automerge::ApplyIncoming as _;
+        let mut mine = Doc::new();
+        let mut theirs = mine.fork();
+        for keep in keeps {
+            apply_as(&mut mine, "ada", keep).expect("her device keeps it");
+        }
+        for keep in other {
+            apply_as(&mut theirs, "ada", keep).expect("her other device keeps it");
+        }
+        assert_eq!(
+            crate::containers::maps(&mine, &ROOT, PERSONAL).len(),
+            1,
+            "one device made the map"
+        );
+        mine.merge_incoming(&mut theirs).expect("the devices meet");
+        theirs.merge_incoming(&mut mine).expect("and meet again");
+        mine
+    }
+
+    /// Every entry ada's devices kept before they met reads, and her next change keeps the one
+    /// map there is.
+    #[test]
+    fn the_state_each_device_kept_before_they_met_reads_on_both() {
+        let mut doc = kept_apart(
+            &[view("ada", "tasks", "place", Json::from("today"))],
+            &[
+                view("ada", "tasks", "scroll", Json::from(120)),
+                seen(
+                    "ada",
+                    "tl:so.tilo.lang.tasks:inbox",
+                    Some(SeenMark {
+                        change: "ab".repeat(32),
+                        at: "2026-11-04T12:00:00Z".to_owned(),
+                    }),
+                ),
+                Keep::Runs {
+                    person: "ada".to_owned(),
+                    runs: vec!["run-7".to_owned()],
+                },
+            ],
+        );
+        assert_eq!(
+            crate::containers::maps(&doc, &ROOT, PERSONAL).len(),
+            2,
+            "the devices made a map each"
+        );
+        let state = Personal::read(&doc).expect("the record reads");
+        let theirs = state.of("ada");
+        let mut places: Vec<String> = theirs
+            .slots
+            .iter()
+            .map(|slot| format!("{}={:?}", slot.state, slot.value))
+            .collect();
+        places.sort();
+        assert_eq!(places, ["place=Text(\"today\")", "scroll=Int(120)"]);
+        assert_eq!(theirs.seen.len(), 1, "the seen mark her other device kept");
+        assert_eq!(theirs.runs[0].run, "run-7");
+
+        // Her next change keeps the state of both in the one map, and nothing is lost.
+        apply_as(
+            &mut doc,
+            "ada",
+            &view("ada", "tasks", "lens", Json::from(2)),
+        )
+        .expect("the change applies");
+        assert_eq!(
+            holding(&doc, &ROOT, PERSONAL),
+            1,
+            "one map of her state from that change on"
+        );
+        assert_eq!(
+            crate::containers::reach(&doc, &ROOT, &[PERSONAL, "ada", VIEWS, "tasks"])
+                .iter()
+                .filter(|place| doc.keys(place).next().is_some())
+                .count(),
+            1,
+            "her window's state is in one map from that change on"
+        );
+        let state = Personal::read(&doc).expect("the record reads");
+        assert_eq!(state.of("ada").slots.len(), 3);
+        assert_eq!(state.of("ada").seen.len(), 1);
+        assert_eq!(state.of("ada").runs.len(), 1);
     }
 }

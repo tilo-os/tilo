@@ -332,11 +332,14 @@ impl QueryComposition {
         self.core.display_text(text).into_owned()
     }
 
-    fn signature(&self, display: &str, style: &TextStyle, text: &str) -> u64 {
+    fn signature(&self, display: &str, style: &TextStyle, text: &str, wrap: Option<f32>) -> u64 {
         use std::collections::hash_map::DefaultHasher;
         use std::hash::{Hash, Hasher};
         let mut hash = DefaultHasher::new();
         display.hash(&mut hash);
+        // A field that wraps breaks its lines at its own width, so the width
+        // is part of what the layout says.
+        wrap.map(f32::to_bits).hash(&mut hash);
         style.size.to_bits().hash(&mut hash);
         style.line_height.to_bits().hash(&mut hash);
         style.weight.hash(&mut hash);
@@ -363,6 +366,41 @@ impl QueryComposition {
         style: &TextStyle,
         ink: QueryInk,
     ) {
+        self.paint(ctx, query, rect, style, ink, None);
+    }
+
+    /// Paint a query that wraps at `rect`'s width, for a field of more than
+    /// one line: the message of a box that makes room for what is written in
+    /// it. The lines sit centred while they fit and start from the top, scrolled
+    /// to keep the caret in view, once they do not, so nothing runs sideways.
+    pub fn draw_wrapped(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        query: QueryView<'_>,
+        rect: Rect,
+        style: &TextStyle,
+        ink: QueryInk,
+    ) {
+        self.paint(ctx, query, rect, style, ink, Some(rect.width()));
+    }
+
+    fn paint(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        query: QueryView<'_>,
+        rect: Rect,
+        style: &TextStyle,
+        ink: QueryInk,
+        wrap: Option<f64>,
+    ) {
+        // A field narrower than a glyph wraps nowhere: it stays one line.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a finite widget width in CSS pixels fits the f32 shaping API"
+        )]
+        let wrap = wrap
+            .filter(|width| width.is_finite() && *width >= 1.0)
+            .map(|width| width as f32);
         let QueryView {
             text,
             selection,
@@ -380,7 +418,7 @@ impl QueryComposition {
         } else {
             self.core.display_text(text).into_owned()
         };
-        let signature = self.signature(&display, style, text);
+        let signature = self.signature(&display, style, text, wrap);
         let epoch_stale = self
             .layout_epoch
             .as_ref()
@@ -391,7 +429,7 @@ impl QueryComposition {
                 &mut renderer.font_system,
                 &display,
                 style,
-                None,
+                wrap,
                 browser_emoji,
             );
             renderer.note_browser_rich_layout(&layout);
@@ -415,14 +453,31 @@ impl QueryComposition {
             return;
         };
         let (caret_x, caret_top, caret_height) = layout.caret_geometry(caret_byte);
-        let scroll_x = if shows_placeholder {
-            0.0
+        let height = f64::from(layout.height());
+        // A wrapped field keeps its caret in view downwards, since its words
+        // already break at its width; a one-line field scrolls sideways.
+        let (scroll_x, scroll_y) = if wrap.is_some() {
+            let scroll_y = if shows_placeholder {
+                0.0
+            } else {
+                (f64::from(caret_top + caret_height) - rect.height().max(1.0)).max(0.0)
+            };
+            (0.0, scroll_y)
         } else {
-            (f64::from(caret_x) - rect.width().max(1.0)).max(0.0)
+            let scroll_x = if shows_placeholder {
+                0.0
+            } else {
+                (f64::from(caret_x) - rect.width().max(1.0)).max(0.0)
+            };
+            (scroll_x, 0.0)
         };
         let origin = Point::new(
             rect.x0 - scroll_x,
-            rect.center().y - f64::from(layout.height()) / 2.0,
+            if height <= rect.height() || wrap.is_none() {
+                rect.center().y - height / 2.0
+            } else {
+                rect.y0 - scroll_y
+            },
         );
         self.origin = origin;
         let caret = Rect::new(

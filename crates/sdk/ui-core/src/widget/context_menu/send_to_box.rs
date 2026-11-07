@@ -23,13 +23,15 @@ impl ContextMenu {
     }
 
     /// Open the box with no menu around it: a window's own send key over a
-    /// selection, and a shell asking an app to send what it holds. `anchor`
-    /// is where what is sent stands; the box stands beside it.
+    /// selection, and a shell asking an app to send what it holds, or to
+    /// report a problem, when it names whom the box goes to. `anchor` is
+    /// where what is sent stands; the box stands beside it.
     pub fn open_send_to_alone(
         &mut self,
         about: Option<crate::shared_selection::SharedSelection>,
         bounds: Option<[f64; 4]>,
         draft: Option<&str>,
+        to: &[crate::floating_surface::Recipient],
     ) {
         self.set_about(about);
         let cursor = self.last_cursor;
@@ -38,7 +40,7 @@ impl ContextMenu {
             .map(|[x0, y0, x1, y1]| Rect::new(x0, y0, x1, y1))
             .unwrap_or_else(|| Rect::new(cursor.x, cursor.y, cursor.x, cursor.y));
         self.alone = Some(anchor);
-        self.send_to.open(draft);
+        self.send_to.open(draft, to);
         self.send_to.focus_first();
         self.send_to.place(anchor, self.viewport);
         self.dirty = true;
