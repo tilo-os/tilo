@@ -358,6 +358,32 @@ mod tests {
         }
     }
 
+    /// What an action tells a person is words a person reads: `notify`'s title and body are
+    /// messages of the action, so a catalogue translates them as it translates a view's.
+    #[test]
+    fn what_an_action_notifies_is_a_message_of_the_action() {
+        let mut meta = PackageMeta::default();
+        let action = serde_json::from_value(serde_json::json!({
+            "id": "7vjyuy7c",
+            "name": "remind",
+            "doc": "",
+            "params": [],
+            "class": "undoable",
+            "reaches": [],
+            "label": "Remind",
+        }))
+        .expect("an action");
+        meta.actions.push(action);
+        meta.words.push(crate::meta::WordMeta {
+            view: "7vjyuy7c".to_owned(),
+            key: "w-due".to_owned(),
+            text: "Due {d}".to_owned(),
+        });
+        let catalogue = source_catalogue(&meta);
+        assert!(catalogue.contains("d-7vjyuy7c = Remind"), "{catalogue}");
+        assert!(catalogue.contains(".w-due = Due { $d }"), "{catalogue}");
+    }
+
     /// A view the compiler makes of a loop body is a part of the view it stands in: it has no
     /// words of its own, so the catalogue never names its binding.
     #[test]

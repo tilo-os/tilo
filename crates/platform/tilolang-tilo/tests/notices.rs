@@ -162,7 +162,7 @@ fn remind(
             .invoke(call, &action_id(meta, action), &args(values))
             .unwrap();
     }
-    *clock.borrow_mut() = "2026-10-27T10:00:00Z".to_owned();
+    "2026-10-27T10:00:00Z".clone_into(&mut clock.borrow_mut());
     assert!(service.poll(), "the reminder's moment came");
 }
 
@@ -204,9 +204,8 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
     // The moment comes on the workspace's device; each of Bo's takes in what it wrote, and
     // shows it, saying what the task is and when it is due.
     remind(&mut ada, &meta, &call, &clock);
-    let record = record_of(&ada);
-    laptop.take_in(&mut record.clone()).unwrap();
-    phone.take_in(&mut record.clone()).unwrap();
+    laptop.take_in(&mut record_of(&ada)).unwrap();
+    phone.take_in(&mut record_of(&ada)).unwrap();
     for notices in [&laptop_notices, &phone_notices] {
         let shown = notices.shown.borrow();
         assert_eq!(shown.len(), 1, "one notice: {shown:#?}");
@@ -238,17 +237,15 @@ fn dismissing_a_notice_on_one_device_clears_it_on_the_others() {
     laptop.poll();
     phone.poll();
     remind(&mut ada, &meta, &call, &clock);
-    let record = record_of(&ada);
-    laptop.take_in(&mut record.clone()).unwrap();
-    phone.take_in(&mut record.clone()).unwrap();
+    laptop.take_in(&mut record_of(&ada)).unwrap();
+    phone.take_in(&mut record_of(&ada)).unwrap();
     let shown = laptop_notices.shown.borrow().clone();
     assert_eq!(shown.len(), 1);
     assert_eq!(phone_notices.shown.borrow().len(), 1, "both showed it");
 
     // Bo dismisses it on their laptop: the record says it is seen, as their own change.
     laptop.notice_seen(&id_of(&shown[0].tag));
-    let after = record_of(&laptop);
-    phone.take_in(&mut after.clone()).unwrap();
+    phone.take_in(&mut record_of(&laptop)).unwrap();
 
     // Their phone takes the notification back, and shows it no more.
     assert_eq!(
@@ -277,7 +274,7 @@ fn a_replay_or_a_late_joining_device_tells_nothing_again() {
     // The moment comes, and the phone takes in what the workspace wrote: this is news to it.
     remind(&mut ada, &meta, &call, &clock);
     let record = record_of(&ada);
-    phone.take_in(&mut record.clone()).unwrap();
+    phone.take_in(&mut record_of(&ada)).unwrap();
     assert_eq!(phone_notices.shown.borrow().len(), 1, "news to this device");
 
     // A device that restarts having told it keeps that, and tells nothing again.
@@ -312,8 +309,7 @@ fn what_a_notice_opens_resolves_from_another_device() {
     let (mut phone, phone_notices) = service("bo", "bo", &before);
     phone.poll();
     remind(&mut ada, &meta, &call, &clock);
-    let record = record_of(&ada);
-    phone.take_in(&mut record.clone()).unwrap();
+    phone.take_in(&mut record_of(&ada)).unwrap();
     let shown = phone_notices.shown.borrow().clone();
     let place = place(&shown[0]);
     assert_eq!(place.app, TASKS_APP);
@@ -344,12 +340,11 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
 
     // The app tells them about the note they keep: one change, written by its action as any
     // other is, and the device that looked before it is shown it.
-    let meta = service
+    let meta = &service
         .host()
         .package("so.tilo.test.own")
         .expect("the package")
-        .meta
-        .clone();
+        .meta;
     let note = service
         .resources()
         .into_iter()
@@ -357,7 +352,7 @@ fn a_notice_from_an_app_with_its_own_records_opens_the_persons_own() {
         .expect("the note is published")
         .id;
     service
-        .invoke(note.as_str(), &action_id(&meta, "tell"), &Map::new())
+        .invoke(note.as_str(), &action_id(meta, "tell"), &Map::new())
         .expect("the action runs");
     let shown = recorder.shown.borrow().clone();
     assert_eq!(shown.len(), 1, "the person it names: {shown:#?}");
@@ -385,9 +380,8 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
                 tilolang_runtime::Value::Principal(person) => person.0,
                 _ => return None,
             };
-            let title = match read(tilolang::NOTICE_TITLE)? {
-                tilolang_runtime::Value::Text(text) => text,
-                _ => return None,
+            let tilolang_runtime::Value::Text(title) = read(tilolang::NOTICE_TITLE)? else {
+                return None;
             };
             let body = match read(tilolang::NOTICE_BODY) {
                 Some(tilolang_runtime::Value::Text(text)) => text,

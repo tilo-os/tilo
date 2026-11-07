@@ -349,27 +349,25 @@ fn notices(host: &Host) -> Vec<(String, String, String, String)> {
         .resources_of(tilolang::HOST_APP, tilolang::NOTICE_TYPE)
         .into_iter()
         .filter_map(|id| {
-            let at = ResourceRef::root(id.clone(), tilolang::NOTICE_TYPE.to_owned());
+            let at = ResourceRef::root(id, tilolang::NOTICE_TYPE.to_owned());
             let to = match host.runtime().read(&at, tilolang::NOTICE_TO).ok()? {
                 Value::Principal(person) => person.0,
                 _ => return None,
             };
-            let title = match host.runtime().read(&at, tilolang::NOTICE_TITLE).ok()? {
-                Value::Text(text) => text,
-                _ => return None,
+            let Value::Text(title) = host.runtime().read(&at, tilolang::NOTICE_TITLE).ok()? else {
+                return None;
             };
             let body = match host.runtime().read(&at, tilolang::NOTICE_BODY).ok()? {
                 Value::Text(text) => text,
                 _ => String::new(),
             };
-            let opens = match host.runtime().read(&at, tilolang::NOTICE_OPENS).ok()? {
-                Value::Ref(reference) => {
-                    let target = reference.target.clone();
-                    let app = &tilolang_tilo::schema::lookup(&target.ty)?.app;
-                    tilolang_tilo::publish::resource_id(&app, &target.id_string())
-                }
-                _ => return None,
+            let Value::Ref(reference) = host.runtime().read(&at, tilolang::NOTICE_OPENS).ok()?
+            else {
+                return None;
             };
+            let target = &reference.target;
+            let app = &tilolang_tilo::schema::lookup(&target.ty)?.app;
+            let opens = tilolang_tilo::publish::resource_id(app, &target.id_string());
             Some((to, title, body, opens))
         })
         .collect()

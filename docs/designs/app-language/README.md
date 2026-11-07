@@ -104,14 +104,26 @@ cryptographic random source, and the numbers it drew are kept in the invocation'
 run resumed after waiting for a person, and any run replayed, reads the numbers it drew the
 first time.
 
-`notify(to: who, title: text, body: text, opens: r)` tells the person `who` something on their
-device, through the same notifications every app's news comes through, and opens the resource
-`r` when they choose it. The journal records that the notice was sent, so a run replayed tells
-them no more than the first run did.
+`notify(to: who, title: text, body: text, opens: r)` tells the person `who` something. A notice
+is a record the action writes in its own change: the workspace keeps it like any other resource,
+so every device of that person reads it and no one else's does, and what one of them does with
+it — dismiss it, or choose it and open the resource `r` — is a change of the record too, which
+takes it down on all of theirs. A device tells only what reaches it as news: a notice the record
+held when it first looked, or one it told before, stays quiet, so a replay and a device joining
+late tell nothing again. The journal records that the notice was written, so a run resumed or
+replayed writes no second one.
+
+What a notice says is words a person reads: its `title` and `body` are messages of the action,
+translated in the package's catalogues like the text of a view (`d-<action>.w-<word>`).
 
 ```
 action remind(t: Task) uses notify {
-    notify(to: t.assignee, title: t.title, body: "Its moment has come.", opens: t)
+    notify(
+        to: t.assignee,
+        title: t.title,
+        body: if let d = t.due { "Due {d}" } else if let p = t.project { p.name } else { "" },
+        opens: t,
+    )
 }
 ```
 
