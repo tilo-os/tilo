@@ -26,18 +26,12 @@ pub struct DropZoneProps {
     #[component(event(value = Vec<String>))]
     pub drop: Event,
     /// The action's button was pressed: the view asks for the files its own way.
-    #[component(event)]
+    #[component(event(press))]
     pub choose: Event,
 }
 
 impl Described for DropZone {
     type Props = DropZoneProps;
-
-    /// Choosing its files is the button's own action: the button holds the binding, so a press
-    /// is the route an agent's invocation of the action lands on, and both run from the door.
-    fn press_events() -> &'static [&'static str] {
-        &["choose"]
-    }
 
     fn from_props(key: &str, props: DropZoneProps) -> Self {
         let mut zone = Self::new(key.to_owned(), "");

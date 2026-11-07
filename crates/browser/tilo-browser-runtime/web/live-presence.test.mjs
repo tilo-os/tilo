@@ -226,14 +226,15 @@ test('receiver drops frames at or below the newest sequence', () => {
   assert.deepEqual(remote.sample(5100).pointer.at, [9, 9]);
 });
 
-test('publisher seeds sequence numbers from the wall clock by default', () => {
+test('publisher counts sequence numbers from zero within 32 bits', () => {
   const sent = [];
-  const publisher = createPresencePublisher({encode: v => new Uint8Array(1), send: (b, v) => sent.push(v), wallNow: () => 1_700_000_000_000,
+  const publisher = createPresencePublisher({encode: v => new Uint8Array(1), send: (b, v) => sent.push(v),
     defer: cb => cb(), setTimer: () => 1, clearTimer() {}});
   publisher.start();
   publisher.update({pointer: P(1, 1)});
-  assert.equal(sent[0].seq, 1_700_000_000_000_000 + 1);
-  assert.ok(Number.isSafeInteger(sent[0].seq));
+  assert.equal(sent[0].seq, 1, 'the first frame is sequence one');
+  assert.ok(sent[0].seq <= 0xffff_ffff, 'a sequence fits the view wire');
+  assert.throws(() => createPresencePublisher({encode: () => new Uint8Array(1), send: () => true, initialSeq: 0x1_0000_0000}), TypeError);
 });
 
 test('receiver renders a clean link at the minimum delay and interpolates between frames', () => {

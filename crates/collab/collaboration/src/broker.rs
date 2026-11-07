@@ -3405,7 +3405,10 @@ impl SessionServices {
     ///
     /// The socket cannot be reached, the handoff cannot be written, or the
     /// broker does not answer the connection.
-    #[cfg(unix)]
+    ///
+    /// Linux only, like the launch handoff a surface writes: the session
+    /// serves whose surfaces these are runs on Linux.
+    #[cfg(target_os = "linux")]
     pub fn connect(
         socket: &std::path::Path,
         app_id: &str,

@@ -36,9 +36,7 @@ fn packages() -> [(&'static str, &'static str); 3] {
 /// Ada's workspace with the two apps, and Ben's replica of it.
 fn workspace() -> (Replica, Replica) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &packages());
-    ada.host
-        .runtime()
-        .set_clock(|| "2026-10-30T09:00:00Z".to_owned());
+    ada.host.set_clock(|| "2026-10-30T09:00:00Z".to_owned());
     ada.commit();
     let ben = ada.fork("ben", &packages());
     ben.host.sync_from(&ben.doc);

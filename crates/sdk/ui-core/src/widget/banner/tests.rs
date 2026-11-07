@@ -708,3 +708,37 @@ fn on_touch_a_banners_controls_are_a_fingers_target_inside_it() {
         );
     }
 }
+
+/// A banner whose dismiss the view bound to an action runs it once, through the banner's own
+/// control door, and goes away.
+#[test]
+fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
+    let mut spec = tilo_actions::ResourceSpec::new("res-notice", "test.notice", "Notice");
+    spec = spec.with_action(
+        tilo_actions::ActionSpec::operation(
+            "dismiss",
+            "Dismiss",
+            tilo_actions::OperationKind::Effect,
+            "test.notice.effect",
+            &(),
+        )
+        .expect("a test action"),
+    );
+    let binding = tilo_actions::ActionBinding::unit_for(&spec, "dismiss").expect("published");
+    let address = binding.address().clone();
+    let mut banner = Banner::new(BannerKind::Info, "Synced").with_dismiss_press(
+        crate::widget::Press::of(crate::component::Event::Action(binding)),
+    );
+    banner.dismiss_now();
+    assert!(banner.dismissed, "the press dismisses the banner");
+    let taken = crate::widget::controls::take_control_invocation(&mut banner);
+    assert_eq!(
+        taken.as_ref().map(|taken| taken.address.clone()),
+        Some(address),
+        "one press runs the dismiss once"
+    );
+    assert!(
+        crate::widget::controls::take_control_invocation(&mut banner).is_none(),
+        "the press is taken once"
+    );
+}

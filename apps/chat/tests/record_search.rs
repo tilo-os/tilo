@@ -8,6 +8,8 @@
 use std::io::Write as _;
 use std::process::{Command, Stdio};
 
+use tilo_test_env::SpawnUnderEnvLock as _;
+
 use chat::demo::Workspace;
 use chat::messages::chat_part;
 use chat::parts::ChatPart;
@@ -22,7 +24,7 @@ fn read(doc: &[u8]) -> Vec<serde_json::Value> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
+        .spawn_locked()
         .expect("the chat binary runs");
     child
         .stdin

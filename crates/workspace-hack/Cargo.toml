@@ -106,6 +106,7 @@ hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cma
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
+hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
@@ -214,6 +215,7 @@ stable_deref_trait = { version = "1" }
 strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
@@ -224,7 +226,7 @@ tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
-tokio-stream = { version = "0.1" }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "time"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }
@@ -353,6 +355,7 @@ hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cma
 hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
+hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
 hmac = { version = "0.12", default-features = false, features = ["reset"] }
 hpke-rs = { version = "0.7", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serialization"] }
 hpke-rs-rust-crypto = { version = "0.7", default-features = false, features = ["experimental", "std"] }
@@ -462,6 +465,7 @@ strict-num = { version = "0.1" }
 subtle = { version = "2", features = ["const-generics"] }
 syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit", "visit-mut"] }
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 syntect = { version = "5", default-features = false, features = ["plist-load", "regex-fancy", "yaml-load"] }
 tantivy = { version = "0.27", default-features = false, features = ["mmap"] }
 thiserror = { version = "2" }
@@ -473,7 +477,7 @@ tinystr = { version = "0.8", features = ["serde", "zerovec"] }
 tls_codec = { version = "0.5", features = ["derive", "mls", "serde"] }
 tokio = { version = "1", features = ["full", "test-util", "tracing"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["logging", "ring", "tls12"] }
-tokio-stream = { version = "0.1" }
+tokio-stream = { version = "0.1", features = ["sync"] }
 tokio-util = { version = "0.7", features = ["codec", "compat", "io", "time"] }
 tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml_parser = { version = "1" }

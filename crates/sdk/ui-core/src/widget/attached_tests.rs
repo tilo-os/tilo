@@ -1,7 +1,34 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::component::{BoundValue, Fired, Intent, Value};
+use crate::component::{BoundValue, Fired, Value};
+
+/// The actions the test's message publishes: the ones a view binds rows to and the system
+/// offers beside them.
+fn message_actions(on: &str) -> tilo_actions::ResourceSpec {
+    let mut published = tilo_actions::ResourceSpec::new(on, "test.message", "Message");
+    for id in ["pin", "delete"] {
+        published = published.with_action(
+            tilo_actions::ActionSpec::operation(
+                id,
+                id,
+                tilo_actions::OperationKind::Effect,
+                "test.message.effect",
+                &id,
+            )
+            .expect("a test action"),
+        );
+    }
+    published
+}
+
+/// The action `action` of the message `on`, as a view binds a row to it.
+fn bound(on: &str, action: &str) -> Event {
+    Event::Action(
+        tilo_actions::ActionBinding::unit_for(&message_actions(on), action)
+            .expect("the message publishes it"),
+    )
+}
 
 /// A component instance as a test writes it: its kind, props, the events it gives and the
 /// components in its slots.
@@ -9,7 +36,7 @@ struct Node {
     kind: &'static str,
     key: String,
     props: BTreeMap<String, Value>,
-    events: Vec<(&'static str, Option<tilo_actions::ActionAddress>)>,
+    events: Vec<(&'static str, Option<(&'static str, &'static str)>)>,
     slots: BTreeMap<&'static str, Vec<Node>>,
     queue: crate::Intents<Fired>,
 }
@@ -32,9 +59,8 @@ impl Node {
     }
 
     /// The event `name`, running the action `action` on `on` when given.
-    fn on(mut self, name: &'static str, runs: Option<(&str, &str)>) -> Self {
-        let address = runs.map(|(on, action)| tilo_actions::ActionAddress::new(on, action));
-        self.events.push((name, address));
+    fn on(mut self, name: &'static str, runs: Option<(&'static str, &'static str)>) -> Self {
+        self.events.push((name, runs));
         self
     }
 
@@ -55,8 +81,9 @@ impl Source for Node {
 
     fn event(&mut self, name: &str) -> Event {
         match self.events.iter().find(|(event, _)| *event == name) {
-            Some((_, address)) => {
-                Event::View(Intent::new(&self.queue, &self.key, name).invoking(address.clone()))
+            Some((_, Some((on, action)))) => bound(on, action),
+            Some((_, None)) => {
+                Event::View(crate::component::Intent::new(&self.queue, &self.key, name))
             }
             None => Event::None,
         }
@@ -92,7 +119,11 @@ impl Source for Node {
     }
 }
 
-fn item(queue: &crate::Intents<Fired>, label: &str, runs: Option<(&str, &str)>) -> Node {
+fn item(
+    queue: &crate::Intents<Fired>,
+    label: &str,
+    runs: Option<(&'static str, &'static str)>,
+) -> Node {
     Node::new("MenuItem", label, queue)
         .prop("label", Value::Text(label.to_owned()))
         .on("choose", runs)
@@ -179,18 +210,12 @@ fn a_view_that_places_every_action_gets_nothing_added() {
     let placed = vec![
         MenuPart::Item(MenuItemProps {
             label: "Pin".into(),
-            choose: Event::View(
-                Intent::new(&queue, "p", "choose")
-                    .invoking(Some(tilo_actions::ActionAddress::new("m1", "pin"))),
-            ),
+            choose: bound("m1", "pin"),
             ..MenuItemProps::default()
         }),
         MenuPart::Item(MenuItemProps {
             label: "Delete".into(),
-            choose: Event::View(
-                Intent::new(&queue, "d", "choose")
-                    .invoking(Some(tilo_actions::ActionAddress::new("m1", "delete"))),
-            ),
+            choose: bound("m1", "delete"),
             ..MenuItemProps::default()
         }),
     ];
@@ -203,10 +228,7 @@ fn the_same_action_on_another_resource_is_not_placed() {
     let queue = crate::Intents::default();
     let placed = vec![MenuPart::Item(MenuItemProps {
         label: "Pin".into(),
-        choose: Event::View(
-            Intent::new(&queue, "p", "choose")
-                .invoking(Some(tilo_actions::ActionAddress::new("m2", "pin"))),
-        ),
+        choose: bound("m2", "pin"),
         ..MenuItemProps::default()
     })];
     let (_, offered) = message(&queue);
@@ -223,7 +245,7 @@ fn a_menus_entries_drop_rules_at_either_end_and_doubled() {
         MenuPart::Separator,
         MenuPart::Item(MenuItemProps {
             label: "Reply".into(),
-            choose: Event::View(Intent::new(&queue, "r", "choose")),
+            choose: Event::View(crate::component::Intent::new(&queue, "r", "choose")),
             ..MenuItemProps::default()
         }),
         MenuPart::Separator,
@@ -232,7 +254,7 @@ fn a_menus_entries_drop_rules_at_either_end_and_doubled() {
             label: "Delete".into(),
             destructive: true,
             key: Some("Ctrl+Enter".into()),
-            choose: Event::View(Intent::new(&queue, "d", "choose")),
+            choose: Event::View(crate::component::Intent::new(&queue, "d", "choose")),
             ..MenuItemProps::default()
         }),
         MenuPart::Separator,
@@ -303,7 +325,7 @@ fn a_run_of_grouped_commands_folds_into_one_row_that_opens_them() {
         MenuPart::Item(MenuItemProps {
             label: label.into(),
             group: Some("Due".into()),
-            choose: Event::View(Intent::new(&queue, label, "choose")),
+            choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
             ..MenuItemProps::default()
         })
     };

@@ -1058,6 +1058,40 @@ fn row_words(
     ))
 }
 
+/// The facts a line says, in order: a line lays its facts out as separate
+/// items, so each is its own word under the line's test id.
+fn line_facts(app: &mut HeadlessApp<QuickSettingsApp>, test_id: &str) -> Vec<String> {
+    fn find<'a>(
+        node: &'a ui::headless::InspectionNode,
+        test_id: &str,
+    ) -> Option<&'a ui::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some(test_id) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| find(child, test_id))
+    }
+    fn names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        if let Some(name) = &node.name {
+            out.push(name.clone());
+        }
+        for child in &node.children {
+            names(child, out);
+        }
+    }
+    let snapshot = app.harness().inspection();
+    let mut out = Vec::new();
+    let Some(line) = find(&snapshot.root, test_id) else {
+        return out;
+    };
+    for said in std::iter::once(&line.semantics)
+        .chain(line.children.iter().map(|child| &child.semantics))
+        .flatten()
+    {
+        names(said, &mut out);
+    }
+    out
+}
+
 /// An output the sound graph names in a paragraph — the card, its mode and
 /// the screen after it — is one line under its slider: the screen and the
 /// port it plays through.
@@ -1073,9 +1107,11 @@ fn a_screen_output_is_named_by_its_screen_and_port() {
         }
     });
     app.settle();
-    let (name, _, _) =
-        row_words(&mut app, "qs-volume-device").expect("the volume row says which output plays");
-    assert_eq!(name.as_deref(), Some("LG ULTRAGEAR+ · HDMI"));
+    assert_eq!(
+        line_facts(&mut app, "qs-volume-device"),
+        ["LG ULTRAGEAR+", "HDMI"],
+        "the volume row says which output plays, screen and port apart"
+    );
     let caption = target(&mut app, "qs-volume-device");
     assert!(
         caption.height() < 30.0,

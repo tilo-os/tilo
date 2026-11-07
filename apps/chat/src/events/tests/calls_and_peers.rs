@@ -1173,6 +1173,17 @@ fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
         bounds.width() > 0.0 && panel.contains(bounds.center()),
         "read where the panel paints it: {bounds:?} in {panel:?}"
     );
+    // The run time the title bar counts is the reading's value, as the
+    // shell's call card carries its own.
+    let run = reading
+        .value
+        .as_deref()
+        .expect("the call's reading carries its run time");
+    let (minutes, seconds) = run.split_once(':').expect("a timecode, m:ss");
+    assert!(
+        minutes.parse::<u64>().is_ok() && seconds.len() == 2 && seconds.parse::<u64>().is_ok(),
+        "the run time reads as a clock: {run}"
+    );
 }
 
 #[test]

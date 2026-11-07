@@ -53,6 +53,12 @@ pub trait ChannelSink: Send + Sync + 'static {
     /// each signed by the device that sent it. The service verifies them as it
     /// verifies any it hears.
     fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>);
+
+    /// Note `workspace`'s governance as it now stands, before anyone is told
+    /// it moved: the service decides under which group a record seals from
+    /// what it reads here, so a workspace that settled must be readable there
+    /// at once, not on a later pass.
+    fn settled(&self, workspace: &str, state: tilo_peer_state::StatePeer);
 }
 
 /// The channel service of the device a host runs on.

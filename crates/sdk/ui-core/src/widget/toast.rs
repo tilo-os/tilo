@@ -955,6 +955,38 @@ pub fn card_height(
     height.max(compact).ceil()
 }
 
+/// How an information card's words are laid out `width` wide: the glyphs it
+/// paints and the runs they fall in, one run a line of one field. A card
+/// elides what does not fit, so the same glyph count at a narrower and a
+/// roomier width says the words were shown whole.
+#[cfg(any(test, feature = "test-support"))]
+#[must_use]
+pub fn painted_words(
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    title: &str,
+    body: &str,
+    caption: &str,
+    width: f64,
+) -> (usize, usize) {
+    let card = ToastCard::new(title, ToastKind::Info)
+        .body(body)
+        .caption(caption);
+    let height = card_height(text_renderer, theme, &card, width);
+    let mut scene = Scene::new();
+    paint_card(
+        &mut scene,
+        Affine::IDENTITY,
+        text_renderer,
+        theme,
+        Rect::new(0.0, 0.0, width, height),
+        &card,
+    );
+    let runs = &scene.encoding().resources.glyph_runs;
+    let glyphs = runs.iter().map(|run| run.glyphs.len()).sum();
+    (glyphs, runs.len())
+}
+
 /// Paint a toast / notification card into `rect` and return the geometry a
 /// caller needs to route clicks. The card is width/height-agnostic (it lays
 /// out relative to `rect`), so a 48px single-line in-app toast and a 64px

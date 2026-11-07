@@ -24,6 +24,9 @@ impl ActionControls for ListRow {
                 let _ = emitter.install_custody(domain, attachment);
             }
         }
+        if let Some(swipe) = &self.swipe {
+            swipe.press.install_custody(domain, attachment);
+        }
         for child in Widget::children_mut(self) {
             crate::widget::controls::install_control_custody(child, domain, attachment);
         }
@@ -50,6 +53,9 @@ impl ActionControls for ListRow {
                 return Some(invocation);
             }
         }
+        if let Some(invocation) = self.swipe.as_ref().and_then(|swipe| swipe.press.take()) {
+            return Some(invocation);
+        }
         Widget::children_mut(self)
             .into_iter()
             .find_map(crate::widget::controls::take_control_invocation)
@@ -58,11 +64,13 @@ impl ActionControls for ListRow {
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let id = self.activation.id();
+        // The box is the row's own control at `<row>/check`, where a reader, a script and
+        // assistive technology reach it: its action lands on the box, not on the row's middle.
         if let Some(verb) = &self.check_verb {
-            bindings.push(verb.metadata(id));
+            bindings.push(verb.metadata(&format!("{id}/check")));
         }
         if let Some(action) = &self.check_action {
-            bindings.push(action.metadata(id));
+            bindings.push(action.metadata(format!("{id}/check")));
         }
         for (index, action) in self.actions.iter().enumerate() {
             match &action.handler {
@@ -73,6 +81,9 @@ impl ActionControls for ListRow {
                 // binding: the inventory names what an agent can invoke.
                 ActionHandler::Callback(_) => {}
             }
+        }
+        if let Some(swipe) = &self.swipe {
+            bindings.extend(swipe.press.metadata(format!("{id}/swipe")));
         }
         for child in Widget::children(self) {
             bindings.extend(crate::widget::controls::control_action_bindings(child));
@@ -99,6 +110,11 @@ impl ActionControls for ListRow {
                 emitter.refresh_availability(allowed);
                 changed |= before != emitter.is_available();
             }
+        }
+        if let Some(swipe) = &self.swipe
+            && swipe.press.refresh_availability(allowed)
+        {
+            changed = true;
         }
         if changed {
             self.dirty = true;

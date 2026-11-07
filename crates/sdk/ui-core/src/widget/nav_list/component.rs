@@ -94,7 +94,7 @@ pub struct NavItemProps {
     /// icon and the avatar never both show: the person takes the icon's place.
     pub person: Option<Person>,
     /// The place was chosen: what choosing it does, beside the list's own `select`.
-    #[component(event)]
+    #[component(event(press))]
     pub select: Event,
 }
 
@@ -178,21 +178,33 @@ struct Placed {
     select: Event,
     /// What each place's own selection does, by its key.
     chosen: std::collections::HashMap<String, Event>,
+    /// The places whose selection is an action: choosing one runs it, by its key.
+    bound: std::collections::HashMap<String, Event>,
     /// What each section's add does, by the section's id.
     adds: std::collections::HashMap<String, Event>,
+    /// The sections whose add is an action: pressing it runs it, by the section's id.
+    bound_adds: std::collections::HashMap<String, Event>,
 }
 
 /// The sections `items` stand for under `title`, in order: places outside a section run
 /// together under the list's title, each section is its own under its heading.
 fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) -> Placed {
-    let chosen: std::collections::HashMap<String, Event> = items
-        .iter()
-        .flat_map(NavEntry::places)
-        .filter(|item| !item.select.is_none())
-        .map(|item| (item.key.clone(), item.select.clone()))
-        .collect();
+    let mut chosen: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
+    let mut bound: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
+    for item in items.iter().flat_map(NavEntry::places) {
+        match item.select {
+            Event::None => {}
+            Event::Action(_) => {
+                bound.insert(item.key.clone(), item.select.clone());
+            }
+            Event::View(_) => {
+                chosen.insert(item.key.clone(), item.select.clone());
+            }
+        }
+    }
     let mut sections: Vec<NavSection> = Vec::new();
     let mut adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
+    let mut bound_adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
     let mut loose: Vec<NavItem> = Vec::new();
     let mut title = title;
     let mut flush = |loose: &mut Vec<NavItem>, sections: &mut Vec<NavSection>| {
@@ -221,7 +233,10 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
                     let icon = add.icon.unwrap_or(crate::icons::Icon::Plus);
                     built = built
                         .trailing_action(crate::widget::NavAction::new("add", icon, add.label));
-                    adds.insert(id, add.run);
+                    match add.run {
+                        Event::Action(_) => bound_adds.insert(id, add.run),
+                        _ => adds.insert(id, add.run),
+                    };
                 }
                 sections.push(built);
             }
@@ -238,13 +253,16 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
         sections,
         select,
         chosen,
+        bound,
         adds,
+        bound_adds,
     }
 }
 
 impl NavList {
     /// Answer choosing a place and pressing a section's add with the events `placed` carries.
     fn report(&self, key: &str, placed: &Placed) {
+        self.bind_actions(&placed.bound, &placed.bound_adds);
         if !placed.adds.is_empty() {
             let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = placed
                 .adds

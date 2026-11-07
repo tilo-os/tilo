@@ -1,5 +1,5 @@
 {
-  "format": 6,
+  "format": 7,
   "toolkit": "0.1.0",
   "components": [
     {
@@ -286,15 +286,18 @@
       "events": [
         {
           "name": "act",
-          "doc": "Its main action was pressed."
+          "doc": "Its main action was pressed.",
+          "press": true
         },
         {
           "name": "secondary_act",
-          "doc": "Its second action was pressed."
+          "doc": "Its second action was pressed.",
+          "press": true
         },
         {
           "name": "dismiss",
-          "doc": "Its dismiss button was pressed: stop showing it. A banner with this has the button, and closes as it is pressed."
+          "doc": "Its dismiss button was pressed: stop showing it. A banner with this has the button, and closes as it is pressed.",
+          "press": true
         }
       ],
       "semantics": {
@@ -538,7 +541,8 @@
       "events": [
         {
           "name": "press",
-          "doc": "It was pressed (a click, Enter or Space, an assistive technology)."
+          "doc": "It was pressed (a click, Enter or Space, an assistive technology).",
+          "press": true
         }
       ],
       "semantics": {
@@ -590,7 +594,8 @@
       "events": [
         {
           "name": "activate",
-          "doc": "The card was pressed: open what it stands for."
+          "doc": "The card was pressed: open what it stands for.",
+          "press": true
         }
       ],
       "semantics": {
@@ -959,7 +964,8 @@
       "events": [
         {
           "name": "check",
-          "doc": "It was pressed: what a mark is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
+          "doc": "It was pressed: what a mark is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value.",
+          "press": true
         }
       ],
       "bindings": [
@@ -1020,11 +1026,13 @@
       "events": [
         {
           "name": "press",
-          "doc": "It was pressed: open or apply what it names."
+          "doc": "It was pressed: open or apply what it names.",
+          "press": true
         },
         {
           "name": "remove",
-          "doc": "Its remove button was pressed: take it away. A chip with this has the button."
+          "doc": "Its remove button was pressed: take it away. A chip with this has the button.",
+          "press": true
         }
       ],
       "semantics": {
@@ -1793,7 +1801,8 @@
         },
         {
           "name": "choose",
-          "doc": "The action's button was pressed: the view asks for the files its own way."
+          "doc": "The action's button was pressed: the view asks for the files its own way.",
+          "press": true
         }
       ],
       "semantics": {
@@ -1985,7 +1994,8 @@
       "events": [
         {
           "name": "act",
-          "doc": "The action was pressed."
+          "doc": "The action was pressed.",
+          "press": true
         }
       ],
       "semantics": {
@@ -2577,11 +2587,13 @@
       "events": [
         {
           "name": "check",
-          "doc": "The checkbox was pressed: what a check is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value."
+          "doc": "The checkbox was pressed: what a check is, in the app's words. A task and every step under it are done in one thing to undo; with no `check`, a press changes the bound value.",
+          "press": true
         },
         {
           "name": "activate",
-          "doc": "The row was activated (a click, Enter, an assistive technology): open what it shows."
+          "doc": "The row was activated (a click, Enter, an assistive technology): open what it shows.",
+          "press": true
         }
       ],
       "bindings": [
@@ -5948,7 +5960,8 @@
       "events": [
         {
           "name": "activate",
-          "doc": "The card was pressed: open what it stands for."
+          "doc": "The card was pressed: open what it stands for.",
+          "press": true
         },
         {
           "name": "drop",
@@ -6105,7 +6118,8 @@
       "events": [
         {
           "name": "choose",
-          "doc": "It was chosen."
+          "doc": "It was chosen.",
+          "press": true
         }
       ],
       "semantics": {
@@ -6571,7 +6585,8 @@
       "events": [
         {
           "name": "activate",
-          "doc": "It was pressed: open what it stands for."
+          "doc": "It was pressed: open what it stands for.",
+          "press": true
         }
       ],
       "semantics": {
@@ -6691,7 +6706,8 @@
       "events": [
         {
           "name": "select",
-          "doc": "The place was chosen: what choosing it does, beside the list's own `select`."
+          "doc": "The place was chosen: what choosing it does, beside the list's own `select`.",
+          "press": true
         }
       ],
       "semantics": {

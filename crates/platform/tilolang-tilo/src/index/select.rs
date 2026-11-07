@@ -474,11 +474,13 @@ impl View<'_> {
         let resource = resource.to_owned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         let keep: Keep = Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             view.holds(&child(&resource, id), keep_schema, &residual)
                 .unwrap_or(false)
@@ -667,10 +669,13 @@ impl View<'_> {
         if !a.exact || a.repeats {
             return Ok(None);
         }
+        // The items the open writes moved into the run, checked against the conjunct it
+        // answers: a run read without one takes every item they wrote, which is the most it
+        // can hold rather than how many it does.
         let run = self.run_as_written(
             (resource, field),
             schema,
-            (&a.column, None),
+            (&a.column, Some(*one)),
             run,
             false,
             touched,
@@ -744,11 +749,13 @@ impl View<'_> {
         let part = part.cloned();
         let snapshot = std::sync::Arc::clone(self.snapshot);
         let overlay = std::sync::Arc::clone(self.overlay);
+        let clock = self.clock;
         Box::new(move |id: &str| {
             evaluated.set(evaluated.get().saturating_add(1));
             let view = View {
                 snapshot: &snapshot,
                 overlay: &overlay,
+                clock,
             };
             let path = child(&resource, id);
             if let Some((column, value)) = &part

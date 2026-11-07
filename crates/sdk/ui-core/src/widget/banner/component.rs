@@ -2,7 +2,7 @@
 
 use crate::component::{Component, Described, Event};
 use crate::icons::Icon;
-use crate::widget::Button;
+use crate::widget::{Button, Press};
 
 use super::{Banner, BannerKind, BannerNotice};
 
@@ -36,14 +36,14 @@ pub struct BannerProps {
     /// The label of a second action, before the main one: "Details".
     pub secondary_action: Option<String>,
     /// Its main action was pressed.
-    #[component(event)]
+    #[component(event(press))]
     pub act: Event,
     /// Its second action was pressed.
-    #[component(event)]
+    #[component(event(press))]
     pub secondary_act: Event,
     /// Its dismiss button was pressed: stop showing it. A banner with this has the button, and
     /// closes as it is pressed.
-    #[component(event)]
+    #[component(event(press))]
     pub dismiss: Event,
 }
 
@@ -71,13 +71,6 @@ impl BannerProps {
 impl Described for Banner {
     type Props = BannerProps;
 
-    /// Its actions are buttons of their own, which hold the binding: a press is the route an
-    /// agent's invocation of the action lands on, and both run from the door. Dismissing it
-    /// closes the banner the view shows.
-    fn press_events() -> &'static [&'static str] {
-        &["act", "secondary_act"]
-    }
-
     fn from_props(key: &str, props: BannerProps) -> Self {
         let notice = props.notice();
         let BannerProps {
@@ -99,8 +92,9 @@ impl Described for Banner {
                 secondary_act,
             ));
         }
-        if let Some(mut dismissed) = dismiss.handler() {
-            banner = banner.on_dismiss(move || dismissed());
+        let dismiss = Press::of(dismiss);
+        if !dismiss.is_none() {
+            banner = banner.with_dismiss_press(dismiss);
         }
         banner
     }

@@ -116,17 +116,26 @@ pub const INPUT_ROUTE_TARGET: &str = "tilo::input_route";
 /// that comes and goes, says in the device's log where it stopped and why.
 pub const JOIN_FLOW_TARGET: &str = "tilo::join_flow";
 
+/// The `tracing` target of what an app writes to its standard streams, each
+/// line prefixed with the app it came from (`[app so.tilo.notes stderr] …`) as
+/// the shell logged it: the only account of a launch that failed inside the
+/// app, which otherwise leaves nothing behind. Relayed at `info`, bounded by
+/// the launch that reads it, and always kept whatever `RUST_LOG` says, since a
+/// log that drops it is a log that cannot say why an app never opened.
+pub const APP_OUTPUT_TARGET: &str = "tilo::app_output";
+
 /// Targets the session log keeps at `info` whatever the base filter: rare
 /// lines that time an app's open, the only record of the compositor's and
 /// launcher's share of it before the app's own clock starts, what the
-/// session's repairs of saved state decided, where touch went, and every
-/// step of joining a workspace.
-const ALWAYS_LOGGED: [&str; 5] = [
+/// session's repairs of saved state decided, where touch went, every step of
+/// joining a workspace, and what an app itself said.
+const ALWAYS_LOGGED: [&str; 6] = [
     LAUNCH_LATENCY_TARGET,
     XWAYLAND_TARGET,
     REPAIR_TARGET,
     INPUT_ROUTE_TARGET,
     JOIN_FLOW_TARGET,
+    APP_OUTPUT_TARGET,
 ];
 
 /// The compositor's log filter directives for a `RUST_LOG` of `rust_log`: that
@@ -1175,23 +1184,23 @@ mod tests {
     fn launch_latency_lines_survive_the_default_session_filter() {
         assert_eq!(
             log_directives(None),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
         );
         assert_eq!(
             log_directives(Some("  ")),
-            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info"
+            "error,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
         );
         assert_eq!(
             log_directives(Some("warn")),
-            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info"
+            "warn,tilo::launch_latency=info,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
         );
         assert_eq!(
             log_directives(Some("info,tilo::launch_latency=off")),
-            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info"
+            "info,tilo::launch_latency=off,tilo::xwayland=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
         );
         assert_eq!(
             log_directives(Some("tilo::xwayland=debug")),
-            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info"
+            "tilo::xwayland=debug,tilo::launch_latency=info,tilo::repair=info,tilo::input_route=info,tilo::join_flow=info,tilo::app_output=info"
         );
     }
 

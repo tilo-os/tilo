@@ -24,7 +24,7 @@ pub struct CardProps {
     #[component(slot(default))]
     pub body: Vec<Element>,
     /// The card was pressed: open what it stands for.
-    #[component(event)]
+    #[component(event(press))]
     pub activate: Event,
 }
 

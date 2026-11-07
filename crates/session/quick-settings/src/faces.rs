@@ -6,6 +6,7 @@
 use connectivity::model::{Accessory, LinkKind, Nearby, SavedNetwork, WifiNetwork};
 use settings_store::hardware::{QuickSettingsConfig, QuickSettingsControl};
 use ui::icons::Icon;
+use ui::widget::primitives::Fact;
 
 use crate::effect::QsEffect;
 use crate::i18n::{t, t_args};
@@ -29,8 +30,8 @@ pub(crate) struct SliderFace {
     /// The accessible name.
     pub name: String,
     /// What the slider sets, when it is one of several: the display's name,
-    /// or the output sound plays on.
-    pub device: Option<String>,
+    /// or the screen and port the sound plays through, each its own fact.
+    pub device: Vec<Fact>,
     /// The level as the person reads it, or that it is muted.
     pub value: String,
     pub level: f64,
@@ -58,7 +59,7 @@ impl Sliders {
                 id: "qs-brightness".into(),
                 kind: SliderKind::Brightness,
                 name: t("qs-brightness"),
-                device: None,
+                device: Vec::new(),
                 value: percent(f64::from(state.brightness)),
                 level: f64::from(state.brightness),
                 available: true,
@@ -76,7 +77,11 @@ impl Sliders {
                 } else {
                     t("qs-brightness")
                 },
-                device: several.then(|| display.name.clone()),
+                device: if several {
+                    vec![Fact::text(display.name.clone())]
+                } else {
+                    Vec::new()
+                },
                 value: percent(f64::from(display.level)),
                 level: f64::from(display.level),
                 available: true,
@@ -92,7 +97,7 @@ impl Sliders {
                 .sound_outputs
                 .iter()
                 .find(|output| output.current)
-                .map(|output| crate::sound::short_output(&output.name)),
+                .map_or_else(Vec::new, |output| crate::sound::output_facts(&output.name)),
             value: if muted { t("qs-muted") } else { percent(level) },
             // A muted output is silent at any level: its track is empty, as
             // the volume readout's is.
@@ -1066,6 +1071,11 @@ mod tests {
     use super::*;
     use crate::{DisplayBrightness, SoundInput, SoundOutput, SoundStream};
 
+    /// The words of a slider's device line, in the order it says them.
+    fn said(facts: &[Fact]) -> Vec<&str> {
+        facts.iter().map(|fact| fact.text.as_str()).collect()
+    }
+
     fn network(name: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork {
         WifiNetwork {
             name: name.into(),
@@ -1117,8 +1127,8 @@ mod tests {
             .find(|row| row.id == "qs-brightness")
             .expect("a screen to dim");
         assert_eq!(brightness.value, "60%");
-        assert_eq!(
-            brightness.device, None,
+        assert!(
+            brightness.device.is_empty(),
             "one screen needs no name of its own"
         );
         let volume = sliders
@@ -1127,8 +1137,8 @@ mod tests {
             .find(|row| row.id == "qs-volume")
             .expect("an output to set");
         assert_eq!(
-            volume.device.as_deref(),
-            Some("Speakers"),
+            said(&volume.device),
+            ["Speakers"],
             "it names where the sound plays"
         );
         assert_eq!(volume.value, "40%");
@@ -1172,12 +1182,12 @@ mod tests {
             ],
             "each row says the display it dims"
         );
-        let devices: Vec<Option<String>> = rows.iter().map(|row| row.device.clone()).collect();
+        let devices: Vec<Vec<Fact>> = rows.iter().map(|row| row.device.clone()).collect();
         assert_eq!(
             devices,
             [
-                Some("Built-in display".into()),
-                Some("LG ULTRAGEAR+".into())
+                vec![Fact::text("Built-in display")],
+                vec![Fact::text("LG ULTRAGEAR+")]
             ],
             "and names it on its own line"
         );

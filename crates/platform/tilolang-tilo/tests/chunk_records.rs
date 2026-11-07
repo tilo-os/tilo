@@ -517,6 +517,14 @@ fn a_retitle_writes_and_syncs_the_card_s_chunk_alone() {
     let host = ada.instance.host().unwrap();
     let field = field_id(&meta, "Board", "left");
     assert_eq!(left(&host, &root, &field), inserted);
+    // The index reads the card's fields from the chunk that holds it: a retitle in a chunk
+    // above the record's is the card's new text, not an empty one read from the record.
+    let card_at =
+        ResourceRef::root(&root, board_schema(&meta).id).item(&inserted[4150], card_type(&meta));
+    assert_eq!(
+        host.store().first_text(&card_at).map(|(text, _)| text),
+        Some("changed".to_owned()),
+    );
 }
 
 #[test]

@@ -37,8 +37,11 @@ pub struct Agent {
     pub colour: u8,
     /// Whether the person here keeps it, who alone picks its colour.
     pub mine: bool,
-    /// What it may do, in one plain line.
+    /// Who keeps it, in one plain line.
     pub status: String,
+    /// What it spent of the day its keeper allows, as the line under that one;
+    /// empty where its keeper set no day, or it spent nothing of one yet.
+    pub spend: String,
     /// The model it plans with, as the row's quiet fact; empty for a service,
     /// which has none.
     pub model: String,
@@ -429,6 +432,9 @@ fn agent_row(agents: &Agents, agent: &Agent, parts: &Parts) -> Element {
         .avatar(agent.name.clone(), agent.key.clone())
         .avatar_colour(colour_of(agent.colour))
         .secondary(agent.status.clone());
+    if !agent.spend.is_empty() {
+        row = row.note(agent.spend.clone());
+    }
     if !agent.model.is_empty() {
         row = row.value(agent.model.clone());
     }
@@ -749,14 +755,18 @@ fn limit_section(review: &AgentReview, limit: &Limit, parts: &Parts) -> Element 
 
 /// The Agents tab as the workspace's owner sees it, for captures.
 pub(super) fn sample() -> Agents {
-    let agent = |key: &str, name: &str, colour: u8, mine: bool, status: &str, model: &str| Agent {
-        key: key.to_owned(),
-        name: name.to_owned(),
-        colour,
-        mine,
-        status: status.to_owned(),
-        model: model.to_owned(),
-    };
+    let agent =
+        |key: &str, name: &str, colour: u8, mine: bool, status: &str, spend: &str, model: &str| {
+            Agent {
+                key: key.to_owned(),
+                name: name.to_owned(),
+                colour,
+                mine,
+                status: status.to_owned(),
+                spend: spend.to_owned(),
+                model: model.to_owned(),
+            }
+        };
     Agents {
         intro: Intro {
             title: "3 agents".to_owned(),
@@ -791,7 +801,8 @@ pub(super) fn sample() -> Agents {
                 "Claude",
                 9,
                 true,
-                "Kept by you · $0.42 of $5 today",
+                "Kept by you",
+                "$0.42 of $5 today",
                 "Model: Sonnet from Anthropic",
             ),
             agent(
@@ -800,6 +811,7 @@ pub(super) fn sample() -> Agents {
                 5,
                 true,
                 "Kept by you",
+                "",
                 "Model: No model chosen in Settings",
             ),
             agent(
@@ -807,7 +819,8 @@ pub(super) fn sample() -> Agents {
                 "Encrypted backup",
                 2,
                 false,
-                "Kept by Ada · $1.20 today",
+                "Kept by Ada",
+                "$1.20 today",
                 "",
             ),
         ],

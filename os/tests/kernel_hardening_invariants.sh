@@ -1130,9 +1130,10 @@ image_policy="$repo/os/etc/containers/policy.json"
 # The release trust the shipped policy is generated from (keys/release); an
 # installed image carries the same files in /usr/share/tilo/release.
 release_trust="$repo/keys/release"
-grep -Fqx 'image_policy_check=/usr/libexec/tilo-image-policy-check' "$audit" \
-  && grep -Fq 'if ! policy_report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
-  && grep -Fq '[ ! -s /usr/share/tilo/cosign.pub ]' "$audit" \
+grep -Fqx 'image_policy_check="${TILO_AUDIT_POLICY_CHECK:-/usr/libexec/tilo-image-policy-check}"' "$audit" \
+  && grep -Fq 'if ! report="$("$image_policy_check" "$policy" 2>&1)"; then' "$audit" \
+  && grep -Fqx 'pinned_key="${TILO_AUDIT_PINNED_KEY:-/usr/share/tilo/cosign.pub}"' "$audit" \
+  && grep -Fq '[ ! -s "$pinned_key" ]' "$audit" \
   || bad 'boot audit does not parse the image signature policy and check the pinned key'
 if grep -Fq '"type": "sigstoreSigned"' "$audit"; then
   bad 'boot audit still greps policy.json fragments instead of parsing the policy'

@@ -906,16 +906,15 @@ mod tests {
         staged
             .press(&control_id, false)
             .expect("the control presses");
-        let chosen: Vec<_> = staged
-            .instance
-            .take_chosen()
-            .into_iter()
-            .map(|(address, _)| (address.resource, address.action))
-            .collect();
+        let chosen = staged.instance.take_chosen();
         assert_eq!(
-            chosen,
-            vec![(descriptor.address.resource, descriptor.address.action)],
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&descriptor.address),
             "pressing the control runs the action the app published"
+        );
+        assert!(
+            staged.instance.take_chosen().is_none(),
+            "one press runs the action once"
         );
     }
 
@@ -1071,11 +1070,223 @@ mod tests {
             .expect("the button presses");
         let chosen = staged.instance.take_chosen();
         assert_eq!(
-            chosen.len(),
-            1,
-            "one press runs the action once: {chosen:?}"
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&increment.address),
+            "one press runs the action once"
         );
-        assert_eq!(chosen[0].0, increment.address);
+        assert!(
+            staged.instance.take_chosen().is_none(),
+            "the press runs one action, not two"
+        );
+    }
+
+    /// Press `bounds` as a person presses them, and let the window and its app answer.
+    fn press_at(staged: &mut Staged, bounds: ui::kurbo::Rect) {
+        let center = bounds.center();
+        staged.harness.click_at(center.x, center.y);
+        staged.exchange();
+        staged.settle().expect("the window comes to rest");
+    }
+
+    /// The first menu button of the window's composed tree whose rows `wanted` picks, with its
+    /// node and those rows: the menu the app composes as it does at a person's press.
+    fn composed_menu(
+        staged: &mut Staged,
+        wanted: &dyn Fn(&[String]) -> bool,
+    ) -> Option<(tilo_ui_host::UiNode, Vec<String>)> {
+        fn find(
+            node: &tilo_ui_host::UiNode,
+            wanted: &dyn Fn(&[String]) -> bool,
+        ) -> Option<tilo_ui_host::UiNode> {
+            if node.kind == "ui.MenuButton" && wanted(&menu_rows_of(node)) {
+                return Some(node.clone());
+            }
+            node.children.iter().find_map(|child| find(child, wanted))
+        }
+        let root = staged.composed()?;
+        let menu = find(&root, wanted)?;
+        let rows = menu_rows_of(&menu);
+        Some((menu, rows))
+    }
+
+    fn menu_rows_of(node: &tilo_ui_host::UiNode) -> Vec<String> {
+        fn rows(node: &tilo_ui_host::UiNode, out: &mut Vec<String>) {
+            if node.kind == "ui.MenuItem" {
+                if let Some(Value::Text(label)) = node.props.get("label") {
+                    out.push(label.clone());
+                }
+                return;
+            }
+            for child in &node.children {
+                rows(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        rows(node, &mut out);
+        out
+    }
+
+    /// A row of a menu the app binds to a published action runs that action once, through the
+    /// same door an agent's invocation of it takes: the row is a part of its menu button, and
+    /// the person's press is the action's own route.
+    #[test]
+    fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_door() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let task_type = packages
+            .0
+            .last()
+            .expect("the app's meta")
+            .meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Task")
+            .expect("a task type")
+            .id
+            .clone();
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        // A task outside the inbox: its page offers the menu that files it back into it.
+        let task = staged
+            .resources()
+            .into_iter()
+            .find(|resource| resource.ty == task_type)
+            .expect("the scenario holds a task");
+        staged.open(task);
+        let descriptors = publish_actions(&mut staged);
+        // The facts menu files the task into a project, its own included, so filing it back
+        // into the inbox is a row bound to that action.
+        let (menu, rows) = composed_menu(&mut staged, &|rows| {
+            rows.iter().any(|row| row == "Inbox") && !rows.iter().any(|row| row == "Reopen")
+        })
+        .expect("the page offers the menu that files the task");
+        assert!(
+            rows.iter().any(|label| label == "Inbox"),
+            "filing the task is one of its menu's rows: {rows:?}"
+        );
+        staged.press(&menu.key, false).expect("the menu opens");
+        staged.harness.relayout();
+        // The row a press reaches is the one the action is bound to: the open menu's Inbox.
+        let (unfile, _control_id, control) = descriptors
+            .iter()
+            .filter(|descriptor| descriptor.action_label == "Inbox")
+            .find_map(|descriptor| {
+                let routes = staged.harness().action_ui_routes(&descriptor.address);
+                let [route] = routes.as_slice() else {
+                    return None;
+                };
+                Some((
+                    descriptor,
+                    route.control_id.clone(),
+                    route.bounds.expect("the row is laid out"),
+                ))
+            })
+            .unwrap_or_else(|| {
+                panic!("the app binds one row to Inbox: {rows:?}");
+            });
+        let event = interaction(unfile);
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the row the app binds the action to");
+        assert!(
+            control.contains(locus.center()),
+            "the agent acts at the row: {locus:?} vs {control:?}"
+        );
+        let (before, after) = capture_agent(&mut staged, &event, "tasks-menu-tilolang");
+        let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
+        assert!(marked.is_some(), "the agent's marker rests on the row");
+        assert!(
+            control.contains(ui::kurbo::Point::new(
+                f64::from(marked.expect("a mark").0),
+                f64::from(marked.expect("a mark").1)
+            )),
+            "the marker is drawn inside the row the action lands on"
+        );
+
+        press_at(&mut staged, control);
+        let chosen = staged.instance.take_chosen();
+        assert_eq!(
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&unfile.address),
+            "one press runs the row's action once"
+        );
+        assert!(
+            staged.instance.take_chosen().is_none(),
+            "the press runs one action, not two"
+        );
+    }
+
+    /// A section's add the app binds to a published action runs it once, through the same door:
+    /// the heading's button is a part of the list, and the person's press is the action's own
+    /// route.
+    #[test]
+    fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_door() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let descriptors = publish_actions(&mut staged);
+        let (add, control) = descriptors
+            .iter()
+            .filter(|descriptor| descriptor.action_label == "New project")
+            .find_map(|descriptor| {
+                let routes = staged.harness().action_ui_routes(&descriptor.address);
+                let route = routes
+                    .into_iter()
+                    .find(|route| route.control_id.starts_with("section-action:"))?;
+                Some((
+                    descriptor,
+                    route.bounds.expect("the heading's add is laid out"),
+                ))
+            })
+            .expect("the app binds its section's add to the action it publishes");
+        let event = interaction(add);
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the button the app binds the action to");
+        assert!(
+            control.contains(locus.center()),
+            "the agent acts at the heading's add: {locus:?} vs {control:?}"
+        );
+        let (before, after) = capture_agent(&mut staged, &event, "tasks-section-add-tilolang");
+        let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
+        assert!(marked.is_some(), "the agent's marker rests on the add");
+
+        press_at(&mut staged, control);
+        let chosen = staged.instance.take_chosen();
+        assert_eq!(
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&add.address),
+            "one press runs the add once"
+        );
+        assert!(
+            staged.instance.take_chosen().is_none(),
+            "the press runs one action, not two"
+        );
     }
 
     /// A row's check box runs the check action the app binds to it, once, through the same door
@@ -1098,17 +1309,25 @@ mod tests {
         .expect("the scenario stages");
         staged.harness.relayout();
         let descriptors = publish_actions(&mut staged);
-        let row = descriptors
+        let (row, check) = descriptors
             .iter()
             .find_map(|descriptor| {
                 bound_box(&staged, descriptor)
-                    .map(|(control_id, _control, _check)| (descriptor.clone(), control_id))
+                    .map(|(_id, _control, check)| (descriptor.clone(), check))
             })
             .expect("a row's check box is bound to the check action it runs");
 
-        staged.press(&row.1, false).expect("the row's box presses");
+        // The box itself, where a person clicks it: the rest of the row is the row's own press.
+        press_at(&mut staged, check);
         let chosen = staged.instance.take_chosen();
-        assert_eq!(chosen.len(), 1, "one press runs one action: {chosen:?}");
-        assert_eq!(chosen[0].0, row.0.address);
+        assert_eq!(
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&row.address),
+            "one press runs the check's action once"
+        );
+        assert!(
+            staged.instance.take_chosen().is_none(),
+            "the press runs one action, not two"
+        );
     }
 }

@@ -11,6 +11,7 @@
 //! the graph.
 
 use audio::sound::Sound;
+use ui::widget::primitives::Fact;
 
 use crate::i18n::t;
 use crate::{QuickSettingsState, SoundInput, SoundOutput, SoundStream};
@@ -92,18 +93,18 @@ pub(crate) fn land(qs: &mut QuickSettingsState, sound: &Sound) {
 }
 
 /// The output as the panel names it under its track: a screen's output says
-/// which screen it plays through and which port, "LG ULTRAGEAR+ · HDMI",
+/// which screen it plays through and which port, as two facts on the line,
 /// rather than the whole card name the graph gives it ("AD106M High
 /// Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"),
 /// which is a paragraph where the panel has a line. Every other output keeps
-/// the name its card has.
-pub(crate) fn short_output(name: &str) -> String {
+/// the name its card has, as one fact.
+pub(crate) fn output_facts(name: &str) -> Vec<Fact> {
     let trimmed = name.trim();
     let Some((card, bracketed)) = trimmed.rsplit_once('[') else {
-        return trimmed.to_owned();
+        return vec![Fact::text(trimmed)];
     };
     let Some(monitor) = bracketed.strip_suffix(']') else {
-        return trimmed.to_owned();
+        return vec![Fact::text(trimmed)];
     };
     // What the card calls the port it plays through, in the words the panel
     // prints: the protocol's own name, which no language localises.
@@ -117,9 +118,9 @@ pub(crate) fn short_output(name: &str) -> String {
     };
     let monitor = monitor.trim();
     match (monitor.is_empty(), port) {
-        (false, Some(port)) => format!("{monitor} · {port}"),
-        (false, None) => monitor.to_owned(),
-        _ => trimmed.to_owned(),
+        (false, Some(port)) => vec![Fact::text(monitor).priority(1), Fact::text(port)],
+        (false, None) => vec![Fact::text(monitor).priority(1)],
+        _ => vec![Fact::text(trimmed)],
     }
 }
 
@@ -192,34 +193,41 @@ mod tests {
         }
     }
 
+    /// The words of a row of facts, in the order the panel says them.
+    fn said(facts: &[Fact]) -> Vec<&str> {
+        facts.iter().map(|fact| fact.text.as_str()).collect()
+    }
+
     /// A screen's output is named by the screen it plays through and its
-    /// port; every other output keeps its own name, and a name that only
-    /// looks bracketed is left whole.
+    /// port, said as two facts; every other output keeps its own name as
+    /// one, and a name that only looks bracketed is left whole.
     #[test]
     fn a_screen_output_is_named_by_its_monitor_and_port() {
         assert_eq!(
-            short_output(
+            said(&output_facts(
                 "AD106M High Definition Audio Controller Digitales Stereo (HDMI) [LG ULTRAGEAR+]"
-            ),
-            "LG ULTRAGEAR+ · HDMI"
+            )),
+            ["LG ULTRAGEAR+", "HDMI"]
         );
         assert_eq!(
-            short_output(
+            said(&output_facts(
                 "Ryzen HD Audio Controller Digitales Stereo (DisplayPort) [Studio Display]"
-            ),
-            "Studio Display · DisplayPort"
+            )),
+            ["Studio Display", "DisplayPort"]
         );
         assert_eq!(
-            short_output("Ryzen HD Audio Controller Digitales Stereo [Studio Display]"),
-            "Studio Display"
+            said(&output_facts(
+                "Ryzen HD Audio Controller Digitales Stereo [Studio Display]"
+            )),
+            ["Studio Display"]
         );
         assert_eq!(
-            short_output("Ryzen HD Audio Controller Analoges Stereo"),
-            "Ryzen HD Audio Controller Analoges Stereo"
+            said(&output_facts("Ryzen HD Audio Controller Analoges Stereo")),
+            ["Ryzen HD Audio Controller Analoges Stereo"]
         );
-        assert_eq!(short_output("USB Headset"), "USB Headset");
-        assert_eq!(short_output("Not [closed"), "Not [closed");
-        assert_eq!(short_output("Empty []"), "Empty []");
+        assert_eq!(said(&output_facts("USB Headset")), ["USB Headset"]);
+        assert_eq!(said(&output_facts("Not [closed")), ["Not [closed"]);
+        assert_eq!(said(&output_facts("Empty []")), ["Empty []"]);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use ui::TextRole;
 use ui::framework::ViewCx;
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
+use ui::widget::primitives::Facts;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Element, IconWidget, ListRow, QuickTile, Row, Slider,
     Spacer, Text,
@@ -94,12 +95,12 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
         .with_no_padding()
         .with_rhythm(Rhythm::Tight);
     track = track.push(slider(cx, face));
-    if let Some(device) = &face.device {
+    if !face.device.is_empty() {
         track = track.push(Box::new(
-            Text::new(device)
-                .with_role(TextRole::Caption)
-                .with_truncate(true)
-                .with_id(format!("{}-device", face.id)),
+            Container::new()
+                .with_no_padding()
+                .with_id(format!("{}-device", face.id))
+                .with_child(Box::new(Facts::new(face.device.clone()))),
         ));
     }
     let value = Text::new(&face.value)

@@ -609,6 +609,12 @@ export async function mountDesktop(target,options={}) {
       // own counters and last publish error (`{state, publisher, members,
       // stats}`), or null for a mount with no layer.
       live:()=>{const layer=liveLayer();return layer?{state:layer.state,publisher:layer.publisherId,members:layer.members(),stats:layer.stats?.()}:null;},
+      // What the workspace's call says of itself here: its phase, whether this
+      // page's microphone runs, and what left and arrived over the plane
+      // (`{phase, captureActive, counters}`) — for tests and tools reading
+      // that a call's audio went both ways, or null for a page with no call
+      // lane.
+      call:()=>options.peer?.voice?.call.stats()??null,
       // The workspace's members' pointers the frame draws: `[{label, agent, x, y, color}]`.
       pointers:()=>active()?JSON.parse(runtime.remote_pointers_shown(id)):[],
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.

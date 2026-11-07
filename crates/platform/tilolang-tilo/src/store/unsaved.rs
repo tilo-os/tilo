@@ -149,7 +149,12 @@ impl Inner {
             overlay,
             snapshot: Some(&snapshot),
         };
-        let mut derive = crate::index::derive::Derive::new(&self.chunks, &self.index, &self.nested);
+        let mut derive = crate::index::derive::Derive::new(
+            &self.chunks,
+            &self.index,
+            &self.nested,
+            self.clock.read(),
+        );
         if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
             tracing::warn!(app = write.app, %error, "a change was not indexed");
         }
@@ -312,7 +317,8 @@ impl Inner {
                     overlay: &mut overlay,
                     snapshot: Some(&held.snapshot),
                 };
-                let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+                let mut derive =
+                    Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
                 if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
                     tracing::warn!(app = write.app, %error, "a change was not indexed");
                 }
@@ -397,7 +403,8 @@ impl Inner {
                 overlay: Arc::make_mut(&mut self.overlay),
                 snapshot: Some(&snapshot),
             };
-            let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
+            let mut derive =
+                Derive::new(&self.chunks, &self.index, &self.nested, self.clock.read());
             if let Err(error) = derive.versions(&mut sink, app, &ends) {
                 tracing::warn!(app, %error, "a change's versions were not indexed");
             }

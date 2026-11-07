@@ -35,6 +35,7 @@
 //! index moves there: derived beside the record as each change commits, read by apps and the
 //! search host through the committed-document reads they already make.
 
+pub mod clock;
 pub mod codec;
 pub mod columns;
 pub mod derive;
@@ -61,7 +62,7 @@ use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 13;
+pub const FORMAT: u32 = 14;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -123,6 +124,31 @@ const META_SCHEMA: &str = "schema";
 /// The heads the index reflects of chunk `n`, as `heads.<n>`: the record's own log in chunk
 /// [`chunk::FIRST`], and each chunk above it it was built from.
 const META_HEADS: &str = "heads.";
+/// The instant the columns of a type that read the clock were written at, as
+/// `clock.<type id>` ([`clock`]): what a later read of it writes again for.
+const META_CLOCK: &str = "clock.";
+
+/// The time the columns that read the clock are written at: the instant `now` (seconds since
+/// the epoch, to the minute, as a query reads the clock) and the person's zone (seconds east of
+/// UTC), so `today` is their day.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Clock {
+    pub now: i64,
+    pub zone: i64,
+}
+
+impl Clock {
+    /// The clock as `now` reads it (ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`) in `zone`
+    /// (seconds east of UTC): the instant to the minute, as a query reads it.
+    #[must_use]
+    pub fn at(now: &str, zone: i64) -> Self {
+        let now = tilolang::calendar::instant(now).unwrap_or(0);
+        Self {
+            now: now.saturating_sub(now.rem_euclid(60)),
+            zone,
+        }
+    }
+}
 
 /// What went wrong reading or writing the index.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]

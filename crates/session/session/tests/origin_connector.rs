@@ -1,12 +1,12 @@
 //! A tilolang app whose types hold an outside service's resources keeps them in step with that
 //! service in a real session (`docs/architecture/apps.md` §1, §8).
 //!
-//! The app is the YouTube client (`apps/tl/tube`), its package a fixture installed as an app
+//! The app is the `YouTube` client (`apps/tl/tube`), its package a fixture installed as an app
 //! whose signed manifest declares `origins = ["youtube"]`. The session's own launch path starts
 //! the app's connector as a sandboxed process — here the launcher is a stand-in that runs a
 //! child of this test binary as that process — and the child runs the platform's
 //! `tilolang_youtube::connector::serve` loop over a scripted service: the same connector the
-//! system ships, answering a script instead of YouTube.
+//! system ships, answering a script instead of `YouTube`.
 //!
 //! What this proves is the whole path and nothing test-only about it: a search action an
 //! instance runs queues an outside effect, the session hands the effect to the connector over
@@ -14,7 +14,7 @@
 //! search's settled state — which the session publishes and its door reads.
 //!
 //! Before this work the session started no connector at all: the effect stayed in the
-//! instance's own process, and nothing outside ever asked YouTube.
+//! instance's own process, and nothing outside ever asked `YouTube`.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -39,9 +39,9 @@ use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 
 use common::{HEIGHT, PERSON, WIDTH, private_home};
 
-/// The YouTube client, as a package names it.
+/// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
-/// The channel the scripted YouTube service answers with.
+/// The channel the scripted `YouTube` service answers with.
 const NAME: &str = "Low Level Learning";
 /// The video the scripted service answers with.
 const VIDEO: &str = "I rewrote my window compositor in Rust";
@@ -78,7 +78,7 @@ fn youtube_connector_child() {
     tilolang_youtube::connector::serve(&tilolang_youtube::scripted(scripted()), attachments);
 }
 
-/// The scripted YouTube service: one search's answer.
+/// The scripted `YouTube` service: one search's answer.
 fn scripted() -> tilolang_youtube::Scripted {
     tilolang_youtube::Scripted {
         searches: [(
@@ -111,7 +111,7 @@ fn scripted() -> tilolang_youtube::Scripted {
 
 /// Write the launcher the session starts the apps' connectors through: the stand-in runs this
 /// test binary as the connector process, on the gate the launcher is handed. The apps are the
-/// ones installed in `home`'s own store ([`common::install_apps_in`]), the YouTube client's
+/// ones installed in `home`'s own store ([`common::install_apps_in`]), the `YouTube` client's
 /// signed package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
     // The launcher the session starts connectors through: it runs this test binary as the
@@ -130,7 +130,7 @@ fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn 
 }
 
 /// A headless session with the shell as the whole screen and the seeded apps published (the
-/// YouTube client among them), its apps started through `home`'s launcher. The apps are the
+/// `YouTube` client among them), its apps started through `home`'s launcher. The apps are the
 /// ones installed in `home`'s own app store, as a device's are: the client's package is a
 /// signed `.tapp` whose manifest declares the `youtube` origin, so the session plans its
 /// connector the way it plans any installed app's.
@@ -205,16 +205,18 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         .actions
         .iter()
         .find(|action| action.params().iter().any(|param| param.name == "query"))
-        .map(|action| action.id.clone())
-        .unwrap_or_else(|| {
-            panic!(
-                "the client offers its search: {:?}",
-                root.actions
-                    .iter()
-                    .map(|action| (&action.id, &action.label))
-                    .collect::<Vec<_>>()
-            )
-        });
+        .map_or_else(
+            || {
+                panic!(
+                    "the client offers its search: {:?}",
+                    root.actions
+                        .iter()
+                        .map(|action| (&action.id, &action.label))
+                        .collect::<Vec<_>>()
+                )
+            },
+            |action| action.id.clone(),
+        );
     session
         .invoke(
             root.id.as_str(),

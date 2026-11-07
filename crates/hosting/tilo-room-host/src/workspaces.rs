@@ -2707,10 +2707,28 @@ impl Workspaces {
             publications,
         );
         self.observe_calls(workspace);
-        // Watchers (a persistent workspace's operator) learn that this workspace's
-        // governance moved; nobody listening is fine.
-        let _ = self.inner.changes.send(workspace.workspace().to_owned());
+        self.governance_moved(workspace);
         Ok(())
+    }
+
+    /// Note `workspace`'s governance as it now stands, then tell whoever
+    /// follows the workspace that it moved: the device's channel service
+    /// decides under which group a record seals from the governance it reads,
+    /// so this host's own actions in `workspace` find it there as soon as the
+    /// workspace has settled, and watchers (a persistent workspace's operator)
+    /// are told after, nobody listening being fine.
+    fn governance_moved(&self, workspace: &GovernedWorkspace) {
+        let name = workspace.workspace().to_owned();
+        if let Some(sink) = self
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .and_then(|channels| channels.sink.as_ref())
+        {
+            sink.settled(&name, workspace.peer().clone());
+        }
+        let _ = self.inner.changes.send(name);
     }
 
     /// Archive what the relay retains of `workspace`'s document, once every

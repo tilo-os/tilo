@@ -140,6 +140,10 @@ impl tilo_room_host::workspaces::ChannelSink for DeviceChannelSink {
     fn take(&self, messages: Vec<neighbour_wire::NeighbourMsg>) {
         self.joined.take_channel_governance(messages);
     }
+
+    /// Nothing to note: this device's channel service reads the workspace's
+    /// governance itself, through the session that holds it.
+    fn settled(&self, _workspace: &str, _state: tilo_peer_state::StatePeer) {}
 }
 
 impl tilo_room_host::workspaces::ChannelKeys for DeviceChannelKeys {

@@ -565,14 +565,12 @@ impl Event {
         matches!(self, Self::None)
     }
 
-    /// The action the event runs, when it is known to run one: an exported action by its
-    /// address, a view intent by what its host said it runs.
+    /// The action the event runs, when it is bound to one.
     #[must_use]
     pub fn invokes(&self) -> Option<&tilo_actions::ActionAddress> {
         match self {
-            Self::None => None,
+            Self::None | Self::View(_) => None,
             Self::Action(binding) => Some(binding.address()),
-            Self::View(intent) => intent.invokes.as_ref(),
         }
     }
 }
@@ -601,9 +599,6 @@ pub struct Fired {
 pub struct Intent {
     queue: crate::Intents<Fired>,
     fired: Fired,
-    /// The action the host's view attached to the event runs, when it runs one: what a menu
-    /// tells its placed commands from those the system adds by.
-    invokes: Option<tilo_actions::ActionAddress>,
 }
 
 impl Intent {
@@ -617,22 +612,7 @@ impl Intent {
                 event: event.to_owned(),
                 value: None,
             },
-            invokes: None,
         }
-    }
-
-    /// The intent, saying that what it fires runs the action `action` on the resource
-    /// `resource` (both by id).
-    #[must_use]
-    pub fn invoking_action(self, resource: &str, action: &str) -> Self {
-        self.invoking(Some(tilo_actions::ActionAddress::new(resource, action)))
-    }
-
-    /// The intent, saying that what it fires runs `action`.
-    #[must_use]
-    pub fn invoking(mut self, action: Option<tilo_actions::ActionAddress>) -> Self {
-        self.invokes = action;
-        self
     }
 
     /// Queue the intent, carrying `value`.
@@ -675,20 +655,6 @@ impl Event {
                 }))
             }
         }
-    }
-}
-
-impl Event {
-    /// The event as a command a menu runs each time it is chosen (shared, so a menu that is
-    /// built anew each time it opens can hold it): `None` for [`Event::None`].
-    #[must_use]
-    pub fn command(self) -> Option<std::rc::Rc<dyn Fn()>> {
-        let handler = std::cell::RefCell::new(self.handler()?);
-        Some(std::rc::Rc::new(move || {
-            if let Ok(mut run) = handler.try_borrow_mut() {
-                (*run)();
-            }
-        }))
     }
 }
 
@@ -1074,14 +1040,6 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
     /// The widget of `props`, with `key` its stable id.
     fn from_props(key: &str, props: Self::Props) -> Self;
 
-    /// The events that are its control's own action: the widget keeps the action's binding, so
-    /// a press of it runs through the door with a route of its own, the same one an agent's
-    /// invocation takes. An event not named here is the view's: its press goes back to the view
-    /// as an intent, which no control can route.
-    fn press_events() -> &'static [&'static str] {
-        &[]
-    }
-
     /// Take changed props in place, damaging what they change: `false` when this widget cannot
     /// and is to be built again.
     fn set_props(&mut self, props: Self::Props) -> bool {
@@ -1137,8 +1095,6 @@ pub struct Entry {
     pub slot_views: for<'a> fn(&'a mut Element, &str) -> Option<&'a mut dyn SlotViews>,
     /// The views of one part of a slot, to change by key in place.
     pub part_views: for<'a> fn(&'a mut Element, &str, &str, &str) -> Option<&'a mut dyn SlotViews>,
-    /// The events that are its control's own action ([`Described::press_events`]).
-    pub press_events: fn() -> &'static [&'static str],
 }
 
 /// The [`Entry`] of the widget `W`.
@@ -1183,7 +1139,6 @@ pub fn entry<W: Described>() -> Entry {
         update: update::<W>,
         slot_views: slot_views::<W>,
         part_views: part_views::<W>,
-        press_events: W::press_events,
     }
 }
 
@@ -1202,14 +1157,6 @@ pub fn registry() -> &'static [Entry] {
 #[must_use]
 pub fn get(name: &str) -> Option<&'static Entry> {
     registry().iter().find(|entry| entry.name == name)
-}
-
-/// Whether the event `event` of the component `component` is its control's own action: the
-/// widget holds the binding, so the press and an agent's invocation of the action take one path
-/// ([`Described::press_events`]).
-#[must_use]
-pub fn presses(component: &str, event: &str) -> bool {
-    get(component).is_some_and(|entry| (entry.press_events)().contains(&event))
 }
 
 /// Build the component `name` of `source`.

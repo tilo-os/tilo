@@ -39,7 +39,7 @@ tilolang-did-unmarked = hat { $field } aufgehoben
 tilolang-did-and = und
 
 # Was sich geändert hat, seit die Person zuletzt hinsah, Stück für Stück, und der eine Schritt,
-der es alles als gesehen markiert.
+# der es alles als gesehen markiert.
 tilolang-since-you-looked = Seit Sie zuletzt hinsahen
 tilolang-mark-all-seen = Alle als gesehen markieren
 tilolang-marked-seen = { $count ->

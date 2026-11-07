@@ -93,6 +93,7 @@ const snapshot = async tab => {
     windows: safe(() => globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.label) ?? []),
     people: safe(() => globalThis.tiloMount?.people?.() ?? null),
     live: safe(() => globalThis.tiloMount?.live?.() ?? null),
+    call: safe(() => globalThis.tiloMount?.call?.() ?? null),
     pointers: safe(() => globalThis.tiloMount?.pointers?.() ?? null),
     channels: safe(() => globalThis.tiloChannels?.() ?? ''),
     focus: {active: document.activeElement?.nodeName ?? null, focus: document.hasFocus(),
@@ -243,6 +244,46 @@ const press = async (tab, name) => {
   await click(tab, corner.x + (x0 + x1) / 2, corner.y + (y0 + y1) / 2);
   return true;
 };
+// Press the control `name` once the desktop publishes it: the tree is read
+// again until the control is there, then pressed where it is drawn.
+const pressWhen = async (tab, name, what, timeout = 120_000) => {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    if (await press(tab, name)) return;
+    if (Date.now() > deadline) {
+      await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+      failed(`${what} never appeared: ${name}`);
+    }
+    await sleep(300);
+  }
+};
+// Who stands under the navigation row named `name`: a list publishes its rows
+// flat, each with the level it stands at, so a row's people are the rows that
+// follow it one level deeper, up to the next row at its own.
+const rowsUnder = (tab, name) => tab.evaluate(`(() => {
+  let found = null;
+  const collect = node => {
+    if (found && found.length) return;
+    const children = node.children || [];
+    const at = children.findIndex(child => child.name === ${JSON.stringify(name)} && child.level != null);
+    if (at < 0) return;
+    const level = children[at].level;
+    const under = [];
+    for (const row of children.slice(at + 1)) {
+      if (row.level == null || row.level <= level) break;
+      under.push(row.name ?? '');
+    }
+    found = under;
+  };
+  const walk = n => { if (n.semantics) collect(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  return JSON.stringify(found);
+})()`);
+// The call as the page reads it: its phase, whether its microphone runs and
+// what left and arrived over the plane.
+const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.call?.() ?? null)'));
 
 const open = async name => {
   const context = await browser.context();
@@ -286,6 +327,12 @@ const browser = await launch({args: [
   // The live plane's host is the deployment's, not this machine's: the page
   // dials it, and here it is this machine's loopback behind the ingress.
   `--host-resolver-rules=MAP ${liveHost} 127.0.0.1`,
+  // A person's call is heard through a microphone and played through a
+  // speaker: this machine has no person at it, so the browser carries both —
+  // a synthetic microphone the call really encodes and sends, and no prompt
+  // before a person would have pressed Allow.
+  '--use-fake-device-for-media-stream', '--use-fake-ui-for-media-stream',
+  '--autoplay-policy=no-user-gesture-required',
   // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
@@ -401,6 +448,213 @@ try {
     failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
   }
   console.log('ok: each desk shows the other person here');
+
+  // A call on the page both people share. A starts it from Chat's own call
+  // control — the workspace's voice channel, joined muted, as every Tilo call
+  // starts — and B, whose channels now list the call with A in it, opens the
+  // same call from its own window. Each browser's microphone is its synthetic
+  // device, so the pages carry real Opus between them over the live plane:
+  // what each page sent and what the other heard is the call's own count.
+  // Both read the call's card — who it is with, the run time its title bar
+  // draws, and its controls — and hanging up ends it for both.
+  const nameA = report.presence.b.label; // who B sees: the person A
+  const nameB = report.presence.a.label;
+  // The same shared window in front on both desks, so its controls are where
+  // a person reaches them.
+  await search(a.tab, a.command, 'chat', 'Chat');
+  await search(b.tab, b.command, 'chat', 'Chat');
+  await until(b.tab, `(() => { globalThis.tiloMount?.requestSemantics?.();
+    return JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer'); })()`,
+    "B's chat composer", 180_000);
+
+  // A starts the call the way a person does — the desk's search, Chat's own
+  // action — and Chat joins the workspace's voice channel muted, as every
+  // Tilo call starts, with the call's card as the window's own reading of it.
+  const cardReads = tab => tab.evaluate(`(() => {
+    globalThis.tiloMount?.requestSemantics?.();
+    const found = [];
+    const node = n => { found.push(n); (n.children || []).forEach(node); };
+    const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+    const root = globalThis.tiloMount?.state()?.semantics?.root;
+    if (root) walk(root);
+    return JSON.stringify(found.filter(n => n.value && /^\\d+:\\d{2}$/.test(n.value)) ?? []);
+  })()`);
+  // The call's card as this page reads it: the person it names and the run
+  // time it counts, once the card is there and counting.
+  const untilCard = async (person, who, what, timeout = 180_000) => {
+    const deadline = Date.now() + timeout;
+    let cards = [];
+    for (;;) {
+      cards = JSON.parse(await cardReads(person.tab));
+      const card = cards.find(node => node.name === who);
+      if (card) return card;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what} does not read ${JSON.stringify(who)} with a run time: ${JSON.stringify(cards)}`);
+      }
+      await sleep(300);
+    }
+  };
+  const noCard = async (person, what, timeout = 120_000) => {
+    const deadline = Date.now() + timeout;
+    for (;;) {
+      const cards = JSON.parse(await cardReads(person.tab));
+      if (!cards.length) return;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: the call's card still reads ${JSON.stringify(cards)}`);
+      }
+      await sleep(300);
+    }
+  };
+  const untilLive = async (person, what, timeout = 180_000) => {
+    const deadline = Date.now() + timeout;
+    let call = null;
+    for (;;) {
+      call = await callOn(person.tab);
+      if (call?.phase === 'live') return call;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: the call never went live (${JSON.stringify(call)})`);
+      }
+      await sleep(300);
+    }
+  };
+  // Both microphones running: the page's audio session captures the
+  // browser's synthetic device, which is what puts frames on the plane.
+  const untilCapture = async (person, what, timeout = 120_000) => {
+    const deadline = Date.now() + timeout;
+    let call = null;
+    for (;;) {
+      call = await callOn(person.tab);
+      if (call?.phase === 'live' && call.captureActive) return call;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: the microphone never started (${JSON.stringify(call)})`);
+      }
+      await sleep(300);
+    }
+  };
+  // The call this page takes part in, once it is over.
+  const untilNotLive = async (person, what, timeout = 120_000) => {
+    const deadline = Date.now() + timeout;
+    let call = null;
+    for (;;) {
+      call = await callOn(person.tab);
+      if (call?.phase !== 'live') return call;
+      if (Date.now() > deadline) failed(`${what}: the call is still live (${JSON.stringify(call)})`);
+      await sleep(300);
+    }
+  };
+  // What `sender`'s microphone published and `listener` heard of it: one
+  // count per page, the frames the plane carried between them.
+  const flows = async (sender, listener, what, timeout = 180_000) => {
+    const deadline = Date.now() + timeout;
+    let observed = null;
+    for (;;) {
+      const sent = await callOn(sender.tab);
+      const heard = await callOn(listener.tab);
+      observed = {sent: sent?.counters ?? null, heard: heard?.counters ?? null};
+      if ((sent?.counters?.frames ?? 0) > 20 && (heard?.counters?.heard ?? 0) > 20) return observed;
+      if (Date.now() > deadline) {
+        await dump(sender.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        await dump(listener.tab, `timeout-hearing-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: no audio crossed (${JSON.stringify(observed)})`);
+      }
+      await sleep(500);
+    }
+  };
+
+  await search(a.tab, a.command, 'start a call', 'Start a call');
+  const startedA = await untilCard(a, 'Just you', "A's call card, alone in the call");
+  console.log('ok: A started a call from Chat');
+
+  // B is rung: the workspace's voice channel, in B's own channel list, now
+  // names A in it.
+  const untilChannelPeople = async (person, channel, who, what, timeout = 180_000) => {
+    const deadline = Date.now() + timeout;
+    let people = null;
+    for (;;) {
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      people = JSON.parse(await rowsUnder(person.tab, channel));
+      if (people && people.includes(who)) return people;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: ${channel} lists ${JSON.stringify(people)}`);
+      }
+      await sleep(300);
+    }
+  };
+  const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
+  console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
+  // Nobody is left in the channel: what each desk sees once the call ended.
+  const untilChannelEmpty = async (person, channel, what, timeout = 120_000) => {
+    const deadline = Date.now() + timeout;
+    let people = null;
+    for (;;) {
+      await person.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+      people = JSON.parse(await rowsUnder(person.tab, channel));
+      if (!people || !people.length) return;
+      if (Date.now() > deadline) {
+        await dump(person.tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
+        failed(`${what}: ${channel} still lists ${JSON.stringify(people)}`);
+      }
+      await sleep(300);
+    }
+  };
+
+  // B opens the same call the same way: joining a call that is on is
+  // opening it.
+  await search(b.tab, b.command, 'start a call', 'Start a call');
+  const liveA = await untilLive(a, "A's call going live");
+  const liveB = await untilLive(b, "B's call going live");
+  console.log('ok: both pages are in the call');
+  // Unmuted, both: each page's microphone is the browser's synthetic device,
+  // so unmuting is what puts audio on the plane.
+  await pressWhen(a.tab, 'Unmute', "A's microphone control");
+  await pressWhen(b.tab, 'Unmute', "B's microphone control");
+  await untilCapture(a, "A's microphone running");
+  await untilCapture(b, "B's microphone running");
+  console.log('ok: both microphones are running');
+
+  // The call's card names the other person, counts, and offers the way out:
+  // on each page the same reading of the same call.
+  const cardA = await untilCard(a, nameB, "A's call card");
+  const cardB = await untilCard(b, nameA, "B's call card");
+  for (const [who, person, card] of [['A', a, cardA], ['B', b, cardB]]) {
+    if (!/^\d+:\d{2}$/.test(card.value ?? '')) failed(`${who}'s call card shows no run time: ${JSON.stringify(card)}`);
+    if (card.description !== 'Connected') failed(`${who}'s call card is not connected: ${JSON.stringify(card.description)}`);
+    // The card's hang-up is drawn; the mute control is what unmuting left.
+    if (!JSON.parse(await find(person.tab, 'Mute'))) failed(`${who}'s call card offers no mute control`);
+    if (!JSON.parse(await find(person.tab, 'Leave call'))) failed(`${who}'s call card offers no hang-up control`);
+  }
+  report.call = {startedA, cardA, cardB, ring};
+
+  const fromA = await flows({tab: a.tab}, {tab: b.tab}, "A's audio in B");
+  const fromB = await flows({tab: b.tab}, {tab: a.tab}, "B's audio in A");
+  report.call.audio = {fromA, fromB};
+  report.call.live = {a: liveA, b: liveB};
+  console.log(`ok: each page sent audio the other heard (${JSON.stringify(report.call.audio)})`);
+  await dump(a.tab, '6-a-call');
+  await dump(b.tab, '6-b-call');
+
+  // A hangs up: A's card goes, and B's call has A no longer in it.
+  await pressWhen(a.tab, 'Leave call', "A's hang-up control");
+  await noCard(a, "A's call card after hanging up");
+  await untilNotLive(a, 'A hanging up');
+  await untilCard(b, 'Just you', "B's call card after A hung up");
+  console.log('ok: A hung up, and B is alone in the call');
+  await dump(a.tab, '7-a-hung-up');
+
+  // B hangs up too: the call is over on both desks, and no one is in the
+  // channel's call any more.
+  await pressWhen(b.tab, 'Leave call', "B's hang-up control");
+  await noCard(b, "B's call card after hanging up");
+  await untilNotLive(b, 'B hanging up');
+  await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
+  await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
+  console.log('ok: hanging up ended the call for both');
+  await dump(b.tab, '7-b-hung-up');
 
   // Nothing failed in either page.
   const both = [...a.tab.log, ...b.tab.log];
