@@ -176,6 +176,13 @@ impl Core {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
+            // A record built in a view (`DockItem(...)`) is a value of its type wherever it is
+            // handed: to another view's parameter, or to an action's, as the shell's dock hands
+            // its running items to its tiles. It names no resource yet, and the view that takes
+            // it reads its fields where it was built.
+            (Ty::Record(key), Value::Rec(rec)) => {
+                self.registry.borrow().type_for(key).as_deref() == Some(rec.ty.as_str())
+            }
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields, and so
             // is a filter, held as the `host.Filter` its catalogue entry is.
