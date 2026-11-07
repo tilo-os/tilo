@@ -34,7 +34,7 @@ mode = "off"
 collab = "optional@18"
 tilo-fs = "optional@18"
 # A task's menu carries its issue as the subject of the send-to box beside it.
-shell-ui = "optional@24"
+shell-ui = "optional@25"
 
 # Writing an issue's note asks Notes to make it. Done for someone the host
 # delivered the action for, that is their request; pressed here, it is
