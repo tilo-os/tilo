@@ -126,7 +126,7 @@ impl View<'_> {
         }
         out.retain(|(resource, _)| !self.overlay.removed(resource));
         // Most recent first: two versions recorded in the same second are ordered by the
-        // change's place in the log, which the stamp keeps.
+        // change's causal place, which the stamp keeps.
         out.sort_by(|a, b| b.1.order().cmp(&a.1.order()));
         Ok((
             out.into_iter()
