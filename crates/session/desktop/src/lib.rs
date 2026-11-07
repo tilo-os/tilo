@@ -12,14 +12,11 @@
     )
 )]
 
-mod navigation;
-
 pub mod about;
 pub mod authority;
 pub mod backdrop;
 pub mod chrome;
 pub mod collaborators;
-pub mod composition;
 pub mod control_hints;
 pub mod desk_edges;
 pub mod desk_verbs;
@@ -33,7 +30,6 @@ pub mod follow_banner;
 pub mod fullscreen_hint;
 pub mod here;
 pub mod host_contract;
-pub mod intents;
 pub mod launchpad;
 pub mod osd;
 pub mod overlays;
@@ -46,7 +42,6 @@ pub mod records;
 pub mod resolver;
 pub mod search;
 pub mod search_overlay;
-pub mod session_commands;
 pub mod shortcuts;
 pub mod strip_indicators;
 pub mod strip_navigator;

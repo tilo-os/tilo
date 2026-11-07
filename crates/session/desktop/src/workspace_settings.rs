@@ -1481,7 +1481,11 @@ mod agents_tests {
         {
             let mut ws = ws_with_agent();
             let edit = remove_agent(&mut ws, &OWNER.to_string(), AGENT);
-            assert_eq!(edit.revoked.len(), 2, "its workspace grant and its app grant");
+            assert_eq!(
+                edit.revoked.len(),
+                2,
+                "its workspace grant and its app grant"
+            );
             assert!(ws.agent_members_at(tilo_clock::unix_now()).is_empty());
             assert_eq!(
                 agent_answer(&ws, "so.tilo.notes", ActionKind::Undoable),

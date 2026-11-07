@@ -2009,7 +2009,8 @@ fn rows_of(
         .map(|participant| {
             let is_bot =
                 workspace.is_some_and(|workspace| is_workspace_bot(workspace, participant));
-            let is_agent = is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
+            let is_agent =
+                is_bot || names_agent(&agents, participant) || has_agent_marker(participant);
             let (red, green, blue) = colors
                 .get(&participant.id)
                 .copied()
@@ -2113,9 +2114,9 @@ fn agent_members(workspace: Option<&tilo_desktop_model::Workspace>, now: u64) ->
 
 /// Whether `participant` is one of `agents`, by id or by the name it shows.
 fn names_agent(agents: &[String], participant: &Collaborator) -> bool {
-    agents.iter().any(|agent| {
-        agent == &participant.id || agent == &participant.name
-    })
+    agents
+        .iter()
+        .any(|agent| agent == &participant.id || agent == &participant.name)
 }
 
 /// A recorded role id as people read it; an id this model does not define
@@ -2442,14 +2443,14 @@ mod tests {
         let mut workspace = Workspace::new(WorkspaceSlot(71), "Shared");
         workspace.set_owner("owner");
         let node = workspace.node();
-    workspace.grant(tilo_action_policy::Grant::new(
-        "agent-member:scribe",
-        tilo_action_policy::Subject::agent("scribe"),
-        node,
-        tilo_action_policy::KindSet::READ,
-        tilo_action_policy::Answer::Allow,
-        tilo_action_policy::Subject::person("owner"),
-    ));
+        workspace.grant(tilo_action_policy::Grant::new(
+            "agent-member:scribe",
+            tilo_action_policy::Subject::agent("scribe"),
+            node,
+            tilo_action_policy::KindSet::READ,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Subject::person("owner"),
+        ));
         workspace
             .collaborators
             .push(Collaborator::new("scribe", "Release Notes Agent"));
