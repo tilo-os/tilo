@@ -76,7 +76,6 @@ pub type RawFd = i32;
 use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 #[cfg(test)]
 use tilo_lock::RwLockRecover as _;
-#[cfg(unix)]
 use tokio::io::{AsyncRead, AsyncWrite};
 #[cfg(unix)]
 use tokio::net::UnixStream;
