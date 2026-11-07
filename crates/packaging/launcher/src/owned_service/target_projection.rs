@@ -682,67 +682,36 @@ impl TargetProjectionAdmission {
     }
     pub(crate) fn splice_credentials(&self, argv: &mut Vec<String>) -> io::Result<()> {
         self.native()?;
-        if argv.iter().any(|v| {
-            [
-                "--share-net",
-                "--unshare-user",
-                "--uid",
-                "--gid",
-                "--original-source-fd",
-                "--retained-io-fd",
-                "--target-projection-fd",
-            ]
-            .contains(&v.as_str())
-        }) {
-            return Err(refused("Target namespace plan changed"));
-        }
-        let pos = argv
-            .iter()
-            .position(|v| v == "--unshare-all")
-            .ok_or_else(|| refused("Target canonical namespace plan missing"))?;
-        argv.splice(
-            pos..=pos,
-            [
-                "--unshare-pid",
-                "--unshare-net",
-                "--unshare-ipc",
-                "--unshare-uts",
-                "--unshare-cgroup-try",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "CAP_SETUID",
-                "--cap-add",
-                "CAP_SETGID",
-                "--cap-add",
-                "CAP_SYS_ADMIN",
-            ]
-            .map(String::from),
-        );
-        let shim = argv
-            .iter()
-            .position(|v| v == "__sandbox-exec")
-            .ok_or_else(|| refused("Target signed shim missing"))?;
-        let after_shim = shim.checked_add(1).ok_or(io::ErrorKind::InvalidData)?;
-        argv.splice(
-            after_shim..after_shim,
-            ["--target-projection-fd".into(), TOKEN_FD.to_string()],
-        );
-        let mut traversal = Vec::new();
-        for p in [
-            "/run/tilo",
-            "/etc",
-            "/etc/alternatives",
-            "/run/tilo-runtime",
-            "/var",
-            "/var/tilo-apps",
-            "/usr/share",
-            "/usr/share/X11",
-        ] {
-            traversal.extend(["--perms".into(), "0755".into(), "--dir".into(), p.into()]);
-        }
-        argv.splice(0..0, traversal);
-        Ok(())
+        super::splice_custody(
+            argv,
+            &super::CustodySplice {
+                token_flag: "--target-projection-fd",
+                token_fd: TOKEN_FD,
+                extra_caps: &["--cap-add", "CAP_SYS_ADMIN"],
+                traversal: &[
+                    "/run/tilo",
+                    "/etc",
+                    "/etc/alternatives",
+                    "/run/tilo-runtime",
+                    "/var",
+                    "/var/tilo-apps",
+                    "/usr/share",
+                    "/usr/share/X11",
+                ],
+                forbidden: &[
+                    "--share-net",
+                    "--unshare-user",
+                    "--uid",
+                    "--gid",
+                    "--original-source-fd",
+                    "--retained-io-fd",
+                    "--target-projection-fd",
+                ],
+                changed: "Target namespace plan changed",
+                no_namespaces: "Target canonical namespace plan missing",
+                no_shim: "Target signed shim missing",
+            },
+        )
     }
 }
 

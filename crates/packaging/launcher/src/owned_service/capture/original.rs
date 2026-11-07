@@ -361,77 +361,39 @@ impl Bootstrap {
     }
     pub(super) fn splice(&self, argv: &mut Vec<String>) -> io::Result<()> {
         root()?;
-        let pos = argv
-            .iter()
-            .position(|a| a == "--unshare-all")
-            .ok_or_else(|| refused("Canonical namespace plan is absent"))?;
-        if argv
-            .iter()
-            .any(|a| a == "--share-net" || a == "--unshare-user" || a == "--uid" || a == "--gid")
-        {
-            return Err(refused("Original-source namespace plan was changed"));
-        }
         // Preserve numeric source credentials in the ORIGINAL user namespace.
         // Mount/PID/network/IPC isolation remains mandatory. Only the signed
         // shim receives SETUID/SETGID, which it clears before executing worker.
-        argv.splice(
-            pos..=pos,
-            [
-                "--unshare-pid",
-                "--unshare-net",
-                "--unshare-ipc",
-                "--unshare-uts",
-                "--unshare-cgroup-try",
-                "--cap-drop",
-                "ALL",
-                "--cap-add",
-                "CAP_SETUID",
-                "--cap-add",
-                "CAP_SETGID",
-            ]
-            .map(String::from),
-        );
-        if self.roots.is_some() {
-            // Signed root shim only, cleared with all capabilities before worker.
-            let capability = argv
-                .iter()
-                .position(|arg| arg == "CAP_SETGID")
-                .ok_or_else(|| refused("Original credential capabilities are absent"))?;
-            let insertion = capability
-                .checked_add(1)
-                .ok_or(io::ErrorKind::InvalidInput)?;
-            argv.splice(
-                insertion..insertion,
-                ["--cap-add".into(), "CAP_SYS_ADMIN".into()],
-            );
-        }
-        let pos = argv
-            .iter()
-            .position(|a| a == "__sandbox-exec")
-            .ok_or_else(|| refused("Signed sandbox shim is absent"))?;
-        let insertion = pos.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
-        argv.splice(
-            insertion..insertion,
-            ["--original-source-fd".into(), BOOTSTRAP_FD.to_string()],
-        );
-        // These are empty, root-owned directories in bwrap's fresh filesystem,
-        // created BEFORE any data or host binds. Private data copies otherwise
-        // make their synthetic parents0700, blocking the later source UID.
-        // No host path, original source leaf or delegated app leaf is chmodded.
-        let mut traversal = Vec::new();
-        for path in [
-            "/etc",
-            "/etc/alternatives",
-            "/run/tilo-runtime",
-            "/var",
-            "/var/tilo-apps",
-            "/usr/share",
-            "/usr/share/X11",
-        ] {
-            traversal.extend(["--perms".into(), "0755".into(), "--dir".into(), path.into()]);
-        }
-        argv.splice(0..0, traversal);
-        Ok(())
+        crate::owned_service::splice_custody(
+            argv,
+            &crate::owned_service::CustodySplice {
+                token_flag: "--original-source-fd",
+                token_fd: BOOTSTRAP_FD,
+                // Signed root shim only, cleared with all capabilities before worker.
+                extra_caps: if self.roots.is_some() {
+                    &["--cap-add", "CAP_SYS_ADMIN"]
+                } else {
+                    &[]
+                },
+                // These are empty, root-owned directories in bwrap's fresh filesystem,
+                // created BEFORE any data or host binds. Private data copies otherwise
+                // make their synthetic parents 0700, blocking the later source UID.
+                // No host path, original source leaf or delegated app leaf is chmodded.
+                traversal: &[
+                    "/etc",
+                    "/etc/alternatives",
+                    "/run/tilo-runtime",
+                    "/var",
+                    "/var/tilo-apps",
+                    "/usr/share",
+                    "/usr/share/X11",
+                ],
+                forbidden: &["--share-net", "--unshare-user", "--uid", "--gid"],
+                changed: "Original-source namespace plan was changed",
+                no_namespaces: "Canonical namespace plan is absent",
+                no_shim: "Signed sandbox shim is absent",
+            },
+        )
     }
 }
 fn root() -> io::Result<()> {

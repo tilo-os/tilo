@@ -27,6 +27,81 @@ pub(crate) fn refused(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::PermissionDenied, message)
 }
 
+/// The namespaces every signed worker keeps, and the only capabilities its
+/// shim receives: mount, PID, network, IPC and cgroup isolation are mandatory
+/// even though the worker runs as the source account.
+const WORKER_NAMESPACES: &[&str] = &[
+    "--unshare-pid",
+    "--unshare-net",
+    "--unshare-ipc",
+    "--unshare-uts",
+    "--unshare-cgroup-try",
+    "--cap-drop",
+    "ALL",
+    "--cap-add",
+    "CAP_SETUID",
+    "--cap-add",
+    "CAP_SETGID",
+];
+
+/// What one signed service's credential splice names, where its own protocol
+/// differs from every other's.
+pub(crate) struct CustodySplice {
+    /// The flag the signed shim reads its custody token from.
+    pub token_flag: &'static str,
+    /// The descriptor carrying that token.
+    pub token_fd: RawFd,
+    /// The `--cap-add` fragment the shim needs beyond `SETUID`/`SETGID`.
+    pub extra_caps: &'static [&'static str],
+    /// Directories the worker must traverse before any bind lands on them.
+    pub traversal: &'static [&'static str],
+    /// Flags that must not already be in the argv: their presence means the
+    /// plan this splice was written for is not the plan it got.
+    pub forbidden: &'static [&'static str],
+    /// Refusal when [`CustodySplice::forbidden`] matches.
+    pub changed: &'static str,
+    /// Refusal when the launcher's `--unshare-all` is missing.
+    pub no_namespaces: &'static str,
+    /// Refusal when the signed shim is missing.
+    pub no_shim: &'static str,
+}
+
+/// The credential splice every signed service performs on a launch's argv.
+///
+/// Replace the launcher's `--unshare-all` with the namespaces a worker may
+/// keep, drop every capability and grant the shim only the ids it clears
+/// before `exec`, hand the shim its custody token after `__sandbox-exec`, and
+/// create the directories it traverses before any bind lands on them. What
+/// differs per service — token, extra capabilities, directories, refusals —
+/// is [`CustodySplice`], so the part that is the same cannot drift.
+pub(crate) fn splice_custody(argv: &mut Vec<String>, spec: &CustodySplice) -> io::Result<()> {
+    if argv.iter().any(|v| spec.forbidden.contains(&v.as_str())) {
+        return Err(refused(spec.changed));
+    }
+    let pos = argv
+        .iter()
+        .position(|v| v == "--unshare-all")
+        .ok_or_else(|| refused(spec.no_namespaces))?;
+    let namespaces = WORKER_NAMESPACES.iter().chain(spec.extra_caps);
+    argv.splice(pos..=pos, namespaces.map(|flag| (*flag).to_owned()));
+    let shim = argv
+        .iter()
+        .position(|v| v == "__sandbox-exec")
+        .ok_or_else(|| refused(spec.no_shim))?;
+    let after_shim = shim.checked_add(1).ok_or(io::ErrorKind::InvalidInput)?;
+    argv.splice(
+        after_shim..after_shim,
+        [spec.token_flag.to_owned(), spec.token_fd.to_string()],
+    );
+    let mut traversal = Vec::new();
+    for path in spec.traversal {
+        traversal.extend(["--perms".to_owned(), "0755".to_owned(), "--dir".to_owned()]);
+        traversal.push((*path).to_owned());
+    }
+    argv.splice(0..0, traversal);
+    Ok(())
+}
+
 pub(crate) mod capture;
 mod delayed_filter;
 pub(crate) mod retained_io;
