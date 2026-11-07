@@ -1498,6 +1498,7 @@ invite-role-label = They join as
 invite-for-label = This link is for
 invite-anyone = Anyone with the link
 invite-create = Create link
+invite-making = Making the link…
 invite-link-label = The link
 invite-copy = Copy link
 invite-code-alt = The invitation link as a code to scan

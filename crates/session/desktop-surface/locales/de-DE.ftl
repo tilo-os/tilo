@@ -1511,6 +1511,7 @@ invite-role-label = Beitritt als
 invite-for-label = Dieser Link ist für
 invite-anyone = Alle mit diesem Link
 invite-create = Link erstellen
+invite-making = Der Link wird erstellt…
 invite-link-label = Der Link
 invite-copy = Link kopieren
 invite-code-alt = Der Einladungslink als Code zum Scannen

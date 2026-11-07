@@ -1230,6 +1230,11 @@ impl crate::Shared {
         if let Some(personal) = &self.personal {
             personal.borrow_mut().joined(workspace);
         }
+        // A session the host started with a short link learns what it joined
+        // only here, and the authority it waits for is asked of it.
+        self.boot_join
+            .borrow_mut()
+            .joined(&joined.granted.workspace);
         self.redeem_invitation(joined);
         Ok(())
     }
