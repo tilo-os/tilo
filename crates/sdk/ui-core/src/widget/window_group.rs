@@ -5739,6 +5739,8 @@ mod fullscreen_bar;
 #[path = "window_group_search.rs"]
 mod search;
 
+pub(crate) use search::place_search;
+
 #[cfg(test)]
 #[path = "window_group_window_bar_tests.rs"]
 mod window_bar_tests;

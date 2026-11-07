@@ -242,22 +242,6 @@ impl EmbeddedApp {
         self.wants_frame.set(true);
     }
 
-    /// Serve the app's shell-ui connection as its native runner does
-    /// between frames, and draw it again when that changed what it shows:
-    /// for a host that runs the app as a window of its own and draws it in
-    /// a frame of its own (the screenshot harness). Returns whether it
-    /// changed.
-    #[cfg(feature = "test-support")]
-    pub fn pump_shell_connection_for_test(&mut self) -> bool {
-        self.runs();
-        let changed = self.app.test_pump_floating_service();
-        if changed {
-            self.app.layout.layout_dirty = true;
-            self.wants_frame.set(true);
-        }
-        changed
-    }
-
     /// The app shown, to drive it.
     /// When the app next wants to run with nothing waking it. Its widgets
     /// change their deadlines only as the app runs (a pump, a frame, an
@@ -323,14 +307,6 @@ impl EmbeddedApp {
         if self.app.focused_control() != before {
             let _ = self.app.refresh_semantic_tree();
         }
-    }
-
-    /// Give the app keyboard focus from its host's focus order, coming
-    /// from after it with `backwards` (Shift+Tab): focus lands on its last
-    /// control then, else on its first.
-    pub fn enter_focus(&mut self, backwards: bool) {
-        self.entering_backwards = backwards;
-        Widget::set_focus(self, true);
     }
 
     /// The root widget of the app's component: what an app's own tests

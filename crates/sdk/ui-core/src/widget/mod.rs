@@ -3348,6 +3348,7 @@ pub mod table {
 }
 pub use table::Table;
 mod window_group;
+pub(crate) use window_group::place_search as place_window_search;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,

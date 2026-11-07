@@ -18,7 +18,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use super::FrameHarness;
 #[cfg(test)]
 use crate::widget::tabs::TAB_BAR_HEIGHT;
-use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearch, WindowSearchRequest};
+use crate::widget::{TabBar, TabDescriptor, Widget, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
 const TAB: u64 = 1;
@@ -556,7 +556,7 @@ impl FrameHarness {
         let frame_top = self.frame_top();
         let search = &mut self.window_search;
         search.set_app_name(&title);
-        place_search(&bar, search);
+        crate::widget::place_window_search(&bar, search);
         search.set_frame_origin(Point::new(0.0, frame_top));
         let ground = bar.ground_color(&self.theme);
         scene.fill(
@@ -686,29 +686,6 @@ fn lay_out_bar(bar: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
     bar.apply_layout(&taffy, node, Point::ZERO);
 }
 
-/// Place the window's search control as the window group does: ending the
-/// app's slots, else after the tabs.
-fn place_search(bar: &TabBar, search: &mut WindowSearch) {
-    let px = crate::widget::window_controls::CONTROL_PX;
-    let gap = crate::widget::window_controls::CONTROL_GAP;
-    if let Some((row, reach)) = bar.toolbar_search_slot() {
-        let x0 = row.x1 + gap;
-        let y0 = row.center().y - px / 2.0;
-        search.place_trailing(
-            Rect::new(x0, y0, x0 + px, y0 + px),
-            reach.min(x0),
-            row.x0.min(x0),
-        );
-        return;
-    }
-    let row = bar.get_rect();
-    let x0 = bar.tabs_end() + gap;
-    let y0 = row.center().y - px / 2.0;
-    let limit = bar.window_controls().content_limit(row);
-    search.place(Rect::new(x0, y0, x0 + px, y0 + px), limit.max(x0 + px));
-    search.set_cramped_start(bar.search_cramped_start());
-}
-
 #[cfg(test)]
 #[path = "window_bar_layout_tests.rs"]
 mod layout_tests;
@@ -716,6 +693,7 @@ mod layout_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::widget::WindowSearch;
 
     #[test]
     fn a_window_bar_capture_hosts_the_apps_slots_above_its_frame() {
