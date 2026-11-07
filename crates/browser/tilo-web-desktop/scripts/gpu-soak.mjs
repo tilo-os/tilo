@@ -5,6 +5,8 @@
 // is what exhausts a browser's GPU process — on Safari that took the whole Mac
 // down. Never point this at Safari or Playwright's WebKit.
 //
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
+
 // usage: node gpu-soak.mjs URL [WINDOWS] [MINUTES]
 //   URL      a desktop page: build.sh's desktop output (the page root …/, where
 //            windows are opened through globalThis.tiloMount) or a console
@@ -156,7 +158,7 @@ if (s.windows !== null) {
   const apps = await evaluate(`fetch('apps.json').then(r => r.json()).then(j => j.applications.map(a => a.id))`);
   for (let i = 0; i < windows; i++) {
     const app = apps[i % apps.length];
-    await evaluate(`(() => { const n = globalThis.tiloMount.navigation; return n.dispatch({kind: 'launch', generation: n.getSnapshot().generation, app: ${JSON.stringify(app)}}); })()`)
+    await evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.openApp(app))})`)
       .catch(error => log.push(`launch ${app}: ${error.message}`));
     await sleep(300);
     if (i % 20 === 19) await record(`opened ${i + 1}`);
@@ -168,7 +170,7 @@ const deadline = Date.now() + minutes * 60_000;
 let step = 0;
 while (Date.now() < deadline) {
   // Keep the renderer drawing: select the windows in turn when the page offers navigation.
-  await evaluate(`(() => { const n = globalThis.tiloMount?.navigation; if (!n) return; const s = n.getSnapshot(); const e = s.entries ?? []; if (!e.length) return; return n.dispatch({kind: 'select', generation: s.generation, route: e[${step} % e.length].route}); })()`).catch(error => log.push(`select: ${error.message}`));
+  await evaluate(`(() => { const n = globalThis.tiloMount?.navigation; if (!n) return; const e = n.getSnapshot().entries ?? []; if (!e.length) return; return n.dispatch({effect: 'focus', args: {tab: e[${step} % e.length].route.tab}}); })()`).catch(error => log.push(`select: ${error.message}`));
   step++;
   await sleep(SAMPLE_MS);
   await record(`soak ${step}`);

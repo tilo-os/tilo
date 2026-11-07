@@ -196,6 +196,12 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
 /// Step the session until the lock screen's own frame is on `displays` and is
 /// not changing any more: the screen itself, not the blank or dim a locked
 /// output shows before the client's first frame arrives.
+///
+/// The lock screen is an app of its own, drawing on its own clock: the frame
+/// it covers the desk with is not yet what it drew, and how many turns of the
+/// session pass before it rests is the app's to decide. What settles it is the
+/// rule [`until_still`] reads — a screen that stopped changing — never a count
+/// of turns of the session.
 #[track_caller]
 pub(super) fn until_drawn(
     session: &mut Session,
@@ -204,7 +210,6 @@ pub(super) fn until_drawn(
 ) -> Vec<Vec<f64>> {
     let deadline = tilo_test_env::hang_deadline();
     let mut waking = Waking::new();
-    let mut settled: Option<Vec<Vec<f64>>> = None;
     loop {
         waking.keep(session);
         let now = session
@@ -217,12 +222,17 @@ pub(super) fn until_drawn(
                 .all(|(now, was)| apart(now, was) > CLOSE)
         });
         if covers {
-            if settled.as_ref() == now.as_ref() {
-                return now.expect("the lock screen drew");
+            for display in displays {
+                until_still(session, display);
             }
-            settled = now;
-        } else {
-            settled = None;
+            let drawn = pictures(session, displays);
+            if drawn
+                .iter()
+                .zip(was)
+                .all(|(now, was)| apart(now, was) > CLOSE)
+            {
+                return drawn;
+            }
         }
         assert!(
             Instant::now() < deadline,
@@ -1319,27 +1329,34 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
 
     // The sound key works here: it changes a level and reveals nothing behind
     // the lock. Its readout answers on the screen the key was pressed at.
-    tap(&mut session, keys::VOLUME_UP);
-    assert_eq!(
-        readout_saying(&mut session, "Speakers"),
-        "Speakers, Muted",
-        "the locked session answers the device key, naming the output"
-    );
-    // The frame the answer is drawn in, over the lock's own: step until a
-    // frame differs from the lock's and the next one is the same, so what is
-    // measured is the readout at rest rather than a frame of its arrival.
-    let mut last: Option<tilo_compositor::Screenshot> = None;
-    pump(&mut session, &mut [], |session, _| {
-        let now = session
-            .compositor()
-            .screenshot(DISPLAY)
-            .expect("screenshot");
-        let drawn = changed(&before, &now).is_some();
-        let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
-        last = Some(now);
-        drawn && settled
+    //
+    // The readout stands for a moment of its own, and a machine running the
+    // whole suite can spend that moment on the turn that raised it: the key,
+    // the words it answers with and the frame that draws them are read at one
+    // reading of the clock, so the frame measured is the one the key drew.
+    let after = ui::time::testing::with_monotonic_time(ui::time::now(), || {
+        tap(&mut session, keys::VOLUME_UP);
+        assert_eq!(
+            readout_saying(&mut session, "Speakers"),
+            "Speakers, Muted",
+            "the locked session answers the device key, naming the output"
+        );
+        // The frame the answer is drawn in, over the lock's own: step until a
+        // frame differs from the lock's and the next one is the same, so what is
+        // measured is the readout at rest rather than a frame of its arrival.
+        let mut last: Option<tilo_compositor::Screenshot> = None;
+        pump(&mut session, &mut [], |session, _| {
+            let now = session
+                .compositor()
+                .screenshot(DISPLAY)
+                .expect("screenshot");
+            let drawn = changed(&before, &now).is_some();
+            let settled = last.as_ref().is_some_and(|last| last.rgba == now.rgba);
+            last = Some(now);
+            drawn && settled
+        });
+        last.expect("the readout's frame")
     });
-    let after = last.expect("the readout's frame");
     assert!(
         !asked.borrow().is_empty(),
         "the key reached the sound service while locked"

@@ -684,11 +684,14 @@ impl Shared {
             | ShortcutAction::DictationFinish
             | ShortcutAction::DictationCancel => self.dictation.shortcut(action),
             ShortcutAction::ShortcutHelp => self.shortcut_guide.toggle(),
-            // Asking the person's agents and saying something both start a
-            // conversation, which Chat holds: the chord opens it there, on
-            // the same card the desk's chat card is.
+            // Asking the person's agents and saying something both send from
+            // the window the person works in: its app opens the one box, with
+            // no menu to carry it, and the person names whom it goes to. The
+            // desk names that window on its next pass, and a desk with none in
+            // front leaves the chord to Chat, which a send with nothing to be
+            // about has always opened.
             ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
-                self.launchpad(LaunchpadAction::Chat);
+                self.send_from.set(true);
             }
             // The desk answers these on its own windows, strips and places
             // before handing anything on: one arriving here is one it had

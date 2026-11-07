@@ -1,13 +1,24 @@
-//! The memory an app nobody can see gives back first.
+//! The memory an app nobody can see gives back first, and the CPU an app
+//! that is opening is served before everything else.
 //!
-//! Every app starts in the foreground tier: a CPU and IO weight well above the
-//! default and a memory-low floor, so a starting app is not paged out from
-//! under itself (`launcher::priority`). The session is what knows which
-//! windows the person can see, so it is what moves an app between the tiers:
-//! while the desk shows a window of an app the app is in the foreground
-//! tier, and an app with no window in view is in the background tier, whose
-//! weight is below default and whose floor is none. Both writes are the same
-//! ([`launcher::app_cgroup::set_tier`]): the files a launch is born with.
+//! Every app starts in the startup tier: the most CPU and IO weight a cgroup
+//! may carry, so the app the person just asked for is served before every
+//! other app, the session's desk and any batch work while it opens
+//! (`launcher::priority`). Once it has had its startup window it takes
+//! the tier of what the person can see: the session is what knows which
+//! windows the desk shows, so it is what moves an app between the tiers.
+//! While the desk shows a window of an app the app is in the foreground tier,
+//! with a memory-low floor; an app with no window in view is in the
+//! background tier, whose weight is below default and whose floor is none.
+//! Both writes are the same ([`launcher::app_cgroup::set_tier`]): the files a
+//! launch is born with.
+//!
+//! The cgroup the session itself runs in carries [`Tier::Session`]: the desk
+//! placing and drawing a window is work a person waits on, so it outranks
+//! every app. A launch a host gave no scope of its own runs in that same
+//! cgroup: it is served by the session's weight while it opens, and the
+//! session's weight stays once it has, so the app is never demoted by being
+//! where the session is.
 //!
 //! Running low on memory is handled before the kernel's OOM killer has to be
 //! ([`launcher::memory_pressure`]): under rising pressure the watch on this
@@ -55,18 +66,55 @@ pub(crate) fn cgroups_of(apps: &Running) -> Vec<(PathBuf, String)> {
     cgroups
 }
 
-/// Put each app of `apps` in the tier of what the person can see: foreground
-/// while its cgroup is one `visible` names, background otherwise, writing
-/// only the apps whose tier changed. Returns how many it moved. `total` is
-/// this machine's memory, which a foreground app's floor is an eighth of.
-pub(crate) fn put_in_tiers(
-    apps: &[(PathBuf, String)],
+/// One launch, as the tier pass reads it: the cgroup the process it started
+/// runs in, and whether it is still opening.
+struct Launch {
+    dir: PathBuf,
+    opening: bool,
+}
+
+/// Every launch of `apps`, with the cgroup its process is in right now: the
+/// scope the launcher asked the user manager for, or the session's own cgroup
+/// on a host that gave the launch none.
+fn launches_of(apps: &Running) -> Vec<Launch> {
+    running(apps)
+        .values()
+        .filter_map(|app| {
+            Some(Launch {
+                dir: launcher::app_cgroup::cgroup_of_pid(app.pid)?,
+                opening: app.opening(),
+            })
+        })
+        .collect()
+}
+
+/// Put each cgroup of `launches` in its tier, writing only the cgroups whose
+/// tier changed, and answer how many moved.
+///
+/// A cgroup one of whose launches is still opening keeps the startup tier, so
+/// two apps sharing a cgroup (a host with no user manager runs every launch in
+/// the session's) do not demote each other. Afterwards the cgroup the session
+/// itself runs in is the session's tier whatever the desk shows, and a
+/// launch's own cgroup takes the tier of what the person can see. `total` is
+/// this machine's memory, which a foreground app's floor is an eighth of; the
+/// session's own cgroup sets weights only, since its floor is the image's.
+fn put_in_tiers(
+    launches: &[Launch],
     visible: &[PathBuf],
+    own: Option<&Path>,
     total: Option<u64>,
 ) -> usize {
+    let mut opening: BTreeMap<&Path, bool> = BTreeMap::new();
+    for launch in launches {
+        *opening.entry(launch.dir.as_path()).or_default() |= launch.opening;
+    }
     let mut moved: usize = 0;
-    for (dir, app) in apps {
-        let tier = if visible.contains(dir) {
+    for (dir, opening) in opening {
+        let tier = if opening {
+            Tier::Startup
+        } else if own == Some(dir) {
+            Tier::Session
+        } else if visible.iter().any(|visible| visible == dir) {
             Tier::Foreground
         } else {
             Tier::Background
@@ -74,32 +122,34 @@ pub(crate) fn put_in_tiers(
         if launcher::app_cgroup::tier_of(dir) == Some(tier) {
             continue;
         }
+        let total = (own != Some(dir)).then_some(total).flatten();
         match launcher::app_cgroup::set_tier(dir, tier, total) {
             Ok(()) => moved = moved.saturating_add(1),
-            Err(error) => tracing::warn!(%app, ?tier, %error, "an app keeps its tier"),
+            Err(error) => tracing::warn!(
+                dir = %dir.display(),
+                ?tier,
+                %error,
+                "a launch keeps its tier"
+            ),
         }
     }
     moved
 }
 
-/// Put every app the person started in the tier of what they can see:
-/// `on_screen` is the process of each window the desk shows, and an app holds
-/// a window while a process of it is in the app's own cgroup.
-pub(crate) fn tier_by_visibility(apps: &Running, on_screen: &[u32]) {
-    let visible: Vec<PathBuf> = on_screen.iter().filter_map(|pid| cgroup_of(*pid)).collect();
+/// Put every cgroup a launch of `apps` runs in in its tier: the startup tier
+/// while the launch is opening, then the tier of what the person can see —
+/// and [`Tier::Session`] for `own`, the cgroup this session runs in.
+pub(crate) fn tier_by_visibility(apps: &Running, on_screen: &[u32], own: Option<&Path>) {
+    let visible: Vec<PathBuf> = on_screen
+        .iter()
+        .filter_map(|pid| launcher::app_cgroup::cgroup_of_pid(*pid))
+        .collect();
     put_in_tiers(
-        &cgroups_of(apps),
+        &launches_of(apps),
         &visible,
+        own,
         launcher::priority::mem_total_bytes(),
     );
-}
-
-/// The cgroup directory the process `pid` is in, when a launch of an app is
-/// what put it there.
-fn cgroup_of(pid: u32) -> Option<PathBuf> {
-    let cgroup = std::fs::read_to_string(format!("/proc/{pid}/cgroup")).ok()?;
-    let cgroup = launcher::app_cgroup::app_cgroup_at(&cgroup)?;
-    Some(launcher::app_cgroup::fs_path(&cgroup))
 }
 
 /// Why memory ended the app whose cgroup is `dir`, once: what the watch
@@ -234,18 +284,41 @@ mod tests {
         std::fs::read_to_string(app.0.join("cpu.weight")).unwrap()
     }
 
+    /// A launch of `app` whose process runs in its cgroup, still opening or
+    /// past its startup window.
+    fn launch(app: &(PathBuf, String), opening: bool) -> Launch {
+        Launch {
+            dir: app.0.clone(),
+            opening,
+        }
+    }
+
+    fn tiered(app: &(PathBuf, String), visible: bool, opening: bool, own: Option<&Path>) -> usize {
+        let visible = if visible {
+            std::slice::from_ref(&app.0)
+        } else {
+            &[]
+        };
+        put_in_tiers(&[launch(app, opening)], visible, own, Some(32 * GIB))
+    }
+
     #[test]
     fn pressure_reclaims_from_the_app_nobody_can_see_before_the_one_in_front() {
         let home = tempfile::tempdir().unwrap();
-        let in_front = app_cgroup(&home.path().join("app-in-front"), Tier::Foreground, 3 * GIB);
-        let hidden = app_cgroup(&home.path().join("app-hidden"), Tier::Foreground, 2 * GIB);
+        let in_front = app_cgroup(&home.path().join("app-in-front"), Tier::Startup, 3 * GIB);
+        let hidden = app_cgroup(&home.path().join("app-hidden"), Tier::Startup, 2 * GIB);
         let apps = [in_front.clone(), hidden.clone()];
 
-        // The desk shows a window of the first app and none of the other: the
-        // pass moves one up and the other down, writing the launch's own tier
-        // files.
-        let moved = put_in_tiers(&apps, std::slice::from_ref(&in_front.0), Some(32 * GIB));
-        assert_eq!(moved, 1, "the foreground app is where it started");
+        // The desk shows a window of the first app and none of the other, and
+        // both have opened: the pass moves one up and the other down, writing
+        // the launch's own tier files.
+        let moved = put_in_tiers(
+            &[launch(&in_front, false), launch(&hidden, false)],
+            std::slice::from_ref(&in_front.0),
+            None,
+            Some(32 * GIB),
+        );
+        assert_eq!(moved, 2, "both launches take the tier of what is on screen");
         assert_eq!(weight(&in_front), "800");
         assert_eq!(weight(&hidden), "50", "an app nobody sees yields");
         assert_eq!(
@@ -280,35 +353,61 @@ mod tests {
     #[test]
     fn an_app_that_comes_back_to_the_front_is_restored() {
         let home = tempfile::tempdir().unwrap();
-        let app = app_cgroup(&home.path().join("app-probe"), Tier::Foreground, GIB);
-        assert_eq!(
-            put_in_tiers(std::slice::from_ref(&app), &[], Some(32 * GIB)),
-            1
-        );
+        let app = app_cgroup(&home.path().join("app-probe"), Tier::Startup, GIB);
+        assert_eq!(tiered(&app, false, false, None), 1);
         assert_eq!(weight(&app), "50");
         // Its window is on screen again: the same pass, the other way.
-        assert_eq!(
-            put_in_tiers(
-                std::slice::from_ref(&app),
-                std::slice::from_ref(&app.0),
-                Some(32 * GIB)
-            ),
-            1
-        );
+        assert_eq!(tiered(&app, true, false, None), 1);
         assert_eq!(weight(&app), "800");
         // Already there: the pass writes nothing.
-        assert_eq!(
-            put_in_tiers(
-                std::slice::from_ref(&app),
-                std::slice::from_ref(&app.0),
-                Some(32 * GIB)
-            ),
-            0
-        );
+        assert_eq!(tiered(&app, true, false, None), 0);
         assert!(
             has_floor(&app.0.join("memory.low")),
             "a foreground app keeps its floor"
         );
+    }
+
+    #[test]
+    fn an_app_that_is_opening_is_served_before_everything_else() {
+        let home = tempfile::tempdir().unwrap();
+        let app = app_cgroup(&home.path().join("app-probe"), Tier::Foreground, GIB);
+        // Opening, and the desk already shows its window: it keeps the
+        // startup tier until its startup window has passed.
+        assert_eq!(tiered(&app, true, true, None), 1);
+        assert_eq!(weight(&app), "10000");
+        assert!(
+            has_floor(&app.0.join("memory.low")),
+            "an app that is opening keeps the floor it opens with"
+        );
+        assert_eq!(tiered(&app, true, true, None), 0, "nothing to write");
+        // Opened: the tier of what the person can see.
+        assert_eq!(tiered(&app, true, false, None), 1);
+        assert_eq!(weight(&app), "800");
+    }
+
+    #[test]
+    fn a_launch_in_the_sessions_cgroup_keeps_the_sessions_weight_once_it_has_opened() {
+        let home = tempfile::tempdir().unwrap();
+        // A host with no user manager runs the launch in the session's own
+        // cgroup: while it opens, that cgroup is the launch's; afterwards it is
+        // the desk's, and never the background tier of an app nobody sees.
+        let session = app_cgroup(&home.path().join("session.scope"), Tier::Session, GIB);
+        let own = session.0.clone();
+        std::fs::write(session.0.join("memory.low"), "0").unwrap();
+        assert_eq!(tiered(&session, false, true, Some(&own)), 1);
+        assert_eq!(weight(&session), "10000");
+        assert_eq!(tiered(&session, false, false, Some(&own)), 1);
+        assert_eq!(weight(&session), "1000", "the desk keeps its own weight");
+        assert!(!has_floor(&session.0.join("memory.low")));
+        // A second app opening in the same cgroup is not demoted by the first
+        // one having opened.
+        let apps = [launch(&session, false), launch(&session, true)];
+        assert_eq!(
+            put_in_tiers(&apps, &[], Some(&own), Some(32 * GIB)),
+            1,
+            "still opening, so still the startup tier"
+        );
+        assert_eq!(weight(&session), "10000");
     }
 
     fn has_floor(path: &Path) -> bool {

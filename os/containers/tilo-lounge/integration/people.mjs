@@ -482,7 +482,7 @@ try {
   // A opens the Lounge's chat the way a person does — search, the app's name,
   // Enter — and writes in it: the hello lands in B's.
   await search(a.tab, a.command, 'chat', 'Chat');
-  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => (entry.label ?? '').toLowerCase() === 'chat')`,
+  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.chat')`,
     "A's own chat window", 120_000);
   await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer')`,
     "A's chat composer", 120_000);

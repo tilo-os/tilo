@@ -113,22 +113,24 @@ const COMPUTE_ASSETS: [&str; 5] = [
     "pkg/compute/tilo_browser_compute.js",
     "pkg/compute/tilo_browser_compute_bg.wasm",
 ];
-const WASM_OPT_FLAGS: [&str; 5] = [
-    "-Oz",
-    "--enable-bulk-memory",
-    "--enable-nontrapping-float-to-int",
-    // A split module keeps the name section the splitter read.
-    "--strip-debug",
-    // Sound for rustc's stack-first wasm32 layout: the first KiB is the
-    // bottom of the stack, reached only by a stack about to overflow.
-    "--low-memory-unused",
-];
+/// What every web module this repository builds passes wasm-opt: the same
+/// list the pages' own `build.sh` reads, so the module the size gates
+/// measure is the module the site serves.
+const WASM_OPT_FLAGS: &str = include_str!("../../../../../tools/web/wasm-opt-flags");
+
+/// [`WASM_OPT_FLAGS`] as arguments: comments are lines, the rest is words.
+fn wasm_opt_flags() -> impl Iterator<Item = &'static str> {
+    WASM_OPT_FLAGS
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .flat_map(str::split_whitespace)
+}
 
 /// The optimizer identity and arguments are shared by the cache and invocation.
 struct Optimizer {
     program: PathBuf,
     version: String,
-    flags: &'static [&'static str],
+    flags: Vec<&'static str>,
 }
 
 impl Optimizer {
@@ -145,7 +147,7 @@ impl Optimizer {
             .map(|version| Self {
                 program,
                 version,
-                flags: &WASM_OPT_FLAGS,
+                flags: wasm_opt_flags().collect(),
             })
     }
 
@@ -156,7 +158,7 @@ impl Optimizer {
     fn optimize(&self, wasm: &Path) -> Result<()> {
         run(
             ProcessCommand::new(&self.program)
-                .args(self.flags)
+                .args(&self.flags)
                 .arg(wasm)
                 .arg("-o")
                 .arg(wasm),
@@ -1946,7 +1948,7 @@ printf 'optimizer\n' >> "$(dirname "$output")/../calls"
         executable(&other_program, script);
         optimizer = Optimizer::probe(other_program, true).unwrap();
         bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
-        optimizer.flags = &["-O2"];
+        optimizer.flags = vec!["-O2"];
         bundle_runtime(&shipping, &bindgen, &bundle, Some(&optimizer), None).unwrap();
         let twice = std::fs::read_to_string(&output).unwrap();
         assert!(twice.contains("optimized -O2"));

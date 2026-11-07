@@ -865,7 +865,14 @@ impl Device {
         let control = self.control.clone();
         let logs = self.logs_dir();
         std::fs::create_dir_all(&logs).expect("a directory for what the device logs");
-        let log = std::fs::File::create(logs.join("session.log")).expect("a log for the session");
+        // A device started again keeps what its session said when it stopped: what it
+        // answered last, a crash included, is what a step that fails after the restart reads.
+        let mut log = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logs.join("session.log"))
+            .expect("a log for the session");
+        let _ = writeln!(log, "\n--- this device's session starts ---");
         let mut command = Command::new(env!("CARGO_BIN_EXE_tilo-session"));
         command
             .args([
@@ -968,15 +975,10 @@ impl Device {
             .expect("the socket reads");
         let mut line = String::new();
         if let Err(error) = BufReader::new(stream).read_line(&mut line) {
-            let log = self.log();
-            let last = log
-                .lines()
-                .rev()
-                .find(|line| !line.trim().is_empty())
-                .unwrap_or_default();
             panic!(
-                "{} did not answer {request}: {error}; its session last said: {last}",
+                "{} did not answer {request}: {error}; its session last said:\n{}",
                 self.label,
+                self.read_line_of_log(),
             );
         }
         serde_json::from_str(&line).unwrap_or_else(|error| {

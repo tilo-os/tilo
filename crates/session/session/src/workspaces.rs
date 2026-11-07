@@ -1152,6 +1152,7 @@ impl crate::Shared {
             .unwrap_or_default();
         let mut tree = self.handle.read(Clone::clone);
         let mut changed = false;
+        let endpoint = self.sync.as_ref().map(|sync| sync.endpoint_addr());
         for workspace in &mut tree.workspaces {
             if let Some(engine) = &self.engine
                 && self
@@ -1164,7 +1165,12 @@ impl crate::Shared {
                 // A workspace made on this desk is a workspace from here on,
                 // not only this desk's: its governance is founded in the
                 // workspace it already has an identity for.
-                engine.found(workspace.slot, workspace.id(), &workspace.name);
+                engine.found(
+                    workspace.slot,
+                    workspace.id(),
+                    &workspace.name,
+                    endpoint.as_ref(),
+                );
             }
             if workspace
                 .owner()
@@ -1179,6 +1185,12 @@ impl crate::Shared {
         }
         if changed {
             self.handle.replace_tree(tree);
+        }
+        // A workspace founded before its record said where its own host is
+        // reached is named now: a workspace hosted here is reached at this
+        // device, and nothing reaches its records until the record says so.
+        if let (Some(engine), Some(endpoint)) = (&self.engine, &endpoint) {
+            engine.name_own_hosts(endpoint);
         }
         self.project_governance();
     }

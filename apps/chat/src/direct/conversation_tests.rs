@@ -189,6 +189,205 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
     );
 }
 
+/// What a window's box sends goes to the conversation Chat already keeps with
+/// the person it names — Ada reads it there as one more message, carrying what
+/// the box held — never a second conversation with the same person.
+#[test]
+fn a_box_send_reaches_the_conversation_the_two_already_have() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000c";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let conversation = Chat::direct_id([
+        Participant::person(ada.clone()),
+        Participant::person(bob.clone()),
+    ]);
+    let carried = tilo_reference::Attached::Text {
+        text: "the wheel stutters".into(),
+        from: None,
+    };
+
+    let sent = bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            attached: vec![carried],
+            text: "can you look?".into(),
+            bounds: None,
+        })
+        .expect("Bob's box sends");
+    let value = sent.value.expect("the send says where the message went");
+    assert_eq!(
+        value["conversation"],
+        conversation.to_string(),
+        "the message joins the conversation they already have"
+    );
+    assert_eq!(value["accepted"].as_bool(), Some(true));
+    bob_window.with_chat(|chat| {
+        assert_eq!(
+            chat.active_channel,
+            conversation.to_string(),
+            "the window opens where the message landed"
+        );
+    });
+
+    deliver_messages(&mut bob_window, &mut ada_window);
+    assert_eq!(
+        read_conversation(&mut ada_window, &bob),
+        [("can you look?".to_owned(), bob.clone())],
+        "Ada reads what the box sent"
+    );
+    let rows = crate::testing::mounted_rows(&mut ada_window, &conversation.to_string());
+    assert_eq!(
+        rows.len(),
+        1,
+        "the conversation holds the one message, not a second conversation"
+    );
+    assert_eq!(
+        rows[0].attachments,
+        [tilo_reference::Attached::Text {
+            text: "the wheel stutters".into(),
+            from: None,
+        }],
+        "the message carries what the box held"
+    );
+}
+
+/// A box with no words to send but something to send it about — a task
+/// handed to someone — posts the message carrying that, and nothing else.
+#[test]
+fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000d";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (mut ada_window, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let conversation =
+        Chat::direct_id([Participant::person(ada.clone()), Participant::person(bob)]);
+    let carried = tilo_reference::Attached::Text {
+        text: "#42 Ship the release".into(),
+        from: None,
+    };
+
+    bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            attached: vec![carried.clone()],
+            text: String::new(),
+            bounds: None,
+        })
+        .expect("Bob's box sends the task alone");
+
+    deliver_messages(&mut bob_window, &mut ada_window);
+    let rows = crate::testing::mounted_rows(&mut ada_window, &conversation.to_string());
+    assert_eq!(rows.len(), 1, "the message is there");
+    assert_eq!(rows[0].text, "", "with no words beside what it carries");
+    assert_eq!(
+        rows[0].attachments,
+        [carried],
+        "the task the box was about is the message"
+    );
+}
+
+/// A message a box sends to an agent lands in the conversation with that
+/// agent, made as the message arrives: the workspace needs no channel made
+/// first.
+#[test]
+fn a_box_send_to_an_agent_opens_its_conversation() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000d";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let agent = "a5".repeat(16);
+    let conversation =
+        Chat::direct_id([Participant::person(bob), Participant::agent(agent.clone())]);
+
+    let sent = bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
+            attached: Vec::new(),
+            text: "please look".into(),
+            bounds: None,
+        })
+        .expect("Bob's box sends");
+    let value = sent.value.expect("the send says where the message went");
+    assert_eq!(value["conversation"], conversation.to_string());
+    bob_window.with_chat(|chat| {
+        assert_eq!(
+            chat.active_channel,
+            conversation.to_string(),
+            "the window opens the conversation the message made"
+        );
+    });
+    let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].text, "please look");
+}
+
+/// A send made in a box hands the conversation it opened to the desktop at the
+/// box's own bounds: the message and the conversation it landed in stand in
+/// one place, one gesture. The conversation stands in the card alone — the
+/// window goes on with what it showed, as it does when a conversation is
+/// floated out of a thread by hand.
+#[test]
+fn a_box_send_opens_its_conversation_where_the_box_stood() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{FloatingRole, Recipient, RecipientKind};
+    use vello::kurbo::Rect;
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000e";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let stood = [210.0, 120.0, 530.0, 380.0];
+
+    bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Person, ada.clone(), "Ada")],
+            attached: Vec::new(),
+            text: "look at this".into(),
+            bounds: Some(stood),
+        })
+        .expect("Bob's box sends");
+
+    let request = bob_window
+        .with_chat(ui::widget::FloatingSurfaceProvider::take_floating_surface_request)
+        .flatten()
+        .expect("the send presents the conversation as a card");
+    assert_eq!(
+        request.role,
+        FloatingRole::Conversation,
+        "the card is the conversation, not a copy of the window"
+    );
+    assert_eq!(
+        request.initial_rect,
+        Some(Rect::new(stood[0], stood[1], stood[2], stood[3])),
+        "the card stands where the box stood"
+    );
+    bob_window.with_chat(|chat| {
+        let conversation = crate::record::Chat::direct_id([
+            crate::record::Participant::person(bob.clone()),
+            crate::record::Participant::person(ada.clone()),
+        ])
+        .to_string();
+        assert!(
+            chat.agent_surfaces.contains_key(&conversation),
+            "the conversation is the window's card"
+        );
+        assert_ne!(
+            chat.active_channel, conversation,
+            "the window shows the conversation in one place, not two"
+        );
+    });
+}
+
 /// What a person's card asks of Chat when they press Message: the row naming
 /// their conversation, which opens it with the composer ready.
 #[test]

@@ -44,8 +44,10 @@ fn week() -> (Replica, Replica) {
     call(&ada, "check", vec![bins]);
     ada.commit();
     let ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
+    // Ben's clock, before what his copy reads: the columns his index writes are the ones his
+    // person's day asks for.
     ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    ben.host.sync_from(&ben.doc);
     (ada, ben)
 }
 
@@ -174,8 +176,8 @@ fn today_reads_the_same_at_any_size_and_each_person_their_own() {
     let (hers, today) = rendered(&ada);
     assert_eq!(today, 5);
     let ben = ada.fork("ben", PACKAGES);
-    ben.host.sync_from(&ben.doc);
     ben.host.set_clock(|| "2026-10-29T10:00:00Z".to_owned());
+    ben.host.sync_from(&ben.doc);
     let (theirs, today) = rendered(&ben);
     assert_eq!(
         today, 3,

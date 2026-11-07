@@ -57,12 +57,14 @@ pub fn send(socket: BorrowedFd<'_>, fields: &[&[u8]], fds: &[BorrowedFd<'_>]) ->
     {
         return Err(io::ErrorKind::InvalidInput.into());
     }
-    let sent = sendmsg(
-        socket,
-        &[io::IoSlice::new(&message)],
-        &mut control,
-        SendFlags::NOSIGNAL,
-    )?;
+    // A peer that has gone must not signal the process. `MSG_NOSIGNAL` says
+    // that where the platform has it; macOS has no such flag and its Rust
+    // runtime already ignores `SIGPIPE`, so the send fails with `EPIPE`.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flags = SendFlags::NOSIGNAL;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let flags = SendFlags::empty();
+    let sent = sendmsg(socket, &[io::IoSlice::new(&message)], &mut control, flags)?;
     if sent == message.len() {
         Ok(())
     } else {
@@ -84,12 +86,18 @@ pub fn receive(
     use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, ReturnFlags, recvmsg};
     let mut space = [std::mem::MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(MAX_FDS))];
     let mut control = RecvAncillaryBuffer::new(&mut space);
+    // `MSG_CMSG_CLOEXEC` marks the descriptors close-on-exec as they arrive.
+    // A platform without it (macOS) marks them below instead.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    let flags = RecvFlags::CMSG_CLOEXEC;
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    let flags = RecvFlags::empty();
     let received = loop {
         match recvmsg(
             socket,
             &mut [io::IoSliceMut::new(buffer)],
             &mut control,
-            RecvFlags::CMSG_CLOEXEC,
+            flags,
         ) {
             Err(rustix::io::Errno::INTR) => {}
             other => break other?,
@@ -100,6 +108,10 @@ pub fn receive(
         if let RecvAncillaryMessage::ScmRights(rights) = message {
             fds.extend(rights);
         }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "android")))]
+    for fd in &fds {
+        rustix::io::fcntl_setfd(fd, rustix::io::FdFlags::CLOEXEC)?;
     }
     if received
         .flags

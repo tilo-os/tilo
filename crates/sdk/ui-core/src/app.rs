@@ -2567,6 +2567,17 @@ impl App {
             }
         }
 
+        // A part its owner rebuilt (a page, a list showing other rows) holds
+        // the answer the keyboard was on when the control itself survives:
+        // it answers to the same name, alone in the new tree, and the
+        // keyboard goes back to it rather than to nothing.
+        if self.focused_node.is_none()
+            && let Some(name) = self.focus_anchor.clone()
+            && let Some(node) = self.unique_answering(&name)
+        {
+            self.set_focused_node(Some(node));
+        }
+
         // The widgets built above are fresh instances the OLD `sync` never
         // ran against, so without this they draw blank until the next event.
         #[cfg(test)]

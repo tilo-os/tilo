@@ -1427,19 +1427,27 @@ fn seal_runtime_bundle(tree: &Path, manifest: &runtime_bundle::BundleManifest) {
     }
 }
 
-/// The checks the launcher makes before it mounts a per-user bundle.
+/// The checks the launcher makes before it mounts a per-user bundle, which
+/// leave the bundle's verification record: the first launch of an app that
+/// installs a runtime reads that record instead of hashing what this just
+/// proved. Sealing the bundle afterwards moves the files' identities and the
+/// record with them, which costs nothing: a sealed bundle is proven by the
+/// kernel, and one the filesystem would not seal keeps the record.
 fn check_runtime_bundle(
     tree: &Path,
     version: &str,
 ) -> Result<runtime_bundle::BundleManifest, Error> {
-    let manifest = runtime_bundle::verify_bundle_with(
+    let records = runtime_bundle::record::directory();
+    let manifest = runtime_bundle::verify_bundle_recorded_with(
         tree,
         &runtime_bundle::VerifyOptions {
             require_publisher: None,
             require_signature: true,
             require_arch: Some(runtime_bundle::host_arch().to_string()),
         },
+        records.as_deref(),
     )
+    .map(|(manifest, _)| manifest)
     .map_err(|e| Error::RuntimeBundle(e.to_string()))?;
     if manifest.version != version {
         return Err(Error::RuntimeBundle(format!(

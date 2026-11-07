@@ -16,6 +16,7 @@ import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {inflateSync} from 'node:zlib';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const args = process.argv.slice(2);
 const bundle = args.find(arg => !arg.startsWith('--'));
@@ -117,7 +118,7 @@ for (let i = 0; ; i++) {
   if (await evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
   assert.ok(i < 90, `the desktop never presented: ${await evaluate("document.getElementById('status')?.textContent")}`);
 }
-const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
+const command = action => evaluate(`(async()=>{await tiloMount.navigation.dispatch(${JSON.stringify(action)});return true;})()`);
 // The note's blocks in order: text, bounds and handle, in page pixels.
 const blocks = () => evaluate(`(async () => {
   const stale = tiloMount.state().semantics;
@@ -140,7 +141,7 @@ const blocks = () => evaluate(`(async () => {
   return found;
 })()`);
 
-await command({kind: 'launch', app: 'so.tilo.notes'});
+await command(verb.openApp('so.tilo.notes'));
 await sleep(3000);
 // Start a note from the empty state's button, then write five paragraphs.
 const start = await evaluate(`(async () => {

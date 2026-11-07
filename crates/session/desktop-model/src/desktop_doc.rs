@@ -18,9 +18,9 @@
 //! effect_receipts_v1: {invocation → json},
 //! automations_v1: {shortcut id → json},
 //! arrangement_v1?: "canvas", canvas_v1?: {group id → json place},
-//! local_v1?: json,
+//! floats_v1?: {group id → json float}, local_v1?: json,
 //! strips: [ { id, name, window_groups: [ { id, tabs: [ { id, title, app_title?, tile_json } ] } ] } ] } ] }`.
-//! Canvas places are the workspace's arrangement, `local_v1` is what only this
+//! Canvas places and floats are the workspace's arrangement, `local_v1` is what only this
 //! device reads of a workspace, and `view_v1` is how this device shows the
 //! desk: none of them reaches another device, and all are in this document
 //! because it is the one store of the desk here.
@@ -37,7 +37,7 @@ use collab_types::caps::CapOverride;
 use tilo_action_policy::{Grant, GrantId, Preset, Role, Subject, WorkspacePolicy};
 
 use crate::app::AppKind;
-use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace};
+use crate::arrangement::{Arrangement, ArrangementKind, CanvasPlace, FloatPlace};
 use crate::ids::{GroupId, StripId, TabId, WorkspaceId, WorkspaceSlot};
 use crate::layout::{Strip, Tab, TileContent, WindowGroup};
 use crate::partition::OutputPartition;
@@ -65,6 +65,7 @@ pub(crate) const GROUPS_KEY: &str = "window_groups";
 const TABS_KEY: &str = "tabs";
 const ARRANGEMENT_KEY: &str = "arrangement_v1";
 const CANVAS_KEY: &str = "canvas_v1";
+const FLOATS_KEY: &str = "floats_v1";
 const RECORDS_KEY: &str = "window_records_v1";
 const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
 
@@ -422,7 +423,8 @@ fn write_local(doc: &mut AutoCommit, entry: &ObjId, ws: &Workspace) {
 }
 
 /// The workspace's arrangement: its kind only when it is not the strips
-/// every workspace starts with, and its canvas places once it has any.
+/// every workspace starts with, and its canvas places and floats once it has
+/// any.
 fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangement) {
     match arrangement.kind {
         ArrangementKind::Strips => delete_if_present(doc, entry, ARRANGEMENT_KEY),
@@ -442,6 +444,17 @@ fn write_arrangement(doc: &mut AutoCommit, entry: &ObjId, arrangement: &Arrangem
                 .map(|(group, place)| (group.to_string(), place)),
         );
     }
+    if !arrangement.floats.is_empty() || obj(doc, entry, FLOATS_KEY).is_some() {
+        sync_blob_map(
+            doc,
+            entry,
+            FLOATS_KEY,
+            arrangement
+                .floats
+                .iter()
+                .map(|(group, float)| (group.to_string(), float)),
+        );
+    }
 }
 
 fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
@@ -455,6 +468,11 @@ fn read_arrangement(doc: &AutoCommit, entry: &ObjId) -> Arrangement {
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(group, place)| Some((group.parse().ok()?, place)))
+            .collect(),
+        floats: read_keyed_blob_map::<FloatPlace>(doc, entry, FLOATS_KEY)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(group, float)| Some((group.parse().ok()?, float)))
             .collect(),
     }
 }

@@ -3320,6 +3320,8 @@ pub use primitives::{
 pub use row_menu::RowMenu;
 pub mod context_menu_area;
 pub use context_menu_area::{ContextMenuArea, MenuEntry};
+pub mod send_to;
+pub use send_to::{SendToBox, SendToFocus};
 pub mod attached;
 mod hover_toolbar;
 pub use hover_toolbar::HoverToolbar;

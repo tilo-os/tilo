@@ -76,10 +76,28 @@ export RUSTUP_HOME="${RUSTUP_HOME:-$HOME/.rustup}"
 # those of sockets tests create in their temporary directories: the root is
 # their TMPDIR too.
 root=$(mktemp -d /tmp/tilo-test-env.XXXXXXXX)
+# Anything mounted under the root goes before the tree: a runtime a test
+# started can leave its FUSE mount behind, and a mount point cannot be
+# removed while it is mounted. Deepest first, Linux only (mount points below
+# the root carry no spaces: the template has none).
+detach_mounts() {
+    [ -r /proc/self/mountinfo ] || return 0
+    local point
+    while IFS= read -r point; do
+        fusermount3 -u -z -- "$point" 2>/dev/null ||
+            umount -l -- "$point" 2>/dev/null || true
+    done < <(
+        awk -v root="$root/" 'index($5, root) == 1 { print $5 }' /proc/self/mountinfo |
+            awk '{ print length($0), $0 }' | sort -rn | cut -d' ' -f2-
+    )
+}
 cleanup() {
-    # Tests may leave read-only fixture trees behind.
+    detach_mounts
+    # Tests may leave read-only fixture trees behind. What the root still
+    # holds after that is not the command's result: the run reports its own
+    # status, never the cleanup's.
     chmod -R u+rwX -- "$root" 2>/dev/null || true
-    rm -rf -- "$root"
+    rm -rf -- "$root" 2>/dev/null || true
 }
 trap cleanup EXIT
 trap 'exit 130' INT

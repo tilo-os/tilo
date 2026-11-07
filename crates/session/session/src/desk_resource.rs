@@ -1088,7 +1088,7 @@ impl Desk {
                 invitee_name,
                 recipient,
                 expires_in_seconds.unwrap_or(DEFAULT_INVITE_SECONDS),
-                endpoint,
+                &endpoint,
                 std::time::SystemTime::now(),
             )
             .map_err(DoorError::Failed)?;

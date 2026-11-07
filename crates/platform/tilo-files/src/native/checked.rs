@@ -92,6 +92,15 @@ impl Identity {
     pub fn of_path(_path: &Path) -> io::Result<Option<Self>> {
         Err(unsupported())
     }
+
+    /// Identify an open file through its descriptor, so no later path
+    /// lookup can name another inode; unsupported on this target.
+    ///
+    /// # Errors
+    /// Always returns [`io::ErrorKind::Unsupported`].
+    pub fn of_file(_file: &std::fs::File) -> io::Result<Self> {
+        Err(unsupported())
+    }
 }
 
 #[cfg(not(unix))]

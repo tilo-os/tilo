@@ -602,6 +602,7 @@ fn a_window_fades_in_as_it_opens_and_its_last_frame_fades_out_as_it_closes() {
 mod keys {
     pub const TAB: u32 = 15;
     pub const A: u32 = 30;
+    pub const C: u32 = 46;
     pub const D: u32 = 32;
     pub const LEFT_SHIFT: u32 = 42;
     pub const ESCAPE: u32 = 1;
@@ -2008,6 +2009,8 @@ mod secret_captures;
 mod first_ask;
 #[path = "session/idle_frames.rs"]
 mod idle_frames;
+#[path = "session/send_key.rs"]
+mod send_key;
 #[path = "session/window_warmth.rs"]
 mod window_warmth;
 

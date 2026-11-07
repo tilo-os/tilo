@@ -774,12 +774,32 @@ author-bot-linked = Linked to { $person } on Tilo
 author-persona-suffix = { $name } · { $service }
 
 # A context menu's query field: typing narrows its entries, and a sentence
-# no entry answers is asked of an agent about what the menu is on.
+# no entry answers goes into the send-to box docked beside it.
 menu-query-placeholder = Type to filter
-menu-query-placeholder-ask = Type to filter or ask
-menu-query-name = Filter or ask
-# The row that asks an agent the typed sentence.
-menu-ask-typed = Ask: { $text }
+menu-query-placeholder-ask = Type to filter or send
+menu-query-placeholder-send = Type to filter or send
+menu-query-name = Filter or send
+menu-query-name-send = Filter or send
+# The row that carries the typed sentence into the send-to box.
+menu-send = Send…
+menu-ask-typed = Send: { $text }
+
+# The box beside a context menu: whom a message goes to, what it is about,
+# and its words.
+send-to-name = Send to
+send-to-to = To
+send-to-new-agent = New agent
+send-to-recipients-name = Recipients
+send-to-search-placeholder = Add someone…
+send-to-no-results = Nothing found
+send-to-subject = Subject
+send-to-subjects-name = Subjects
+send-to-add-subject = Add a subject
+send-to-message-name = Message
+send-to-message-placeholder = Write a message
+send-to-send = Send
+send-to-remove = Remove
+send-to-recipient-set = Sent to { $name }
 
 widget-screenshot-saved = Saved
 widget-screenshot-copied = Copied

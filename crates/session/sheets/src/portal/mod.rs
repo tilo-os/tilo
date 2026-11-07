@@ -502,9 +502,31 @@ impl PortalSeat {
         Rc::ptr_eq(&self.dialog, &other.dialog)
     }
 
-    /// What the sheet shows now.
+    /// What the sheet shows now: nothing once the shell took its question
+    /// back, or it dismissed itself.
     pub fn dialog(&self) -> Option<Dialog> {
-        self.dialog.borrow().clone()
+        self.dialog
+            .borrow()
+            .clone()
+            .filter(|_| self.presentation.is_open())
+    }
+
+    /// What its card draws: its question while the shell has it up, and the
+    /// last one it showed while it leaves the screen.
+    pub(crate) fn drawn(&self) -> Option<Dialog> {
+        self.dialog
+            .borrow()
+            .clone()
+            .filter(|_| self.presentation.is_drawn())
+    }
+
+    /// The shell took the question back: what the person typed and answered
+    /// goes with it, and its card leaves the screen.
+    pub fn taken_down(&self) {
+        self.forget();
+        self.asked.borrow_mut().clear();
+        *self.secrets.borrow_mut() = Vec::new();
+        self.presentation.close();
     }
 
     /// What was asked since the shell last looked, oldest first.
@@ -749,7 +771,7 @@ impl ResourceApp for PortalApp {
             }
             seat
         });
-        let dialog = seat.dialog();
+        let dialog = seat.drawn();
         let focus = dialog.as_ref().map_or(Focus::Choices, Shown::first_focus);
         let shown = cx.local(Shown {
             dialog,

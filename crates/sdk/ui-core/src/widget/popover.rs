@@ -107,6 +107,8 @@ impl MenuMetrics {
 /// Narrower than this, a panel that stands as a sheet in a narrow window
 /// ([`Popover::set_sheet_when_narrow`]) does: the width a phone holds a list
 /// on, where a panel under its button has no room to be one.
+// ratchet-allow(pixel_const): the window width a panel becomes a sheet under, read from the
+// window's own rect every layout pass, not spacing
 pub const SHEET_WIDTH: f64 = 480.0;
 
 /// An anchored floating Panel holding an option menu or any content widget.

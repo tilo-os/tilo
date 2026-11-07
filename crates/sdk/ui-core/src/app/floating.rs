@@ -534,8 +534,12 @@ impl App {
         // (`native_runner::slot_bar`).
         // No desktop agent to ask: offer no entry, and drop what was asked
         // while the connection went away.
-        crate::shared_selection::set_agent_host_available(false);
-        let _ = crate::shared_selection::take_agent_requests();
+        if crate::shared_selection::send_host_available() {
+            tracing::debug!("this window has no shell: its menus carry no send-to box");
+        }
+        crate::shared_selection::set_send_host_available(false);
+        let _ = crate::shared_selection::take_send_to();
+        let _ = crate::shared_selection::take_recipient_searches();
         while let Some(request) = self.root_widget.take_floating_surface_request() {
             let message =
                 crate::floating_surface::FloatingSurfaceHostMessage::Reattach { id: request.id };
@@ -770,7 +774,8 @@ impl App {
             client
                 .send(&crate::floating_surface::FloatingSurfaceClientMessage::SelectionCapable)?;
             self.floating.selection_capable_sent = true;
-            crate::shared_selection::set_agent_host_available(true);
+            crate::shared_selection::set_send_host_available(true);
+            tracing::debug!("this window opens a send-to box when the shell asks");
         }
         // What this window shows, so the desktop's own menus for it (its
         // window menu) attach it as the apps' menus do.
@@ -797,19 +802,37 @@ impl App {
                 },
             )?;
         }
-        for request in crate::shared_selection::take_agent_requests() {
-            let ask = request.ask.clone();
-            let draft = request.draft.clone();
-            let (selection, bounds) = self.agent_reference(request);
+        // What this window's send-to boxes hold: the session acts on each as
+        // the person, making an agent, opening the conversation and posting
+        // the message.
+        for request in crate::shared_selection::take_send_to() {
+            let (to, attached, text, bounds) = self.send_reference(request);
             client.send(
-                &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
-                    selection,
+                &crate::floating_surface::FloatingSurfaceClientMessage::SendTo {
+                    to,
+                    attached,
+                    text,
                     bounds,
-                    ask,
-                    draft,
                 },
             )?;
             *changed = true;
+        }
+        // The recipients a box asked the one search for.
+        for (request, query) in crate::shared_selection::take_recipient_searches() {
+            client.send(
+                &crate::floating_surface::FloatingSurfaceClientMessage::SearchRecipients {
+                    request,
+                    query,
+                },
+            )?;
+            *changed = true;
+        }
+        // While a box is open, what the window has selected now is what its
+        // "+" adds.
+        if crate::shared_selection::box_open() {
+            crate::shared_selection::set_focused_selection(
+                crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
+            );
         }
         while let Some(mode) = self.root_widget.take_capture_studio_request() {
             let mode = match mode {
@@ -1224,18 +1247,13 @@ impl App {
                     }
                 }
                 FloatingSurfaceHostMessage::ShareSelection => {
-                    let (selection, bounds) =
-                        self.agent_reference(crate::shared_selection::AgentRequest::default());
-                    if let Some(client) = &mut self.floating.client {
-                        let _ = client.send(
-                            &crate::floating_surface::FloatingSurfaceClientMessage::AskAgent {
-                                selection,
-                                bounds,
-                                ask: None,
-                                draft: None,
-                            },
-                        );
-                    }
+                    // The shell asks this window to send from its keyboard,
+                    // with no menu to carry a box: it opens alone, with no
+                    // subject, and the person names whom it goes to.
+                    crate::shared_selection::open_send_box(None, None, None);
+                }
+                FloatingSurfaceHostMessage::Recipients { request, rows } => {
+                    crate::shared_selection::answer_recipients(*request, rows.clone());
                 }
                 // What the desktop says of windows shared live reaches the
                 // app's next sync, where it reads them
@@ -1418,21 +1436,58 @@ fn tab_request_message(
     request.message(instance)
 }
 
+/// The app that publishes what `subject` names, as the window's published
+/// resources tell it: a subject keeps the publisher of its record, which is
+/// where the message about it travels, whatever window showed it.
+#[cfg(feature = "native")]
+fn publishing_app<'a>(
+    subject: &crate::shared_selection::SharedSelection,
+    published: &'a [tilo_actions::ResourceSpec],
+) -> Option<&'a str> {
+    let resource = subject.resource.as_ref()?;
+    let spec = published
+        .iter()
+        .find(|spec| spec.kind == resource.kind && spec.id.as_str() == resource.id.as_str())?;
+    spec.app_id.as_deref()
+}
+
 impl App {
     /// What `request` is about, as the shell is told: a typed reference
     /// and where in this window it is drawn.
     #[cfg(feature = "native")]
-    fn agent_reference(
+    /// What a box holds, as the session reads it: whom it goes to, what the
+    /// message carries (each subject as the record and part it names), its
+    /// words and where the box stood.
+    fn send_reference(
         &self,
-        request: crate::shared_selection::AgentRequest,
+        request: crate::shared_selection::SendToRequest,
     ) -> (
-        Option<crate::shared_selection::SharedSelection>,
+        Vec<crate::floating_surface::Recipient>,
+        Vec<tilo_reference::Attached>,
+        String,
         Option<[f64; 4]>,
     ) {
-        request.resolve(
-            crate::shared_selection::subtree_selection(self.root_widget.as_ref()),
-            &self.collect_resources(),
-        )
+        let published = self.collect_resources();
+        let focused = crate::shared_selection::subtree_selection(self.root_widget.as_ref());
+        let mut attached = Vec::with_capacity(request.about.len());
+        for (index, about) in request.about.into_iter().enumerate() {
+            let (subject, _) = crate::shared_selection::resolve_selection(
+                Some(about),
+                None,
+                // What the box added after its first chip was not what the
+                // person pointed at: it is named in its own right.
+                focused.clone().filter(|_| index == 0),
+                &published,
+            );
+            let Some(subject) = subject else {
+                continue;
+            };
+            let app = publishing_app(&subject, &published);
+            if let Some(sent) = subject.to_attached(app, None) {
+                attached.push(sent);
+            }
+        }
+        (request.to, attached, request.text, request.bounds)
     }
 
     /// Without a desktop tab model, another instance is another window of

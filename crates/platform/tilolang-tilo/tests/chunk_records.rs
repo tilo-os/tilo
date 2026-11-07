@@ -957,6 +957,7 @@ fn opened(docs: &mut Docs, dir: &Path, ids: &str, sent: bool) -> (Host, Rc<RefCe
     let host = Host::open(
         Opening {
             record: Some(&record),
+            chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
         },

@@ -211,6 +211,7 @@ mod tests {
                 Some("/src/tilo/os/usr/share/tilo/system-interfaces.toml".into())
             }
             "HOME" => Some("/home/you".into()),
+            "RUST_LOG" => Some("warn,tilo_ui=debug".into()),
             // Not on the allowlist: it describes the session's own
             // confinement, not the person.
             "TILO_WORKSPACE_ID" => Some("someone-elses-workspace".into()),
@@ -239,6 +240,7 @@ mod tests {
                 "/src/tilo/os/usr/share/tilo/system-interfaces.toml",
             ),
             ("HOME", "/home/you"),
+            ("RUST_LOG", "warn,tilo_ui=debug"),
             ("WAYLAND_DISPLAY", "wayland-2"),
             ("XDG_RUNTIME_DIR", "/run/user/1000"),
             ("DISPLAY", ":7"),

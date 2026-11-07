@@ -5,10 +5,8 @@
 //! when a sentence can be asked of something: a query field at its top
 //! narrows its entries with the ranking every filtered list shares
 //! (`crate::search::ranked_rows`), and Enter runs the best match. A sentence
-//! none of its rows answers is asked of an agent about what the menu is on
-//! ([`ContextMenu::set_about`]), through the desktop
-//! ([`crate::shared_selection::ask_agent_at`]), or through the menu's owner
-//! when it answers itself ([`ContextMenu::set_owner_asks`]).
+//! none of its rows answers goes into the send-to box beside the menu
+//! ([`crate::widget::SendToBox`]), which sends it to whom the person names.
 
 use std::cell::Cell;
 
@@ -40,8 +38,8 @@ pub(super) struct MenuQuery {
 impl ContextMenu {
     /// The owner answers a sentence typed into the menu itself, draining it
     /// with [`Self::take_ask`], and the menu takes typing however it was
-    /// opened. For a host with its own agent composer (the desktop's menus);
-    /// an app's menus ask through the desktop with no code of their own.
+    /// opened. For a host with its own composer (the desktop's menus); an
+    /// app's menus open the send-to box with no code of their own.
     pub fn set_owner_asks(&mut self, asks: bool) {
         if self.owner_asks != asks {
             self.owner_asks = asks;
@@ -115,7 +113,7 @@ impl ContextMenu {
         if self.query.is_some() && self.can_ask() {
             self.own_rows = Some(self.items.len());
             self.items
-                .push(MenuItem::action(String::new(), || {}).with_icon(Icon::Sparkles));
+                .push(MenuItem::action(crate::i18n!("menu-send"), || {}).with_icon(Icon::Sparkles));
         }
         self.refilter();
         self.dirty = true;
@@ -130,9 +128,9 @@ impl ContextMenu {
         self.items.get(..owned).unwrap_or_default()
     }
 
-    /// Whether a sentence typed into the menu can be asked of an agent.
+    /// Whether a sentence typed into the menu can be sent from it.
     pub(super) fn can_ask(&self) -> bool {
-        self.owner_asks || crate::shared_selection::agent_host_available()
+        self.owner_asks || crate::shared_selection::send_host_available()
     }
 
     /// The row asking the typed sentence, when the menu has one.
@@ -180,6 +178,8 @@ impl ContextMenu {
             }),
         );
         if let Some(ask) = self.ask_row() {
+            // The row carries what is typed into the box, so it names the
+            // sentence it sends.
             let text = self
                 .query
                 .as_ref()
@@ -219,23 +219,27 @@ impl ContextMenu {
         crate::widget::note_resource_presentation_changed();
     }
 
-    /// Ask an agent the typed sentence about what the menu is on, and close.
+    /// Carry the typed sentence into the box beside the menu, with the menu
+    /// still open under the person's eyes: the box sends it.
     pub(super) fn ask_typed(&mut self) {
         let text = self
             .query
             .as_ref()
             .map(|query| query.text.trim().to_owned())
             .unwrap_or_default();
-        // Only a menu that offered to ask, when it opened, asks.
+        // Only a menu that offered somewhere to send, when it opened, does.
         if text.is_empty() || self.ask_row().is_none() {
             return;
         }
         if self.owner_asks {
             self.asked = Some(text);
-        } else {
-            crate::shared_selection::ask_agent_at(self.about.clone(), self.ask_at, &text);
+            self.close();
+            return;
         }
-        self.close();
+        self.send_to.set_about(self.about.clone());
+        self.send_to.open(Some(&text));
+        self.send_to.place(self.rect, self.viewport);
+        self.dirty = true;
     }
 
     /// The hovered row, when it opens a nested menu.

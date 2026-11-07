@@ -756,6 +756,16 @@ impl Widget for PageInvite {
                 .is_some_and(|content| content.take_structure_dirty())
     }
 
+    /// A page with no sheet up has nothing under it whose size could be
+    /// solved again: the default answers for every childless widget with
+    /// "measure", which would re-solve the whole tree on each frame that
+    /// lays out, a pan's included.
+    fn layout_needs_measure(&self) -> bool {
+        self.content
+            .as_ref()
+            .is_some_and(|content| content.layout_needs_measure())
+    }
+
     fn traps_focus(&self) -> bool {
         self.seat.presentation().is_drawn()
     }

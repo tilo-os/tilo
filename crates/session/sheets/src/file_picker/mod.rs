@@ -326,6 +326,12 @@ impl FilePickerSeat {
         self.held.borrow().request.clone()
     }
 
+    /// The shell took the request back: the chooser goes away with it.
+    pub fn taken_down(&self) {
+        self.ask(None);
+        self.presentation.close();
+    }
+
     /// What the chooser shows now.
     pub fn listing(&self) -> Listing {
         self.held.borrow().listing.clone()

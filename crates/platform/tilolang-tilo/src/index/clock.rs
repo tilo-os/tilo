@@ -5,12 +5,13 @@
 //! reads one run and one count rather than checking its tests item by item.
 //!
 //! The clock runs on without the record changing, so the index records the instant it wrote such
-//! a type's columns at ([`META_CLOCK`]) and, when it is asked at a later one, writes again the
+//! a type's columns at ([`META_CLOCK`]) and, when it is asked at another one, writes again the
 //! items whose clock-read field the clock passed between the two: those, and only those, can
 //! have come to hold of the filter or stopped holding of it, so what it holds and how many it
-//! holds stay exact without reading what did not move. A column that reads the person's day
-//! changes with their zone as well, so a zone other than the one it was written in writes them
-//! all again.
+//! holds stay exact without reading what did not move. That holds whichever way the clock moved:
+//! the index answers the instant it is asked at, so an instant behind the one it wrote at writes
+//! again too. A column that reads the person's day changes with their zone as well, so a zone
+//! other than the one it was written in writes them all again.
 
 use std::collections::BTreeSet;
 use std::sync::Arc;
@@ -36,13 +37,34 @@ impl Index {
                 return Ok(None);
             };
             let text = super::codec::get_text(value.value())?;
-            let mut parts = text.split(' ');
-            let (Some(now), Some(zone)) = (parts.next(), parts.next()) else {
-                return Err(IndexError::Corrupt);
-            };
-            let now = now.parse().map_err(|_| IndexError::Corrupt)?;
-            let zone = zone.parse().map_err(|_| IndexError::Corrupt)?;
-            Ok(Some((now, zone)))
+            let clock = recorded(&text).ok_or(IndexError::Corrupt)?;
+            Ok(Some((clock.now, clock.zone)))
+        })();
+        if matches!(read, Err(IndexError::Corrupt)) {
+            self.stats.corrupt();
+        }
+        read
+    }
+
+    /// The types whose columns that read the clock the index wrote, and so has to write again
+    /// when the clock they are read at changes: what the host naming a clock makes exact at it
+    /// ([`crate::store::TiloStore::set_now`]).
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn recorded(&self) -> Result<Vec<String>, IndexError> {
+        let read = (|| {
+            let txn = redb::ReadableDatabase::begin_read(&*self.db)?;
+            let meta = txn.open_table(super::META)?;
+            let mut out = Vec::new();
+            for entry in meta.range(META_CLOCK..)? {
+                let (key, _) = entry?;
+                let Some(ty) = key.value().strip_prefix(META_CLOCK) else {
+                    break;
+                };
+                out.push(ty.to_owned());
+            }
+            Ok(out)
         })();
         if matches!(read, Err(IndexError::Corrupt)) {
             self.stats.corrupt();
@@ -51,8 +73,8 @@ impl Index {
     }
 
     /// Write again the columns of the filters of `schema` that read the clock, as `clock` has it:
-    /// the items whose clock-read field it passed since the index last wrote them, and nothing
-    /// else. Answers whether it wrote.
+    /// the items whose clock-read field the clock passed since the index last wrote them, and
+    /// nothing else. Answers whether it wrote.
     ///
     /// # Errors
     /// The index cannot be written.
@@ -69,7 +91,8 @@ impl Index {
             // The index wrote none of them: it is derived whole, which writes them as it goes.
             return Ok(false);
         };
-        if clock.now <= written && clock.zone == zone {
+        let from = Clock { now: written, zone };
+        if clock == from {
             return Ok(false);
         }
         let snapshot = self.snapshot()?;
@@ -77,7 +100,15 @@ impl Index {
         for column in live {
             for (field, day) in clock_fields(column) {
                 paths.extend(if clock.zone == zone {
-                    crossed(&snapshot, schema, field, day, written, clock)?
+                    // The items the clock passed between the instant it wrote at and this one,
+                    // from the earlier of the two: a clock behind what it wrote at passed them
+                    // the other way, and their answer moved with it.
+                    let (there, here) = if from.now < clock.now {
+                        (from, clock)
+                    } else {
+                        (clock, from)
+                    };
+                    crossed(&snapshot, schema, field, day, there.now, here)?
                 } else {
                     every(&snapshot, schema, field)?
                 });
@@ -273,13 +304,23 @@ fn ids_in(
 
 impl Writer<'_> {
     /// Record the instant the columns of `ty` that read the clock are written at, and the zone
-    /// they read the person's day in, unless the index records one already.
+    /// they read the person's day in, as the earliest of it and the one recorded: the columns a
+    /// write leaves behind hold of their filters from this instant on, so an instant earlier than
+    /// the one recorded means a later read has to write them again from there
+    /// ([`Index::refresh`]).
     ///
     /// # Errors
     /// The index cannot be written.
     pub fn note_written_at(&mut self, ty: &str, clock: Clock) -> Result<(), IndexError> {
         let key = format!("{META_CLOCK}{ty}");
-        if redb::ReadableTable::get(&self.tables.meta, key.as_str())?.is_some() {
+        let holds = match redb::ReadableTable::get(&self.tables.meta, key.as_str())? {
+            None => false,
+            Some(held) => {
+                let held = super::codec::get_text(held.value())?;
+                recorded(&held).is_some_and(|written| written.now <= clock.now)
+            }
+        };
+        if holds {
             return Ok(());
         }
         self.set_written_at(ty, clock)
@@ -298,6 +339,18 @@ impl Writer<'_> {
             .insert(key.as_str(), super::codec::put_text(&text).as_slice())?;
         Ok(())
     }
+}
+
+/// The clock `text` records ([`META_CLOCK`]): the instant and the zone it was written in.
+fn recorded(text: &str) -> Option<Clock> {
+    let mut parts = text.split(' ');
+    let (Some(now), Some(zone)) = (parts.next(), parts.next()) else {
+        return None;
+    };
+    Some(Clock {
+        now: now.parse().ok()?,
+        zone: zone.parse().ok()?,
+    })
 }
 
 /// Whether the list is a collection's column of the column `column`.

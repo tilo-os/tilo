@@ -290,6 +290,7 @@ pub use inspection_patch::{InspectionPatchStats, write_inspection_patch};
 mod app;
 mod drive;
 pub mod driver;
+mod focus;
 pub use driver::{Outcome, Step, StepRecord, StepStatus, drive};
 mod invocation_results;
 mod lazy_palette;
@@ -530,6 +531,10 @@ pub struct FrameHarness {
     /// every `relayout` by scanning for `is_focused()`: widget instances
     /// survive a relayout, their taffy ids do not.
     focused: Option<NodeId>,
+    /// The name the control with the keyboard answers to, as it stood before
+    /// a rebuild could replace it: what tells a rebuilt part that the answer
+    /// the person was on still stands in the new tree.
+    focus_name: Option<String>,
     focus_trap_active: bool,
     active_input_instance: Option<crate::application::InstanceId>,
     // An activation is complete only when its current focus and encoded frame
@@ -602,6 +607,12 @@ pub struct FrameHarness {
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
     last_relayout: RelayoutStats,
+    /// Whether every widget of the tree was placed and where focus stood then:
+    /// a frame that solves, builds and remounts nothing, with focus where it
+    /// stood, places only what moved
+    /// ([`crate::widget::layout::placing_again_in`]).
+    placed_all: bool,
+    placed_focus: Option<NodeId>,
     /// Completed relayout frames since construction.
     relayout_frames: u64,
     /// Layout nodes built since construction: every node of each rebuilt
@@ -693,6 +704,11 @@ pub struct RelayoutStats {
     pub measured: bool,
     pub marked_dirty: usize,
     pub marked_leaves: usize,
+    /// The frame placed the widgets the views moved, not every widget of the
+    /// tree: nothing was solved, built or remounted since they were placed, so
+    /// what stood still stands where it stood and a long collection places only
+    /// what stands near its clip ([`crate::widget::layout::placing_again_in`]).
+    pub placed_partly: bool,
 }
 
 /// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
@@ -1627,6 +1643,7 @@ impl FrameHarness {
             input_scale: 1.0,
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
+            focus_name: None,
             focus_trap_active: false,
             active_input_instance: None,
             pending_app_activation: None,
@@ -1656,6 +1673,8 @@ impl FrameHarness {
             layout_built: false,
             full_relayout_override: None,
             last_relayout: RelayoutStats::default(),
+            placed_all: false,
+            placed_focus: None,
             relayout_frames: 0,
             layout_nodes_built: 0,
             retained_frames: 0,
@@ -3581,6 +3600,8 @@ impl FrameHarness {
             || self.remount
             || self.root.layout_needs_measure();
         let mut stats = RelayoutStats::default();
+        // Whether any pass placed every widget (`RelayoutStats::placed_partly`).
+        let mut placed_all_widgets = false;
         // Captured lazily, immediately before a build replaces controls.
         let mut view = None;
         // What arrives in the window's first frame shows at rest.
@@ -3784,6 +3805,12 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::BuildLayout, t_build);
             }
             let t_apply = self.profiler.as_ref().map(|_| crate::time::now());
+            // Nothing was solved, built or remounted since the widgets were last placed and
+            // focus stayed: only views moved, and a collection places only what it shows.
+            let again = !(must_compute || rebuilt_this_pass || remounted)
+                && self.placed_all
+                && self.placed_focus == self.focused
+                && self.history.is_none();
             if let Some(history) = &mut self.history {
                 history.apply_composition(
                     self.root.as_mut(),
@@ -3791,9 +3818,18 @@ impl FrameHarness {
                     self.child_node,
                     Point::ORIGIN,
                 );
+            } else if again {
+                let tree = crate::widget::layout::TreeId::of(&self.taffy);
+                crate::widget::layout::placing_again_in(tree, || {
+                    self.root
+                        .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+                });
             } else {
+                placed_all_widgets = true;
                 self.root
                     .apply_layout(&self.taffy, self.child_node, Point::ORIGIN);
+                self.placed_all = true;
+                self.placed_focus = self.focused;
             }
             if let Some(profiler) = self.profiler.as_mut() {
                 profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
@@ -3811,6 +3847,7 @@ impl FrameHarness {
         })?;
         self.last_layout_viewport = Some(self.viewport);
         self.last_layout_scale = Some(self.input_scale);
+        stats.placed_partly = !placed_all_widgets;
         self.last_relayout = stats;
         if stats.rebuilt
             || stats.remounted
@@ -3922,8 +3959,20 @@ impl FrameHarness {
             } else {
                 kept
             };
+            // A part its owner rebuilt (a page, a list showing other rows)
+            // holds the answer the keyboard was on when the control itself
+            // survives: it answers to the same name, alone in the new tree,
+            // and the keyboard goes back to it rather than to nothing.
+            let named = (found.is_none() && stats.rebuilt)
+                .then(|| self.answering_alone())
+                .flatten();
             drop(admission);
             self.focused = found;
+            if let Some(node) = named {
+                self.root.focus_requested(Some(node), &self.taffy);
+                let _ = self.mutate_node(node, |widget| widget.set_focus(true));
+                self.focused = Some(node);
+            }
         }
 
         // Nothing asks to trap focus that did not last frame: a trap comes
@@ -4460,142 +4509,6 @@ impl FrameHarness {
             .0
     }
 
-    /// Whether embedded History and a History holding saved focus leave a
-    /// node free to take focus, for asking of every node in one pass: each
-    /// History's subtrees are walked once, not once per node.
-    fn history_focus_admission(&self) -> impl Fn(NodeId) -> bool + '_ {
-        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-            self.root.as_ref(),
-            &self.taffy,
-        );
-        let saved = self
-            .history
-            .as_ref()
-            .filter(|history| history.has_saved_focus())
-            .map(|history| history.owned_nodes(&self.taffy));
-        move |node| {
-            restrictions.allows(node) && saved.as_ref().is_none_or(|owned| owned.contains(&node))
-        }
-    }
-
-    /// Whether the walk in [`Self::update_focus_trap`] could find a trap: History
-    /// review is open, or a widget it would inspect traps focus. `false` is
-    /// exact — that walk would conclude "untrapped" — while `true` may still
-    /// end there (a trap under a hidden or denied ancestor).
-    fn focus_trap_possible(&self) -> bool {
-        let _profile = tilo_resource::profiling::Phase::start("ui.focus_trap_probe");
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| history.review_is_open())
-        {
-            return true;
-        }
-        if self.history.is_some()
-            || crate::history_mode::embedded::has_surfaces(self.root.as_ref())
-            || crate::focus_navigation::hosts_components(self.root.as_ref())
-        {
-            // The mapped walk inspects composed nodes, some of which are not
-            // Widget children of the root; every one it can inspect is mapped.
-            let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
-            self.node_map.keys().any(|&node| {
-                // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
-                unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
-            })
-        } else {
-            crate::focus_navigation::any_trap(self.root.as_ref())
-        }
-    }
-
-    /// The node of the widget holding the open trap, as the tree stands now.
-    fn focus_trap_node(&self) -> Option<NodeId> {
-        let mut sweep = crate::bound_dispatch::NodeSweep::new(&self.bindings, &self.node_map);
-        self.node_map.keys().copied().find(|&node| {
-            // SAFETY: FrameHarness owns this stable tree; no target reference escapes.
-            unsafe { sweep.inspect(node, |widget| widget.traps_focus()) }.unwrap_or(false)
-        })
-    }
-
-    fn update_focus_trap(
-        &mut self,
-        before_layout: Option<crate::widget::layout::CompositionFocus>,
-    ) {
-        // Untrapped and nothing asking to trap: the walk below could only
-        // conclude that again, which leaves focus alone. Skip it, as the live
-        // App does between rebuilds, so headless frames cost what live ones
-        // do; a trap that appears without a rebuild still engages this frame.
-        if !self.focus_trap_active && !self.focus_trap_possible() {
-            return;
-        }
-        let _profile = tilo_resource::profiling::Phase::start("ui.focus_order");
-        let restrictions = crate::history_mode::embedded::FocusRestrictions::collect(
-            self.root.as_ref(),
-            &self.taffy,
-        );
-        let (mut order, trapped) = self
-            .tree()
-            .focus_order_under(self.child_node, &restrictions);
-        if !self.focus_trap_active && trapped {
-            // Capture a stable semantic/owner identity, never carry a stale Taffy id
-            // through the portable host's complete layout rebuilds.
-            self.focus_before_trap = before_layout.or_else(|| unsafe {
-                crate::widget::layout::CompositionFocus::capture(
-                    self.focused,
-                    &self.node_map,
-                    &self.bindings,
-                )
-            });
-            self.focus_trap_node = self.focus_trap_node();
-        }
-        let mut before = if self.focus_trap_active && !trapped {
-            // Bound component delegates can be absent from Widget::children's
-            // generic order. Eligibility comes from this newly admitted layout,
-            // with the same embedded-history restrictions as mapped traversal.
-            let (allowed, _) = self
-                .tree()
-                .layout_map_focus_order(self.child_node, &restrictions);
-            let saved = self.focus_before_trap.take();
-            let target = saved.as_ref().and_then(|saved| unsafe {
-                saved.resolve(&self.node_map, &self.bindings, Some(&allowed))
-            });
-            // Focus the trap itself moved, still standing, outlives it: a menu's
-            // "Rename" opens the field the person types into next, and the control
-            // that opened the menu is gone. So does focus the person put on the
-            // trap itself, which never went into what it hides. Focus the trap
-            // took into its content goes back to the control it was taken from.
-            let trap_node = self.focus_trap_node.take();
-            let kept = self
-                .focused
-                .filter(|id| order.contains(id) && (target.is_none() || Some(*id) == trap_node));
-            let restored = match (&saved, kept) {
-                (Some(saved), Some(keep)) => unsafe {
-                    saved.restore_keeping(&self.node_map, &self.bindings, Some(&allowed), keep)
-                },
-                (Some(saved), None) => unsafe {
-                    saved.restore(&self.node_map, &self.bindings, Some(&allowed))
-                },
-                (None, _) => None,
-            };
-            if let Some(target) = kept.or(restored)
-                && !order.contains(&target)
-            {
-                order.push(target);
-            }
-            restored
-        } else {
-            None
-        };
-        if let Some(next) = crate::focus_navigation::reconcile_trap(
-            &mut self.focus_trap_active,
-            &mut before,
-            self.focused,
-            &order,
-            trapped,
-        ) {
-            self.set_focused(next);
-        }
-    }
-
     /// Reject external activation while a modal owns input. Search acceptance
     /// calls this only after its overlay has closed and its intent was taken.
     pub fn check_app_activation(&self) -> Result<(), String> {
@@ -4964,6 +4877,32 @@ impl FrameHarness {
             let _ = self.mutate_node(new, |widget| widget.set_focus(true));
         }
         self.focused = node;
+        // The answer the keyboard is on, kept while a rebuilt part replaces
+        // the control that carries it.
+        self.focus_name = self.focused_name();
+    }
+
+    /// The name the control with the keyboard answers to in this tree.
+    fn focused_name(&self) -> Option<String> {
+        self.focused.and_then(|node| {
+            self.inspect_node(node, |widget| widget.test_id().map(str::to_owned))
+                .ok()
+                .flatten()
+        })
+    }
+
+    /// The one focusable control answering to the name the keyboard was on,
+    /// when exactly one does.
+    fn answering_alone(&self) -> Option<NodeId> {
+        let name = self.focus_name.as_deref()?;
+        let mut answering = self.node_map.keys().copied().filter(|&node| {
+            self.inspect_node(node, |widget| {
+                widget.is_focusable() && widget.is_enabled() && widget.test_id() == Some(name)
+            })
+            .unwrap_or(false)
+        });
+        let single = answering.next()?;
+        answering.next().is_none().then_some(single)
     }
 
     /// Advance keyboard focus like Tab (or Shift+Tab when `back`), cycling the

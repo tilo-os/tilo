@@ -72,6 +72,7 @@ fn keep_index(
     let host = tilolang_tilo::host::Host::open(
         tilolang_tilo::host::Opening {
             record: Some(doc),
+            chunks: None,
             index_dir: Some(tilolang_tilo::index::workspace_dir(&base, "personal")),
             device: None,
         },

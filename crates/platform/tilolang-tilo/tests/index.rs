@@ -338,6 +338,7 @@ fn kept_in(dir: &Path, doc: &AutoCommit, lock: &str) -> Host {
     let host = Host::open(
         Opening {
             record: Some(doc),
+            chunks: None,
             index_dir: Some(dir.to_owned()),
             device: None,
         },
@@ -424,6 +425,7 @@ fn a_store_without_the_record_opens_over_the_index_and_takes_the_record_later() 
     let host = Host::open(
         Opening {
             record: None,
+            chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
         },
@@ -470,6 +472,7 @@ fn a_window_opens_over_the_index_an_earlier_window_kept() {
     let second = Host::open(
         Opening {
             record: Some(&ada.doc),
+            chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
         },
@@ -499,6 +502,7 @@ fn a_window_whose_index_is_not_kept_builds_it_off_the_frame() {
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
+            chunks: None,
             index_dir: None,
             device: None,
         },
@@ -613,6 +617,7 @@ fn a_window_opened_over_its_index_publishes_every_hit_and_each_commit_at_once() 
     let host = Host::open(
         Opening {
             record: Some(&ada.doc),
+            chunks: None,
             index_dir: Some(dir.path().to_owned()),
             device: None,
         },

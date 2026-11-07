@@ -151,6 +151,27 @@ fn list(
         tracker.clone(),
         dispatcher.clone(),
     );
+    // What each row is about, by its key: the issue's resource and the row's label, so the menu
+    // opened on a row carries that issue as its subject.
+    let subjects: Rc<Vec<(String, String)>> = Rc::new(
+        rows.iter()
+            .map(|row| (crate::model::issue_resource(&row.issue), row.label.clone()))
+            .collect(),
+    );
+    let row_about = {
+        let subjects = Rc::clone(&subjects);
+        move |key: &u64| {
+            let index = usize::try_from(*key).ok()?.checked_sub(1)?;
+            let (resource, label) = subjects.get(index)?;
+            Some(
+                ui::shared_selection::SharedSelection::of_items([(
+                    resource.as_str(),
+                    label.as_str(),
+                )])
+                .in_kind(crate::model::KIND),
+            )
+        }
+    };
     let Ok(model) =
         VecListModel::new(rows, |row| row.key).map(|model| model.with_parents(|row| row.parent))
     else {
@@ -210,7 +231,8 @@ fn list(
             if let Some(issue) = open_issue(key) {
                 opener.open(&issue);
             }
-        }),
+        })
+        .with_row_about(row_about),
     )
 }
 

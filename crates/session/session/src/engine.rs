@@ -141,6 +141,21 @@ impl FileHost for Slots {
     }
 }
 
+/// What this device may seal a workspace's record with
+/// ([`Engine::seal_keys`]): the channel's keys, the wait for them, or this
+/// device's own lack of a secret store to hold any.
+pub(crate) enum SealKeys {
+    /// The keys this device seals the record's writes with.
+    Here(channel_crypto::ChannelContentKeys),
+    /// The keys are not here yet: the answer arrives as the workspace's other
+    /// messages do, and the write waits for it.
+    Waiting,
+    /// This device has no secret store, so it holds no channel keys of any
+    /// workspace: a sealed record is one it can neither write nor read here,
+    /// and no workspace refused anything.
+    NoSecretStore,
+}
+
 /// This device's workspaces, and the identity they are held with.
 pub struct Engine {
     owner: NativeWorkspaceOwner,
@@ -160,6 +175,11 @@ pub struct Engine {
     /// desk.
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
+
+/// A record's bytes, with the heads they were last saved at: what
+/// [`Engine::record_since`] answers when the record changed since the caller
+/// last read it.
+type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
 
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -271,7 +291,7 @@ impl Engine {
         app: &str,
         record: &str,
         known: Option<[u8; 32]>,
-    ) -> Result<Option<(Vec<u8>, [u8; 32])>, String> {
+    ) -> Result<SavedRecord, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
             return Ok(None);
@@ -363,38 +383,47 @@ impl Engine {
 
     /// The keys this device seals writes of `record` of `app` with in
     /// `workspace`, a workspace whose records are its members' sealed
-    /// channels: `Ok(None)` while the record's channel keys are not here yet,
-    /// and the answer arrives as the workspace's other messages do. That
-    /// includes a channel the workspace's governance does not name this device
-    /// in yet, as it does on the first look after a session starts: the device
-    /// waits for the answer rather than being told it will never get one.
+    /// channels.
+    ///
+    /// [`SealKeys::Here`] is the keys; [`SealKeys::Waiting`] says they are not
+    /// here yet, and the answer arrives as the workspace's other messages do.
+    /// That includes a channel the workspace's governance does not name this
+    /// device in yet, as it does on the first look after a session starts: the
+    /// device waits for the answer rather than being told it will never get
+    /// one.
+    ///
+    /// [`SealKeys::NoSecretStore`] is this device's own lack, not any
+    /// workspace's verdict: with no secret store this device holds no channel
+    /// keys at all, so there is nothing to wait for either. A caller says
+    /// nothing to the person about it: no workspace refused a write it never
+    /// made.
     ///
     /// # Errors
-    /// This session has no channel service, this device has no secret store,
-    /// or the workspace removed it from the record's channel: it holds no
-    /// keys, and none are coming.
+    /// This session has no channel service, or the workspace removed this
+    /// device from the record's channel: it holds no keys, and none are
+    /// coming.
     pub(crate) fn seal_keys(
         &self,
         workspace: WorkspaceId,
         app: &str,
         record: &str,
-    ) -> Result<Option<channel_crypto::ChannelContentKeys>, String> {
+    ) -> Result<SealKeys, String> {
         let Some(keys) = self.keys.get() else {
             return Err("this session's channel service is not running".to_owned());
         };
         let route = collab_types::ChannelRoute::new(app, record);
-        match keys.access_record(workspace, &route).0 {
-            ChannelAccess::Ready(keys) => Ok(Some(keys)),
+        Ok(match keys.access_record(workspace, &route).0 {
+            ChannelAccess::Ready(keys) => SealKeys::Here(keys),
             // Asked and not admitted yet, or admitted nowhere the governance
             // here can name: either way the keys are not here yet.
-            ChannelAccess::Waiting | ChannelAccess::Unavailable => Ok(None),
-            ChannelAccess::Removed => Err(format!(
-                "the workspace removed this device from {record}'s channel"
-            )),
-            ChannelAccess::NoSecretStore => {
-                Err("this device has no secret store, so it holds no channel keys".to_owned())
+            ChannelAccess::Waiting | ChannelAccess::Unavailable => SealKeys::Waiting,
+            ChannelAccess::Removed => {
+                return Err(format!(
+                    "the workspace removed this device from {record}'s channel"
+                ));
             }
-        }
+            ChannelAccess::NoSecretStore => SealKeys::NoSecretStore,
+        })
     }
 
     /// Ask `workspace`'s hosts for the record on `channel` the first time it
@@ -691,31 +720,14 @@ impl Engine {
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
-        endpoint: iroh::EndpointAddr,
+        endpoint: &iroh::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
-            .map_err(|error| error.to_string())?;
         let identity = self.identity();
         // What the joiner dials: this device's endpoint, signed by the device
         // the grant names, as a host of its own workspace.
-        let packet_relay_url = endpoint
-            .relay_urls()
-            .next()
-            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
-            version: 1,
-            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
-            room: workspace.to_owned(),
-            workspace_id,
-            endpoint_addr: endpoint,
-            host_user_public_key: identity.device_cert.user_public_key,
-            host_device_certificate: identity.device_cert.clone(),
-            packet_relay_url,
-        }
-        .transport_hint(&identity.device_signing_key)
-        .map_err(|error| error.to_string())?;
+        let hint = self.own_host_hint(workspace, endpoint)?;
         let now_ns: u64 = now
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -901,17 +913,53 @@ impl Engine {
         &self.identity
     }
 
+    /// Where this device's own host of `workspace` is reached at `endpoint`,
+    /// signed by this device: what an invitation names for the joiner, and
+    /// what a workspace founded here records of its own host.
+    fn own_host_hint(
+        &self,
+        workspace: &str,
+        endpoint: &iroh::EndpointAddr,
+    ) -> Result<tilo_peer_state::join::TransportHint, String> {
+        let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
+            .map_err(|error| error.to_string())?;
+        let identity = self.identity();
+        let packet_relay_url = endpoint
+            .relay_urls()
+            .next()
+            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            room: workspace.to_owned(),
+            workspace_id,
+            endpoint_addr: endpoint.clone(),
+            host_user_public_key: identity.device_cert.user_public_key,
+            host_device_certificate: identity.device_cert.clone(),
+            packet_relay_url,
+        }
+        .transport_hint(&identity.device_signing_key)
+        .map_err(|error| error.to_string())
+    }
+
     /// Found `workspace` — made on this desk in `slot`, under `name` — when
     /// this device is the one that made it and nothing here holds it yet:
     /// who is in the workspace, who may invite into it and what its apps
     /// record there become the workspace's own, hosted here, instead of what
     /// this desk alone keeps. An earlier session's workspace is founded the
-    /// same way, once.
+    /// same way, once. `endpoint` is where other devices reach this one, which
+    /// the workspace's record keeps as its own host's address.
     ///
     /// A workspace this device may not own, or one that could not be
     /// published, stays the desk's own: it is not asked for again until a
     /// later session.
-    pub(crate) fn found(&self, slot: WorkspaceSlot, workspace: WorkspaceId, name: &str) {
+    pub(crate) fn found(
+        &self,
+        slot: WorkspaceSlot,
+        workspace: WorkspaceId,
+        name: &str,
+        endpoint: Option<&iroh::EndpointAddr>,
+    ) {
         if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
             return;
         }
@@ -919,17 +967,59 @@ impl Engine {
         if !identity.device_cert.capabilities.can_own_workspaces {
             return;
         }
+        // Without somewhere other devices reach this one, the workspace is
+        // not founded: a workspace says where its own host is reached.
+        let Some(endpoint) = endpoint else {
+            return;
+        };
+        let host_hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
+            Ok(hint) => hint,
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    %workspace,
+                    "this device's own host of the workspace could not be named"
+                );
+                return;
+            }
+        };
         match self.owner.create_workspace(
             workspace,
             name,
             &identity.device_cert,
             &identity.device_signing_key,
+            host_hint,
             SystemTime::now(),
         ) {
             Ok(_) => self.bind(slot, workspace),
             Err(error) => {
                 tracing::warn!(%error, %workspace, "the workspace was not founded here");
                 self.unfounded.lock_recover().insert(workspace);
+            }
+        }
+    }
+
+    /// Name where this device's own host of each workspace it holds is
+    /// reached at `endpoint`, for one founded before its record said: a
+    /// workspace founded here is reached at its own host, and a record that
+    /// does not say so leaves its records where no device reaches them.
+    pub(crate) fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
+        for workspace in self.owner.hosts_unnamed() {
+            let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
+                Ok(hint) => hint,
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "this device's own host could not be named");
+                    continue;
+                }
+            };
+            match self.owner.name_host(workspace, hint) {
+                Ok(true) => {
+                    tracing::info!(%workspace, "the workspace's own host is named in its record");
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, %workspace, "the workspace's own host was not named");
+                }
             }
         }
     }
@@ -986,7 +1076,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
         tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-            .material(&self.identity)
+            .custody(&self.identity)
             .map(drop)
     }
 
@@ -1024,9 +1114,9 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
             .ok_or_else(|| format!("{app} is not installed on this device"))?;
         let route =
             tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
-        let (_, cert, _, _) =
+        let (cert, _, _) =
             tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-                .material(&self.identity)?;
+                .custody(&self.identity)?;
         let key = self.identity.device_signing_key.clone();
         owner
             .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())
@@ -1114,18 +1204,27 @@ mod tests {
         Engine::open(identity, Some(state), Vec::new()).expect("an engine")
     }
 
+    /// Where a desk's own host is reached: its device's endpoint.
+    fn endpoint(identity: &HostIdentity) -> iroh::EndpointAddr {
+        iroh::EndpointAddr::new(
+            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+                .expect("a device endpoint"),
+        )
+    }
+
     #[test]
     fn a_desk_workspace_is_founded_under_the_identity_the_desk_made() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, person) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
         let slot = WorkspaceSlot(7);
 
-        engine.found(slot, workspace, "Desk");
+        engine.found(slot, workspace, "Desk", Some(&at));
         // Again, as every pass over the desk does: one workspace, still the
         // one the desk made.
-        engine.found(slot, workspace, "Desk");
+        engine.found(slot, workspace, "Desk", Some(&at));
 
         assert!(
             engine.holds(workspace),
@@ -1144,12 +1243,38 @@ mod tests {
     }
 
     #[test]
+    fn a_workspace_this_device_hosts_names_its_own_host_and_commits_here() {
+        use tilo_action_broker::owner_commits::OwnerCustody as _;
+
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let host = identity.device_cert.device_public_key;
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
+
+        let hint = engine
+            .owner
+            .with_current(workspace, |view| view.transport_hint().cloned())
+            .expect("a workspace this device founded names where its host is reached");
+        assert_eq!(
+            hint.host.device_public_key, host,
+            "the host it names is this device, whose host is in this process"
+        );
+        engine
+            .check_custody(&engine.owner, workspace)
+            .expect("its own member acts there, its host being in this process");
+    }
+
+    #[test]
     fn a_workspace_made_here_and_held_nowhere_else_may_be_deleted() {
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
 
         assert!(
             engine.may_delete(workspace),
@@ -1184,10 +1309,11 @@ mod tests {
         let (identity, _) = identity(DeviceCapabilities::member());
         let mut identity = identity;
         identity.device_cert.capabilities.can_own_workspaces = false;
+        let at = endpoint(&identity);
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
 
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
 
         assert!(!engine.holds(workspace));
         assert!(!engine.may_invite(&workspace.to_string()));

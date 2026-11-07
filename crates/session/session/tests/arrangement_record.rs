@@ -233,6 +233,198 @@ fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction
     }
 }
 
+/// The action that floats `place` where the person let it go.
+fn float_at(
+    place: u64,
+    float: tilo_desktop_model::FloatPlace,
+) -> tilo_session::arrangement::ArrangementAction {
+    tilo_session::arrangement::ArrangementAction::Float { place, float }
+}
+
+/// The action that snaps the floating `place` back where it stands.
+fn snap_back(place: u64) -> tilo_session::arrangement::ArrangementAction {
+    tilo_session::arrangement::ArrangementAction::Snap {
+        place,
+        row: None,
+        before: None,
+    }
+}
+
+/// The strip holding `place`, as the arrangement reads it.
+fn strip_reading_of(session: &Session, place: u64) -> tilo_session::arrangement::StripReading {
+    let strip = strip_of(session, place).expect("it has a strip");
+    strip_at(session, strip).expect("the strip is in the record")
+}
+
+// (6) A window let go outside its strip floats above the desk, where every
+// member of the workspace sees it: one step of the person's record, taken
+// back by undo, and snapping it back with no target returns it exactly where
+// it was.
+#[test]
+fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    let window = open_window(&mut session, "org.example.Notes");
+    let other = open_window(&mut session, "org.example.Files");
+    step(&mut session);
+    let before = strip_reading_of(&session, window);
+    assert!(
+        !before.floating,
+        "it stands among the windows to begin with"
+    );
+
+    let float = tilo_desktop_model::FloatPlace::new(
+        tilo_desktop_model::FloatCorner::BottomRight,
+        40,
+        24,
+        640,
+        480,
+    );
+    session
+        .arrangement()
+        .borrow_mut()
+        .ask_person(&float_at(window, float))
+        .unwrap();
+    step(&mut session);
+
+    let floating = strip_reading_of(&session, window);
+    assert!(floating.floating, "the window floats");
+    assert_eq!(floating.float_corner, "bottom-right");
+    assert_eq!((floating.float_dx, floating.float_dy), (40, 24));
+    assert_eq!((floating.float_width, floating.float_height), (640, 480));
+    assert!(
+        !strip_reading_of(&session, other).floating,
+        "only the window the person let go floats"
+    );
+    let (who, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("floating is a step of the record's history");
+    assert_eq!(who, ADA, "attributed to the person");
+    assert_eq!(verb, "float");
+
+    // Undo takes the one step back, and redo floats it again.
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    assert!(
+        !strip_reading_of(&session, window).floating,
+        "undone in one step"
+    );
+    session
+        .invoke_with_actor(
+            ADA,
+            tilo_session::arrangement::RECORD_RESOURCE,
+            "redo",
+            &serde_json::json!({}),
+        )
+        .unwrap();
+    step(&mut session);
+    assert!(strip_reading_of(&session, window).floating);
+
+    // Snapping it back with no target returns it exactly where it was.
+    session
+        .arrangement()
+        .borrow_mut()
+        .ask_person(&snap_back(window))
+        .unwrap();
+    step(&mut session);
+    let snapped = strip_reading_of(&session, window);
+    assert!(!snapped.floating);
+    assert_eq!(
+        snapped.key, before.key,
+        "the same window, in the same strip"
+    );
+    assert_eq!(snapped.row, before.row, "in the same row");
+    assert_eq!(
+        (snapped.placed, snapped.canvas_x, snapped.canvas_y),
+        (before.placed, before.canvas_x, before.canvas_y),
+        "exactly where it was"
+    );
+    let (_, verb) = session
+        .arrangement()
+        .borrow_mut()
+        .last_step()
+        .expect("snapping back is a step too");
+    assert_eq!(verb, "snap-back");
+    session.undo_arrangement().unwrap();
+    step(&mut session);
+    assert!(
+        strip_reading_of(&session, window).floating,
+        "undo floats it again"
+    );
+}
+
+// (7) A float is the workspace's, not the device's: it is in the desk the
+// workspace shares, so the next start shows it floating — and so does every
+// other member of the workspace, who reads the same record.
+#[test]
+fn a_float_is_in_the_shared_desk_so_every_member_sees_it() {
+    let _settled = ui::motion::testing::settled();
+    let home = tilo_test_env::TestHome::new().unwrap();
+    let state = home.state().to_path_buf();
+    let (window, strip) = {
+        let mut session = session_in(Some(state.clone()));
+        step(&mut session);
+        let window = open_window(&mut session, "org.example.Notes");
+        step(&mut session);
+        let strip = strip_of(&session, window).expect("it has a strip");
+        let float = tilo_desktop_model::FloatPlace::new(
+            tilo_desktop_model::FloatCorner::TopLeft,
+            10,
+            10,
+            600,
+            400,
+        );
+        session
+            .arrangement()
+            .borrow_mut()
+            .ask_person(&float_at(window, float))
+            .unwrap();
+        step(&mut session);
+        // It is the desk's record every member of the workspace receives.
+        let desk = ui::automerge::AutoCommit::load(
+            &std::fs::read(state.join("tilo").join("desk.automerge")).expect("the desk's document"),
+        )
+        .expect("the desk's document reads");
+        let (_, workspaces) = desk
+            .get(ui::automerge::ROOT, "workspaces")
+            .expect("the desk is a document")
+            .expect("it holds workspaces");
+        let (_, entry) = desk
+            .get(&workspaces, 0_usize)
+            .expect("a workspace entry")
+            .expect("one workspace");
+        let (_, floats) = desk
+            .get(&entry, "floats_v1")
+            .expect("the desk is read")
+            .expect("the workspace holds floats");
+        assert_eq!(
+            desk.keys(&floats).collect::<Vec<_>>(),
+            vec![strip.to_string()],
+            "the window's float is in the shared record"
+        );
+        (window, strip)
+    };
+
+    let mut next = session_in(Some(state));
+    step(&mut next);
+    let back = strip_reading_of(&next, window);
+    assert!(back.floating, "the next start shows it floating");
+    assert_eq!(back.float_corner, "top-left");
+    assert_eq!(
+        (
+            back.float_dx,
+            back.float_dy,
+            back.float_width,
+            back.float_height
+        ),
+        (10, 10, 600, 400)
+    );
+    assert_eq!(strip_of(&next, window), Some(strip));
+}
+
 /// Every action `resource` and its children publish, by the resource's id and the action's.
 fn published_actions(resource: &tilo_actions::ResourceSpec, out: &mut Vec<(String, String)>) {
     out.extend(

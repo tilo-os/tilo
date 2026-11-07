@@ -17,6 +17,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const args = process.argv.slice(2);
 const bundle = args.find(arg => !arg.startsWith('--'));
@@ -74,7 +75,7 @@ await evaluate(`globalThis.swipeLog=[];addEventListener('wheel',e=>swipeLog.push
 await evaluate(`globalThis.panTrace=null;(function frame(t){if(globalThis.panTrace)panTrace.push([t,tiloMount.navigation.getSnapshot().desktopPan?.offset??null,tiloMount.state()?.frames??null]);requestAnimationFrame(frame);})(0);true`);
 
 const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
-const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
+const command = action => evaluate(`(async()=>{await tiloMount.navigation.dispatch(${JSON.stringify(action)});return true;})()`);
 const strip = async () => {
   const s = await snapshot();
   const windows = s.entries.filter(e => e.route.workspace === s.active.workspace && e.route.strip === s.active.strip);
@@ -110,12 +111,12 @@ for (const [i, app] of ['so.tilo.calculator', 'so.tilo.notes', 'so.tilo.sheets',
   if (i >= 3 && (await strip()).pan?.max > TRAVEL * 2) break;
   assert.ok(i >= 3 || apps.includes(app), `${app} is in this bundle: ${apps}`);
   if (!apps.includes(app)) continue;
-  await command({kind: 'launch', app});
+  await command(verb.openApp(app));
   await sleep(1500);
 }
 let s = await strip();
 assert.ok(s.pan?.max > TRAVEL * 2, `the strip overflows by more than two swipes: ${JSON.stringify(s.pan)}`);
-await command({kind: 'select', route: s.windows[0].route});
+await command(verb.focus(s.windows[0].route));
 await sleep(600);
 s = await strip();
 assert.ok(s.pan.offset < 0.5, `the first window is at home: ${JSON.stringify(s.pan)}`);
@@ -177,7 +178,7 @@ assert.ok(Math.abs((await strip()).pan.offset - s.pan.max) < 1, 'and stays there
 console.log(JSON.stringify({step: 'ends', max: s.pan.max, ok: true}));
 
 // Sheets alone: nowhere to pan, so the swipe scrolls its grid sideways.
-for (const w of s.windows.filter(w => w.label.toLowerCase() !== 'sheets')) await command({kind: 'close', route: w.route});
+for (const w of s.windows.filter(w => w.label.toLowerCase() !== 'sheets')) await command(verb.closeTab(w.route));
 await sleep(1500);
 s = await strip();
 assert.deepEqual(s.windows.map(w => w.label.toLowerCase()), ['sheets'], 'only Sheets is left');

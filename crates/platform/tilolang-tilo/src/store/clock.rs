@@ -47,12 +47,32 @@ impl TiloStore {
     /// writes again for the instants the clock passed ([`Self::refresh`]).
     pub fn set_now(&self, now: impl Fn() -> String + 'static) {
         self.mutate().clock.now = Rc::new(now);
+        self.exact_at_the_clock();
     }
 
     /// Where the person is, in seconds east of UTC, from the host: their day, which `today`
     /// reads.
     pub fn set_zone(&self, zone: impl Fn() -> i64 + 'static) {
         self.mutate().clock.zone = Rc::new(zone);
+        self.exact_at_the_clock();
+    }
+
+    /// The clock the host named is the one the columns that read it answer at from here on:
+    /// write again what it passed since the index last wrote them, so a read after it answers
+    /// from the columns rather than writing them as it goes.
+    fn exact_at_the_clock(&self) {
+        let types: Vec<String> = {
+            let inner = self.held();
+            inner
+                .apps
+                .values()
+                .filter(|held| held.ready())
+                .flat_map(|held| held.index.recorded().unwrap_or_default())
+                .collect()
+        };
+        for ty in types {
+            self.refresh(&ty);
+        }
     }
 
     /// The instant the items of `ty` next come to hold of, or stop holding of, a filter that

@@ -18,16 +18,19 @@ arch=$(uname -m)
 # A release Fedora still serves is under /pub/fedora/linux on its mirrors; one
 # that has gone end of life moves to /pub/archive/fedora/linux, where the
 # builder images' older releases are. Ask once, for this image's own release,
-# which of the two holds it, so a build follows one list and not a list per
-# location: dnf tries every baseurl of a repository before failing, and a
-# wrong one answers 404 to every request.
+# which of the two holds it, for the release's packages and its updates alike,
+# so a build follows one list and not a list per location: dnf tries every
+# baseurl of a repository before failing, and a wrong one answers 404 to every
+# request.
 current="https://ftp.fau.de/fedora/linux https://dl.fedoraproject.org/pub/fedora/linux"
 archived="https://archives.fedoraproject.org/pub/archive/fedora/linux https://dl.fedoraproject.org/pub/archive/fedora/linux"
 reaches() {
   local base
   for base in $1; do
-    curl -fs -I --max-time 15 -o /dev/null \
-      "$base/releases/$release/Everything/$arch/os/repodata/repomd.xml" && return 0
+    curl -fs -I --max-time 10 -o /dev/null \
+      "$base/releases/$release/Everything/$arch/os/repodata/repomd.xml" &&
+    curl -fs -I --max-time 10 -o /dev/null \
+      "$base/updates/$release/Everything/$arch/repodata/repomd.xml" && return 0
   done
   return 1
 }
@@ -45,6 +48,7 @@ fi
 # second carries a release where a download from the first fails, so one mirror
 # throttling or resetting connections does not fail the build ("All mirrors were
 # tried"). RPM signatures still provide the authenticity check.
+printf 'configure-fedora-mirrors: Fedora %s (%s) from %s\n' "$release" "$arch" "$bases"
 first=${bases%% *}
 second=${bases#* }
 sed -i \

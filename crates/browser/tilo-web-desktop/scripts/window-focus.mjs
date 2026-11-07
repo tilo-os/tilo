@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import {resolve} from 'node:path';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const bundle = process.argv[2];
 if (!bundle) throw Error('usage: node window-focus.mjs BUNDLE_DIR');
@@ -27,7 +28,7 @@ for (let i = 0; ; i++) {
 }
 
 const snapshot = () => evaluate('tiloMount.navigation.getSnapshot()');
-const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
+const command = action => evaluate(`(async()=>{await tiloMount.navigation.dispatch(${JSON.stringify(action)});return true;})()`);
 const active = async () => {
   const s = await snapshot();
   return s.entries.find(e => e.route.tab === s.active?.tab)?.label;
@@ -50,7 +51,7 @@ const click = async (x, y) => {
 };
 
 const apps = ['so.tilo.chat', 'so.tilo.notes', 'so.tilo.calculator'];
-for (const app of apps) await command({kind: 'launch', app});
+for (const app of apps) await command(verb.openApp(app));
 const windows = await until('three windows open', async () => {
   const s = await snapshot();
   return s.entries.length === apps.length && s.entries;
@@ -58,7 +59,7 @@ const windows = await until('three windows open', async () => {
 
 for (const target of [0, 2, 1, 2, 0]) {
   const {route, label} = windows[target];
-  await command({kind: 'select', route});
+  await command(verb.focus(route));
   await until(`select ${label}`, async () => (await active()) === label);
 }
 console.log(JSON.stringify({step: 'select', ok: true}));
@@ -78,7 +79,7 @@ assert.equal(await failure(), null, 'the presses kept the desktop drawing');
 console.log(JSON.stringify({step: 'click', active: [...chosen], ok: true}));
 
 const frames = await evaluate('tiloMount.state()?.frames ?? 0');
-await command({kind: 'close', route: (await snapshot()).entries[0].route});
+await command(verb.closeTab((await snapshot()).entries[0].route));
 await until('the first window closed', async () => (await snapshot()).entries.length === apps.length - 1);
 await until('a frame after the close', async () => (await evaluate('tiloMount.state()?.frames ?? 0')) > frames + 1);
 assert.equal(await failure(), null, 'closing a window keeps the desktop drawing');
