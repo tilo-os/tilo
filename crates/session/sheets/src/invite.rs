@@ -15,8 +15,8 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, Divider, Element, ListRow, ModalDialog,
-    QrWidget, Row, Section, Segment, Spacer, Text, TextInput, ToggleGroup,
+    Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, QrWidget, Row,
+    Section, Segment, Spacer, Text, TextInput, ToggleGroup,
 };
 
 use crate::presentation::Presentation;
@@ -259,7 +259,13 @@ pub fn sheet(
     if let Some(note) = &invite.note {
         body = body.push(notice(note, ask));
     }
-    body = body.push(composing(invite, choosing, link, ask));
+    // The link last made stands first: it is what the person hands over, and
+    // the form that makes another one falls under it. The code is taller than
+    // a field, so anywhere but the top of the sheet it would open clipped.
+    if let Some(created) = &invite.created {
+        body = body.push(handover(created, link, ask));
+    }
+    body = body.push(composing(invite, choosing, ask));
     if invite.may_invite {
         body = body.push(pending(invite, ask));
     }
@@ -296,12 +302,7 @@ fn notice(note: &Note, ask: &Ask) -> Element {
 
 /// Making a link: the part it brings someone in at, who it is for, and the
 /// button that makes it. Without the grant, why there is nothing to make.
-fn composing(
-    invite: &Invite,
-    choosing: &LocalState<Choosing>,
-    link: &LocalState<String>,
-    ask: &Ask,
-) -> Element {
+fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Element {
     let mut items: Vec<Element> = Vec::new();
     if !invite.may_invite {
         items.push(caption(&invite.refusal));
@@ -354,11 +355,12 @@ fn composing(
                 }),
         )),
     ));
-    if let Some(created) = &invite.created {
-        items.push(Box::new(Divider::horizontal()));
-        items.extend(made(created, link, ask));
-    }
     Box::new(Section::new(items))
+}
+
+/// The link last made, standing on its own: the thing the person hands over.
+fn handover(created: &Created, link: &LocalState<String>, ask: &Ask) -> Element {
+    Box::new(Section::new(made(created, link, ask)))
 }
 
 /// The parts on offer, the one the person may bring someone in at chosen.
