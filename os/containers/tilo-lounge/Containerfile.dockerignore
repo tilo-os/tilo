@@ -2,5 +2,6 @@
 !bin/
 !bots/
 !fonts/
+!surfaces/
 !entrypoint.sh
 !verify-no-cisco-openh264.sh

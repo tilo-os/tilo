@@ -54,8 +54,6 @@ thiserror.workspace = true
 tracing.workspace = true
 workspace-hack = { version = "0.1" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
-tilo-app-package = { path = "../../packaging/tilo-app-package" }
-app-registry = { path = "../../packaging/app-registry" }
 libc.workspace = true
 tilo-files = { path = "../../platform/tilo-files", features = ["watch"] }
 collab-types = { path = "../../collab/collab-types" }

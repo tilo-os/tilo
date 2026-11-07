@@ -31,6 +31,7 @@ mod collaboration;
 mod content;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
+mod surfaces;
 pub(crate) use content::lacks_answer;
 pub use content::{ContentKeeper, WorkspaceContent};
 mod desktop_writes;
@@ -1247,6 +1248,7 @@ impl Workspaces {
         }
         this.settle_layouts().await;
         this.follow_activity();
+        this.follow_missing_surfaces();
         this.inner.hosting.resume().await;
         Ok(this)
     }
@@ -2056,6 +2058,15 @@ impl Workspaces {
             return Ok(());
         };
         let (app_id, record_id) = (app_id.clone(), record_id.clone());
+        // The change is decided against the surface its op names: the one this
+        // host runs the app with, or one the workspace keeps for it
+        // ([`crate::surfaces`]). What it lacks it asks the workspace's members
+        // for, and the change is held until one answers.
+        if let Some(surface) = envelope.surface
+            && crate::surfaces::kept(&app_id, &hex::encode(surface)).is_none()
+        {
+            self.note_missing_surface(workspace, &app_id, &hex::encode(surface));
+        }
         let workspace = self
             .workspace(workspace)
             .await

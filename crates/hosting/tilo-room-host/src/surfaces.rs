@@ -1,43 +1,41 @@
-//! The app surfaces this relay decides received changes against.
+//! The app surfaces this host decides received changes against, kept with the
+//! workspace's content.
 //!
-//! A change's op names the content hash of its app's `surface.toml`; the
-//! registry serves every reviewed package's payload blobs by hash, so the
-//! relay fetches a surface it has not seen from there, in the background,
-//! and holds the ops naming it until it has arrived. What it fetched stays
-//! here by hash, whichever version of the app it is: members read a record
-//! started by an older version with that version's surface
-//! ([`Workspaces::content_answer`](crate::workspaces::Workspaces::content_answer)).
+//! A change's op names the content hash of its app's `surface.toml`, and the
+//! change is decided against that version's surface, whoever ran it. A host
+//! has the surfaces of the apps it runs in its own process; every other one is
+//! content of the workspace, kept under its state directory by hash, which the
+//! host asks its members for when a change names one it lacks
+//! ([`crate::workspaces`]). What arrives stays, whichever version of the app it
+//! is: members read a record started by an older version with that version's
+//! surface
+//! ([`Workspaces::content_answer`](crate::workspaces::Workspaces::content_answer)),
+//! and a registry is nowhere on that path — it serves installs, never history.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tilo_lock::MutexRecover as _;
 
-/// The registry relays fetch surfaces from unless `TILO_REGISTRY` names one.
-pub const DEFAULT_REGISTRY: &str = "https://apps.tilo.so";
+/// How many surfaces one host keeps. A surface is a few kilobytes of
+/// `surface.toml`, and a host that met more versions than this asks for the
+/// rest again rather than keep an unbounded map.
+const MAX_SURFACES: usize = 4096;
 
-/// How long answering a member's request waits for a registry fetch: a
-/// surface is a few kilobytes, and a member that waited longer asks again.
-const FETCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// What the relay has of each surface: its bytes, or a fetch under way.
-type Fetched = Arc<Mutex<HashMap<String, Option<Vec<u8>>>>>;
-
-/// The surfaces this host fetches from `registry`: one cache for deciding the
-/// changes that name them and for answering the members that read them.
+/// The surfaces this host has, by BLAKE3 hash: what it runs an app with, and
+/// what the workspace gave it.
 struct Surfaces {
-    registry: String,
-    runtime: Option<tokio::runtime::Handle>,
-    bytes: Fetched,
-    /// Signalled when a fetch finishes, so a member's request for a surface
-    /// this host is still fetching is answered by that one fetch rather than
-    /// by the next request.
-    fetched: std::sync::Condvar,
+    dir: PathBuf,
+    bytes: Mutex<HashMap<[u8; 32], Vec<u8>>>,
 }
 
-/// This process's surfaces, once [`decide_receipt_from_registry`] installed
-/// them.
+/// This process's surfaces, once [`decide_receipt`] installed them.
 static SURFACES: Mutex<Option<Arc<Surfaces>>> = Mutex::new(None);
+
+fn installed() -> Option<Arc<Surfaces>> {
+    SURFACES.lock_recover().clone()
+}
 
 /// The surface `hash` of `app` when it is the one this host runs `app`
 /// with.
@@ -55,73 +53,90 @@ pub const fn surface_of(_: &str, _: &str) -> Option<Vec<u8>> {
     None
 }
 
-/// The bytes of the surface `hash` of `app` this host keeps: the one it runs
-/// `app` with, or one the registry fetched for a change that named it, whoever
-/// ran that version. A surface it holds neither is asked of the registry, and
-/// this says `None` until it arrives.
+/// The bytes of the surface `hash` of `app` this host decides its changes
+/// with: the one it runs the app with, or one the workspace gave it. The
+/// first is put in the content plane here, so a host that runs a later version
+/// of the app still reads what was written with this one.
 pub(crate) fn kept(app: &str, hash: &str) -> Option<Vec<u8>> {
-    surface_of(app, hash).or_else(|| request(hash))
-}
-
-/// The bytes of the surface `hash` of `app` a member asked this host for,
-/// waiting for the registry's answer when the host has not seen it yet: what
-/// a record started by an older version of an app reads its writes with.
-///
-/// Blocks until the fetch lands or [`FETCH_WAIT`] passes, so it is called off
-/// the async threads that serve members.
-pub(crate) fn answer(app: &str, hash: &str) -> Option<Vec<u8>> {
     if let Some(bytes) = surface_of(app, hash) {
+        keep(hash, &bytes);
         return Some(bytes);
     }
-    let surfaces = SURFACES.lock_recover().clone()?;
-    // One fetch for every member asking at once: the one already under way,
-    // or this one.
-    let _ = request(hash);
-    let (known, _) = surfaces
-        .fetched
-        .wait_timeout_while(surfaces.bytes.lock_recover(), FETCH_WAIT, |known| {
-            matches!(known.get(hash), Some(None))
-        })
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    known.get(hash).cloned().flatten()
+    read(hash)
 }
 
-/// What this host fetched for the surface `hash`, or a fetch started for it.
-fn request(hash: &str) -> Option<Vec<u8>> {
-    let surfaces = SURFACES.lock_recover().clone()?;
-    let mut known = surfaces.bytes.lock_recover();
-    if let Some(known) = known.get(hash) {
-        return known.clone();
+/// The bytes of the surface `hash` this host keeps, checked against the
+/// address they are kept under.
+pub(crate) fn read(hash: &str) -> Option<Vec<u8>> {
+    let hash = address(hash)?;
+    let surfaces = installed()?;
+    if let Some(bytes) = surfaces.bytes.lock_recover().get(&hash) {
+        return Some(bytes.clone());
     }
-    // ignored-failure: a hash that is not one names no surface; the member asking is told so.
-    let Some(blob) = hex::decode(hash)
+    // The plane is the workspace's, not this process's memory: a surface
+    // another start kept is read here, and kept for the rest of this one.
+    let bytes = std::fs::read(surfaces.dir.join(hex::encode(hash))).ok()?;
+    (blake3::hash(&bytes).as_bytes() == &hash).then(|| {
+        let mut known = surfaces.bytes.lock_recover();
+        if known.len() < MAX_SURFACES {
+            known.insert(hash, bytes.clone());
+        }
+        bytes
+    })
+}
+
+/// Whether this host keeps the surface `hash`.
+pub(crate) fn holds(hash: &str) -> bool {
+    address(hash).is_some_and(|hash| {
+        installed().is_some_and(|surfaces| surfaces.bytes.lock_recover().contains_key(&hash))
+            || read(&hex::encode(hash)).is_some()
+    })
+}
+
+/// Keep `bytes` as the surface `hash`: whether they were new to the plane and
+/// hash to the address they came under. A surface that arrived is one this
+/// host can decide the changes it held for
+/// ([`arrivals`]).
+pub(crate) fn keep(hash: &str, bytes: &[u8]) -> bool {
+    let Some(hash) = address(hash) else {
+        return false;
+    };
+    if blake3::hash(bytes).as_bytes() != &hash {
+        return false;
+    }
+    let Some(surfaces) = installed() else {
+        return false;
+    };
+    {
+        let mut known = surfaces.bytes.lock_recover();
+        if known.contains_key(&hash) || known.len() >= MAX_SURFACES {
+            return false;
+        }
+        known.insert(hash, bytes.to_vec());
+    }
+    // Written beside the workspace's state, as the content it is: a start
+    // after this one reads it there rather than asking for it again.
+    if let Err(error) = write(&surfaces.dir, &hex::encode(hash), bytes) {
+        tracing::warn!(%error, "a surface could not be written to the content plane");
+    }
+    arrived();
+    true
+}
+
+/// Write `bytes` as `name` under `dir`, whole or not at all.
+fn write(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let part = dir.join(format!("{name}.part"));
+    std::fs::write(&part, bytes)?;
+    std::fs::rename(&part, dir.join(name))
+}
+
+/// The [u8; 32] address `hash` names, when it names one.
+pub(crate) fn address(hash: &str) -> Option<[u8; 32]> {
+    // ignored-failure: a hash that is not one names no surface this host keeps
+    hex::decode(hash)
         .ok()
         .and_then(|bytes| <[u8; 32]>::try_from(bytes).ok())
-    else {
-        tracing::warn!(%hash, "a surface is asked for by a hash that is not one");
-        return None;
-    };
-    let runtime = surfaces.runtime.clone()?;
-    known.insert(hash.to_owned(), None);
-    drop(known);
-    let blobs = tilo_app_registry_blobs(&surfaces.registry);
-    let hash = hash.to_owned();
-    runtime.spawn(async move {
-        let result = blobs.fetch_all(&[tilo_app_package::BlobHash(blob)]).await;
-        let mut known = surfaces.bytes.lock_recover();
-        if let Some(bytes) = result.ok().and_then(|mut all| all.pop()) {
-            known.insert(hash, Some(bytes.to_vec()));
-            drop(known);
-            surfaces.fetched.notify_all();
-            arrived();
-        } else {
-            // Asked again by the next op or member that names it.
-            known.remove(&hash);
-            drop(known);
-            surfaces.fetched.notify_all();
-        }
-    });
-    None
 }
 
 /// The surface the changes this host signs for `app` name: the one it runs
@@ -137,16 +152,72 @@ const fn signed_surface(_: &str) -> Option<[u8; 32]> {
     None
 }
 
-/// Decide every change this process receives against the surfaces of the
-/// apps this host runs in its own process, and others fetched by hash from
-/// `registry`. Call it once, on the runtime the relay runs on, before the
-/// relay starts.
-pub fn decide_receipt_from_registry(registry: &str) {
+/// The surfaces this build publishes for the history the apps' older versions
+/// wrote: one file per version of a built-in app's `surface.toml`, laid out by
+/// the image's build beside its programs (`TILO_SURFACES` names another).
+const BUILT_SURFACES: &str = "/usr/local/share/tilo/surfaces";
+
+/// Publish the surfaces this build carries into the content plane `dir`, by
+/// their hash: a change written by an older version of an app than this build
+/// runs is decided here even when no member still has that version. Files
+/// already in the plane are left as they are, so a start publishes once.
+fn publish_built(dir: &Path) {
+    let built = std::env::var_os("TILO_SURFACES")
+        .map_or_else(|| PathBuf::from(BUILT_SURFACES), PathBuf::from);
+    publish_from(&built, dir);
+}
+
+/// [`publish_built`] for the surfaces under `built`.
+fn publish_from(built: &Path, dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(built) else {
+        return;
+    };
+    let (mut published, mut kept) = (0u64, 0u64);
+    for entry in entries.flatten() {
+        let Ok(bytes) = std::fs::read(entry.path()) else {
+            continue;
+        };
+        let hash = hex::encode(blake3::hash(&bytes).as_bytes());
+        if dir.join(&hash).exists() {
+            kept = kept.saturating_add(1);
+            continue;
+        }
+        match write(dir, &hash, &bytes) {
+            Ok(()) => published = published.saturating_add(1),
+            Err(error) => {
+                tracing::warn!(%error, %hash, "a surface this build carries was not published");
+            }
+        }
+    }
+    if published > 0 {
+        tracing::info!(
+            published,
+            kept,
+            "the surfaces this build carries are in the content plane"
+        );
+    }
+}
+
+/// Decide every change this process receives against the surfaces of the apps
+/// this host runs in its own process, or keeps under `dir`, its content plane
+/// for them. Call it once, on the runtime the relay runs on, before the relay
+/// starts.
+pub fn decide_receipt(dir: &Path) {
+    publish_built(dir);
+    let known = std::fs::read_dir(dir)
+        .map(|entries| entries.flatten().collect::<Vec<_>>())
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|entry| {
+            let hash = address(entry.file_name().to_str()?)?;
+            let bytes = std::fs::read(entry.path()).ok()?;
+            (blake3::hash(&bytes).as_bytes() == &hash).then_some((hash, bytes))
+        })
+        .take(MAX_SURFACES)
+        .collect();
     *SURFACES.lock_recover() = Some(Arc::new(Surfaces {
-        registry: registry.trim_end_matches('/').to_owned(),
-        runtime: tokio::runtime::Handle::try_current().ok(),
-        bytes: Fetched::default(),
-        fetched: std::sync::Condvar::new(),
+        dir: dir.to_path_buf(),
+        bytes: Mutex::new(known),
     }));
     tilo_peer_state::decide_with_surfaces(
         collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
@@ -168,6 +239,11 @@ fn arrival_count() -> &'static tokio::sync::watch::Sender<u64> {
 /// ([`crate::workspaces::Workspaces`]), so a held change is never let go for good.
 pub(crate) fn arrivals() -> tokio::sync::watch::Receiver<u64> {
     arrival_count().subscribe()
+}
+
+/// Tell whoever follows [`arrivals`] that an app surface arrived.
+pub(crate) fn arrived() {
+    arrival_count().send_modify(|count| *count = count.wrapping_add(1));
 }
 
 /// Why the relay refuses the change the delta `delta` carries by its author's
@@ -203,15 +279,6 @@ pub(crate) fn role_refusal(
         }
         .to_string(),
     )
-}
-
-/// Tell whoever follows [`arrivals`] that an app surface arrived.
-pub(crate) fn arrived() {
-    arrival_count().send_modify(|count| *count = count.wrapping_add(1));
-}
-
-fn tilo_app_registry_blobs(registry: &str) -> app_registry::http_blobs::HttpBlobs {
-    app_registry::http_blobs::HttpBlobs::new(registry.trim_end_matches('/').to_owned())
 }
 
 /// Why the relay refuses the change the delta `delta` carries, if it does:
@@ -257,4 +324,62 @@ pub(crate) fn refusal(
     )
     .err()
     .map(|refusal| refusal.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::publish_from;
+
+    /// What the image's build laid out: one file per version of the apps'
+    /// `surface.toml`, named for the app and the commit, and the same version
+    /// twice when two apps shared it.
+    #[test]
+    fn the_surfaces_a_build_carries_are_published_by_hash_once() {
+        let scratch = tempfile::tempdir().unwrap();
+        let built = scratch.path().join("built");
+        let plane = scratch.path().join("surfaces");
+        std::fs::create_dir_all(&built).unwrap();
+        let old = b"kind = \"chat.workspace\"\nversion = 1\n";
+        let older = b"kind = \"chat.workspace\"\nversion = 2\n";
+        std::fs::write(built.join("chat.9102a1.toml"), old).unwrap();
+        std::fs::write(built.join("chat.4c1e77.toml"), older).unwrap();
+        std::fs::write(built.join("slides.9102a1.toml"), old).unwrap();
+
+        publish_from(&built, &plane);
+
+        for (version, bytes) in [("chat v1", old.as_slice()), ("chat v2", older.as_slice())] {
+            let hash = hex::encode(blake3::hash(bytes).as_bytes());
+            assert_eq!(
+                std::fs::read(plane.join(&hash)).unwrap(),
+                bytes,
+                "{version} is in the plane, by its hash"
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(&plane).unwrap().count(),
+            2,
+            "one file per version, not one per file"
+        );
+
+        // A start after this one publishes nothing new.
+        let kept = std::fs::metadata(plane.join(hex::encode(blake3::hash(old).as_bytes())))
+            .unwrap()
+            .modified()
+            .unwrap();
+        publish_from(&built, &plane);
+        assert_eq!(std::fs::read_dir(&plane).unwrap().count(), 2);
+        assert_eq!(
+            std::fs::metadata(plane.join(hex::encode(blake3::hash(old).as_bytes())))
+                .unwrap()
+                .modified()
+                .unwrap(),
+            kept
+        );
+    }
 }

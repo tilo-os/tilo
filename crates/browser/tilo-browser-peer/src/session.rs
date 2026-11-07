@@ -3009,8 +3009,8 @@ impl Task {
     }
 
     /// Ask the workspaces for the app surfaces this page holds documents for
-    /// and does not have: the host keeps every version it decided with, and
-    /// asks the registry for one it has not seen.
+    /// and does not have: the workspace keeps every version its history was
+    /// written with, and a member that wrote under one answers with it.
     fn ask_surfaces(&mut self, client: &Link) {
         let mut wants: BTreeMap<[u8; 32], (u64, String, String)> = BTreeMap::new();
         for (route, held) in &self.held_inbound {

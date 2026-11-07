@@ -25,16 +25,21 @@
 // plane, with the certificate `/live` told them to pin. ROLES_FILE is the file
 // the deployment mounts as the Lounge's roles file, which this run writes the
 // inviter into.
+// With EARLIER as the seventh argument the run is the other way round: one
+// person, who was not here when the workspace last started, joins and reads the
+// chat message EARLIER — written before it by pages that are gone — and writes
+// in it. What a page sees of the past is the workspace's, not a store beside it.
+//
 // Prints a JSON report and saves what each page showed; exits non-zero when
-// the two people did not meet, or when the invitation took more than an
-// invitation.
+// the two people did not meet, when the invitation took more than an
+// invitation, or when a person joining later finds no chat history.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, origin, out, liveHost, rolesFile] = process.argv.slice(2);
+const [site, relay, origin, out, liveHost, rolesFile, earlier] = process.argv.slice(2);
 if (!site || !relay || !origin || !out || !liveHost || !rolesFile) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST ROLES_FILE');
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST ROLES_FILE [EARLIER]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -443,6 +448,33 @@ const browser = await launch({args: [
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
 try {
+  if (earlier) {
+    // A person arriving now: the chat window and the composer are the app's,
+    // the message in it was written before this start by a page that is gone.
+    const visitor = await open('V');
+    await search(visitor.tab, visitor.command, 'chat', 'Chat');
+    const showing = `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {})`;
+    await until(visitor.tab,
+      `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === 'so.tilo.chat')`,
+      "V's own chat window", 120_000);
+    await until(visitor.tab, `${showing}.includes('Message composer')`, "V's chat composer", 120_000);
+    await until(visitor.tab, `${showing}.includes(${JSON.stringify(earlier)})`,
+      'the chat message the workspace kept from before this start', 180_000);
+    report.earlier = earlier;
+    console.log(`ok: the chat the workspace kept shows "${earlier}" to a person who was not here`);
+    const reply = `here now ${Date.now()}`;
+    if (!await press(visitor.tab, 'Message composer')) failed("V's chat has no message composer", visitor.tab);
+    await type(visitor.tab, reply);
+    await key(visitor.tab, 'Enter');
+    await until(visitor.tab, `${showing}.includes(${JSON.stringify(reply)})`, 'the reply in the chat', 180_000);
+    report.reply = reply;
+    await dump(visitor.tab, 'earlier-chat');
+    console.log('ok: the person joining after the restart wrote in the same chat');
+    writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
+    console.log(JSON.stringify(report, null, 2));
+    await browser.close().catch(error => console.error('close:', error.message));
+    process.exit(0);
+  }
   const a = await open('A');
   const b = await open('B');
 

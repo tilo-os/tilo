@@ -1,11 +1,12 @@
-//! A host answers a member's request for the app surface a change was written
-//! with, whichever version of the app that is: a member reading a record an
-//! older version started decides its writes against that version's surface,
-//! which it asks its workspace for by hash, as it asks for any content.
+//! A host decides the changes members make against the app surfaces those
+//! changes name, and the workspace is where a surface it lacks comes from: the
+//! member that wrote the change answers the host's ask for it, or any other
+//! member that has it. What arrived is the workspace's content from then on —
+//! a start after this one reads it beside the workspace's state, and a member
+//! reading a record an older version of the app started is answered with it.
 //!
-//! The version a host never ran is not in its own apps: it fetches it from the
-//! registry by hash, the way it fetched it to decide the change, and answers
-//! with one copy however many members ask.
+//! No registry is on this path: a version no registry serves reads as well as
+//! one it does.
 
 #![allow(
     clippy::unwrap_used,
@@ -17,32 +18,41 @@
 
 use neighbour_wire::NeighbourMsg;
 
-const NOTES: &str = "so.tilo.notes";
-/// The workspace the member asks in: any workspace the host governs.
-const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
+const APP: &str = "so.tilo.chat";
 
-/// The surface of a version of the notes app this host does not run.
-fn older_surface() -> Vec<u8> {
-    std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../../apps/notes/surface.toml"
-    ))
-    .unwrap()
+/// A surface of a version of the app this host does not run: nothing in it
+/// matters but its bytes, which no registry has.
+fn unserved_surface() -> Vec<u8> {
+    b"kind = \"chat.workspace\"\nversion = 1\n# written by a version no registry serves\n".to_vec()
 }
 
 /// What a member's device asks the workspace for.
-fn want(requester: u64, hash: &str) -> Vec<u8> {
+fn want(requester: u64, workspace: &str, hash: &str) -> Vec<u8> {
     postcard::to_allocvec(&NeighbourMsg::RecordContentWant {
         requester,
-        app_id: NOTES.into(),
-        cluster_id: WORKSPACE.into(),
+        app_id: APP.into(),
+        cluster_id: workspace.into(),
         hash: hash.into(),
     })
     .unwrap()
 }
 
-/// The content `frames` answer with, or `None` when the host said it keeps
-/// none.
+/// What device `member` answers the host with: the surface `bytes`, whole.
+fn answer(host: &[u8; 32], member: [u8; 32], workspace: &str, bytes: &[u8]) -> Vec<u8> {
+    postcard::to_allocvec(&NeighbourMsg::RecordContentPiece {
+        responder: neighbour_wire::peer_handle(&member),
+        requester: neighbour_wire::peer_handle(host),
+        app_id: APP.into(),
+        cluster_id: workspace.into(),
+        hash: blake3::hash(bytes).to_hex().to_string(),
+        total: u64::try_from(bytes.len()).unwrap(),
+        offset: 0,
+        bytes: bytes.to_vec(),
+    })
+    .unwrap()
+}
+
+/// The content the host answers `frames` with, or `None` when it keeps none.
 fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
     let mut whole = Vec::new();
     for frame in frames {
@@ -67,78 +77,84 @@ fn gathered(frames: &[Vec<u8>]) -> Option<Vec<u8>> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_host_answers_with_the_surface_of_an_app_version_it_never_ran() {
-    // The surfaces it installs are the process's: no other test runs here.
+async fn a_surface_a_member_answers_with_is_the_workspaces_from_then_on() {
+    // The plane it installs is the process's: no other test runs here.
     if !crate::common::in_own_process(
-        "surface_content::a_host_answers_with_the_surface_of_an_app_version_it_never_ran",
+        "surface_content::a_surface_a_member_answers_with_is_the_workspaces_from_then_on",
     ) {
         return;
     }
-    let surface = older_surface();
-    let hash = blake3::hash(&surface).to_hex().to_string();
-    let served = surface.clone();
-    let name = hash.clone();
-    let registry = test_http::Responder::handle(move |request| {
-        Some(match request.target.as_str() {
-            path if path == format!("/blobs/{name}") => {
-                test_http::Reply::status(200).body(served.clone())
-            }
-            _ => test_http::Reply::status(404),
-        })
-    });
-    tilo_room_host::surfaces::decide_receipt_from_registry(&registry.url());
     let scratch = tempfile::tempdir().unwrap();
+    let plane = scratch.path().join("surfaces");
+    tilo_room_host::surfaces::decide_receipt(&plane);
     let (key, cert) = tilo_room_host::workspaces::fixtures::governor();
     let host = tilo_room_host::workspaces::fixtures::test_host(scratch.path(), &key, &cert).await;
     let workspaces = host.workspaces().clone();
+    let workspace = workspaces.create("Lounge").await.unwrap().workspace;
+    let surface = unserved_surface();
+    let hash = blake3::hash(&surface).to_hex().to_string();
 
-    // Answering fetches the surface, so it happens off the threads that serve
-    // members.
-    let asked = want(42, &hash);
-    let answering = workspaces.clone();
-    let frames = tokio::task::spawn_blocking(move || answering.content_answer(WORKSPACE, &asked))
-        .await
-        .unwrap();
+    // Nothing has it: a member asking is told so, not left waiting.
     assert_eq!(
-        gathered(&frames),
+        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
+        None
+    );
+
+    // A member's change names it: the host asks the workspace for it, and the
+    // member answers the host with its bytes.
+    let reached = workspaces.ask_surface(&workspace, APP, &hash).await;
+    assert!(reached <= 1, "no members are in a workspace made just now");
+    let member = [9; 32];
+    workspaces.content_for_host(
+        &workspace,
+        member,
+        &answer(&cert.device_public_key, member, &workspace, &surface),
+    );
+
+    // It is the workspace's content now: the host decides with it
+    // ([`tilo_room_host::surfaces`]) and answers members reading the record it
+    // was written with.
+    assert_eq!(
+        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
         Some(surface.clone()),
-        "the surface the member asked for, whole"
-    );
-    let requested: Vec<String> = registry
-        .drain_requests()
-        .into_iter()
-        .map(|request| request.target)
-        .collect();
-    assert!(
-        requested
-            .iter()
-            .any(|path| path == &format!("/blobs/{hash}")),
-        "the host fetched the version it never ran by hash: {requested:?}"
+        "the surface the member answered with, whole"
     );
 
-    // It keeps what it fetched: the second member asking is answered without
-    // asking the registry again.
-    let asked = want(42, &hash);
-    let answering = workspaces.clone();
-    let frames = tokio::task::spawn_blocking(move || answering.content_answer(WORKSPACE, &asked))
-        .await
-        .unwrap();
+    // Kept beside the workspace's state: a start after this one has it without
+    // asking anybody.
+    assert_eq!(std::fs::read(plane.join(&hash)).unwrap(), surface);
+    tilo_room_host::surfaces::decide_receipt(&plane);
     assert_eq!(
-        gathered(&frames),
+        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &hash))),
         Some(surface),
-        "answered from what it kept"
+        "answered after a start that asked nobody"
     );
-    assert!(registry.drain_requests().is_empty(), "no second fetch");
+    assert_eq!(
+        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &"0".repeat(64)))),
+        None,
+        "a surface nobody answered with is still not kept"
+    );
 
-    // A hash the registry has, as far as the host's own apps go, keeps none:
-    // the member is told so rather than left waiting.
-    let absent = "0".repeat(64);
-    let asked = want(42, &absent);
-    let answering = workspaces.clone();
-    let frames = tokio::task::spawn_blocking(move || answering.content_answer(WORKSPACE, &asked))
-        .await
-        .unwrap();
-    assert_eq!(gathered(&frames), None, "not kept: the member is told so");
+    // Bytes that do not hash to the address they came under are not the
+    // surface asked for.
+    let other = blake3::hash(b"a version the workspace asked for")
+        .to_hex()
+        .to_string();
+    workspaces.ask_surface(&workspace, APP, &other).await;
+    workspaces.content_for_host(
+        &workspace,
+        member,
+        &answer(
+            &cert.device_public_key,
+            member,
+            &workspace,
+            b"not those bytes",
+        ),
+    );
+    assert_eq!(
+        gathered(&workspaces.content_answer(&workspace, &want(42, &workspace, &other))),
+        None
+    );
 
     host.shutdown().await;
 }

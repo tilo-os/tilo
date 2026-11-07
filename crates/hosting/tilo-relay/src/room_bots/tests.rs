@@ -28,7 +28,7 @@ pub(super) async fn bot_host(
 ) -> crate::workspaces::fixtures::TestHost {
     // The native apps name their surfaces as the host first runs them.
     let _ = AppCatalogue::native();
-    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    crate::surfaces::decide_receipt(&state.join("surfaces"));
     test_host(state, key, cert).await
 }
 
@@ -40,7 +40,7 @@ async fn bot_host_taking_part(
     cert: &DeviceCert,
 ) -> crate::workspaces::fixtures::TestHost {
     let _ = AppCatalogue::native();
-    crate::surfaces::decide_receipt_from_registry("http://127.0.0.1:9");
+    crate::surfaces::decide_receipt(&state.join("surfaces"));
     test_host_taking_part(state, key, cert).await
 }
 
