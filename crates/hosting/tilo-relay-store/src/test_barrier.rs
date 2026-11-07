@@ -1,8 +1,8 @@
 //! Test-only, one-shot barriers scoped to an exact temporary store and operation.
 //!
-//! Built only for tests and the `test-support` feature: the store, its owner
-//! and the shell replay adapter pause or fail at named points so a test can
-//! interleave them deterministically.
+//! Built only for tests and the `test-support` feature: the store and its
+//! owner pause or fail at named points so a test can interleave them
+//! deterministically.
 #![allow(
     clippy::significant_drop_tightening,
     reason = "relays, fixtures and guards deliberately stay alive until each test ends"

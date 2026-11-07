@@ -11,10 +11,8 @@
 //! ([`HostConfig::shell_payloads`](crate::host::HostConfig::shell_payloads),
 //! [`NeighbourPayloads`] by default) and hands it to the compactor and to every
 //! workspace store it opens, and the peer session asks the store of the
-//! workspace it serves. The same adapter binds native shell replay
-//! ([`ShellPayloads::replay`]): the store steps the selection the bound
-//! authority hands it through the `store::shell_selection` seam. Workspace
-//! governance still uses the desktop's vocabulary directly.
+//! workspace it serves. Workspace governance still uses the desktop's
+//! vocabulary directly.
 //! An adapter that classifies nothing makes the host keep every entry and
 //! fold none: unknown data never grants removal.
 
