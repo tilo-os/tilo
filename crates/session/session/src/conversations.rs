@@ -484,10 +484,9 @@ impl Conversations {
             // The workspace holds no Chat, and the person asked in it: the
             // record is made here, with the genesis every device derives the
             // same, so a second device's first ask meets the one this made.
-            opened.chat = WorkspaceRecord::<chat::Chat>::open_at(
+            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
-                chat_id.as_str(),
                 CHAT_APP,
                 Some(LivePermissions::fixed(permissions.clone())),
                 Some(self.wake.handle()),
@@ -503,10 +502,9 @@ impl Conversations {
             if !held {
                 return None;
             }
-            opened.chat = WorkspaceRecord::<chat::Chat>::open_at(
+            opened.chat = WorkspaceRecord::<chat::Chat>::open_primary(
                 &opened.records,
                 CHAT_OWNER,
-                chat_id.as_str(),
                 CHAT_APP,
                 Some(LivePermissions::fixed(permissions.clone())),
                 Some(self.wake.handle()),

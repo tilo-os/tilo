@@ -126,7 +126,7 @@ impl Agents {
         let mut spend = BTreeMap::new();
         let mut kept = Vec::new();
         for (workspace, policy) in workspaces {
-            let Some(record) = self.record(workspace, policy, person) else {
+            let Some(record) = self.record(workspace, policy, person, false) else {
                 continue;
             };
             let state = record.get();
@@ -179,7 +179,7 @@ impl Agents {
             let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
                 continue;
             };
-            let Some(record) = self.record(workspace, policy, person) else {
+            let Some(record) = self.record(workspace, policy, person, false) else {
                 continue;
             };
             let counted =
@@ -211,7 +211,7 @@ impl Agents {
         policy: &WorkspacePolicy,
         person: &str,
     ) -> Option<String> {
-        let record = self.record(workspace, policy, person)?;
+        let record = self.record(workspace, policy, person, true)?;
         let state = record.get();
         if let Some(held) = state
             .active()
@@ -242,12 +242,16 @@ impl Agents {
     }
 
     /// The workspace's agents record, opened here where it is not, at the
-    /// grants the pass read.
+    /// grants the pass read. `create` says whether a workspace that keeps none
+    /// is given one: asking does — a person with no agent yet is one ask away
+    /// from having one (shell.md §8.1) — and the pass's reading never does, so
+    /// a workspace nobody set an agent up in costs no record.
     fn record(
         &self,
         workspace: &str,
         policy: &WorkspacePolicy,
         person: &str,
+        create: bool,
     ) -> Option<WorkspaceRecord<Record>> {
         let mut open = self.open.borrow_mut();
         if open
@@ -266,12 +270,12 @@ impl Agents {
             record: None,
         });
         if opened.record.is_none() {
-            let id = RecordId::package_primary();
+            let id = collab_types::workspace_record_id(KIND);
             let held = opened
                 .records
-                .holds_record(OWNER, id.as_str(), KIND)
+                .holds_record(OWNER, &id, KIND)
                 .unwrap_or(false);
-            if !held {
+            if !held && !create {
                 return None;
             }
             let permissions = PermissionContext::from_standing(
@@ -279,10 +283,9 @@ impl Agents {
                 Standing::person(policy.clone(), person.to_owned()),
             )
             .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-            opened.record = WorkspaceRecord::<Record>::open_at(
+            opened.record = WorkspaceRecord::<Record>::open(
                 &opened.records,
                 OWNER,
-                id.as_str(),
                 SESSION_APP,
                 Some(LivePermissions::fixed(permissions)),
                 Some(self.wake.handle()),

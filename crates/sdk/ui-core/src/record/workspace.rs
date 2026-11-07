@@ -121,6 +121,24 @@ impl WorkspaceRecords {
         self.open_at(owner, id, kind, initialize)
     }
 
+    /// The record `owner` keeps **as its own primary record** of `kind`: the
+    /// one record of a kind an app keeps in a workspace, under the owner's
+    /// [`RecordId::package_primary`] (Chat's of its chat, `chat.workspace`).
+    /// [`Self::open_record_at`] cannot open it, because the primary id is a
+    /// sentinel no [`RecordId::parse`] accepts; this is the same open with
+    /// the id taken as it is.
+    ///
+    /// # Errors
+    /// The record could not be read or created.
+    pub fn open_primary(
+        &self,
+        owner: &str,
+        kind: &str,
+        initialize: &dyn Fn(&mut AutoCommit) -> Result<(), String>,
+    ) -> Result<StoredRecord, RecordOpenError> {
+        self.open_at(owner, RecordId::package_primary(), kind, initialize)
+    }
+
     /// Whether `owner`'s store holds the record `id` of `kind`, without
     /// opening or creating it: a list asks this to show the records that
     /// exist, not to make one for everything it could name.

@@ -986,13 +986,29 @@ impl Session {
             let person = options.person.clone();
             let conversations = Rc::clone(&conversations);
             let agents = Rc::clone(&agents);
+            let catalog = arrangement.borrow().targets();
             Rc::new(move |text: &str| {
                 let (workspace, policy) = handle.read(|tree| {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
                 })?;
                 let agent = agents.keep_one(&workspace, &policy, &person)?;
-                conversations.ask(&person, &workspace, &policy, &agent, text)
+                let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
+                // A channel the ask just made is a resource the arrangement may
+                // place the moment it is asked to: search has not read Chat's
+                // record yet, so the place's app and default view are put where
+                // the catalog is read from besides the door's own tree
+                // (`Catalog::remember`), and the next read of the door's
+                // resources carries it like any other.
+                catalog.borrow_mut().remember(
+                    &channel,
+                    arrangement::Target {
+                        app: "so.tilo.chat".to_owned(),
+                        views: Vec::new(),
+                        title: crate::i18n::t("session-ask-conversation"),
+                    },
+                );
+                Some(channel)
             })
         };
         doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
