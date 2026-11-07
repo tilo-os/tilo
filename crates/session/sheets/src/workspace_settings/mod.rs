@@ -87,6 +87,10 @@ pub enum WorkspaceSettingsEffect {
     /// people in it
     #[effect(destructive, attended)]
     Delete,
+    /// Delete this workspace, with everything in it: it is yours, on this
+    /// device only, with nobody else in it
+    #[effect(destructive, attended)]
+    DeleteWorkspace,
     /// Give a member of the workspace another role
     #[effect(attended)]
     SetRole {
@@ -288,6 +292,8 @@ pub enum Confirm {
     RemoveMember { member: String, name: String },
     /// Revoke the permission `grant`, which `holder` holds.
     Revoke { grant: String, holder: String },
+    /// Delete the workspace, with everything in it.
+    DeleteWorkspace,
 }
 
 /// What the sheet keeps to itself while it is up: the question it is
@@ -471,6 +477,7 @@ impl ResourceApp for WorkspaceSettingsApp {
     fn scenarios() -> &'static [&'static str] {
         &[
             "general",
+            "general-deleting",
             "general-viewer",
             "people",
             "people-member",
@@ -496,6 +503,12 @@ impl ResourceApp for WorkspaceSettingsApp {
                     grant: "grant-2".to_owned(),
                     holder: "Ada Lovelace-Byron".to_owned(),
                 }),
+                ..Local::default()
+            });
+        }
+        if fixture.scenario() == Some("general-deleting") {
+            fixture.provide(Local {
+                confirming: Some(Confirm::DeleteWorkspace),
                 ..Local::default()
             });
         }
@@ -791,6 +804,7 @@ impl Confirm {
             Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
                 grant: grant.clone(),
             },
+            Self::DeleteWorkspace => WorkspaceSettingsEffect::DeleteWorkspace,
         }
     }
 
@@ -799,6 +813,7 @@ impl Confirm {
         match self {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
             Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
+            Self::DeleteWorkspace => (&settings.general.delete_decision, settings.name.clone()),
         }
     }
 }
@@ -821,19 +836,27 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
         .with_no_padding()
         .with_intrinsic_height()
         .push(general::caption(&subject));
-    let (keep, review, go) = (parts.clone(), parts.clone(), parts.clone());
-    Box::new(
-        ModalDialog::new(question.title.clone(), body)
-            .with_test_id("ws-settings-decision")
-            .with_description(question.description.clone())
-            .open(true)
-            .primary_action(question.confirm.clone(), move || go.decide(Answer::Confirm))
-            .with_destructive(true)
-            .secondary_action(question.keep.clone(), move || keep.decide(Answer::Keep))
-            .tertiary_action(question.review.clone(), move || {
-                review.decide(Answer::Review);
-            }),
-    )
+    let (keep, going, dismissed) = (parts.clone(), parts.clone(), parts.clone());
+    let mut dialog = ModalDialog::new(question.title.clone(), body)
+        .with_test_id("ws-settings-decision")
+        .with_description(question.description.clone())
+        .open(true)
+        .primary_action(question.confirm.clone(), move || {
+            going.decide(Answer::Confirm);
+        })
+        .with_destructive(true)
+        .secondary_action(question.keep.clone(), move || keep.decide(Answer::Keep))
+        // Escape keeps things as they are and puts the question away.
+        .on_dismiss(move || dismissed.decide(Answer::Keep));
+    // A question that offers what the workspace did about it says so beside
+    // the two answers.
+    if !question.review.is_empty() {
+        let review = parts.clone();
+        dialog = dialog.tertiary_action(question.review.clone(), move || {
+            review.decide(Answer::Review);
+        });
+    }
+    Box::new(dialog)
 }
 
 /// Escape takes back a name being typed, and leaves an agent's review,

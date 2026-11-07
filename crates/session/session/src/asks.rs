@@ -72,6 +72,12 @@ impl Shared {
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                // The desk was asked to delete a workspace, and the person
+                // is the one who answers: the question stands in its own
+                // dialog, wherever deleting was asked from.
+                DesktopAsk::DeleteWorkspace { slot, name } => {
+                    self.ask_to_delete_workspace(slot, &name);
+                }
                 // A workspace the desk deleted, whoever asked it to: what is
                 // left of it here in this device's record goes too.
                 DesktopAsk::DeletedWorkspace { workspace, name } => {
@@ -382,7 +388,9 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
-            DELETE_WORKSPACE => self.ask_delete_workspace(),
+            // Deleting is the desk's, which asks the person first: the desk's
+            // own action is the only thing that deletes.
+            DELETE_WORKSPACE => self.ask_desk_to_delete(),
             // The Tilo menu's own rows, and the same effects the power
             // menu's choices are.
             SESSION_LOCK => self.power_effect(PowerEffect::Lock),
@@ -390,10 +398,6 @@ impl Shared {
             SESSION_RESTART => self.power_effect(PowerEffect::Restart),
             SESSION_SHUT_DOWN => self.power_effect(PowerEffect::ShutDown),
             choice => {
-                // The delete banner's own buttons are its answer.
-                if self.answer_delete_workspace(choice) {
-                    return;
-                }
                 // A device another of the person's devices found asks here
                 // to act as them: the banner's own buttons are its answer.
                 if let Some(fabric) = &self.fabric

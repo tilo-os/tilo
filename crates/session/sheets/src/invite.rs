@@ -96,6 +96,9 @@ pub struct Created {
     pub invite: String,
     /// The invitation's text, as another device joins with it.
     pub link: String,
+    /// The signed invitation itself, which the text spells out in base64:
+    /// what the code carries, since the text alone is too long to scan.
+    pub code: Vec<u8>,
     /// What the link is called, who it brings in and how long it works, and
     /// the button that copies it.
     pub link_label: String,
@@ -413,7 +416,7 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    let code = QrWidget::new(created.link.clone())
+    let code = QrWidget::new(created.code.clone())
         .with_id("invite-code")
         .with_alt(created.alt.clone());
     vec![
@@ -573,6 +576,7 @@ impl ResourceApp for InviteApp {
                 invite.created = Some(Created {
                     invite: "8f2c".to_owned(),
                     link: "tilo://join?invite=8f2c…".to_owned(),
+                    code: b"invitation".to_vec(),
                     link_label: "The link".to_owned(),
                     brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
                     lasts: "The link works for the next 60 minutes.".to_owned(),

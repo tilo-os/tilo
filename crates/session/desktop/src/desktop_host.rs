@@ -1226,6 +1226,16 @@ impl DesktopChrome {
                     self.handle.acknowledge(refusal);
                 }
             }
+            ChromeIntent::DeleteWorkspace => {
+                if let Err(refusal) = self.delete_workspace(None, None) {
+                    self.handle.acknowledge(refusal);
+                }
+            }
+            ChromeIntent::DeleteWorkspaceConfirmed => {
+                if let Err(refusal) = self.delete_workspace(None, Some(true)) {
+                    self.handle.acknowledge(refusal);
+                }
+            }
             ChromeIntent::ToggleTiloMenu => {
                 self.workspace_menu.close();
                 self.tilo_menu.set_actions(self.tilo_menu_actions());
@@ -1591,33 +1601,44 @@ impl DesktopChrome {
         Ok(())
     }
 
-    /// Delete the workspace `id` (the one the person is in when absent): it
-    /// goes with everything in it, from here and from the person's list. The
-    /// person is left in the one beside it, or, when it was the only one, in
-    /// a new empty workspace.
-    fn delete_workspace(&self, id: Option<WorkspaceSlot>) -> Result<(), String> {
+    /// Delete the workspace `id` (the one the person is in when absent).
+    ///
+    /// Deleting takes everything in it, so it is asked first: the person
+    /// answers in the host's own confirm ([`DesktopAsk::DeleteWorkspace`]),
+    /// and only an answer that says so deletes.
+    fn delete_workspace(
+        &self,
+        id: Option<WorkspaceSlot>,
+        confirmed: Option<bool>,
+    ) -> Result<(), String> {
         let here = id.or_else(|| {
             self.handle
                 .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
         });
         let id = here.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-delete"))?;
         self.rules.may_delete_workspace(id)?;
-        // What the workspace is, read before it goes: the host hands its
-        // record back by the id the workspace itself has.
-        let workspace = self
+        let named = self
             .handle
             .read(|tree| {
                 tree.workspaces
                     .iter()
                     .find(|workspace| workspace.slot == id)
-                    .map(Workspace::id)
+                    .map(|workspace| (workspace.id(), workspace.name.clone()))
             })
             .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
+        let (workspace, name) = named;
+        if confirmed != Some(true) {
+            // The person answers first: nothing of it goes until they do.
+            self.asks
+                .borrow_mut()
+                .push(DesktopAsk::DeleteWorkspace { slot: id, name });
+            return Ok(());
+        }
         let name = self.take_workspace_off(Some(id))?;
         if self.handle.read(|tree| tree.workspaces.is_empty()) {
             self.fresh_workspace();
         }
-        // Whoever asked for it — the menu, a banner or an agent — the host
+        // Whoever asked for it — the menu, the settings, an agent — the host
         // hears of the deletion the same way, from the desk that made it.
         self.asks
             .borrow_mut()
@@ -2396,11 +2417,14 @@ impl DesktopChrome {
                 self.report(left);
                 Some(true)
             }
-            ChromeEffect::DeleteWorkspace { workspace } => {
+            ChromeEffect::DeleteWorkspace {
+                workspace,
+                confirmed,
+            } => {
                 let deleted = workspace
                     .as_deref()
                     .map_or(Ok(None), |id| self.workspace_named(id).map(Some))
-                    .and_then(|id| self.delete_workspace(id));
+                    .and_then(|id| self.delete_workspace(id, *confirmed));
                 self.report(deleted);
                 Some(true)
             }

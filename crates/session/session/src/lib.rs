@@ -236,6 +236,7 @@ use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
+use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
@@ -377,8 +378,9 @@ struct Shared {
     /// machine's reading every pass, the same one the bar and the lock screen
     /// show.
     music: tilo_desktop::desk_widgets::DeskMusic,
-    /// The power menu, workspace settings, and the questions the session
-    /// asks for apps and services, by their seats.
+    /// The power menu, workspace settings, the questions the session asks
+    /// for apps and services, and the one deleting a workspace asks, by
+    /// their seats.
     power: Option<PowerSeat>,
     workspace_settings: Option<WorkspaceSettingsSeat>,
     /// The desk revision workspace settings was last fed at: its panes are
@@ -405,6 +407,9 @@ struct Shared {
     /// from, and what it made in this opening.
     invite: Option<InviteSeat>,
     invite_made: RefCell<invite::Made>,
+    /// The question deleting a workspace asks, and the workspace it is about.
+    delete_workspace: Option<DeleteWorkspaceSeat>,
+    delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceSlot>>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
@@ -1359,6 +1364,7 @@ impl Session {
             file_picker,
             directory,
             invite,
+            delete_workspace,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1758,6 +1764,8 @@ impl Session {
             directory,
             invite,
             invite_made: RefCell::default(),
+            delete_workspace,
+            delete_workspace_ask: RefCell::default(),
             directory_store,
             boot_join: RefCell::new(boot_join),
             community: RefCell::new(community),

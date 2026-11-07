@@ -405,6 +405,9 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 wayland-client.workspace = true
+# What a scanner reads from a code the session draws: the invite sheet's
+# test decodes the invitation back out of its QR.
+rqrr = { workspace = true, default-features = true }
 # The text a field asks a keyboard for, as an app's toolkit speaks it.
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.

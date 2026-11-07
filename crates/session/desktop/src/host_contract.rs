@@ -85,6 +85,10 @@ pub enum DesktopAsk {
     HostAction(String),
     /// The person left the workspace `name` here; the host says so.
     LeftWorkspace(String),
+    /// The person asked to delete the workspace `slot`, called `name`, and
+    /// it is theirs to delete: the host asks them to confirm it, and only
+    /// their answer deletes anything.
+    DeleteWorkspace { slot: WorkspaceSlot, name: String },
     /// The desk deleted the workspace `workspace`, which was called `name`:
     /// what is left of it in the host's record goes with it.
     DeletedWorkspace {

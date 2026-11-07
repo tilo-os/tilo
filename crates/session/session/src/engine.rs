@@ -58,6 +58,20 @@ pub struct Person {
     pub removed: bool,
 }
 
+/// Why a workspace is not the person's to delete here, when it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotDeletable {
+    /// This device does not hold it.
+    NotHeld,
+    /// Someone else is still in it, so it is not this device's to delete.
+    OthersInIt,
+    /// Another of the person's devices holds it too: deleting it here would
+    /// not delete it for them.
+    OtherDevice,
+    /// It belongs to someone else.
+    NotOwner,
+}
+
 /// An invitation this device made: the link a person hands over, the part it
 /// brings whoever redeems it in at, and when it stops working.
 #[derive(Clone, Debug)]
@@ -553,8 +567,16 @@ impl Engine {
     /// not one another of their devices would list again.
     #[must_use]
     pub fn may_delete(&self, workspace: WorkspaceId) -> bool {
+        self.not_deletable(workspace).is_none()
+    }
+
+    /// Why `workspace` is not this device's person's to delete here, when it
+    /// is not: what the surfaces offering deleting say beside a delete they
+    /// cannot offer.
+    #[must_use]
+    pub fn not_deletable(&self, workspace: WorkspaceId) -> Option<NotDeletable> {
         if !self.holds(workspace) {
-            return false;
+            return Some(NotDeletable::NotHeld);
         }
         let identity = self.identity();
         let person = hex::encode(identity.device_cert.user_public_key);
@@ -565,14 +587,22 @@ impl Engine {
                 .iter()
                 .all(|member| member.removed || member.person == person)
         });
+        if !alone {
+            return Some(NotDeletable::OthersInIt);
+        }
         let only_here = self
             .roster_devices(&workspace_id)
             .is_ok_and(|devices| devices == [device]);
-        alone
-            && only_here
-            && self
-                .owner_of(&workspace_id)
-                .is_ok_and(|owner| owner == person)
+        if !only_here {
+            return Some(NotDeletable::OtherDevice);
+        }
+        if !self
+            .owner_of(&workspace_id)
+            .is_ok_and(|owner| owner == person)
+        {
+            return Some(NotDeletable::NotOwner);
+        }
+        None
     }
 
     /// Take `workspace` out of this device's record, with everything of it

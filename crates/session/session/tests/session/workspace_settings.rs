@@ -930,6 +930,9 @@ fn workspace_settings_general_leaves_the_workspace() {
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
+    // Leaving is for a workspace that stays with the people in it: the new
+    // one has someone else in it, so leaving it means something.
+    own_workspace(&session, &["ada"]);
     invoke(&mut session, CHROME_RESOURCE, "workspace-settings");
     assert_eq!(
         session.handle().read(|tree| tree.workspaces.len()),

@@ -594,12 +594,16 @@ pub enum ChromeEffect {
     /// Delete a workspace
     ///
     /// The workspace shown, when it is the person's own and this computer is
-    /// the only one holding it: it goes, with everything in it.
+    /// the only one holding it: it goes, with everything in it. Deleting is
+    /// asked first, so nothing goes until the person says `confirmed`.
     #[effect(own_device)]
     DeleteWorkspace {
         /// The workspace to delete.
         #[param("The workspace to delete, its name or its decimal id")]
         workspace: Option<String>,
+        /// The person answered the question that deleting asks: yes.
+        #[param("The person said yes to the question deleting asks")]
+        confirmed: Option<bool>,
     },
 
     /// Open the workspace's settings

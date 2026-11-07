@@ -21385,6 +21385,7 @@ dependencies = [
  "postcard",
  "rand_core 0.10.0",
  "resvg",
+ "rqrr",
  "runtime-collab",
  "runtime-identity",
  "runtime-portal",
