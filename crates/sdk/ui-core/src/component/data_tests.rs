@@ -278,6 +278,82 @@ fn a_card_grid_reads_its_cards_and_a_press_reports_the_resource_it_shows() {
     );
 }
 
+/// A grid given its cards in place keeps each card's own widget and takes what the card now
+/// says: the props name the cards and carry none of their bodies, so a card rebuilt from them
+/// would show nothing, and one replaced would lose its body and what the person was doing in
+/// it. A card that says something else changes on the card where it stands.
+#[test]
+fn a_card_grid_takes_its_cards_in_place_while_they_are_the_cards_it_shows() {
+    let queue = crate::Intents::default();
+    let card = |item: &str, title: &str| {
+        Node::new("CardGridCard", item, &queue)
+            .prop("item", resource(item))
+            .prop("title", text(title))
+    };
+    let reading = |titles: &[(&str, &str)]| {
+        let mut grid = Node::new("CardGrid", "apps", &queue);
+        for (item, title) in titles {
+            grid = grid.holding("cards", card(item, title));
+        }
+        crate::widget::CardGridProps::from_source(&mut grid).expect("the grid reads")
+    };
+    let cards = |host: &FrameHarness| -> Vec<usize> {
+        let grid = host.root::<crate::widget::DescribedCardGrid>().grid();
+        (0..grid.len())
+            .filter_map(|index| grid.card(index))
+            .map(|card| std::ptr::from_ref::<dyn Widget>(card.as_ref()).cast::<()>() as usize)
+            .collect()
+    };
+    let names = |host: &FrameHarness| -> Vec<String> {
+        let grid = host.root::<crate::widget::DescribedCardGrid>().grid();
+        let mut out = Vec::new();
+        fn walk(w: &dyn Widget, out: &mut Vec<String>) {
+            if let Some(node) = w.accessibility() {
+                out.extend(node.name.clone());
+            }
+            for child in w.children() {
+                walk(child, out);
+            }
+        }
+        for card in (0..grid.len()).filter_map(|index| grid.card(index)) {
+            walk(card.as_ref(), &mut out);
+        }
+        out
+    };
+
+    let mut host = harness(crate::widget::DescribedCardGrid::from_props(
+        "apps",
+        reading(&[("doc/a:1", "Alpha"), ("doc/a:2", "Beta")]),
+    ));
+    host.relayout();
+    let before = cards(&host);
+    assert_eq!(before.len(), 2, "the two cards show");
+    assert!(
+        names(&host).iter().any(|name| name == "Beta"),
+        "the second card's title shows: {:?}",
+        names(&host)
+    );
+
+    // One card retitled: the cards' own widgets stay where they stand, and the one that says
+    // something else says it.
+    assert!(
+        host.root_mut::<crate::widget::DescribedCardGrid>()
+            .set_props(reading(&[("doc/a:1", "Alpha"), ("doc/a:2", "Beta II")])),
+        "the cards it shows are taken in place"
+    );
+    assert_eq!(cards(&host), before, "each card keeps its own widget");
+    assert!(
+        names(&host).iter().any(|name| name == "Beta II"),
+        "the retitled card says so: {:?}",
+        names(&host)
+    );
+    assert!(
+        !names(&host).iter().any(|name| name == "Beta"),
+        "the title it had is gone: {:?}",
+        names(&host)
+    );
+}
+
 #[test]
 fn a_tree_view_reads_its_nodes_and_reports_the_resource_a_node_shows() {
     let queue = crate::Intents::default();

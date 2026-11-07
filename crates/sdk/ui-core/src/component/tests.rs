@@ -243,6 +243,144 @@ fn every_described_widget_takes_its_props_where_it_stands() {
     );
 }
 
+/// Props given in place carry no built views, so a widget that shows its parts' views — a map's
+/// pins, a board's cards — keeps each part's view where it stands and takes from the props only
+/// what it says *around* them. It therefore takes the props in place only while they name the
+/// parts it already holds, and is built again when they name others.
+///
+/// The alternative is what left a stale node behind after `5fab1bdd584`: a map patched the pins
+/// it recognised and kept the pin of a place the arrangement had closed, so a closed window's
+/// title stayed on the canvas and in the accessibility tree; and a board rebuilt its cards from
+/// props that carried none of their views, so every card showed empty.
+#[test]
+fn a_widget_holding_parts_takes_other_parts_only_by_being_built_again() {
+    use crate::widget::{
+        Board, BoardCardProps, BoardLaneProps, BoardProps, Map, MapPinProps, MapProps, Text,
+    };
+
+    fn pin(key: &str, body: &str) -> MapPinProps {
+        MapPinProps {
+            key: key.into(),
+            body: vec![Box::new(Text::new(body))],
+            ..MapPinProps::default()
+        }
+    }
+
+    fn map(pins: Vec<MapPinProps>) -> Map {
+        <Map as Described>::from_props(
+            "map",
+            MapProps {
+                name: Some("Canvas".into()),
+                ground: false,
+                pins,
+            },
+        )
+    }
+
+    /// The names a widget lays out for assistive technology, its parts' views included: read
+    /// from the widget as it is laid out, so what its views say stands in its tree.
+    fn said(root: &dyn crate::widget::Widget) -> Vec<String> {
+        fn walk(w: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+            if let Some(node) = w.accessibility() {
+                out.extend(node.name);
+            }
+            for child in w.children() {
+                walk(child, out);
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, &mut out);
+        out
+    }
+
+    /// `widget`, laid out as the window lays it out, with the names it says once it is.
+    fn laid_out<W: crate::widget::Widget + 'static>(
+        widget: W,
+    ) -> (crate::headless::FrameHarness, Vec<String>) {
+        let host = crate::headless::FrameHarness::for_root(
+            crate::State::new(),
+            widget,
+            (900, 600),
+            crate::theme::Theme::dark(),
+        );
+        let said = said(host.root::<W>());
+        (host, said)
+    }
+
+    let pins = |keys: &[&str]| -> Vec<MapPinProps> {
+        keys.iter()
+            .map(|key| pin(key, &format!("the place {key}")))
+            .collect()
+    };
+    let props = |keys: &[&str]| MapProps {
+        name: Some("Canvas".into()),
+        ground: false,
+        pins: pins(keys),
+    };
+
+    let (mut host, before) = laid_out(map(pins(&["a", "b"])));
+    assert!(
+        before.iter().any(|name| name.contains("the place b")),
+        "the map shows its pins' views: {before:?}"
+    );
+    assert!(
+        host.root_mut::<Map>().set_props(props(&["a", "b"])),
+        "a map given the pins it holds takes where they stand"
+    );
+    let after = said(host.root::<Map>());
+    assert!(
+        after.iter().any(|name| name.contains("the place b")),
+        "the pins' views stay: {after:?}"
+    );
+    for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
+        let mut held = map(pins(&["a", "b"]));
+        assert!(
+            !held.set_props(props(other)),
+            "a map given pins it does not hold shows another canvas, and is built again: \
+             {other:?}"
+        );
+    }
+
+    let card = |key: &str| BoardCardProps {
+        key: key.into(),
+        body: vec![Box::new(Text::new(&format!("the card {key}")))],
+        ..BoardCardProps::default()
+    };
+    let board = |cards: &[&str]| BoardProps {
+        name: Some("Plan".into()),
+        lanes: vec![BoardLaneProps {
+            key: "todo".into(),
+            title: Some("To do".into()),
+            cards: cards.iter().map(|key| card(key)).collect(),
+            ..BoardLaneProps::default()
+        }],
+    };
+    let (mut host, before) = laid_out(<Board as Described>::from_props(
+        "board",
+        board(&["a", "b"]),
+    ));
+    assert!(
+        before.iter().any(|name| name.contains("the card b")),
+        "the board shows its cards' views: {before:?}"
+    );
+    assert!(
+        host.root_mut::<Board>().set_props(board(&["a", "b"])),
+        "a board given the lanes and cards it holds takes where it stands"
+    );
+    let after = said(host.root::<Board>());
+    assert!(
+        after.iter().any(|name| name.contains("the card b")),
+        "the cards' views stay: {after:?}"
+    );
+    for other in [&["a"][..], &["a", "b", "c"][..], &["b", "a"][..]] {
+        let mut held = <Board as Described>::from_props("board", board(&["a", "b"]));
+        assert!(
+            !held.set_props(board(other)),
+            "a board whose cards changed shows another board, and is built again: {other:?}"
+        );
+    }
+}
+
 #[test]
 fn a_missing_required_prop_or_a_value_of_another_type_is_refused() {
     let mut nothing = given("k", &[]);

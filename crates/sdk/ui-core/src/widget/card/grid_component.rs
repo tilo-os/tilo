@@ -101,6 +101,24 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
     (key, Box::new(card))
 }
 
+/// What a card says around its body — whether it is selected, and its title and count — taken
+/// where the card stands: its body, its place and what a press on it does stay.
+fn say(props: CardGridCardProps, card: &mut crate::widget::Card) {
+    card.set_selected(props.selected);
+    let title = props.title.filter(|title| !title.is_empty());
+    match title {
+        Some(title) => {
+            let header = crate::widget::SectionHeader::group(title);
+            let header = match props.count {
+                Some(count) => header.count(usize::try_from(count).unwrap_or(0)),
+                None => header,
+            };
+            card.set_header(header);
+        }
+        None => card.remove_header(),
+    }
+}
+
 /// A described card grid: its grid, and the keys of the cards it shows, in order.
 pub struct DescribedCardGrid {
     grid: CardGrid,
@@ -158,8 +176,12 @@ impl Described for DescribedCardGrid {
         }
     }
 
-    /// The cards change by key where they stand: one gone is removed, one that came in is
-    /// inserted, one that changed is replaced in its place. The others keep their widget.
+    /// The cards change by key where they stand: one that came in is inserted, one that moved
+    /// is moved, one gone is removed, and what a card says around its body changes on the card
+    /// itself. The body each card shows stays where it stands.
+    ///
+    /// Props given in place name the cards and carry none of their bodies, so a card's body is
+    /// never rebuilt from them: rebuilding would show every card empty.
     fn set_props(&mut self, props: CardGridProps) -> bool {
         let CardGridProps {
             name,
@@ -182,15 +204,22 @@ impl Described for DescribedCardGrid {
         }
         for (at, card) in cards.into_iter().enumerate() {
             let key = card.item.0.clone();
-            let (_, widget) = card_of(card);
             if let Some(had) = self.shown.iter().position(|held| held == &key) {
                 if had != at {
                     self.grid.move_card(had, at);
                     let key = self.shown.remove(had);
                     self.shown.insert(at, key);
                 }
-                self.grid.replace_card(at, widget);
+                // What the card says around its body changes on the card where it stands: its
+                // body is the card's own and stays.
+                if let Some(held) = self.grid.card_mut(at).and_then(|card| {
+                    card.as_any_mut()
+                        .and_then(|any| any.downcast_mut::<crate::widget::Card>())
+                }) {
+                    say(card, held);
+                }
             } else {
+                let (_, widget) = card_of(card);
                 self.grid.insert_card(at, widget);
                 self.shown.insert(at, key);
             }

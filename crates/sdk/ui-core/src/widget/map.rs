@@ -412,24 +412,34 @@ impl Described for Map {
     }
 
     /// Where the pins stand and which ground the map is on change where it stands: the camera
-    /// keeps its place, and the pins keep their views (the pins themselves arrive by key).
+    /// keeps its place, and each pin keeps the view it shows.
+    ///
+    /// Props given in place name the pins and carry none of their views, so the pins they name
+    /// must be the pins the map holds, one for one: a map given other pins is another canvas,
+    /// and is built again around them. Patching the pins it recognises would leave the pin of a
+    /// place the arrangement closed standing on screen and in the accessibility tree.
     fn set_props(&mut self, props: MapProps) -> bool {
         let MapProps {
             name: _,
             ground,
             pins,
         } = props;
+        if pins.len() != self.pins.len()
+            || pins
+                .iter()
+                .zip(&self.pins)
+                .any(|(given, (key, _, _))| given.key != *key)
+        {
+            return false;
+        }
         self.ground = ground;
-        for pin in pins {
-            let place = PinPlace {
+        for (pin, (_, held, _)) in pins.into_iter().zip(self.pins.iter_mut()) {
+            *held = PinPlace {
                 x: pin.x.unwrap_or(0) as f64,
                 y: pin.y.unwrap_or(0) as f64,
                 width: (pin.width.unwrap_or(360) as f64).max(1.0),
                 height: pin.height.map(|height| (height as f64).max(1.0)),
             };
-            if let Some((_, held, _)) = self.pins.iter_mut().find(|(key, _, _)| *key == pin.key) {
-                *held = place;
-            }
         }
         self.dirty = true;
         self.invalidation.invalidate();
