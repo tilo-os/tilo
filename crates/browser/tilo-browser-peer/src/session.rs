@@ -2801,6 +2801,13 @@ impl Task {
                 ) {
                     Ok(true) => {}
                     Ok(false) => {
+                        // The channel carries the record's content keys, and
+                        // which devices read it is its workspace's governance,
+                        // not any one write: take part in it for a write that
+                        // arrived here even when this page cannot decide it
+                        // yet. A record whose every write is held would
+                        // otherwise never ask for the keys the writes wait on.
+                        self.open_channel(&route);
                         self.hold_document(route, OpKey::of(envelope), body, author, retained);
                         return;
                     }
