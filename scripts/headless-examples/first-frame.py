@@ -58,7 +58,8 @@ def real_apps_lines(log: str) -> list[dict]:
     import re
     from datetime import datetime, timezone
 
-    pattern = re.compile(r"^\S+Z\s+\w+\s+(?P<target>[^\s:]+):\s*(?P<message>.*)$")
+    pattern = re.compile(
+        r"^\S+Z\s+\w+\s+(?P<target>[A-Za-z0-9_:]+):\s*(?P<message>.*)$")
     fields = re.compile(r"(\w+)=(\S+)")
     lines = []
     for raw in log.splitlines():

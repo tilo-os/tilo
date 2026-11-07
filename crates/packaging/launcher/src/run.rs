@@ -1868,11 +1868,21 @@ fn splice_cli_setenv(
 
 /// Hand this launch's phase marks to the app
 /// ([`tilo_startup_metrics::LAUNCHER_MARKS_ENV`]), so its startup file also
-/// covers the launcher. Only when the shell asked for startup metrics; the
-/// value is the launcher's own fixed mark names and wall-clock times. The
-/// last mark is taken here, after every check and before the sandbox spawns.
+/// covers the launcher, and the app's startup file path, which the sandbox
+/// would otherwise clear. Only when the shell asked for startup metrics; the
+/// marks are the launcher's own fixed names and wall-clock times. The last
+/// mark is taken here, after every check and before the sandbox spawns.
 fn splice_startup_marks(argv: &mut Vec<String>) -> Result<(), RunError> {
     tilo_startup_metrics::handoff_mark("sandbox-argv-ready");
+    splice_cli_setenv(
+        argv,
+        std::env::var_os("TILO_STARTUP_METRICS_PATH").map(|path| {
+            (
+                "TILO_STARTUP_METRICS_PATH".to_string(),
+                path.to_string_lossy().into_owned(),
+            )
+        }),
+    )?;
     splice_cli_setenv(
         argv,
         tilo_startup_metrics::handoff_env_value()
