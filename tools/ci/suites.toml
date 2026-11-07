@@ -510,6 +510,9 @@ inputs = [
   "tools/apps/app_release.py", "dist/apps/app-collections.toml", "apps/*/tilo-app.toml",
 ]
 suites = [
+  # tools/perf/test_adapters.py holds the browser adapter's KPI names equal to
+  # the budgets and its workloads' samples to the qualification's report.
+  "tools/perf/test_adapters.py",
   "tools/perf/test_check_kpi.py",
   "tools/perf/test_image_size.py",
   "tools/perf/test_record.py",

@@ -1490,6 +1490,24 @@ min_delta = 0.5
 baseline_min_runs = 1
 source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
 
+# A fast typist's keys into a note (--typing-keys), each timed from the page's
+# key event to the first presented frame after it. The ceiling is the
+# runtime's goal: a key on screen within three frames at 60 Hz. The nightly
+# run types on SwiftShader, where a frame is the software rasterizer's, so
+# what its records hold for comparison is the runtime's own CPU per frame
+# beside it, against the display's 16.7 ms frame.
+[kpi."browser.typing.key_to_frame"]
+unit = "ms"
+p95 = 50.0
+baseline_min_runs = 3
+source = "page key event to the first presented frame after it, a fast typist's keys into a note (headless, SwiftShader)"
+
+[kpi."browser.typing.frame_work"]
+unit = "ms"
+p95 = 16.7
+baseline_min_runs = 3
+source = "the runtime's CPU for each frame a typed key presented (headless, SwiftShader)"
+
 # Session startup and frame budgets, per device class, read by
 # tools/perf/check_kpi.py (the [kpi.*] tables above stay compare.py's).
 #

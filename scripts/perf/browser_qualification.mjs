@@ -9,8 +9,8 @@
 // usage: node scripts/perf/browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON
 //          --renderer gpu|swiftshader [--rounds N]
 //          [--activations N] [--demo-seconds S] [--idle-seconds S]
-//          [--expect-revision SHA] [--allow-dev] [--max-load L] [--cpu-throttle F]
-//          [--frame-timeout S] [--viewport WxH] [--enforce-goals]
+//          [--typing-keys N] [--expect-revision SHA] [--allow-dev] [--max-load L]
+//          [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]
 //
 // Each round is a fresh browser context (empty HTTP cache and storage) at the
 // workload's viewport (FHD, 1920x1080 at DPR 1, unless --viewport), and
@@ -28,6 +28,10 @@
 //             runtime's CPU time for each presented frame (`draw_total`),
 //             after the same pan once unmeasured, which compiles its pipelines
 //   idle     frames presented per second by the same desktop left alone
+//   typing   keys typed into a note at a fast typist's rate (--typing-keys,
+//             off by default): each key's time in the page to the first
+//             presented frame after it, the runtime's CPU time per typing
+//             frame and what each of those frames repainted
 //
 // --frame-timeout S is how long one awaited frame may take before the run
 // is invalid: 10 s on a GPU, 120 s on a software rasterizer, which compiles
@@ -51,6 +55,9 @@
 //                  the app's own code drawn within 1 s
 //   load           p99 <= 2.5 s (the web's "good" Largest Contentful Paint)
 //   idle           <= 2 presented frames per second
+//   typing         key to presented frame p95 <= 50 ms (a key that reaches the
+//                  screen within three frames at 60 Hz), judged when the
+//                  typing workload ran
 // Beside load's time, the report records what the first load transferred and
 // how many requests it took (Performance Resource Timing: every resource that
 // started before the desktop's first presented frame), which the browser
@@ -79,6 +86,7 @@ export const GOALS = {
   openReadyMs: 1000,
   loadMs: 2500,
   idlePerS: 2,
+  typingMs: 50,
 };
 // Desktop windows of the demo: the apps of the launch demo that open without
 // an account or a network, in the order they are opened.
@@ -88,8 +96,8 @@ export const RENDERERS = ['gpu', 'swiftshader'];
 // FHD, the older-hardware target; --viewport overrides it.
 const VIEWPORT = {width: 1920, height: 1080, deviceScaleFactor: 1};
 const USAGE = 'usage: browser_qualification.mjs BUNDLE_DIR --out REPORT_JSON --renderer gpu|swiftshader '
-  + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--expect-revision SHA] [--allow-dev] '
-  + '[--max-load L] [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]';
+  + '[--rounds N] [--activations N] [--demo-seconds S] [--idle-seconds S] [--typing-keys N] [--expect-revision SHA] '
+  + '[--allow-dev] [--max-load L] [--cpu-throttle F] [--frame-timeout S] [--viewport WxH] [--enforce-goals]';
 
 export class Invalid extends Error {}
 
@@ -110,18 +118,18 @@ export function within(promise, ms, what) {
 }
 
 export function parseArgs(argv) {
-  const options = {rounds: 3, activations: 20, demoSeconds: 5, idleSeconds: 3, cpuThrottle: 1, allowDev: false,
-    enforceGoals: false};
+  const options = {rounds: 3, activations: 20, demoSeconds: 5, idleSeconds: 3, typingKeys: 0, cpuThrottle: 1,
+    allowDev: false, enforceGoals: false};
   const positionals = [];
   const numbers = {'--rounds': 'rounds', '--activations': 'activations', '--demo-seconds': 'demoSeconds',
-    '--idle-seconds': 'idleSeconds', '--max-load': 'maxLoad', '--cpu-throttle': 'cpuThrottle',
-    '--frame-timeout': 'frameTimeout'};
+    '--idle-seconds': 'idleSeconds', '--typing-keys': 'typingKeys', '--max-load': 'maxLoad',
+    '--cpu-throttle': 'cpuThrottle', '--frame-timeout': 'frameTimeout'};
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg in numbers) {
       const value = Number(argv[++i]);
-      // `--demo-seconds 0` leaves the demo out.
-      const least = arg === '--demo-seconds' ? 0 : Number.MIN_VALUE;
+      // `--demo-seconds 0` and `--typing-keys 0` leave that workload out.
+      const least = ['--demo-seconds', '--typing-keys'].includes(arg) ? 0 : Number.MIN_VALUE;
       if (!Number.isFinite(value) || value < least) throw Error(`${arg} needs a positive number`);
       options[numbers[arg]] = value;
     } else if (arg === '--out') options.out = argv[++i];
@@ -140,7 +148,7 @@ export function parseArgs(argv) {
   // first used; one frame can then take tens of seconds.
   options.frameTimeout ??= options.renderer === 'gpu' ? 10 : 120;
   options.viewport ??= VIEWPORT;
-  for (const name of ['rounds', 'activations']) {
+  for (const name of ['rounds', 'activations', 'typingKeys']) {
     if (!Number.isInteger(options[name])) throw Error(`--${name} must be a whole number`);
   }
   return {...options, bundle: resolve(positionals[0])};
@@ -221,15 +229,19 @@ export function classifyAdapter(info) {
 /**
  * Chrome's flags for a run on `renderer` by user `uid`: no frame-rate limit
  * or vsync; SwiftShader's Vulkan and ANGLE on SwiftShader (as
- * crates/browser/tilo-web-desktop/scripts/navigation.mjs starts it); no
- * sandbox for root (a CI container), which Chrome refuses otherwise. The
- * adapter check still proves which renderer ran. There is no lavapipe run:
- * Chrome draws its page on a system Vulkan CPU driver but never offers one to
- * WebGPU (with SwiftShader removed, WebGPU had no adapter at all).
+ * crates/browser/tilo-web-desktop/scripts/navigation.mjs starts it), or, for a
+ * hardware run, the vulkan backend a machine's own driver serves WebGPU from
+ * (headless Chrome settles on SwiftShader without it); no sandbox for root (a
+ * CI container), which Chrome refuses otherwise. The adapter check still
+ * proves which renderer ran: a hardware run on a machine whose Vulkan driver
+ * offers WebGPU no adapter is reported invalid, never measured as a GPU.
  */
 export function chromeFlags(renderer, uid) {
   return ['--disable-frame-rate-limit', '--disable-gpu-vsync',
-    ...(renderer === 'swiftshader' ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader'] : []),
+    ...(renderer === 'swiftshader'
+      ? ['--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader']
+      : ['--enable-features=Vulkan', '--use-vulkan=native', '--use-angle=vulkan',
+        '--ignore-gpu-blocklist', '--disable-gpu-driver-bug-workarounds']),
     ...(uid === 0 ? ['--no-sandbox'] : [])];
 }
 
@@ -258,11 +270,14 @@ export function judgeGoals(summary) {
     goal("open, app's code drawn (p99, ms)", summary.open_ready_ms.p99, GOALS.openReadyMs),
     goal('load (p99, ms)', summary.load_ms.p99, GOALS.loadMs),
     goal('idle (presented frames per second, max)', summary.idle_per_s.max, GOALS.idlePerS),
+    goal('typing, key to presented frame (p95, ms)', summary.typing_ms.p95, GOALS.typingMs),
   ].filter(entry => Number.isFinite(entry.measured));
 }
 
 // A round without the demo (`--demo-seconds 0`).
 const NO_DEMO = {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN, distinctOffsets: 0};
+// A round without typing (`--typing-keys 0`).
+const NO_TYPING = {keys: 0, latencies: [], work: [], stages: {}, damage: {}, requesters: {}, text: null};
 
 export function hostState() {
   const [one, five] = os.loadavg();
@@ -425,11 +440,106 @@ const demoExpression = seconds => `(async () => {
     distinctOffsets: offsets.size, max};
 })()`;
 
+// Frames the settled desktop presents per second, and — from the runtime's
+// own metrics — what each of them repainted and what asked for it: an idle
+// desktop that presents a frame names the widget to fix.
 const idleExpression = seconds => `(async () => {
+  const runtime = ${RUNTIME};
+  runtime.configure_frame_metrics(true); runtime.take_frame_metrics();
   const frames = () => tiloMount.state()?.frames ?? 0, start = performance.now(), from = frames();
   await new Promise(done => setTimeout(done, ${seconds * 1000}));
-  return (frames() - from) / ((performance.now() - start) / 1000);
+  const perS = (frames() - from) / ((performance.now() - start) / 1000);
+  const metrics = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false);
+  const damage = {}, requesters = {};
+  for (const mount of metrics) {
+    for (const what of mount.damage ?? []) damage[what] = (damage[what] ?? 0) + 1;
+    for (const [k, n] of Object.entries(mount.requesters ?? {})) requesters[k] = (requesters[k] ?? 0) + n;
+  }
+  return {perS, damage, requesters};
 })()`;
+
+// Where the notes window's empty state offers New note, or the block editor
+// of the note it already holds, in page pixels. The semantics tree is asked
+// for and waited on, as a reader of the window would see it.
+const noteTargetExpression = kind => `(async () => {
+  const stale = tiloMount.state().semantics;
+  tiloMount.requestSemantics();
+  for (let i = 0; i < 60 && tiloMount.state().semantics === stale; i++) await new Promise(done => setTimeout(done, 50));
+  const canvas = tiloMount.canvas.getBoundingClientRect(), found = {};
+  const page = b => b && (Array.isArray(b)
+    ? {x0: b[0] + canvas.left, y0: b[1] + canvas.top, x1: b[0] + b[2] + canvas.left, y1: b[1] + b[3] + canvas.top}
+    : {x0: b.x0 + canvas.left, y0: b.y0 + canvas.top, x1: b.x1 + canvas.left, y1: b.y1 + canvas.top});
+  const walk = (node, rect) => {
+    if (!node || typeof node !== 'object') return;
+    const access = node.semantics ?? node;
+    const bounds = access.bounds ?? node.rect ?? (rect && {x0: rect[0], y0: rect[1], x1: rect[0] + rect[2], y1: rect[1] + rect[3]});
+    if (${JSON.stringify(kind)} === 'new-note') {
+      if (access.role === 'Button' && access.name === 'New note' && bounds && !found.target) found.target = page(bounds);
+    } else if ((node.widget === 'BlockEditor' || /^notes\\.block-text:/.test(node.semantic_key ?? ''))
+        && bounds && !found.target) {
+      found.target = page(bounds);
+    }
+    for (const child of node.children ?? []) walk(child, child.rect);
+    for (const child of node.semantics?.children ?? []) walk(child);
+  };
+  walk(tiloMount.state()?.semantics?.root);
+  return found.target ?? null;
+})()`;
+
+// Every key the person presses in the page, and every frame it presents
+// while the typing workload runs; the runtime's per-frame stage samples.
+const typingRecorder = `(() => {
+  const host = tiloMount.canvas.parentElement;
+  const typing = globalThis.__typing = {keys: [], frames: []};
+  document.addEventListener('keydown', event => { typing.keys.push(event.timeStamp); }, {capture: true, passive: true});
+  typing.observer = new MutationObserver(() => {
+    if (host.dataset.phase === 'presented') typing.frames.push(performance.now());
+  });
+  typing.observer.observe(host, {attributes: true, attributeFilter: ['data-frames']});
+  return true;
+})()`;
+const typingFinish = `(async () => {
+  const runtime = ${RUNTIME};
+  const typing = globalThis.__typing ?? {keys: [], frames: []};
+  typing.observer?.disconnect();
+  const metrics = JSON.parse(runtime.take_frame_metrics()); runtime.configure_frame_metrics(false);
+  const latency = typing.keys.map(at => {
+    const frame = typing.frames.find(time => time > at);
+    return frame === undefined ? null : frame - at;
+  });
+  const samples = metrics.flatMap(mount => mount.samples);
+  const stages = {};
+  for (const {stage, ms} of samples) { const entry = stages[stage] ??= {n: 0, ms: 0}; entry.n++; entry.ms += ms; }
+  const damages = {}, requesters = {};
+  for (const mount of metrics) {
+    for (const what of mount.damage ?? []) damages[what] = (damages[what] ?? 0) + 1;
+  }
+  for (const mount of metrics) for (const [k, n] of Object.entries(mount.requesters ?? {})) requesters[k] = (requesters[k] ?? 0) + n;
+  // What the note now holds, read from the semantics tree, proves the keys
+  // reached the document and not only the page.
+  const values = [];
+  const walk = node => {
+    if (!node || typeof node !== 'object') return;
+    if (/^notes\\.block-text:/.test(node.semantic_key ?? '') && node.value) values.push(node.value);
+    for (const child of node.children ?? []) walk(child);
+    for (const child of node.semantics?.children ?? []) walk(child);
+  };
+  tiloMount.requestSemantics();
+  for (let i = 0; i < 40; i++) {
+    walk(tiloMount.state()?.semantics?.root);
+    if (values.length) break;
+    await new Promise(done => setTimeout(done, 50));
+  }
+  return {keys: typing.keys.length, latency, work: samples.filter(s => s.stage === 'draw_total').map(s => s.ms),
+    stages, damages, requesters, text: values.join(' ').slice(0, 200)};
+})()`;
+
+// A key event as Chrome sends it for a printable character.
+export function keyEvent(character) {
+  if (character === ' ') return {key: ' ', code: 'Space', windowsVirtualKeyCode: 32};
+  const upper = character.toUpperCase();
+  return {key: character, code: `Key${upper}`, windowsVirtualKeyCode: upper.charCodeAt(0)};
+}
 
 // --- one round ----------------------------------------------------------------
 
@@ -503,6 +613,60 @@ async function measureDemo(page, windows, options, index) {
     measuredBy: demo.measuredBy};
 }
 
+// How fast a person typing quickly sends keys: 20 a second, a fast typist's
+// burst, so a frame that arrives late shows up in the p95.
+const TYPING_INTERVAL_MS = 50;
+const TYPING_TEXT = 'the quick brown fox jumps over the lazy dog';
+
+// A note typed into at TYPING_INTERVAL_MS, each key timed from the page's own
+// key event to the first presented frame after it. The editor is reached the
+// way a person reaches it: New note, then a press in the note's body.
+async function measureTyping(page, windows, options, index) {
+  const notes = windows.find(entry => entry.app === 'so.tilo.notes') ?? windows[0];
+  await page.evaluate(`(async () => { const s = tiloMount.navigation.getSnapshot();
+    await tiloMount.navigation.dispatch({kind: 'select', generation: s.generation, route: ${JSON.stringify(notes.route)}}); return true; })()`);
+  await sleep(1000);
+  const click = async (rect, dx = 0.5, dy = 0.5) => {
+    const x = Math.round(rect.x0 + (rect.x1 - rect.x0) * dx), y = Math.round(rect.y0 + (rect.y1 - rect.y0) * dy);
+    for (const [type, buttons] of [['mousePressed', 1], ['mouseReleased', 0]]) {
+      await page.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', buttons, clickCount: 1});
+    }
+  };
+  const fresh = await page.evaluate(noteTargetExpression('new-note'));
+  if (fresh) {
+    await click(fresh);
+    await sleep(1500);
+  }
+  const editor = await page.evaluate(noteTargetExpression('editor'));
+  if (!editor) throw new Invalid(`round ${index}: the notes window shows no editor to type into`);
+  // A press in the body, on its first line just past the text's left edge:
+  // the caret goes where a person's would.
+  await click({...editor, x0: editor.x0 + 40, y0: editor.y0 + 12}, 0, 0);
+  await sleep(500);
+  await page.evaluate(`(async () => { const runtime = ${RUNTIME}; runtime.configure_frame_metrics(true); runtime.take_frame_metrics(); return true; })()`);
+  await page.evaluate(typingRecorder);
+  const typed = TYPING_TEXT.repeat(Math.ceil(options.typingKeys / TYPING_TEXT.length)).slice(0, options.typingKeys);
+  for (const character of typed) {
+    const event = keyEvent(character);
+    await page.send('Input.dispatchKeyEvent', {type: 'keyDown', text: character, unmodifiedText: character, ...event});
+    await page.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
+    await sleep(TYPING_INTERVAL_MS);
+  }
+  await sleep(300);
+  const typing = await page.evaluate(typingFinish);
+  if (typing.keys !== typed.length) {
+    throw new Invalid(`round ${index}: the page saw ${typing.keys} of the ${typed.length} keys typed`);
+  }
+  const missing = typing.latency.filter(value => value === null).length;
+  if (missing) throw new Invalid(`round ${index}: ${missing} of ${typed.length} keys presented no frame after them`);
+  const text = (typing.text ?? '').replace(/\s+/g, ' ').trim();
+  if (!text.includes(typed.replace(/\s+/g, ' ').trim())) {
+    throw new Invalid(`round ${index}: the note holds "${text}", not what was typed ("${typed}")`);
+  }
+  return {keys: typing.keys, latencies: typing.latency, work: typing.work, stages: typing.stages, damage: typing.damages,
+    requesters: typing.requesters, text};
+}
+
 async function round(browser, url, options, index) {
   const page = await freshPage(browser, options);
   const frameTimeoutMs = options.frameTimeout * 1000;
@@ -560,9 +724,13 @@ async function round(browser, url, options, index) {
 
     await sleep(2000);
     const idle = await page.evaluate(idleExpression(options.idleSeconds));
+    // Typing comes last: a field left focused blinks its caret, which is a
+    // frame a desktop no one is touching is right to present, and the idle
+    // workload is about the frames nothing asks for.
+    const typing = options.typingKeys > 0 ? await measureTyping(page, windows, options, index) : NO_TYPING;
     const resources = await page.evaluate(RESOURCES);
     if (page.errors.length) throw new Invalid(`round ${index}: page exceptions: ${page.errors.slice(0, 3).join(' | ')}`);
-    return {round: index, loadMs: load, adapter, apps, opens, activations, demo, idlePerS: idle, resources};
+    return {round: index, loadMs: load, adapter, apps, opens, activations, typing, demo, idle, resources};
   } finally {
     await page.close().catch(() => {});
   }
@@ -581,7 +749,9 @@ export function summarize(rounds, load = {}) {
     demo_interval_ms: stats(rounds.flatMap(r => r.demo.intervals)),
     demo_work_ms: stats(rounds.flatMap(r => r.demo.work)),
     demo_fps: stats(rounds.map(r => r.demo.fps)),
-    idle_per_s: stats(rounds.map(r => r.idlePerS)),
+    idle_per_s: stats(rounds.map(r => r.idle.perS)),
+    typing_ms: stats(rounds.flatMap(r => r.typing.latencies)),
+    typing_work_ms: stats(rounds.flatMap(r => r.typing.work)),
   };
 }
 
@@ -601,6 +771,35 @@ export function attribute(rounds) {
     busyPercent: seconds ? Math.round(ms / (seconds * 1000) * 1000) / 10 : NaN}));
 }
 
+/** The typing workload's own frame time: its stages per key, and what its frames repainted. */
+export function attributeTyping(rounds) {
+  const keys = rounds.reduce((sum, r) => sum + r.typing.keys, 0);
+  const totals = {}, damages = {};
+  for (const r of rounds) {
+    for (const [stage, {n, ms}] of Object.entries(r.typing.stages)) {
+      const entry = totals[stage] ??= {n: 0, ms: 0};
+      entry.n += n; entry.ms += ms;
+    }
+    for (const [what, n] of Object.entries(r.typing.damage)) damages[what] = (damages[what] ?? 0) + n;
+  }
+  return {keys,
+    stages: Object.entries(totals).sort((a, b) => b[1].ms - a[1].ms).map(([stage, {n, ms}]) => ({stage, n,
+      msPerKey: keys ? Math.round(ms / keys * 1000) / 1000 : NaN})),
+    damage: Object.entries(damages).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([what, n]) => ({what, n}))};
+}
+
+/** What an idle desktop's presented frames repainted, and what asked for them. */
+export function attributeIdle(rounds) {
+  const damage = {}, requesters = {};
+  for (const r of rounds) {
+    for (const [what, n] of Object.entries(r.idle.damage)) damage[what] = (damage[what] ?? 0) + n;
+    for (const [k, n] of Object.entries(r.idle.requesters)) requesters[k] = (requesters[k] ?? 0) + n;
+  }
+  const top = counts => Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 12)
+    .map(([what, n]) => ({what, n}));
+  return {damage: top(damage), requesters: top(requesters)};
+}
+
 export function formatSummary(report) {
   const s = report.summary;
   const row = (name, stat) => `  ${name.padEnd(18)} n ${String(stat.n).padStart(4)}  p50 ${stat.p50}  p95 ${stat.p95}  p99 ${stat.p99}  max ${stat.max}`;
@@ -614,9 +813,22 @@ export function formatSummary(report) {
     row('activate (ms)', s.activate_ms),
     row('demo interval (ms)', s.demo_interval_ms), row('demo work (ms)', s.demo_work_ms), row('demo fps', s.demo_fps),
     row('idle (frames/s)', s.idle_per_s),
+    ...(report.workload.typingKeys > 0
+      ? [row('typing (ms)', s.typing_ms), row('typing work (ms)', s.typing_work_ms)]
+      : []),
     report.attribution.length ? `  demo stages (ms per presented frame, share of wall time): ${report.attribution.slice(0, 8)
       .map(a => `${a.stage} ${a.msPerFrame} (${a.busyPercent}%)`).join(', ')}` : '  demo not run',
   ];
+  if (report.typing && report.typing.stages.length) {
+    lines.push(`  typing stages (ms per key): ${report.typing.stages.slice(0, 8)
+      .map(a => `${a.stage} ${a.msPerKey}`).join(', ')}`);
+    lines.push(`  typing frames repainted: ${report.typing.damage.slice(0, 6)
+      .map(d => `${d.what} (${d.n})`).join(', ')}`);
+  }
+  if (report.idle && (report.idle.damage.length || report.idle.requesters.length)) {
+    lines.push(`  idle frames repainted: ${(report.idle.damage.slice(0, 5).map(d => `${d.what} (${d.n})`).join(', ')) || 'none'}`
+      + `; asked for by ${report.idle.requesters.slice(0, 5).map(d => `${d.what} (${d.n})`).join(', ') || 'nothing'}`);
+  }
   if (report.rounds.some(r => r.demo.measuredBy)) {
     const measuredBy = {};
     for (const r of report.rounds) {
@@ -675,13 +887,16 @@ async function main() {
       load: {bytes: loadBytes.map(t => t.bytes), requests: loadBytes.map(t => t.requests),
         crossOrigin: loadBytes.map(t => t.crossOrigin)},
       workload: {rounds: options.rounds, activations: options.activations, demoSeconds: options.demoSeconds,
-        idleSeconds: options.idleSeconds, cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
-      summary, goals: judgeGoals(summary), attribution: attribute(rounds),
+        idleSeconds: options.idleSeconds, typingKeys: options.typingKeys, typingIntervalMs: TYPING_INTERVAL_MS,
+        cpuThrottle: options.cpuThrottle, apps: rounds[0].apps, inputHz: 120, chromeFlags: flags},
+      summary, goals: judgeGoals(summary), attribution: attribute(rounds), typing: attributeTyping(rounds),
+      idle: attributeIdle(rounds),
       samples: {
         load_ms: rounds.map(r => r.loadMs), open_ms: rounds.flatMap(r => r.opens.map(o => o.ms)),
         open_ready_ms: rounds.flatMap(r => r.opens.map(o => o.readyMs)),
         activate_ms: rounds.flatMap(r => r.activations), demo_interval_ms: rounds.flatMap(r => r.demo.intervals),
-        demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idlePerS),
+        demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idle.perS),
+        typing_ms: rounds.flatMap(r => r.typing.latencies), typing_work_ms: rounds.flatMap(r => r.typing.work),
         transfer_bytes: loadBytes.map(t => t.bytes), request_count: loadBytes.map(t => t.requests),
       },
       rounds: rounds.map(({resources, ...r}) => ({...r, demo: {frames: r.demo.frames, wheels: r.demo.wheels,
