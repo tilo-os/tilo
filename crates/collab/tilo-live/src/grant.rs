@@ -26,7 +26,7 @@
 //! content-key epoch the device sealed under, carried so a relay can refuse a
 //! grant that predates a rotation it has already applied.
 
-use crate::carrier::MAX_GRANT_BYTES;
+use crate::preface::MAX_GRANT_BYTES;
 
 /// The version byte of a native grant.
 pub const NATIVE: u8 = 2;

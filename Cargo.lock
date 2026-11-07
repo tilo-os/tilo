@@ -17767,6 +17767,7 @@ dependencies = [
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
  "tilo-clock",
+ "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-live",
  "tilo-lock",

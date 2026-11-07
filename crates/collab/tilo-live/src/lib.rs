@@ -21,8 +21,9 @@ pub mod tls;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
-/// What a native device presents to be admitted to a scope.
-#[cfg(feature = "relay")]
+/// What a native device presents to be admitted to a scope: the page builds
+/// one over iroh too, so it is here wherever a device can dial.
+#[cfg(any(feature = "relay", feature = "iroh"))]
 pub mod grant;
 
 /// The carrier over a direct iroh connection, beside the browser's
