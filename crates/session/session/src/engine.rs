@@ -986,7 +986,7 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
         workspace_id: WorkspaceId,
     ) -> Result<(), String> {
         tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-            .material(&self.identity)
+            .custody(&self.identity)
             .map(drop)
     }
 
@@ -1024,9 +1024,9 @@ impl tilo_action_broker::owner_commits::OwnerCustody for Engine {
             .ok_or_else(|| format!("{app} is not installed on this device"))?;
         let route =
             tilo_peer_state::owner::ApplicationRecord::declared(app, record, kind, &declared)?;
-        let (_, cert, _, _) =
+        let (cert, _, _) =
             tilo_network_actor::native_ingress::Connect::new(owner.clone(), workspace_id)?
-                .material(&self.identity)?;
+                .custody(&self.identity)?;
         let key = self.identity.device_signing_key.clone();
         owner
             .prepare_application_record(workspace_id, &cert, &key, &route, SystemTime::now())

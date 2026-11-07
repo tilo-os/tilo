@@ -56,9 +56,13 @@ pub enum SendToFocus {
 /// what hit-tests and what assistive technology reads the bounds from.
 #[derive(Clone, Debug, Default)]
 struct Layout {
+    /// The quiet line that names the box.
+    header: Rect,
+    chips: Vec<Rect>,
+    /// Where a chip's × stands, for the chips that carry one.
+    removes: Vec<Option<Rect>>,
     search: Rect,
     rows: Vec<Rect>,
-    chips: Vec<Rect>,
     subjects: Vec<Rect>,
     plus: Rect,
     message: Rect,
@@ -242,7 +246,7 @@ impl SendToBox {
         self.rows.clear();
         self.hovered = None;
         self.answered = false;
-        self.request = crate::shared_selection::search_recipients("");
+        self.ask_search();
         if let Some(text) = draft {
             text.clone_into(&mut self.text);
             self.text_selection = Selection::collapsed(self.text.len());
@@ -348,7 +352,8 @@ impl SendToBox {
         let gap = f64::from(GAP) / 2.0 * scale;
         let results = (self.rows.len().min(MAX_ROWS) as f64) * row;
         pad * 2.0
-            + row // the chips and the search, on one line
+            + self.header_height() // the quiet line naming the box
+            + row // the recipients and the search, on one line
             + if results > 0.0 { gap + results } else { 0.0 }
             + gap
             + row // the subjects
@@ -366,11 +371,25 @@ impl SendToBox {
         f64::from(self.theme.tokens.spacing.s2) * self.text_scale
     }
 
-    /// A line of chips from the box's leading edge, each as wide as its name
-    /// asks, sharing `room` between them when together they ask for more, and
-    /// how far the line reaches. So neither a chip nor the control after it —
-    /// the search, the button that adds a subject — stands past the box.
-    fn chip_row(&self, names: &[String], y: f64, room: f64) -> (Vec<Rect>, f64) {
+    /// The height of the line that names the box: quieter than a row, so the
+    /// recipient chip under it is what the eye lands on.
+    fn header_height(&self) -> f64 {
+        self.row_height() * 0.8
+    }
+
+    /// What a chip asks for: the mark it leads with, its name at half a row a
+    /// letter, and the × that takes it off.
+    fn chip_ask(&self, name: &str, remove: bool) -> f64 {
+        let row = self.row_height();
+        let letters = f64::from(u32::try_from(name.chars().count()).unwrap_or(u32::MAX));
+        row * 0.85 + letters * row * 0.5 + row * 0.8 + if remove { row * 0.6 } else { 0.0 }
+    }
+
+    /// Place chips asking for `asks` from the box's leading edge on line `y`,
+    /// sharing `room` between them when together they ask for more, and how far
+    /// the line reaches. So neither a chip nor the control after it — the
+    /// search, the button that adds a subject — stands past the box.
+    fn lay_chips(&self, asks: &[f64], y: f64, room: f64) -> (Vec<Rect>, f64) {
         let rect = self.rect;
         let row = self.row_height();
         let gap = f64::from(GAP) / 2.0 * self.text_scale;
@@ -380,7 +399,7 @@ impl SendToBox {
         // As many chips as the line holds at its narrowest, so a count that
         // would leave nothing to read does not crowd out the control after it.
         let count = (room / narrowest).floor().max(0.0);
-        let shown = names
+        let shown = asks
             .len()
             .min(usize::try_from(count as u64).unwrap_or(usize::MAX));
         if shown == 0 {
@@ -388,9 +407,8 @@ impl SendToBox {
         }
         let share = ((room - gap * shown as f64) / shown as f64).max(0.0);
         let mut x = start;
-        for name in &names[..shown] {
-            let letters = f64::from(u32::try_from(name.chars().count()).unwrap_or(u32::MAX));
-            let width = (letters * row * 0.5 + row).min(share);
+        for ask in &asks[..shown] {
+            let width = ask.min(share);
             chips.push(Rect::new(x, y, x + width, y + row));
             x += width + gap;
         }
@@ -404,17 +422,43 @@ impl SendToBox {
         let pad = self.padding();
         let gap = f64::from(GAP) / 2.0 * self.text_scale;
         let mut y = rect.y0 + pad;
-        // The recipients' chips, from the leading edge; the search keeps the
-        // rest of the line.
-        let mut chips = Vec::with_capacity(self.to.len());
-        let names: Vec<String> = self
+        let header = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + self.header_height());
+        y += self.header_height();
+        let room = (rect.width() - pad * 2.0).max(0.0);
+        // The recipients' chips, from the leading edge, each with room for the
+        // mark it leads with and the × that takes it off; the search keeps the
+        // rest of the line, enough for what it says when nothing is typed.
+        let removable: Vec<bool> = self
             .to
             .iter()
-            .map(|recipient| recipient.name.clone())
+            .map(|recipient| {
+                !(recipient.kind == RecipientKind::NewAgent
+                    && recipient.name
+                        == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
+            })
             .collect();
-        let (laid, x) = self.chip_row(&names, y, rect.width() - pad * 2.0 - row * 2.5);
-        chips.extend(laid);
-        let search = Rect::new(x.min(rect.x1 - pad), y, rect.x1 - pad, y + row);
+        let asks: Vec<f64> = self
+            .to
+            .iter()
+            .zip(&removable)
+            .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
+            .collect();
+        let search_room = (row * 5.0).min(room * 0.4);
+        let (chips, x) = self.lay_chips(&asks, y, (room - search_room).max(0.0));
+        let removes: Vec<Option<Rect>> = chips
+            .iter()
+            .zip(&removable)
+            .map(|(chip, remove)| {
+                remove.then(|| Rect::new(chip.x1 - row * 0.6, chip.y0, chip.x1, chip.y1))
+            })
+            .collect();
+        let start = (x + gap).max(rect.x0 + pad);
+        let search = Rect::new(
+            start.min(rect.x1 - pad - search_room).max(rect.x0 + pad),
+            y,
+            rect.x1 - pad,
+            y + row,
+        );
         y += row + if self.rows.is_empty() { 0.0 } else { gap };
         let mut rows = Vec::with_capacity(self.rows.len().min(MAX_ROWS));
         for _ in self.rows.iter().take(MAX_ROWS) {
@@ -424,22 +468,29 @@ impl SendToBox {
         y += gap;
         // The subjects share their line with the button that adds one, so both
         // stay inside the box whatever they hold.
-        let labels: Vec<String> = self
+        let asks: Vec<f64> = self
             .subjects
             .iter()
-            .map(|subject| subject_label(subject))
+            .map(|subject| self.chip_ask(&subject_label(subject), false))
             .collect();
-        let (subjects, x) = self.chip_row(&labels, y, rect.width() - pad * 2.0 - row);
-        let plus = Rect::new(x, y, x + row, y + row);
+        let (subjects, x) = self.lay_chips(&asks, y, (room - row).max(0.0));
+        let plus = Rect::new(
+            x.min(rect.x1 - pad - row),
+            y,
+            x.min(rect.x1 - pad - row) + row,
+            y + row,
+        );
         y += row + gap;
         let message = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + row * 2.0);
         y += row * 2.0 + gap;
         let send_width = (row * 3.0).min(rect.width() - pad * 2.0);
         let send = Rect::new(rect.x1 - pad - send_width, y, rect.x1 - pad, y + row);
         Layout {
+            header,
+            chips,
+            removes,
             search,
             rows,
-            chips,
             subjects,
             plus,
             message,
@@ -447,13 +498,19 @@ impl SendToBox {
         }
     }
 
-    /// The recipients `query` finds, asked of the host's one search.
+    /// The recipients `query` finds, asked of the host's one search. An empty
+    /// field asks nothing: what every app holds would answer it, and nothing
+    /// anybody choosing a recipient reads starts with a list of conversations.
     fn ask_search(&mut self) {
         self.answered = false;
         self.rows.clear();
         self.hovered = None;
-        self.request = crate::shared_selection::search_recipients(&self.search);
         self.dirty = true;
+        if self.search.trim().is_empty() {
+            self.layout = self.build_layout();
+            return;
+        }
+        self.request = crate::shared_selection::search_recipients(&self.search);
     }
 
     /// What the box paints has changed, so the window draws another frame.
@@ -553,6 +610,11 @@ impl SendToBox {
         let Some(rows) = crate::shared_selection::take_recipients(self.request) else {
             return false;
         };
+        if self.search.trim().is_empty() {
+            // Answered after the field was cleared: what it found is not what
+            // the person is choosing from now.
+            return false;
+        }
         self.rows = rows;
         self.answered = true;
         self.hovered = (!self.rows.is_empty()).then_some(0);
@@ -582,7 +644,17 @@ impl SendToBox {
             return true;
         }
         if let Some(index) = self.layout.chips.iter().position(|chip| chip.contains(at)) {
-            if index > 0 {
+            // The × takes a chip off; a recipient the person picked goes on a
+            // press anywhere on it, and the agent a message makes stays until
+            // it is taken off by its own ×.
+            let remove = self
+                .layout
+                .removes
+                .get(index)
+                .copied()
+                .flatten()
+                .is_some_and(|remove| remove.contains(at));
+            if remove || index > 0 {
                 self.to.remove(index);
                 self.changed();
                 self.layout = self.build_layout();
@@ -831,16 +903,38 @@ impl SendToBox {
             .ink_dim;
         let ink = tokens.colors.text_primary;
         let inset = f64::from(tokens.spacing.s2);
+        let row = self.row_height();
 
-        // The recipients' chips: the raised well, concentric with the panel.
+        // The quiet line that names the box: whose message this is.
+        let caption = theme.text(TextRole::Caption);
+        let header_label = crate::i18n::I18nManager::lookup_plain("send-to-name");
+        let (_, header_height) = text_renderer.measure_style(&header_label, None, &caption);
+        text_renderer.draw_style(
+            scene,
+            &header_label,
+            dim,
+            transform.pre_translate(Vec2::new(
+                self.layout.header.x0,
+                self.layout.header.y0
+                    + (self.layout.header.height() - f64::from(header_height)) / 2.0,
+            )),
+            None,
+            &caption,
+        );
+
+        // The recipients' chips: each leads with the mark of what it is — the
+        // accent's sparkle for the agent a message makes, their own avatar in
+        // their colour for a person or an agent already here — and carries the
+        // × that takes it off the message.
         for (index, chip) in self.layout.chips.iter().enumerate() {
             let armed = self.focused && self.focus == SendToFocus::Recipients && index == 0;
+            let pill = RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0));
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
                 tokens.colors.surfaces.raised,
                 None,
-                &RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0)),
+                &pill,
             );
             if armed {
                 scene.stroke(
@@ -848,27 +942,61 @@ impl SendToBox {
                     transform,
                     tokens.colors.intent.accent_ink,
                     None,
-                    &RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0)),
+                    &pill,
                 );
             }
-            if let Some(recipient) = self.to.get(index) {
-                let text_x = chip.x0 + inset;
-                let shown = text_renderer.elide_to_width_style(
-                    &recipient.name,
-                    (chip.width() - inset * 2.0).max(1.0) as f32,
-                    &style,
-                );
-                let (_, height) = text_renderer.measure_style(&shown, None, &style);
-                text_renderer.draw_style(
+            let Some(recipient) = self.to.get(index) else {
+                continue;
+            };
+            let mark = row * 0.62;
+            let mark_rect = Rect::from_center_size(
+                (chip.x0 + row * 0.85 - mark / 2.0, chip.center().y),
+                (mark, mark),
+            );
+            if recipient.kind == RecipientKind::NewAgent {
+                crate::icons::draw_icon(
                     scene,
-                    &shown,
-                    ink,
-                    transform.pre_translate(Vec2::new(
-                        text_x,
-                        chip.y0 + (chip.height() - f64::from(height)) / 2.0,
-                    )),
-                    None,
-                    &style,
+                    transform,
+                    mark_rect,
+                    crate::icons::Icon::Sparkles,
+                    tokens.colors.intent.accent_ink,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
+            } else {
+                crate::widget::avatar::AvatarFace::new(&recipient.name, &recipient.id).paint(
+                    &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                    mark_rect,
+                );
+            }
+            let remove = self.layout.removes.get(index).copied().flatten();
+            let text_x = chip.x0 + row * 0.85;
+            let room = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
+            let shown = text_renderer.elide_to_width_style(
+                &recipient.name,
+                (room - text_x - row * 0.1).max(1.0) as f32,
+                &style,
+            );
+            let (_, height) = text_renderer.measure_style(&shown, None, &style);
+            text_renderer.draw_style(
+                scene,
+                &shown,
+                ink,
+                transform.pre_translate(Vec2::new(
+                    text_x,
+                    chip.y0 + (chip.height() - f64::from(height)) / 2.0,
+                )),
+                None,
+                &style,
+            );
+            if let Some(remove) = remove {
+                let side = f64::from(tokens.metrics.icon_sm) * 0.8;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(remove.center(), (side, side)),
+                    crate::icons::Icon::X,
+                    dim,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
@@ -968,8 +1096,9 @@ impl SendToBox {
             let _ = height;
         }
 
-        // The subjects: what the message is about, and the button that adds
-        // what the person has selected now.
+        // The subjects: what the message is about, each led by the glyph of the
+        // app that holds it, and the button that adds what the person has
+        // selected now.
         for (index, chip) in self.layout.subjects.iter().enumerate() {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -979,9 +1108,21 @@ impl SendToBox {
                 &RoundedRect::from_rect(*chip, radius.min(chip.height() / 2.0)),
             );
             if let Some(subject) = self.subjects.get(index) {
+                let mark = row * 0.55;
+                crate::icons::draw_icon(
+                    scene,
+                    transform,
+                    Rect::from_center_size(
+                        (chip.x0 + row * 0.85 - mark / 2.0, chip.center().y),
+                        (mark, mark),
+                    ),
+                    subject_glyph(subject),
+                    dim,
+                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                );
                 let shown = text_renderer.elide_to_width_style(
                     &subject_label(subject),
-                    (chip.width() - inset * 2.0).max(1.0) as f32,
+                    (chip.width() - row * 1.05).max(1.0) as f32,
                     &style,
                 );
                 let (_, height) = text_renderer.measure_style(&shown, None, &style);
@@ -990,7 +1131,7 @@ impl SendToBox {
                     &shown,
                     ink,
                     transform.pre_translate(Vec2::new(
-                        chip.x0 + inset,
+                        chip.x0 + row * 0.85,
                         chip.y0 + (chip.height() - f64::from(height)) / 2.0,
                     )),
                     None,
@@ -1040,9 +1181,9 @@ impl SendToBox {
             QueryInk::of(&tokens.colors),
         );
 
-        // Send: a filled control at the trailing edge, dimmed while there is
-        // nothing to send.
-        let ready = !self.text.trim().is_empty();
+        // Send: the accent once there is something to send, a quiet control
+        // until then.
+        let ready = !self.to.is_empty() && !self.text.trim().is_empty();
         scene.fill(
             vello::peniko::Fill::NonZero,
             transform,
@@ -1171,7 +1312,7 @@ impl SendToBox {
                 .with_bounds(self.layout.send)
                 .with_state(AccessState {
                     focusable: true,
-                    disabled: self.text.trim().is_empty(),
+                    disabled: self.to.is_empty() || self.text.trim().is_empty(),
                     ..Default::default()
                 }),
         ));
@@ -1259,18 +1400,48 @@ impl SendToBox {
     }
 }
 
-/// What a subject chip reads: the words selected, else what the resource is
-/// called, else the item it is.
+/// Whether `line` is the excerpt's own count of what it left out (`- and 3
+/// more`), which names no subject.
+fn is_overflow(line: &str) -> bool {
+    line.strip_prefix("- and ")
+        .and_then(|rest| rest.strip_suffix(" more"))
+        .is_some_and(|count| !count.is_empty() && count.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// What a subject chip reads: the words selected — the first line of them, and
+/// how many more there are — else what the resource is called, else the item it
+/// is.
 #[must_use]
 fn subject_label(subject: &SharedSelection) -> String {
-    if let Some(excerpt) = subject
-        .anchor
-        .excerpt
-        .as_deref()
-        .map(str::trim)
-        .filter(|excerpt| !excerpt.is_empty())
-    {
-        return excerpt.chars().take(48).collect();
+    if let Some(excerpt) = subject.anchor.excerpt.as_deref() {
+        let lines: Vec<String> = excerpt
+            .lines()
+            .map(str::trim)
+            .filter(|line| !is_overflow(line))
+            .map(|line| {
+                line.strip_prefix("- ")
+                    .unwrap_or(line)
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .filter(|line| !line.is_empty())
+            .collect();
+        if let Some(first) = lines.first() {
+            // A list's items are what the selection says it holds; its excerpt
+            // lists as many as it could fit.
+            let more = subject
+                .anchor
+                .items
+                .len()
+                .max(lines.len())
+                .saturating_sub(1);
+            let mut label: String = first.chars().take(48).collect();
+            if more > 0 {
+                label.push_str(&format!(" +{more}"));
+            }
+            return label;
+        }
     }
     if let Some(label) = subject
         .resource
@@ -1287,6 +1458,19 @@ fn subject_label(subject: &SharedSelection) -> String {
         .map(|place| place.item.clone())
         .or_else(|| subject.anchor.items.first().map(|item| item.item.clone()))
         .unwrap_or_default()
+}
+
+/// The glyph a subject chip leads with: the app whose surface holds the
+/// resource the subject names.
+#[must_use]
+fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
+    subject
+        .resource_kind
+        .as_deref()
+        .and_then(|kind| kind.split('.').next())
+        .map_or(crate::icons::Icon::AppWindow, |app| {
+            crate::icons::app_glyph(app, None)
+        })
 }
 
 #[cfg(test)]

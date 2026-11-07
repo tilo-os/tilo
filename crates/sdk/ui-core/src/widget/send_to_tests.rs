@@ -138,8 +138,21 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
 fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    assert!(
+        send_to.rows().is_empty(),
+        "an empty recipient field shows nobody to choose from"
+    );
+    assert!(
+        crate::shared_selection::take_recipient_searches().is_empty(),
+        "and asks the search nothing until the person types"
+    );
+    send_to.focus_first();
+    type_text(&mut send_to, "a");
+    let (request, _) = crate::shared_selection::take_recipient_searches()
+        .pop()
+        .expect("the box asked the search");
     crate::shared_selection::answer_recipients(
-        send_to.request,
+        request,
         vec![
             Recipient::found(RecipientKind::Agent, "agent:7", "Ada").with_detail("agent"),
             Recipient::found(RecipientKind::Person, "person:ada", "Ada Lovelace"),
@@ -189,7 +202,7 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
     // Typing asks the one search for what matches, and the answer is what
     // the rows show.
     send_to.focus_first();
-    type_text(&mut send_to, "ad");
+    type_text(&mut send_to, "d");
     assert!(
         send_to.rows().is_empty(),
         "what was found for an earlier query is not what this one finds"
@@ -217,6 +230,58 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
         send_to.focus(),
         SendToFocus::Message,
         "Shift with Tab steps back to the message"
+    );
+}
+
+#[test]
+fn a_recipient_chip_leads_with_what_it_is_and_carries_the_x_that_takes_it_off() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    assert_eq!(send_to.layout.chips.len(), 1, "the agent a message makes");
+    assert!(
+        send_to.layout.removes[0].is_none(),
+        "the default recipient stays: the box always has somewhere to send"
+    );
+
+    // A name typed into the field makes an agent of that name, which is not
+    // the default and comes off by its ×.
+    send_to.focus_first();
+    type_text(&mut send_to, "Ada's agent");
+    let _ = crate::shared_selection::take_recipient_searches();
+    send_to.pick_or_name();
+    assert_eq!(send_to.recipients().len(), 1);
+    assert_eq!(send_to.recipients()[0].kind, RecipientKind::NewAgent);
+    assert_eq!(send_to.recipients()[0].name, "Ada's agent");
+    let remove = send_to.layout.removes[0].expect("an agent made by name is taken off");
+    assert!(send_to.press(remove.center()), "the × is in the box");
+    assert!(
+        send_to.recipients().is_empty(),
+        "the chip is off the message, and the box asks whom it goes to"
+    );
+}
+
+#[test]
+fn a_subject_chip_reads_what_was_chosen_without_the_marks_of_a_list() {
+    let one =
+        SharedSelection::of_items([("row-1", "#1  Ship the release")]).in_kind("tasks.tracker");
+    assert_eq!(
+        subject_label(&one),
+        "#1 Ship the release",
+        "the chip reads the task, not the list's bullet"
+    );
+    assert_eq!(
+        subject_glyph(&one),
+        crate::icons::Icon::ListChecks,
+        "and leads with the glyph of the app that holds it"
+    );
+
+    let many =
+        SharedSelection::of_items([("row-1", "#1  Ship the release"), ("row-2", "#2  Tell Ada")])
+            .in_kind("tasks.tracker");
+    assert_eq!(
+        subject_label(&many),
+        "#1 Ship the release +1",
+        "the rest of the selection is counted, not spelled out"
     );
 }
 
