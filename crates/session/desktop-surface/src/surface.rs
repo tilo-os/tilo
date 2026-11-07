@@ -1217,6 +1217,7 @@ impl DesktopSurface {
     /// windows where they are.
     fn sync_floats(&mut self) {
         let shown = self.shown;
+        let mut returning = None;
         for (strip, row) in &mut self.rows {
             let floats = if Some(*strip) == shown {
                 floats::floats_of(
@@ -1227,7 +1228,26 @@ impl DesktopSurface {
             } else {
                 HashMap::new()
             };
+            // A window the record put back in its strip after floating is
+            // the one the person just snapped back: its strip brings it into
+            // view as it does a window that opens or takes the focus, or the
+            // window lands where the pan left the strip rather than where it
+            // stood when it was lifted.
+            let back = row
+                .floats()
+                .keys()
+                .find(|group| !floats.contains_key(group))
+                .copied();
             row.set_floats(floats);
+            if Some(*strip) == shown
+                && let Some(group) = back
+                && !row.is_floating(group)
+            {
+                returning = Some((*strip, group));
+            }
+        }
+        if self.reveal.is_none() {
+            self.reveal = returning;
         }
     }
 

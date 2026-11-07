@@ -47,7 +47,19 @@ impl GroupRow {
     /// Show the windows of `floats` at their rects, in the surface's
     /// coordinates, and every other window in its strip. A window that
     /// leaves the set is back in the strip.
-    pub fn set_floats(&mut self, floats: HashMap<u64, Rect>) {
+    pub fn set_floats(&mut self, mut floats: HashMap<u64, Rect>) {
+        // A float the hand is carrying owns where it stands until it is let
+        // go: the record catches up then, not under the hand.
+        let carried = self
+            .group_drag
+            .filter(|drag| drag.moved)
+            .map(|drag| drag.group_id)
+            .and_then(|id| self.floats.get(&id).map(|at| (id, *at)));
+        if let Some((id, at)) = carried
+            && floats.contains_key(&id)
+        {
+            floats.insert(id, at);
+        }
         if self.floats == floats {
             return;
         }
