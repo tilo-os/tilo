@@ -1245,10 +1245,10 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     capture(&mut app, "workspace-settings-agent-review-limit");
     press(&mut app, "ws-agent-back");
     settle(&mut session, &mut app);
+    let row = listed_agent(&session, "analyst");
     assert_eq!(
-        listed_agent(&session, "analyst").status,
-        "Kept by you · $0 of $5 today",
-        "the row counts the day against what the keeper allows, beside who keeps it"
+        row.spend, "$0 of $5 today",
+        "the row counts the day against what the keeper allows, under who keeps it"
     );
     capture(&mut app, "workspace-settings-agents-spend");
     let held = held_agents(&mut session, &home, &workspace, |held| {

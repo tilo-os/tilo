@@ -1518,6 +1518,13 @@ impl ListRow {
         self
     }
 
+    /// See [`ListRowFace::note`].
+    #[must_use]
+    pub fn note(mut self, text: impl Into<String>) -> Self {
+        self.note = Some(text.into());
+        self
+    }
+
     /// See [`ListRowFace::meta`].
     #[must_use]
     pub fn meta(mut self, text: impl Into<String>) -> Self {

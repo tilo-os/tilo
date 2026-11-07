@@ -183,10 +183,8 @@ impl Agents {
                     name: agent.name.clone(),
                     colour: agent.slot(),
                     mine,
-                    status: subtitle(
-                        keeper_line(names, workspace, record, &agent.keeper),
-                        spend_line(agent),
-                    ),
+                    status: keeper_line(names, workspace, record, &agent.keeper),
+                    spend: spend_line(agent),
                     model: model_line(&config, &agent.id.0, agent.model.as_deref()),
                 }
             })
@@ -751,19 +749,6 @@ fn limit_of(
         placeholder: t("workspace-settings-agent-limit-placeholder"),
         set: t("workspace-settings-agent-limit-set"),
         can_choose: keeps,
-    }
-}
-
-/// What an agent's row says under its name: who keeps it, and what it spent
-/// of the day its keeper allows where there is a day to read.
-fn subtitle(status: String, spend: String) -> String {
-    if spend.is_empty() {
-        status
-    } else {
-        t_args(
-            "workspace-settings-agent-subtitle",
-            &[("status", status.into()), ("spend", spend.into())],
-        )
     }
 }
 

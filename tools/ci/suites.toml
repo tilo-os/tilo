@@ -752,12 +752,13 @@ readers = [
 package = "tilolang-cli"
 # The build tests build and sign copies of the built-in packages, the native types test
 # describes Chat and Tasks from their sources, and the layout check's own tests lay out the
-# shell's traditional desktop from its sources; the dev test builds generations of Counter.
-# The copy they all stage from is `tests/support`, which names the packages' directory.
+# shell's traditional desktop, and its windows, from its sources; the dev test builds
+# generations of Counter. The copy they all stage from is `tests/support`, which names the
+# packages' directory.
 inputs = ["apps/chat/", "apps/tl/"]
 readers = [
   "crates/lang/tilolang-cli/src/layout_check/stage.rs",
-  "crates/lang/tilolang-cli/src/layout_check.rs",
+  "crates/lang/tilolang-cli/src/layout_check/windows.rs",
   "crates/lang/tilolang-cli/tests/support/mod.rs",
   "crates/lang/tilolang-cli/tests/native_types.rs",
   "crates/lang/tilolang-cli/tests/check.rs",
@@ -909,10 +910,11 @@ readers = [
 package = "tilo-relay"
 # A workspace's bot runner is tested with the Discord bridge's program as it
 # ships, the import it plans resuming after the workspace refused part of a run.
-inputs = ["apps/discord/bridge/program.json"]
+inputs = ["apps/discord/bridge/program.json", "apps/notes/surface.toml"]
 readers = [
   "crates/hosting/tilo-relay/src/room_bots/tests.rs",
   "crates/hosting/tilo-relay/tests/governed_rooms/app_push.rs",
+  "crates/hosting/tilo-relay/tests/surface_content.rs",
 ]
 
 [[cargo]]
@@ -1494,8 +1496,8 @@ readers = [
 package = "tilo-browser-peer"
 # The actual microphone fixture serves the production web modules to
 # Chromium and carries the page's pictures to a native participant of its call.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh"]
-readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs"]
+inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml"]
+readers = ["crates/browser/tilo-browser-peer/tests/voice_browsers.rs", "crates/browser/tilo-browser-peer/tests/headless_audio_lifetime.rs", "crates/browser/tilo-browser-peer/tests/surface_by_hash.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo]]

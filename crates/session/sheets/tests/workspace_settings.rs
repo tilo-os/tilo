@@ -498,11 +498,11 @@ fn a_review_asks_for_answers_models_and_resets_by_key() {
 fn an_agents_day_is_read_on_its_row_and_set_in_its_review() {
     let (mut app, _) = seated("agents");
     assert!(
-        says(&mut app, "Kept by you · $0.42 of $5 today"),
-        "the row counts the day on its line under the name, where who keeps it reads"
+        says(&mut app, "$0.42 of $5 today"),
+        "the row counts the day on its line under the name, under who keeps it"
     );
     assert!(
-        says(&mut app, "Kept by Ada · $1.20 today"),
+        says(&mut app, "$1.20 today"),
         "an unmetered agent says what it spent on that line too"
     );
 
