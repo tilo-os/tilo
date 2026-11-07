@@ -36,6 +36,8 @@ serde_json.workspace = true
 # A member role maps onto the collaboration role.
 collab-types = { version = "0.1.0", path = "../collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../tilo-user-identity" }
+# A sealed invitation is an at-rest envelope under the key its link carries.
+tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 # Why a delegation is not usable.
 thiserror.workspace = true
 

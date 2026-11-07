@@ -231,6 +231,7 @@ async fn no_route_hands_a_page_the_keys_of_a_channels_record() {
         fetch: None,
         live: None,
         page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -314,6 +315,7 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
         fetch: None,
         live: None,
         page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -425,6 +427,167 @@ async fn the_public_directory_answers_any_site_and_a_full_door_says_when() {
     );
     let (status, head, _) = exchange(addr, &head, b"not json").await;
     assert_eq!(status, 204, "{head}");
+
+    serving.abort();
+    crate::daemon::Relay::shutdown(relay).await;
+}
+
+/// The shelf answers a site's own `/i/<handle>`: an inviter leaves sealed
+/// bytes, a redeemer fetches exactly those, and the inviter takes them back.
+/// The site reads no key, because no request carries one.
+#[tokio::test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay holds the shelf until it shuts down at the end"
+)]
+async fn a_sealed_invitation_is_left_fetched_and_taken_back() {
+    use tilo_relay_protocol::sealed_invitations::{Fetched, Stored, TakeBack};
+
+    let root = SigningKey::from_bytes(&[131; 32]);
+    let (host_key, host) = device(
+        &root,
+        132,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = Relay::start_with_relay_mode(
+        RelayConfig {
+            state_root: state.path().into(),
+            ..Default::default()
+        },
+        crate::daemon::RelayIdentity {
+            user_public_key: host.user_public_key,
+            device_signing_key: host_key,
+            device_cert: host.clone(),
+            revocations: RevocationList::new(),
+        },
+        iroh::RelayMode::Disabled,
+    )
+    .await
+    .unwrap();
+    let sessions = Sessions::new(relay.web_context().clone());
+    let web = Arc::new(Web {
+        sessions,
+        host_info: HostInfo {
+            host_cert: host.clone(),
+        },
+        allowed_origins: vec![],
+        features: 0,
+        workspaces: relay.workspaces().cloned(),
+        envelopes: envelopes::Envelopes::new(relay.state_root().join("envelopes")),
+        profiles: envelopes::Envelopes::of(
+            envelopes::Kind::Profile,
+            relay.state_root().join("profiles"),
+        ),
+        here: Arc::new(here::Here::new(None)),
+        country: None,
+        fetch: None,
+        live: None,
+        page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
+    });
+    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+        .await
+        .unwrap();
+    let addr = listener.local_addr().unwrap();
+    let serving = tokio::spawn(plain_accept_loop(listener, web));
+
+    let handle = "abcdefghijklmnop";
+    let delete = "a".repeat(43);
+    let sealed = "c2VhbGVkIGludml0YXRpb24";
+    let stored = serde_json::to_vec(&Stored {
+        sealed: sealed.to_owned(),
+        expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+        delete: delete.clone(),
+    })
+    .unwrap();
+    // Below the site's own path, as `entry.json` names it, and with no
+    // credentials: the inviter's device signs nothing at the site.
+    let head = format!(
+        "POST /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        stored.len()
+    );
+    let (status, head, _) = exchange(addr, &head, &stored).await;
+    assert_eq!(status, 204, "{head}");
+    assert_eq!(
+        header_value(&head, "access-control-allow-origin"),
+        Some("*"),
+        "any site's page may leave one"
+    );
+
+    let (status, head, body) = exchange(
+        addr,
+        &format!(
+            "GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\n\r\n"
+        ),
+        b"",
+    )
+    .await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        header_value(&head, "content-type"),
+        Some("application/json")
+    );
+    let fetched: Fetched = serde_json::from_slice(&body).unwrap();
+    assert_eq!(fetched.sealed, sealed);
+    assert!(
+        !String::from_utf8_lossy(&body).contains(&delete),
+        "the site gives back no delete secret"
+    );
+
+    // A preflight from a page on another site.
+    let (status, head, _) = exchange(
+        addr,
+        &format!(
+            "OPTIONS /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nOrigin: https://app.example\r\nAccess-Control-Request-Method: DELETE\r\n\r\n"
+        ),
+        b"",
+    )
+    .await;
+    assert_eq!(status, 204, "{head}");
+    assert!(
+        header_value(&head, "access-control-allow-methods")
+            .unwrap_or_default()
+            .contains("delete"),
+        "{head}"
+    );
+
+    // A stranger holding the link can fetch, but takes nothing back.
+    let wrong = serde_json::to_vec(&TakeBack {
+        delete: "b".repeat(43),
+    })
+    .unwrap();
+    let head = format!(
+        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        wrong.len()
+    );
+    let (status, head, _) = exchange(addr, &head, &wrong).await;
+    assert_eq!(status, 403, "{head}");
+
+    let right = serde_json::to_vec(&TakeBack {
+        delete: delete.clone(),
+    })
+    .unwrap();
+    let head = format!(
+        "DELETE /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+        right.len()
+    );
+    let (status, head, _) = exchange(addr, &head, &right).await;
+    assert_eq!(status, 204, "{head}");
+
+    // The link now names an invitation that is gone, and says so.
+    let (status, head, body) = exchange(
+        addr,
+        &format!("GET /i/{handle} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"),
+        b"",
+    )
+    .await;
+    assert_eq!(status, 410, "{head}");
+    assert!(
+        String::from_utf8_lossy(&body).contains("gone"),
+        "the refusal says the invitation is gone: {}",
+        String::from_utf8_lossy(&body)
+    );
 
     serving.abort();
     crate::daemon::Relay::shutdown(relay).await;
@@ -669,6 +832,7 @@ async fn the_fetch_proxy_answers_admitted_people_and_refuses_everyone_else() {
         ),
         live: None,
         page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -975,6 +1139,7 @@ async fn a_pages_live_grant_is_issued_to_an_admitted_device_and_cut_on_removal()
         fetch: None,
         live: Some(Arc::new(live)),
         page_errors: page_errors::PageErrors::default(),
+        shelf: shelf::Shelf::default(),
     });
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await

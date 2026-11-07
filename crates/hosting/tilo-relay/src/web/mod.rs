@@ -20,6 +20,7 @@ mod here;
 pub mod install;
 mod page_errors;
 mod sessions;
+mod shelf;
 #[cfg(test)]
 mod tests;
 mod tls;
@@ -197,6 +198,9 @@ struct Web {
     live: Option<Arc<wt::Live>>,
     /// The page errors the door logs.
     page_errors: page_errors::PageErrors,
+    /// The sealed invitations this site keeps in place of their clerk: what a
+    /// short link names, in bytes the site has no key for.
+    shelf: shelf::Shelf,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -356,6 +360,7 @@ impl Relay {
             fetch: fetch.proxy,
             live: Some(Arc::new(live)),
             page_errors: page_errors::PageErrors::default(),
+            shelf: shelf::Shelf::default(),
         });
         let mut tasks = live_tasks;
         tasks.extend(fetch.metrics);
@@ -764,6 +769,14 @@ async fn handle(web: &Web, request: Request<hyper::body::Incoming>) -> Response<
         .is_some_and(|route| route == protocol::FETCH_PATH)
     {
         return fetch::handle(web, request).await;
+    }
+    // A sealed invitation is fetched and taken back with their own methods,
+    // so the shelf answers before the POST-only gate.
+    if let Some(handle) = tilo_relay_protocol::sealed_invitations::handle_of(request.uri().path()) {
+        let handle = handle.to_owned();
+        let mut response = shelf::handle(web, request, &handle).await;
+        shelf::cors(&mut response);
+        return response;
     }
     let origin = request.headers().get(header::ORIGIN).cloned();
     let public = public_directory_route(request.uri().path());

@@ -23,6 +23,8 @@ pub mod invitations;
 /// keeps the bytes its device signed, so a build that reads a record written
 /// then needs the layout that record is in.
 pub mod previous;
+/// A link that carries an invitation's place and key, not its kilobytes.
+pub mod sealed;
 pub mod task_delegation;
 
 use base64::Engine as _;

@@ -15,6 +15,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tilo_relay_protocol::metrics::WorkspaceEgress;
+use tilo_relay_protocol::sealed_invitations as SealedInvitations;
 use tilo_relay_protocol::{
     ComputeAccelerator, DeviceMeshProfile, DeviceRole, HomePeerRegistration, MetricsSnapshot,
     PowerAvailability, ProcessLease, RelayConfig, ReplicationIntent, ReplicationResource,
@@ -204,6 +205,30 @@ fn json_encodings_are_pinned() {
         &ProcessLease::from_parts(4242, 987_654_321),
         r#"{"pid":4242,"start_time":987654321}"#,
     );
+
+    // The shelf a site keeps sealed invitations on.
+    let stored = SealedInvitations::Stored {
+        sealed: "c2VhbGVk".to_string(),
+        expires_at_ns: 1_700_000_000_000_000_000,
+        delete: "ZGVsZXRl".to_string(),
+    };
+    assert_json(
+        &stored,
+        r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl"}"#,
+    );
+    assert_json(
+        &SealedInvitations::Fetched {
+            sealed: "c2VhbGVk".to_string(),
+        },
+        r#"{"sealed":"c2VhbGVk"}"#,
+    );
+    assert_json(
+        &SealedInvitations::TakeBack {
+            delete: "ZGVsZXRl".to_string(),
+        },
+        r#"{"delete":"ZGVsZXRl"}"#,
+    );
+    assert!(serde_json::from_str::<SealedInvitations::Stored>(r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","extra":1}"#).is_err());
 }
 
 // Same variants, in the same order, as `ReplicationResource`.

@@ -22749,6 +22749,7 @@ dependencies = [
  "serde_bytes",
  "serde_json",
  "thiserror 2.0.21",
+ "tilo-seal",
  "tilo-user-identity",
  "uuid",
  "workspace-hack",
