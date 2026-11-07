@@ -67,7 +67,10 @@
 		handle @shelf {
 			reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
 		}
-		handle {
+		# The route keeps the order written here: as the handles it would be
+		# sorted, and the rewrite to the entry page would run before the
+		# prefix came off, leaving a path no file has.
+		route {
 			uri strip_prefix /i
 			root * /srv/tilo-web
 			header Cache-Control "no-cache"
