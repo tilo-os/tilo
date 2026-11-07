@@ -13,21 +13,46 @@
 # repository files.
 set -euo pipefail
 repos=${1:-/etc/yum.repos.d}
-# Four, in the order dnf tries them until one answers: ftp.fau.de, and Fedora's
-# own master (dl.fedoraproject.org) where a download from it fails, so one mirror
+release=$(. /etc/os-release && printf '%s' "$VERSION_ID")
+arch=$(uname -m)
+# A release Fedora still serves is under /pub/fedora/linux on its mirrors; one
+# that has gone end of life moves to /pub/archive/fedora/linux, where the
+# builder images' older releases are. Ask once, for this image's own release,
+# which of the two holds it, so a build follows one list and not a list per
+# location: dnf tries every baseurl of a repository before failing, and a
+# wrong one answers 404 to every request.
+current="https://ftp.fau.de/fedora/linux https://dl.fedoraproject.org/pub/fedora/linux"
+archived="https://archives.fedoraproject.org/pub/archive/fedora/linux https://dl.fedoraproject.org/pub/archive/fedora/linux"
+reaches() {
+  local base
+  for base in $1; do
+    curl -fs -I --max-time 15 -o /dev/null \
+      "$base/releases/$release/Everything/$arch/os/repodata/repomd.xml" && return 0
+  done
+  return 1
+}
+if reaches "$current"; then
+  bases=$current
+elif reaches "$archived"; then
+  bases=$archived
+else
+  echo "configure-fedora-mirrors: no Fedora mirror answered for release $release ($arch):" >&2
+  echo "  $current" >&2
+  echo "  $archived" >&2
+  exit 1
+fi
+# Two hosts from that list, in the order dnf tries them until one answers: the
+# second carries a release where a download from the first fails, so one mirror
 # throttling or resetting connections does not fail the build ("All mirrors were
-# tried"); then the same two under /pub/archive, where a release moves when it
-# goes end of life — the builder images pin older releases than the base, and a
-# current mirror has no directory for those. RPM signatures still provide the
-# authenticity check.
-archive=https://archives.fedoraproject.org/pub/archive/fedora/linux
-archive_master=https://dl.fedoraproject.org/pub/archive/fedora/linux
+# tried"). RPM signatures still provide the authenticity check.
+first=${bases%% *}
+second=${bases#* }
 sed -i \
-  -e "s|^#baseurl=http://download.example/pub/fedora/linux/releases/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/releases/\1 https://dl.fedoraproject.org/pub/fedora/linux/releases/\1 $archive/releases/\1 $archive_master/releases/\1|" \
+  -e "s|^#baseurl=http://download.example/pub/fedora/linux/releases/\(.*\)$|baseurl=$first/releases/\1 $second/releases/\1|" \
   -e '/^metalink=.*repo=fedora-/s/^/#/' \
   "$repos/fedora.repo"
 sed -i \
-  -e "s|^#baseurl=http://download.example/pub/fedora/linux/updates/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/updates/\1 https://dl.fedoraproject.org/pub/fedora/linux/updates/\1 $archive/updates/\1 $archive_master/updates/\1|" \
+  -e "s|^#baseurl=http://download.example/pub/fedora/linux/updates/\(.*\)$|baseurl=$first/updates/\1 $second/updates/\1|" \
   -e 's|/Everything/SRPMS/|/Everything/source/tree/|g' \
   -e '/^metalink=.*repo=updates-/s/^/#/' \
   "$repos/fedora-updates.repo"
