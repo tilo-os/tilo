@@ -250,8 +250,8 @@ fn details_name(section: QsSection) -> String {
     })
 }
 
-/// A row under the tiles: it opens its section's page, or (the
-/// notifications) their page.
+/// A row under the tiles: it opens its section's page, or, for the
+/// notifications, the desk's centre — the one list.
 fn root_row(cx: &ViewCx<QuickSettings>, face: &crate::faces::RowFace) -> Element {
     let mut row = ListRow::new(face.id(), &face.title).icon(face.icon);
     if let Some(detail) = &face.detail {

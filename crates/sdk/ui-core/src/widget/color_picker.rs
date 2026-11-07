@@ -996,6 +996,8 @@ impl ColorPicker {
 }
 
 impl Widget for ColorPicker {
+    crate::described!();
+
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         self.dirty = true;
         if let Some(binding) = &mut self.local_state

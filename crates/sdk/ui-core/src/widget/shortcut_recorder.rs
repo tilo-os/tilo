@@ -202,6 +202,8 @@ impl ShortcutRecorder {
 const CAPTURE_PROMPT: &str = "Type a shortcut";
 
 impl Widget for ShortcutRecorder {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {

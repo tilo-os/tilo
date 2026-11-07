@@ -57,6 +57,12 @@ tilo_automerge_isolate::test_worker!();
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
+/// The origin the deployment's ingress publishes for the room: what its pages
+/// and its links name. On this machine it is the address the room is reached
+/// at, because the room publishes its live plane at that origin's host and the
+/// port it bound, and the member's page dials it there.
+const ORIGIN: &str = "https://127.0.0.1";
+
 /// A room service as its deployment runs it: `tilo-relay room --persistent`
 /// with the deployment's own routes beside it, spoken to over its stdin as the
 /// operator (whose input a deployment leaves closed).
@@ -98,9 +104,6 @@ impl Room {
         let owner = ed25519_dalek::SigningKey::from_bytes(&random_key());
         let root_file = state.path().join("root");
         std::fs::write(&root_file, hex::encode(owner.to_bytes())).expect("the owner root");
-        // The ports the deployment publishes, taken for this room the way the
-        // deployment publishes them.
-        let ports = ports();
         let entrypoint = entrypoint();
         let mut command = Command::new("sh");
         command
@@ -112,9 +115,12 @@ impl Room {
             .env("TILO_ROOMS_PERSISTENT", "lounge")
             .env("TILO_ROOMS_NAME", "Lounge")
             .env("TILO_ROOMS_ADMISSION", "invite")
-            .env("TILO_ROOMS_RELAY_ORIGIN", &ports.origin)
-            .env("TILO_ROOMS_PUBLIC_API", &ports.origin)
-            .env("TILO_ROOMS_LIVE_ORIGIN", &ports.live_origin)
+            // The origin the ingress publishes. The listeners below stand
+            // where it forwards to, each on a port the kernel picks: the
+            // plain one's is announced once the room has bound it, and the
+            // live plane's is the room's own origin host and that port.
+            .env("TILO_ROOMS_RELAY_ORIGIN", ORIGIN)
+            .env("TILO_ROOMS_PUBLIC_API", ORIGIN)
             .env("TILO_ROOMS_WEB_ENTRY", "https://tilo.coffee/")
             .env(
                 "TILO_ROOMS_SITE_ORIGINS",
@@ -123,15 +129,14 @@ impl Room {
             .env("TILO_ROOMS_ROOT_FILE", &root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
             .env("TILO_ROOMS_WAIT_LIST_MAX", "16")
-            // The listeners, on loopback: the deployment's ports narrowed to
-            // this machine.
+            // The listeners, on loopback, each on a port the kernel picks as
+            // it binds: two rooms on one machine take the ports they are
+            // given, and the room announces the ones it bound.
             .env("TILO_ROOMS_STATE", state.path().join("tilo-rooms"))
-            .env(
-                "TILO_ROOMS_RELAY_PLAIN",
-                format!("127.0.0.1:{}", ports.relay),
-            )
-            .env("TILO_ROOMS_LIVE", format!("127.0.0.1:{}", ports.live))
-            .env("TILO_ROOMS_HTTP", format!("127.0.0.1:{}", ports.http))
+            .env("TILO_ROOMS_WEB", "127.0.0.1:0")
+            .env("TILO_ROOMS_RELAY_PLAIN", "127.0.0.1:0")
+            .env("TILO_ROOMS_LIVE", "127.0.0.1:0")
+            .env("TILO_ROOMS_HTTP", "127.0.0.1:0")
             // The room's state volume, where the host keeps its secrets.
             .env("TILO_SECRETS_DIR", state.path().join("tilo-rooms/secrets"))
             .env("TILO_RELAY_LOG", "warn")
@@ -163,12 +168,12 @@ impl Room {
         };
         let OperatorEvent::Started {
             workspace: Some(workspace),
+            plain_origin: Some(plain),
             ..
         } = started
         else {
-            panic!("a persistent room announces its workspace");
+            panic!("a persistent room announces its workspace and its plain listener: {started:?}");
         };
-        let plain = format!("http://127.0.0.1:{}", ports.relay);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -206,53 +211,6 @@ impl Room {
             DeviceCapabilities::member(),
         );
         Member { key, cert }
-    }
-}
-
-/// The ports the deployment publishes, on this machine: the relay the ingress
-/// forwards to (9780), the live plane (UDP 9781) and the deployment's routes
-/// (8790).
-struct Ports {
-    relay: u16,
-    live: u16,
-    http: u16,
-    /// `https://` origins the ingress publishes them at.
-    origin: String,
-    live_origin: String,
-}
-
-/// The deployment's own ports on this machine, from the number the deployment
-/// publishes: the first free one up from it, so two rooms on one machine are
-/// apart while each stands where the ingress expects.
-fn ports() -> Ports {
-    // A port that was free when it was looked at is held until every one is
-    // chosen: two listeners that both find the deployment's first port taken
-    // would otherwise be handed the same one, and the room fails to bind.
-    let mut held: Vec<(std::net::TcpListener, std::net::UdpSocket)> = Vec::new();
-    let mut free = |wanted: u16| -> u16 {
-        (wanted..wanted.saturating_add(200))
-            .find(|port| {
-                let Ok(tcp) = std::net::TcpListener::bind(("127.0.0.1", *port)) else {
-                    return false;
-                };
-                let Ok(udp) = std::net::UdpSocket::bind(("127.0.0.1", *port)) else {
-                    return false;
-                };
-                held.push((tcp, udp));
-                true
-            })
-            .expect("a free loopback port in the deployment's range")
-    };
-    let relay = free(9780);
-    let live = free(9781);
-    let http = free(8790);
-    drop(held);
-    Ports {
-        relay,
-        live,
-        http,
-        origin: format!("https://127.0.0.1:{relay}"),
-        live_origin: format!("https://127.0.0.1:{live}"),
     }
 }
 

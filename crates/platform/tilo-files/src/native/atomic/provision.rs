@@ -1,4 +1,4 @@
-//! Unix trusted-host directory admission and complete leaf-to-root commit.
+//! Unix trusted-host directory admission and commit of the held prefix-to-leaf chain.
 use crate::native::atomic::{FileIdentity, Privacy, StorageDirectory, native};
 use std::{
     error::Error,
@@ -112,7 +112,8 @@ pub fn directory_state(error: &io::Error) -> Option<DirectoryState> {
         .map(ProvisionError::state)
 }
 
-/// Create/admit the whole directory chain, then fsync every held node leaf-to-`/`.
+/// Create/admit the directory chain under its deepest existing prefix, then
+/// fsync that prefix and every node created below it.
 ///
 /// Existing host aliases are admitted by canonicalization and forward held
 /// lookup; missing suffixes must contain only normal components. An unresolved
@@ -121,7 +122,9 @@ pub fn directory_state(error: &io::Error) -> Option<DirectoryState> {
 /// mount topology and ACL stability. `OwnerOnly` validates newly created/adopted
 /// suffix components and the requested leaf, not existing traversal ancestors;
 /// no permissions are repaired. Permission admission is not storage qualification.
-/// Every fresh call repeats all barriers, including already-existing ancestors.
+/// Every fresh call repeats all barriers, including already-existing nodes below
+/// the prefix; ancestors of the prefix are reached but not opened, so a caller
+/// granted the prefix but not its ancestors provisions.
 pub fn provision_directory(
     path: &Path,
     privacy: Privacy,
@@ -160,8 +163,8 @@ pub fn provision_directory(
     }
 }
 
-/// The chain always holds `/` once preparation succeeds; losing it is a bug,
-/// reported as data corruption rather than a panic.
+/// The chain always holds at least one node once preparation succeeds; losing it
+/// is a bug, reported as data corruption rather than a panic.
 fn lost_node() -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidData,
@@ -197,22 +200,74 @@ impl Chain {
         privacy
     }
     fn prepare(&mut self, state: &mut DirectoryState) -> io::Result<()> {
-        self.prepare_mode(state, false)
-    }
-    fn prepare_mode(&mut self, state: &mut DirectoryState, existing_only: bool) -> io::Result<()> {
         if self.requested.as_os_str().is_empty() {
             return Err(invalid("empty directory request"));
         }
         if !self.requested.is_absolute() {
             self.requested = std::env::current_dir()?.join(&self.requested);
         }
+        if self.existing_only {
+            return self.admit_existing_chain();
+        }
+        let (root, suffix) = self.missing_suffix()?;
+        // The chain starts at the deepest prefix that exists: that is the root
+        // this call may create under. Nothing above it is opened, so a caller
+        // that can reach the root but not its ancestors — a sandbox granted
+        // the directories its launch uses — still provisions, and the commit
+        // syncs the root and what this call created, never `/`.
+        let directory = native::Directory::open(&root)?;
+        if suffix.is_empty() {
+            // The request names a directory that is already there: it is the
+            // whole chain, held under its physical name and bound to the
+            // spelling that was asked for.
+            self.push(directory, root, self.privacy == Privacy::OwnerOnly)?;
+            self.binding = Some((self.requested.clone(), 0));
+            return self.validate();
+        }
+        self.push(directory, root.clone(), false)?;
+        self.binding = Some((root, 0));
+        self.create_suffix(suffix, state)?;
+        let leaf = self.nodes.last_mut().ok_or_else(lost_node)?;
+        leaf.private = self.privacy == Privacy::OwnerOnly;
+        self.validate()
+    }
+    /// Admit every directory from `/` down to the request, for a caller that
+    /// committed an existing chain earlier and now reconciles it.
+    fn admit_existing_chain(&mut self) -> io::Result<()> {
+        let (canonical, _) = self.missing_suffix()?;
+        self.push(
+            native::Directory::open(Path::new("/"))?,
+            PathBuf::from("/"),
+            false,
+        )?;
+        for component in canonical.components() {
+            if let Component::Normal(name) = component {
+                let parent = last(&self.nodes)?;
+                let path = parent.path.join(name);
+                let child = parent
+                    .directory
+                    .inner
+                    .open_directory(name)
+                    .map_err(|e| self.observe_binding(e, &path))?;
+                self.push(child, path, false)?;
+            }
+        }
+        self.binding = Some((canonical, self.nodes.len().saturating_sub(1)));
+        self.validate_binding()?;
+        let leaf = self.nodes.last_mut().ok_or_else(lost_node)?;
+        leaf.private = self.privacy == Privacy::OwnerOnly;
+        self.validate()
+    }
+    /// The deepest prefix of the request that exists, canonicalized, and the
+    /// names below it that do not, outermost first.
+    fn missing_suffix(&self) -> io::Result<(PathBuf, Vec<OsString>)> {
         let mut prefix = self.requested.clone();
         let mut suffix = Vec::new();
-        let canonical = loop {
+        loop {
             match std::fs::metadata(&prefix) {
                 Ok(metadata) => {
                     if !metadata.is_dir() {
-                        if existing_only {
+                        if self.existing_only {
                             return Err(binding_changed(&prefix));
                         }
                         return Err(io::Error::new(
@@ -220,11 +275,12 @@ impl Chain {
                             "existing prefix is not a directory",
                         ));
                     }
-                    break std::fs::canonicalize(&prefix)
+                    let canonical = std::fs::canonicalize(&prefix)
                         .map_err(|e| self.observe_binding(e, &prefix))?;
+                    return Ok((canonical, suffix));
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    if existing_only {
+                    if self.existing_only {
                         return Err(binding_changed(&self.requested));
                     }
                     // A dangling link must not be treated as a creatable directory.
@@ -246,30 +302,7 @@ impl Chain {
                 }
                 Err(error) => return Err(error),
             }
-        };
-        self.push(
-            native::Directory::open(Path::new("/"))?,
-            PathBuf::from("/"),
-            false,
-        )?;
-        for component in canonical.components() {
-            if let Component::Normal(name) = component {
-                let parent = last(&self.nodes)?;
-                let path = parent.path.join(name);
-                let child = parent
-                    .directory
-                    .inner
-                    .open_directory(name)
-                    .map_err(|e| self.observe_binding(e, &path))?;
-                self.push(child, path, false)?;
-            }
         }
-        self.binding = Some((prefix, self.nodes.len().saturating_sub(1)));
-        self.validate_binding()?;
-        self.create_suffix(suffix, state)?;
-        let leaf = self.nodes.last_mut().ok_or_else(lost_node)?;
-        leaf.private = self.privacy == Privacy::OwnerOnly;
-        self.validate()
     }
     fn create_suffix(
         &mut self,
@@ -335,11 +368,6 @@ impl Chain {
     }
     fn validate(&self) -> io::Result<()> {
         self.validate_binding()?;
-        same(
-            &StorageDirectory::open(Path::new("/"))?.identity()?,
-            &self.nodes.first().ok_or_else(lost_node)?.identity,
-            Path::new("/"),
-        )?;
         for pair in self.nodes.windows(2) {
             let [parent, child] = pair else {
                 return Err(lost_node());
@@ -514,7 +542,7 @@ pub fn reconcile_directory(
         pending_child: None,
     };
     let prepared = chain
-        .prepare_mode(&mut DirectoryState::Unchanged, true)
+        .prepare(&mut DirectoryState::Unchanged)
         .and_then(|()| {
             same(
                 &last(&chain.nodes)?.identity,

@@ -7,8 +7,9 @@
 //! itself and the host fills in who and which run, and places none of its own for `r`.
 
 use crate::component::{self, Component, Event, Person, ResourceId};
+use crate::tokens::Rhythm;
 use crate::tokens::colors::PresenceHue;
-use crate::widget::{Chip, ChipStyle, Element, Tone};
+use crate::widget::{Button, Chip, ChipStyle, Container, Element, Tone};
 
 /// What someone else changed of a resource that the person looking has not seen yet: who, in
 /// which task run, and whether they made, changed or removed it. The host fills all but `of`
@@ -21,6 +22,13 @@ pub struct ChangeMarkProps {
     pub of: Option<ResourceId>,
     /// Who made the newest change the person has not seen.
     pub by: Option<Person>,
+    /// Everyone who made one of the changes the person has not seen, in the order they changed it
+    /// (its newest change last), each once.
+    pub by_all: Vec<Person>,
+    /// What the newest change did, in the words history says it with ("moved this to").
+    pub said: Option<String>,
+    /// What one item of it is called, plural ("tasks"): the noun a window's count names.
+    pub noun: Option<String>,
     /// The task run it was part of, as its task is titled.
     pub run: Option<String>,
     /// What they did: `created`, `changed` or `removed`.
@@ -30,17 +38,28 @@ pub struct ChangeMarkProps {
     pub count: i64,
     /// It marks a window, in its header: it says how many changes and by whom.
     pub window: bool,
+    /// The window's document holds more resources than the mark counted: what it says is a
+    /// lower bound, and says so.
+    pub more: bool,
     /// Activated: show what they did, at the run that did it.
     #[component(event)]
     pub activate: Event,
+    /// What a window's mark opens: the views of its catch-up (*Since you looked*), placed by
+    /// whoever placed the mark. A mark of a row has none, and shows who changed it alone.
+    #[component(slot(default))]
+    pub content: Vec<Element>,
 }
 
 /// What a row shows of a change mark, at its own height ([`crate::widget::ListRow::change`]):
-/// who (identity and name), what is said of it, and what pressing their face does.
+/// who (identity and name), what they did said under the row's title, and what pressing their
+/// face does.
 pub struct RowMark {
     pub identity: String,
     pub name: String,
     pub spoken: String,
+    /// What the newest change did, one line under the row's title, "and N more" where there
+    /// are more; empty shows no line.
+    pub said: String,
     pub show: Option<Box<dyn FnMut()>>,
 }
 
@@ -52,17 +71,23 @@ impl ChangeMarkProps {
         Self {
             of: self.of.clone(),
             by: self.by.clone(),
+            by_all: self.by_all.clone(),
+            said: self.said.clone(),
+            noun: self.noun.clone(),
             run: self.run.clone(),
             kind: self.kind.clone(),
             count: self.count,
             window: self.window,
+            more: self.more,
             activate: self.activate.clone(),
+            // A row's mark shows no catch-up: the views of one belong to the mark placed.
+            content: Vec::new(),
         }
     }
 
     /// The mark as a row carries it: the face of who changed it and their colour under the
-    /// row; who and the run said on hover and to assistive technology. `None` while nothing is
-    /// unseen.
+    /// row, and one line under the row's title saying what they did; who and the run said on
+    /// hover and to assistive technology. `None` while nothing is unseen.
     #[must_use]
     pub fn row(self) -> Option<RowMark> {
         let by = self.by?;
@@ -79,10 +104,31 @@ impl ChangeMarkProps {
             ),
             None => what,
         };
+        // What they did, under the row's title: the sentence history says of the change, after
+        // who did it, and how many more of the row's changes wait behind it.
+        let said = self
+            .said
+            .filter(|said| !said.is_empty())
+            .map_or_else(String::new, |said| {
+                let line = crate::i18n::widget_format(
+                    "change-mark-said",
+                    &[("who", by.name.clone().into()), ("said", said.into())],
+                );
+                let also = self.count.saturating_sub(1);
+                if also > 0 {
+                    crate::i18n::widget_format(
+                        "change-mark-said-more",
+                        &[("said", line.into()), ("count", also.into())],
+                    )
+                } else {
+                    line
+                }
+            });
         Some(RowMark {
             identity: by.identity,
             name: by.name,
             spoken,
+            said,
             show: self.activate.handler(),
         })
     }
@@ -105,60 +151,142 @@ impl ChangeMarkProps {
         })
     }
 
-    /// The pill: who and the run, in their colour, led by their face. `None` while nothing is
-    /// unseen (no `by`).
+    /// The header's mark: the faces of everyone who changed what the window shows, and a
+    /// label naming them and saying how many. `None` while nothing is unseen (no `by`).
     #[must_use]
-    pub fn chip(self, key: &str) -> Option<Chip> {
-        let Self {
-            by,
-            run,
-            kind,
-            count,
-            window,
-            activate,
-            ..
-        } = self;
-        let by = by?;
-        let who = by.name.clone();
-        let did = match kind.as_deref() {
-            Some("created") => "change-mark-created",
-            Some("removed") => "change-mark-removed",
-            _ => "change-mark-changed",
+    pub fn chip(&self, key: &str) -> Option<Element> {
+        Some(Box::new(self.pill(key)?))
+    }
+
+    /// The header's mark as the button that opens a catch-up: the same faces and label, with
+    /// the views it was given inside (a popover, a sheet when narrow). `None` when it is no
+    /// window's mark, has nothing to show, or was given no views.
+    #[must_use]
+    pub fn catch_up(&mut self, key: &str) -> Option<Element> {
+        let views = std::mem::take(&mut self.content);
+        if !self.window || views.is_empty() {
+            return None;
+        }
+        let button = self.pill(key)?;
+        let mut column = crate::widget::arrange::Stack::stack()
+            .fill_width()
+            .gap(Rhythm::Related);
+        for view in views {
+            column = column.push(view);
+        }
+        let content = Container::new()
+            .with_no_padding()
+            .with_child(Box::new(column));
+        // A list under the mark, not a page across the window: as wide as the design system's
+        // list panel, inside the window it hangs in, and a sheet at the bottom of a window too
+        // narrow to hang one in. Its footer's one move stays whole at either width.
+        let mut pair = button.with_popover(content);
+        pair.popover_mut().set_confined_to_viewport(true);
+        pair.popover_mut()
+            .set_max_width(f64::from(crate::tokens::Metrics::BASE.panel_width_list));
+        pair.popover_mut().set_sheet_when_narrow(true);
+        Some(Box::new(pair))
+    }
+
+    /// The mark's button: the faces of everyone who changed it (one, for a row) and its label.
+    fn pill(&self, key: &str) -> Option<Button> {
+        let by = self.by.clone()?;
+        let by_all = self.by_all.clone();
+        let noun = self.noun.clone();
+        let count = self.count;
+        let window = self.window;
+        let more = self.more;
+        let activate = self.activate.clone();
+        let mut who: Vec<Person> = Vec::new();
+        for person in by_all.into_iter().chain(std::iter::once(by)) {
+            if !who.iter().any(|seen| seen.identity == person.identity) {
+                who.push(person);
+            }
+        }
+        // A row's mark shows one face; a window's shows everyone, its label naming the first
+        // few and its count saying what they changed.
+        let faces: Vec<(String, String)> = if window {
+            who.iter()
+                .map(|person| (person.name.clone(), person.identity.clone()))
+                .collect()
+        } else {
+            who.iter()
+                .take(1)
+                .map(|person| (person.name.clone(), person.identity.clone()))
+                .collect()
         };
-        let what = crate::i18n::widget_format(did, &[("who", who.clone().into())]);
-        // The face says who changed it, so the pill's text says the run alone: one fact each,
-        // never two joined into one line.
-        let run = run.filter(|run| !run.is_empty());
-        let label = match run.as_deref() {
-            _ if window => crate::i18n::widget_format(
-                "change-window",
-                &[("count", count.max(1).into()), ("who", who.clone().into())],
-            ),
-            Some(run) => run.to_owned(),
-            None => crate::i18n::widget_format("change-mark-who", &[("who", who.clone().into())]),
+        let count = count.max(1);
+        let label = if window {
+            let names = names(&who);
+            match noun.filter(|noun| !noun.is_empty()) {
+                Some(noun) => crate::i18n::widget_format(
+                    if more {
+                        "change-window-changed-more"
+                    } else {
+                        "change-window-changed"
+                    },
+                    &[
+                        ("who", names.into()),
+                        ("count", count.into()),
+                        ("noun", noun.into()),
+                    ],
+                ),
+                None => crate::i18n::widget_format(
+                    if more {
+                        "change-window-more"
+                    } else {
+                        "change-window"
+                    },
+                    &[("count", count.into()), ("who", names.into())],
+                ),
+            }
+        } else {
+            let name = who
+                .first()
+                .map_or_else(String::new, |person| person.name.clone());
+            crate::i18n::widget_format("change-mark-who", &[("who", name.into())])
         };
-        let tooltip = match run {
-            Some(run) => crate::i18n::widget_format(
-                "change-mark-in-run",
-                &[("what", what.into()), ("run", run.into())],
-            ),
-            None => what,
+        let mut button = Button::new(key, &label)
+            .role(crate::widget::ButtonRole::Plain)
+            .with_faces_of(faces)
+            .with_accessible_name(&label)
+            .tooltip(label.clone());
+        button = match activate {
+            Event::None => button,
+            Event::Action(binding) => button.on_action(binding),
+            Event::View(intent) => button.on_view(intent.sender()),
         };
-        let hue = PresenceHue::of_identity(&by.identity);
-        let chip = Chip::new(label)
-            .with_id(key.to_owned())
-            .with_face(who.clone(), face_colour(hue))
-            .style(ChipStyle::Tinted(Tone::Presence(hue)))
-            .tooltip(tooltip)
-            .with_accessible_name(crate::i18n::widget_format(
-                "change-mark-open",
-                &[("who", who.into())],
-            ));
-        Some(match activate {
-            Event::None => chip,
-            Event::Action(binding) => chip.on_action(binding),
-            Event::View(intent) => chip.on_view(intent.sender()),
-        })
+        Some(button)
+    }
+}
+
+/// What `people` are called, as a sentence names them: "Bo", "Bo and Scout", "Bo, Scout and
+/// Kit", and past three "Bo, Scout and 3 others" — the faces count the rest.
+fn names(people: &[Person]) -> String {
+    let name = |index: usize| -> String { people[index].name.clone() };
+    match people.len() {
+        0 => String::new(),
+        1 => name(0),
+        2 => crate::i18n::widget_format(
+            "change-mark-names-two",
+            &[("first", name(0).into()), ("second", name(1).into())],
+        ),
+        3 => crate::i18n::widget_format(
+            "change-mark-names-three",
+            &[
+                ("first", name(0).into()),
+                ("second", name(1).into()),
+                ("third", name(2).into()),
+            ],
+        ),
+        more => crate::i18n::widget_format(
+            "change-mark-names-more",
+            &[
+                ("first", name(0).into()),
+                ("second", name(1).into()),
+                ("count", i64::try_from(more - 2).unwrap_or(i64::MAX).into()),
+            ],
+        ),
     }
 }
 
@@ -169,29 +297,132 @@ fn face_colour(hue: PresenceHue) -> vello::peniko::Color {
     PALETTE.tokens.colors.presence.hue(hue)
 }
 
-/// The described entry of `ChangeMark`: the pill, built anew when its props change.
-#[must_use]
-pub fn entry() -> component::Entry {
-    fn build(source: &mut dyn component::Source) -> Result<Element, component::Error> {
-        let key = source.key().to_owned();
-        let props = ChangeMarkProps::from_source(source)?;
-        Ok(match props.chip(&key) {
-            Some(chip) => Box::new(chip),
-            // Nothing unseen: nothing to show.
-            None => Box::new(crate::widget::arrange::Stack::stack()),
-        })
+/// What a mark shows: a pill in a window's header, the catch-up it opens, or nothing while
+/// nothing is unseen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Nothing,
+    Pill,
+    CatchUp,
+}
+
+/// A change mark as a widget: the faces and the label, kept where they stand while what they
+/// say changes, and the catch-up a window's mark opens.
+pub struct ChangeMark {
+    /// What it is addressed by.
+    key: String,
+    shape: Shape,
+    /// The pill, the catch-up, or the empty stack of a mark with nothing to say.
+    element: Element,
+}
+
+impl ChangeMark {
+    /// The mark `props` describe, addressed by `key`.
+    fn build(key: &str, mut props: ChangeMarkProps) -> Self {
+        let catch_up = props.catch_up(key);
+        let (shape, element) = match catch_up {
+            Some(catch_up) => (Shape::CatchUp, catch_up),
+            None => match props.chip(key) {
+                Some(chip) => (Shape::Pill, chip),
+                // Nothing unseen: nothing to show.
+                None => (
+                    Shape::Nothing,
+                    Box::new(crate::widget::arrange::Stack::stack()) as Element,
+                ),
+            },
+        };
+        Self {
+            key: key.to_owned(),
+            shape,
+            element,
+        }
     }
-    fn update(_: &mut Element, _: &mut dyn component::Source) -> Result<bool, component::Error> {
-        Ok(false)
+
+    /// What `props` would show, as a shape.
+    fn shape_of(props: &ChangeMarkProps) -> Shape {
+        if props.window && !props.content.is_empty() {
+            Shape::CatchUp
+        } else if props.by.is_some() {
+            Shape::Pill
+        } else {
+            Shape::Nothing
+        }
     }
-    fn slot_views<'a>(_: &'a mut Element, _: &str) -> Option<&'a mut dyn component::SlotViews> {
-        None
+}
+
+impl crate::widget::Decorator for ChangeMark {
+    type Inner = dyn crate::widget::Widget;
+
+    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+        self.element.as_ref()
     }
-    component::Entry {
-        name: ChangeMarkProps::NAME,
-        describe: ChangeMarkProps::describe,
-        build,
-        update,
-        slot_views,
+
+    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+        self.element.as_mut()
+    }
+
+    fn name(&self) -> &'static str {
+        "ChangeMark"
+    }
+}
+
+impl component::Described for ChangeMark {
+    type Props = ChangeMarkProps;
+
+    fn from_props(key: &str, props: ChangeMarkProps) -> Self {
+        Self::build(key, props)
+    }
+
+    /// Who changed what, what they did and what pressing it does change where the mark stands,
+    /// so the catch-up it opened stays open. Another shape of mark is built again.
+    fn set_props(&mut self, props: ChangeMarkProps) -> bool {
+        if Self::shape_of(&props) != self.shape {
+            return false;
+        }
+        let Some(pill) = props.pill(&self.key) else {
+            return true;
+        };
+        match self.shape {
+            Shape::Nothing => true,
+            Shape::Pill => {
+                let Some(button) = self
+                    .element
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Button>())
+                else {
+                    return false;
+                };
+                button.take_words(&pill)
+            }
+            Shape::CatchUp => {
+                let Some(pair) = self
+                    .element
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::PopoverButton<Container>>())
+                else {
+                    return false;
+                };
+                pair.button_mut().take_words(&pill)
+            }
+        }
+    }
+
+    /// A window mark's catch-up views change by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn component::SlotViews> {
+        if slot != "content" || self.shape != Shape::CatchUp {
+            return None;
+        }
+        let pair = self
+            .element
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::PopoverButton<Container>>()?;
+        let column = pair
+            .popover_mut()
+            .content_mut()
+            .child_mut()?
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
+            )?;
+        Some(column)
     }
 }

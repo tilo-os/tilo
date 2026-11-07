@@ -71,11 +71,14 @@ pub enum Label {
     /// The TPM's dictionary-attack reset authorisation, wrapped under the
     /// admin's user key or the machine's recovery key.
     TpmLockoutAuth,
+    /// The signed bytes of an invitation, sealed under a key that travels in
+    /// the link's fragment: what a site holds in their place.
+    SealedInvitation,
 }
 
 impl Label {
     /// Every registered label, for uniqueness checks and documentation.
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::RelayEnrollOffer,
         Self::RelayEnrollRequest,
         Self::RelayEnrollResponse,
@@ -102,6 +105,7 @@ impl Label {
         Self::SignInPassphrase,
         Self::SignInRecovery,
         Self::TpmLockoutAuth,
+        Self::SealedInvitation,
     ];
 
     /// The stable byte string bound into the cryptography. Changing one of
@@ -134,6 +138,7 @@ impl Label {
             Self::SignInPassphrase => "tilo-seal/v1/sign-in-passphrase",
             Self::SignInRecovery => "tilo-seal/v1/sign-in-recovery",
             Self::TpmLockoutAuth => "tilo-seal/v1/tpm-lockout-auth",
+            Self::SealedInvitation => "tilo-seal/v1/sealed-invitation",
         }
     }
 

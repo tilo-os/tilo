@@ -5491,7 +5491,6 @@ impl TabBar {
             }
         }
     }
-
 }
 
 /// A window's application mark at any size: the app's own artwork when it

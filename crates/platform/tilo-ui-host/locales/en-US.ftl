@@ -26,23 +26,36 @@ tilolang-embed-source = Block
 # and after: a sentence goes on with it after who made it ("You moved this to Friday"). `$field`
 # is the field's name in a sentence ("due", "priority").
 tilolang-did-changed = changed { $field }
-tilolang-did-created = created this
-tilolang-did-removed = removed this
-tilolang-did-moved = moved this to
-tilolang-did-taken-out = moved this out of
-tilolang-did-assigned = assigned this to
-tilolang-did-unassigned = unassigned this
+tilolang-did-created = created it
+tilolang-did-removed = removed it
+tilolang-did-moved = moved it to
+tilolang-did-taken-out = moved it out of
+tilolang-did-assigned = assigned it to
+tilolang-did-unassigned = unassigned it
 tilolang-did-set = set { $field } to
 tilolang-did-cleared = cleared { $field }
 tilolang-did-set-date = set the { $field } date to
 tilolang-did-cleared-date = cleared the { $field } date
 tilolang-did-set-time = set the { $field } time to
+# A flag that is now set or cleared: the field it says what it is ("done"), never a value.
+tilolang-did-marked = marked it { $field }
+tilolang-did-unmarked = unmarked it { $field }
 tilolang-did-cleared-time = cleared the { $field } time
 # What a change made over many items at once says: the action's own words are written for one
 # item ("moved this to"), so the sentence counts what it changed.
 tilolang-did-many = changed { $count } { $kind }
 # How one sentence goes on with the next field a change wrote ("… and set priority to High").
 tilolang-did-and = and
+
+# The catch-up a window's change mark opens: what changed since the person last looked, item by
+# item, and the one move that marks it all seen.
+tilolang-since-you-looked = Since you looked
+tilolang-mark-all-seen = Mark all seen
+# What the window says once the person marked a catch-up seen; its Undo takes the marks back.
+tilolang-marked-seen = { $count ->
+    [one] Marked 1 change seen
+   *[other] Marked { $count } changes seen
+}
 
 tilolang-invocation-pending = Waiting
 tilolang-invocation-done = Done
@@ -54,6 +67,8 @@ tilolang-embed-error = This block could not run
 tilolang-all = All { $kind }
 # The actor of a history line the person looking made.
 tilolang-you = You
+# The person looking, where a sentence names them after a verb ("assigned it to you").
+tilolang-you-lower = you
 tilolang-empty = Nothing here yet
 # What a list says when it lists none of its kind's items: "No notes yet".
 tilolang-empty-kind = No { $kind } yet

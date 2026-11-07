@@ -197,9 +197,12 @@ pub fn write_preserving_target(path: &Path, bytes: &[u8]) -> io::Result<()> {
 
 /// [`write()`], creating the parent directory first when it is missing.
 ///
-/// Unix opens/creates the entire parent chain, fsyncs every held directory
-/// leaf-to-root, and publishes relative to the held leaf. Existing aliases are
-/// admitted, but unresolved `missing/../other` suffixes fail before creation.
+/// Unix creates any missing part of the parent chain under the deepest
+/// directory that already exists, fsyncs that directory and every held
+/// directory created below it leaf-to-root, and publishes relative to the held
+/// leaf. Existing aliases are admitted, but unresolved `missing/../other`
+/// suffixes fail before creation. Directories above the deepest existing prefix
+/// are reached but not opened or synced.
 /// Windows parent creation remains transitional: file commit does not establish
 /// durability of newly created ancestors.
 ///

@@ -2981,6 +2981,10 @@ mod window_targets_tests;
 mod sideways_wheel_tests;
 
 #[cfg(test)]
+#[path = "app/motion_source_tests.rs"]
+mod motion_source_tests;
+
+#[cfg(test)]
 #[path = "app/manual_composition_tests.rs"]
 mod manual_composition_tests;
 

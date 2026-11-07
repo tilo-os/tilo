@@ -8,8 +8,8 @@ use tilo_actions::ActionAddress;
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE};
 use tilo_desktop::desktop_host::{
-    DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK, SESSION_LOG_OUT,
-    SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+    DELETE_WORKSPACE, DesktopAsk, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE, SESSION_LOCK,
+    SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
 };
 use tilo_desktop::launchpad::{LaunchpadAction, LaunchpadAppAction};
 use tilo_desktop::overlays::{Anchor, Slot};
@@ -72,6 +72,17 @@ impl Shared {
                 // as the keys ask for them.
                 DesktopAsk::Switcher(action) => self.switcher_ask(action),
                 DesktopAsk::LeftWorkspace(name) => workspaces::left_workspace(&self.notices, &name),
+                // The desk was asked to delete a workspace, and the person
+                // is the one who answers: the question stands in its own
+                // dialog, wherever deleting was asked from.
+                DesktopAsk::DeleteWorkspace { slot, name } => {
+                    self.ask_to_delete_workspace(slot, &name);
+                }
+                // A workspace the desk deleted, whoever asked it to: what is
+                // left of it here in this device's record goes too.
+                DesktopAsk::DeletedWorkspace { workspace, name } => {
+                    self.deleted_workspace(workspace, &name);
+                }
                 // A window that stopped answering offers to keep waiting for
                 // its app or to quit it: the same two choices the desk's own
                 // cards make, carried out where the compositor is.
@@ -377,6 +388,9 @@ impl Shared {
                 &self.directory_store,
             ),
             LEAVE_WORKSPACE => self.leave_workspace(),
+            // Deleting is the desk's, which asks the person first: the desk's
+            // own action is the only thing that deletes.
+            DELETE_WORKSPACE => self.ask_desk_to_delete(),
             // The Tilo menu's own rows, and the same effects the power
             // menu's choices are.
             SESSION_LOCK => self.power_effect(PowerEffect::Lock),
@@ -630,10 +644,10 @@ impl Shared {
         match action {
             ShortcutAction::QuickSettings => self.toggle_quick_settings(),
             // The bell opens the one list of notifications: the centre over
-            // the desk, which a press on it opens and another closes.
+            // the desk, whose own Back (or Escape) closes it.
             ShortcutAction::Notifications => {
                 invocations
-                    .push(Invocation::new(DESK_RESOURCE, "show-surface").with("surface", "centre"));
+                    .push(Invocation::new(CHROME_RESOURCE, "notifications").with("open", true));
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();

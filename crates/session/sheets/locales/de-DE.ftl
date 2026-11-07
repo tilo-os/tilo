@@ -185,6 +185,8 @@ directory-error-no-workspace = diese Website bietet keine öffentlichen Arbeitsb
 directory-error-unreachable = die Website war nicht erreichbar
 directory-error-unreadable = die Website hat etwas geantwortet, das kein Verzeichnis ist
 directory-error-status = die Website teilt ihre Arbeitsbereiche gerade nicht
+directory-error-invitation-gone = diese Einladung ist abgelaufen, oder die Person, die sie erstellt hat, hat sie zurückgezogen
+directory-error-invitation-broken = dieser Link öffnet nicht die Einladung, die er nennt
 directory-here-more = +{ $count }
 directory-sites-unread = Einige Websites konnten nicht gelesen werden, daher ist diese Liste unvollständig: { $error }
 directory-listing-gone = Dieser Arbeitsbereich wird nicht mehr aufgeführt. Lies die Website erneut.
@@ -556,3 +558,11 @@ display-sheet-layouts = Anzeige
 display-confirm-question = Anzeigeänderung
 portal-sheet-question = Systemfrage
 workspace-settings-lens = Arbeitsbereich-Einstellungen
+
+# Deleting a workspace, asked wherever it was asked from: the confirm sheet
+# and the workspace settings' own question say the same words.
+workspace-delete-title = { $name } löschen?
+workspace-delete-body = Alles in diesem Arbeitsbereich geht mit ihm: seine Fenster, seine Gruppen, seine Geschichte. Er verschwindet von jedem Gerät, auf dem er ist.
+workspace-delete-confirm = Löschen
+workspace-delete-keep = Behalten
+workspace-delete-lens = Arbeitsbereich löschen

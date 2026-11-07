@@ -228,7 +228,7 @@ impl Activation {
     /// door, or a view intent published as this surface's own view action, `label` naming it.
     pub(crate) fn set_event(&mut self, event: crate::component::Event, label: &str) {
         match event {
-            crate::component::Event::None => {}
+            crate::component::Event::None => self.clear_event(),
             crate::component::Event::Action(binding) => self.set_action(binding),
             crate::component::Event::View(intent) => self.set_native(
                 tilo_actions::OperationKind::View,
@@ -236,6 +236,13 @@ impl Activation {
                 Box::new(intent.sender()),
             ),
         }
+    }
+
+    /// Stop activating anything: a surface whose event its view took away.
+    pub(crate) fn clear_event(&mut self) {
+        self.on_activate = None;
+        self.action = None;
+        self.native = None;
     }
 
     /// The resource a closure-bound surface publishes, if any.

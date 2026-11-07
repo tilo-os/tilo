@@ -33,7 +33,29 @@ pub struct DropZoneProps {
 impl Described for DropZone {
     type Props = DropZoneProps;
 
+    /// Choosing its files is the button's own action: the button holds the binding, so a press
+    /// is the route an agent's invocation of the action lands on, and both run from the door.
+    fn press_events() -> &'static [&'static str] {
+        &["choose"]
+    }
+
     fn from_props(key: &str, props: DropZoneProps) -> Self {
+        let mut zone = Self::new(key.to_owned(), "");
+        zone.set_content(props);
+        zone
+    }
+
+    /// What the zone takes, the button it offers and what a drop does change where the zone
+    /// stands: a drag over it keeps its colour.
+    fn set_props(&mut self, props: DropZoneProps) -> bool {
+        self.set_content(props);
+        true
+    }
+}
+
+impl DropZone {
+    /// Take the zone's words, its glyph, its button and what receiving files does.
+    fn set_content(&mut self, props: DropZoneProps) {
         let DropZoneProps {
             title,
             message,
@@ -42,23 +64,21 @@ impl Described for DropZone {
             drop,
             choose,
         } = props;
-        let mut zone = Self::new(key.to_owned(), title);
-        if let Some(message) = message {
-            zone = zone.message(message);
-        }
-        if let Some(icon) = icon {
-            zone = zone.icon(icon);
-        }
-        if let Some(label) = action {
-            let button = Button::new(&format!("{key}.action"), &label);
-            zone = zone.with_action(match choose.clone() {
+        self.title = title;
+        self.message = message;
+        self.icon = icon.unwrap_or(Icon::Download);
+        self.action = action.map(|label| {
+            let button = Button::new(&format!("{}.action", self.id), &label);
+            match choose.clone() {
                 Event::None => button,
                 Event::Action(binding) => button.on_action(binding),
                 Event::View(intent) => button.on_view(intent.sender()),
-            });
-        }
-        if !drop.is_none() {
-            zone = zone.on_files_view(move |files: Vec<PathBuf>| {
+            }
+        });
+        if drop.is_none() {
+            self.on_files = None;
+        } else {
+            self.set_on_files_view(move |files: Vec<PathBuf>| {
                 let paths: Vec<Value> = files
                     .into_iter()
                     .map(|path| Value::Text(path.display().to_string()))
@@ -66,6 +86,8 @@ impl Described for DropZone {
                 drop.fire(Some(Value::List(paths)));
             });
         }
-        zone
+        self.action_node = None;
+        self.metrics = None;
+        self.dirty = true;
     }
 }

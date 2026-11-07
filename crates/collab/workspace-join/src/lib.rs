@@ -23,6 +23,8 @@ pub mod invitations;
 /// keeps the bytes its device signed, so a build that reads a record written
 /// then needs the layout that record is in.
 pub mod previous;
+/// A link that carries an invitation's place and key, not its kilobytes.
+pub mod sealed;
 pub mod task_delegation;
 
 use base64::Engine as _;
@@ -601,8 +603,18 @@ pub fn verify_transport_hint_at(
     verify_transport_hint(hint)
 }
 
+/// The text an invitation is handed over in: its signed bytes as base64.
 pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
+}
+
+/// The signed invitation behind its text ([`encode_invitation_text`]): what
+/// the text spells out without base64, for a code that has to be small
+/// enough to scan.
+pub fn invitation_bytes(text: &str) -> Result<Vec<u8>, String> {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(text)
+        .map_err(|_| "invalid invitation text encoding".to_string())
 }
 
 pub fn decode_and_verify_invitation_text(
@@ -611,9 +623,7 @@ pub fn decode_and_verify_invitation_text(
     revocations: &RevocationList,
     now_ns: u64,
 ) -> Result<VerifiedJoin, String> {
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(text)
-        .map_err(|_| "invalid invitation text encoding".to_string())?;
+    let bytes = invitation_bytes(text)?;
     decode_and_verify_invitation(&bytes, recipient_user_public_key, revocations, now_ns)
 }
 

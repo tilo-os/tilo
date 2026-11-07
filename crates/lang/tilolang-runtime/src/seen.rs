@@ -51,11 +51,11 @@ impl SeenMark {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SeenWrite {
     /// `person` has seen `resource` (as [`crate::value::ResourceRef::id_string`] writes it) up
-    /// to `mark`.
+    /// to `mark`; `None` takes a mark back (an undone catch-up).
     Resource {
         person: String,
         resource: String,
-        mark: SeenMark,
+        mark: Option<SeenMark>,
     },
     /// `person` reviewed the task run `run` (its group): every version it made is seen.
     Run { person: String, run: String },
@@ -65,6 +65,15 @@ pub enum SeenWrite {
 #[must_use]
 pub fn seen_key(person: &str, resource: &str) -> StateKey {
     StateKey::runtime(SEEN_WINDOW, Some(person.to_owned()), resource)
+}
+
+/// What a catch-up took away, so that it can be given back: the marks `person` had of the
+/// resources they marked seen in one move (`Runtime::mark_all_seen`), as they had them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SeenUndo {
+    pub person: String,
+    /// Each resource, and the mark it had before (`None` where it had none).
+    pub before: Vec<(String, Option<SeenMark>)>,
 }
 
 /// The slot holding the task runs `person` reviewed: the state no resource id names.
@@ -131,6 +140,7 @@ mod tests {
             fields: Vec::new(),
             resource: "d".to_owned(),
             change: change.to_owned(),
+            op: 0,
             count: 1,
             left: None,
             placed: Vec::new(),

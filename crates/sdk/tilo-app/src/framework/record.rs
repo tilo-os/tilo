@@ -528,6 +528,9 @@ impl<'a> Records<'a> {
     /// every member's change to it is decided against that surface.
     pub fn shared_workspace<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
+            // Declared, not opened: a host that reads the record without the
+            // window ([`super::record_index`]) reads it by its kind.
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
         storage.workspace_record::<P>();

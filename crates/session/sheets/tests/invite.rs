@@ -18,8 +18,10 @@ use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
-/// The link a made invitation hands over.
+/// The link a made invitation hands over, and the invitation's own bytes
+/// behind it: what the code carries.
 const LINK: &str = "tilo://join?invite=8f2c";
+const CODE: &[u8] = b"the invitation's signed bytes";
 
 /// The sheet as the session hands it out with a link made.
 fn with_link() -> Invite {
@@ -52,6 +54,7 @@ fn with_link() -> Invite {
         created: Some(Created {
             invite: "8f2c".to_owned(),
             link: LINK.to_owned(),
+            code: CODE.to_vec(),
             link_label: "The link".to_owned(),
             brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
             lasts: "The link works for the next 60 minutes.".to_owned(),

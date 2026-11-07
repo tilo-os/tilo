@@ -69,23 +69,26 @@ pub const CHUNKS_KEY: &str = "$chunks";
 /// against the fixed cost of a record (about 200 us to make, 36 us to open, 19 KiB held).
 pub const ITEMS: u64 = 2048;
 
-/// What a chunk is held to: [`ITEMS`] items, or the snapshot bytes one should not pass.
-pub const BYTES: u64 = 1024 * 1024;
-
-/// What a chunk may hold.
+/// What a chunk may hold: [`ITEMS`] items. Bytes are not a second limit to keep: a chunk's size
+/// follows its item count on the measured curve, and a change too large for the transport is
+/// refused by the workspace and reported (`Instance::unshared`), never silently kept here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub items: u64,
-    pub bytes: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self {
-            items: ITEMS,
-            bytes: BYTES,
-        }
+        Self { items: ITEMS }
     }
+}
+
+/// The record id of chunk `chunk` of the record `base`: `derived:chunk.<n>@<base>`, the id
+/// [`record_sync`](crate::chunk) syncs on demand and the channel its changes travel on. Chunk
+/// [`FIRST`] is the record itself, which has its own id (`base`).
+#[must_use]
+pub fn record_id(base: &str, chunk: ChunkNo) -> String {
+    format!("derived:chunk.{chunk}@{base}")
 }
 
 /// One run of a collection in one chunk: its last order key, and how many items it holds.
@@ -173,6 +176,19 @@ impl Placement {
         self.of.is_empty() && self.runs.is_empty()
     }
 
+    /// Every chunk the manifest names, above the record: the resources it places, and the runs
+    /// it keeps. What a replica holds of a record is these, chunk [`FIRST`] being the record
+    /// itself.
+    #[must_use]
+    pub fn chunks(&self) -> std::collections::BTreeSet<ChunkNo> {
+        self.of
+            .values()
+            .copied()
+            .chain(self.runs.values().flat_map(|chunks| chunks.keys().copied()))
+            .filter(|chunk| *chunk != FIRST)
+            .collect()
+    }
+
     /// The number of the next chunk a run starts in.
     #[must_use]
     pub fn next(&self) -> ChunkNo {
@@ -196,11 +212,17 @@ impl Placement {
 
     /// The chunk the newest item of the collection `field` of `holder` goes to, and whether that
     /// starts a new run: the collection's last run while it holds fewer than `limits.items`, else
-    /// the next chunk. A collection with no run yet is in chunk [`FIRST`], where its resource is.
+    /// the next chunk. A collection with no run yet is in `holder_chunk`, where its resource is.
     #[must_use]
-    pub fn for_new(&self, holder: &str, field: &str, limits: Limits) -> (ChunkNo, bool) {
+    pub fn for_new(
+        &self,
+        holder: &str,
+        field: &str,
+        holder_chunk: ChunkNo,
+        limits: Limits,
+    ) -> (ChunkNo, bool) {
         let Some((chunk, run)) = self.runs(holder, field).pop() else {
-            return (FIRST, false);
+            return (holder_chunk, false);
         };
         if run.len < limits.items {
             (chunk, false)
@@ -276,6 +298,30 @@ impl Chunks {
         }
     }
 
+    /// The chunk `chunk`, to write into: made when the store was not sent it yet, as a write
+    /// into a run that starts there is made before that chunk arrives.
+    pub fn open(&mut self, chunk: ChunkNo) -> &mut Doc {
+        if chunk == FIRST {
+            Arc::make_mut(self.first.get_or_insert_with(|| Arc::new(Doc::new())))
+        } else {
+            Arc::make_mut(
+                self.more
+                    .entry(chunk)
+                    .or_insert_with(|| Arc::new(Doc::new())),
+            )
+        }
+    }
+
+    /// The set holding `doc` as the record, chunk [`FIRST`], and nothing above it.
+    #[must_use]
+    pub fn of(doc: Doc) -> Self {
+        let mut chunks = Self::default();
+        chunks.insert(FIRST, doc);
+        // What the record's manifest places is where this set routes its reads and writes.
+        chunks.reread_placement();
+        chunks
+    }
+
     /// Hold `doc` as chunk `chunk`, in place of what was held of it.
     pub fn insert(&mut self, chunk: ChunkNo, doc: Doc) {
         if chunk == FIRST {
@@ -302,6 +348,11 @@ impl Chunks {
     pub fn doc_mut(&mut self, id: &str) -> Option<&mut Doc> {
         let chunk = self.chunk(id);
         self.mirror_mut(chunk)
+    }
+
+    /// The numbers of the chunks the store holds, the record first and the rest by number.
+    pub fn numbers(&self) -> impl Iterator<Item = ChunkNo> + '_ {
+        self.docs().map(|(chunk, _)| chunk)
     }
 
     /// The chunks the store holds, the record first and the rest by number.
@@ -514,7 +565,7 @@ mod tests {
         assert_eq!(placement.next(), 1);
         assert!(placement.runs("tracker", "issues").is_empty());
         assert_eq!(
-            placement.for_new("tracker", "issues", Limits::default()),
+            placement.for_new("tracker", "issues", FIRST, Limits::default()),
             (FIRST, false)
         );
     }
@@ -531,10 +582,7 @@ mod tests {
 
     #[test]
     fn runs_order_by_their_last_item_and_fill_before_a_new_chunk_starts() {
-        let limits = Limits {
-            items: 2,
-            bytes: BYTES,
-        };
+        let limits = Limits { items: 2 };
         let mut doc = record();
         // The first run stays in the record itself, where the collection is; the second is a chunk.
         run(&mut doc, "tracker", "issues", FIRST, "a2", 2).expect("write");
@@ -549,10 +597,13 @@ mod tests {
         assert_eq!(runs, vec![(FIRST, "a2"), (2, "a4"), (3, "a5")]);
         assert_eq!(placement.run_of("tracker", "issues", "a4"), Some(2));
         // The last run still has room.
-        assert_eq!(placement.for_new("tracker", "issues", limits), (3, false));
+        assert_eq!(
+            placement.for_new("tracker", "issues", FIRST, limits),
+            (3, false)
+        );
         run(&mut doc, "tracker", "issues", 3, "a6", 2).expect("write");
         assert_eq!(
-            Placement::read(&doc).for_new("tracker", "issues", limits),
+            Placement::read(&doc).for_new("tracker", "issues", FIRST, limits),
             (4, true)
         );
     }

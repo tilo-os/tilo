@@ -141,6 +141,8 @@ impl BarChip {
 }
 
 impl Widget for BarChip {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

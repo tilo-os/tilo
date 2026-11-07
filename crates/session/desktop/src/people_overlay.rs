@@ -454,7 +454,9 @@ impl PeopleOverlay {
         let arrive = self.shown.progress(now);
         let pose = ui::motion::Appear::pose(
             arrive,
-            ui::motion::Appear::origin(self.panel, self.panel.center()),
+            ui::motion::Direction::of(self.shown.is_open()),
+            self.panel,
+            self.panel.center(),
             self.motion,
         );
         let placed = pose.applied_to(transform);

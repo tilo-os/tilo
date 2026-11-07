@@ -803,7 +803,7 @@ mod tests {
         use crate::test_support::{Grants as _, KindSet, Subject};
         const NOTES: &str = "so.tilo.notes";
         let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_agent("scribe", KindSet::READ);
         for app in [APP, NOTES] {
             workspace.allow_app(Subject::agent("scribe"), app, KindSet::ALL);
         }
@@ -856,7 +856,7 @@ mod tests {
     fn an_agents_first_view_opens_aside_without_taking_the_persons_focus() {
         use crate::test_support::{Grants as _, KindSet, Subject};
         let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_agent("scribe", KindSet::READ);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::ALL);
         let (state, workspace) = broker(&workspace);
         state.launchable.retain(&surface(7, &workspace));
@@ -1048,7 +1048,7 @@ mod tests {
         use crate::test_support::{Answer, Grants as _, KindSet, Subject, TreePath};
         use tilo_actions::remote::CatalogueQuery;
         let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::READ);
+        workspace.allow_agent("scribe", KindSet::READ);
         workspace.answer(
             Subject::agent("scribe"),
             &TreePath::root().app(APP),
@@ -1160,7 +1160,7 @@ mod tests {
     fn an_agents_action_is_present_in_the_view_it_runs_in() {
         use crate::test_support::{Grants as _, KindSet, Subject};
         let mut workspace = workspace();
-        workspace.admit_agent("scribe", KindSet::UNDOABLE);
+        workspace.allow_agent("scribe", KindSet::UNDOABLE);
         workspace.allow_app(Subject::agent("scribe"), APP, KindSet::UNDOABLE);
         let (state, workspace, fanout) = broker_with_fanout(&workspace);
         state

@@ -1256,11 +1256,11 @@ impl FsBlobs {
 }
 
 /// Members of the workspaces this host's bots act in get what the bots fetched
-/// (a bridged person's avatar) and the surfaces the host signs with.
+/// (a bridged person's avatar). The apps' surfaces are the host's own
+/// ([`crate::workspaces::Workspaces::content_answer`]).
 impl crate::workspaces::WorkspaceContent for FsBlobs {
-    fn read(&self, _room: &str, app: &str, hash: &str) -> Option<Vec<u8>> {
-        crate::surfaces::surface_of(app, hash)
-            .or_else(|| tilo_connector::BlobAccess::read(self, hash))
+    fn read(&self, _room: &str, _app: &str, hash: &str) -> Option<Vec<u8>> {
+        tilo_connector::BlobAccess::read(self, hash)
     }
 }
 

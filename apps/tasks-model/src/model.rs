@@ -3,9 +3,9 @@
 //!
 //! An issue has a number, a title, a markdown body, a status, an assignee,
 //! labels, a parent (nested issues are sub-issues), links to other resources
-//! and a thread. An agent task is an issue assigned to an agent: its runs are
-//! actions on the issue ([`run`]), so every step is a permission in the one
-//! action system and an entry in the issue's history.
+//! and a thread. An agent works on one by the tracker's own actions, so every
+//! edit it makes is a permission in the one action system and an entry in the
+//! issue's history.
 //!
 //! A project or an area (`tracker_area`) is an ordinary resource of the
 //! tracker: it has a name, a kind and the people involved. The tasks it
@@ -13,28 +13,24 @@
 //! documents it holds are the links those issues carry, so one task reads in
 //! its project and in whoever's list alike.
 //!
-//! The app draws the record; anything else that needs to read or name issues
-//! (the agent runner) reads this record crate, so both use one definition of
-//! every type, verb and typed action argument.
+//! The app draws the record, and an agent reads and writes it through the
+//! verbs below, so both use one definition of every type, verb and typed
+//! action argument.
 
 mod effect;
+mod goal;
 mod issue;
 mod record;
-pub mod run;
 pub mod search;
 mod tracker_area;
 
 pub use effect::{NOTE_KIND, NOTES, TasksEffect};
+pub use goal::Area;
 pub use issue::{
-    AgentRequest, Imported, ImportedMessage, Issue, Link, Message, MessageKind, Said, Status,
-    agent_assignee, person_assignee,
+    Imported, ImportedMessage, Issue, Link, Message, MessageKind, Status, agent_assignee,
+    person_assignee,
 };
 pub use record::{Tracker, tracker};
-pub use run::{
-    Area, Budget, Confirmation, ConfirmationState, MAX_TOTAL_MS, MAX_TURN_MS, MAX_TURNS,
-    ModelChoice, PausedRun, Question, Run, RunOutcome, RunPhase, Spend, SpendLimits, StepSpend,
-    money,
-};
 pub use tracker_area::{Kind, Person, TrackerArea};
 
 /// The record kind issues live in.

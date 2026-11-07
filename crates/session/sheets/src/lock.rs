@@ -1536,9 +1536,14 @@ impl ui::widget::Decorator for Stage {
         // The field is where the person is: the screen comes up about it and
         // goes down about it, rather than about its own middle. The refusal
         // moves the field alone, so the shake says which thing was refused.
-        let anchor = Appear::origin(bounds, self.field_centre());
-        let pose = Appear::pose(self.presence.progress(now), anchor, motion)
-            .fade(ui::num::f32_of_f64(1.0 - quiet));
+        let pose = Appear::pose(
+            self.presence.progress(now),
+            Direction::of(self.presence.is_open()),
+            bounds,
+            self.field_centre(),
+            motion,
+        )
+        .fade(ui::num::f32_of_f64(1.0 - quiet));
         let placement = transform;
         let content = &mut self.content;
         // The screen's own keyboard goes up with the screen it belongs to:

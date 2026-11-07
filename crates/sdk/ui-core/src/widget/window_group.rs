@@ -3977,6 +3977,13 @@ impl Widget for WindowGroup {
         self.rect
     }
 
+    /// The window's bar is part of the window: what a person rests the
+    /// pointer on there names itself, its tabs as the whole of their titles
+    /// where the pill cuts them.
+    fn tooltip_target_at(&self, point: Point) -> Option<(Rect, String)> {
+        self.bar_tooltip_at(point)
+    }
+
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {

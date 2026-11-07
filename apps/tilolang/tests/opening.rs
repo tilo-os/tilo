@@ -125,7 +125,8 @@ fn a_kept_workspace_shows_before_its_record_and_goes_on_as_the_window_of_the_rec
         .unwrap();
     settle(&mut app);
     let notes = app.read(|doc| {
-        tilolang_tilo::action::read_resource(doc, NOTES, &root).map_or(0, |record| {
+        let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
+        tilolang_tilo::action::read_resource(&chunks, NOTES, &root).map_or(0, |record| {
             record
                 .schema()
                 .fields

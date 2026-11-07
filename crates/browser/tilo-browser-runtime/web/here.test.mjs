@@ -241,3 +241,40 @@ test('a browser that cannot join live says so where the members would be', async
   assert.equal(people.unavailable, 'this browser cannot join live');
   here.stop();
 });
+
+test('a plane that cannot be reached is said where the members would be, and once in the log', async () => {
+  const h = harness();
+  const said = [];
+  const warn = console.warn;
+  const info = console.info;
+  console.warn = line => said.push(['warn', line]);
+  console.info = line => said.push(['info', line]);
+  try {
+    let note = null;
+    h.peer.liveNote = () => note;
+    const lastPeople = () => h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
+    const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => fakeLayer(),
+      peer: h.peer, fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer,
+      visible: () => true});
+    await settle();
+    assert.equal(lastPeople().unavailable, null);
+    assert.deepEqual(said, []);
+    note = 'this page cannot reach live presence';
+    h.advance(TICK_MS);
+    await h.runTimer();
+    assert.equal(lastPeople().unavailable, 'this page cannot reach live presence');
+    assert.deepEqual(said, [['warn', 'live: this page cannot reach live presence']]);
+    h.advance(TICK_MS);
+    await h.runTimer();
+    assert.deepEqual(said, [['warn', 'live: this page cannot reach live presence']], 'said once while it lasts');
+    note = null;
+    h.advance(TICK_MS);
+    await h.runTimer();
+    assert.equal(lastPeople().unavailable, null);
+    assert.deepEqual(said.at(-1), ['info', 'live: presence joined']);
+    here.stop();
+  } finally {
+    console.warn = warn;
+    console.info = info;
+  }
+});

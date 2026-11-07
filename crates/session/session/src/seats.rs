@@ -4,6 +4,7 @@
 //! Each sheet is the session's: it keeps it current and puts it up, and
 //! whoever asks reaches it here through the session that holds it.
 
+use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
@@ -55,6 +56,13 @@ impl Session {
     #[must_use]
     pub fn invite_sheet(&self) -> Option<&InviteSeat> {
         self.shared.invite.as_ref()
+    }
+
+    /// The delete question's seat: the workspace it is asking about, shown
+    /// when the person asks to delete one.
+    #[must_use]
+    pub fn delete_workspace_sheet(&self) -> Option<&DeleteWorkspaceSeat> {
+        self.shared.delete_workspace.as_ref()
     }
 
     /// The workspace directory's seat: the workspaces this computer may

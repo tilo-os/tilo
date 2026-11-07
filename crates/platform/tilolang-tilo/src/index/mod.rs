@@ -54,14 +54,14 @@ use redb::{
     Database, Durability, ReadOnlyTable, ReadableDatabase as _, ReadableTable as _, Table,
     TableDefinition, WriteTransaction,
 };
-use tilolang_runtime::store::FieldValue;
+use tilolang_runtime::store::{FieldValue, Version};
 
 use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 10;
+pub const FORMAT: u32 = 13;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -81,18 +81,42 @@ const FORMAT_2_POSTINGS: TableDefinition<(&str, &str), u8> = TableDefinition::ne
 /// values are few (a toggle, an enum): where a value's run starts and ends, and the counts
 /// of a filter's chips, without reading the list's pages.
 const COUNTS: TableDefinition<(&str, &str), u64> = TableDefinition::new("counts");
+/// Each resource's newest version, as a [`reflect::Stamp`]: what a mark of the resource, or of the document
+/// holding it, reads without the resource's log. Keyed by the resource alone, so a document's
+/// resources are read as a page of them, never the document whole.
+const NEWEST: TableDefinition<&str, &[u8]> = TableDefinition::new("newest");
 
 /// The pseudo-field holding a resource's type.
 pub const TYPE: &str = "$type";
 /// The pseudo-field holding an item's order key.
 pub const KEY: &str = "$key";
+/// The pseudo-field holding the chunk of the record an item's map is stored in: where a read or
+/// a write of the item goes, without a scan of the chunks.
+pub const CHUNK: &str = "$chunk";
 /// The pseudo-field holding the collection an item is in: its holder and field
 /// ([`derive::in_of`]).
 pub const IN: &str = "$in";
+/// The pseudo-field of an item holding the collection it left from ([`derive::in_of`]), kept
+/// while it is out of every collection: a later removal of it names the collection without
+/// reading the record's log.
+pub const LEFT: &str = "$left";
+
 /// The pseudo-field of a record holding that some move of an item of it did not take effect,
 /// as it closed a cycle ([`tilolang_runtime::place`]): a move in it is derived with the whole
 /// record.
 pub const CYCLES: &str = "$cycles";
+
+/// The pseudo-field of a resource holding the items that left a collection of it, in the order
+/// they left, each with the version that removed it: what a list shows of them struck, until
+/// the person has seen them go. The field's own name follows [`removed_field`].
+pub const REMOVED: &str = "$removed";
+
+/// The pseudo-field of the resource holding `field`'s collection that keeps the items which
+/// left it ([`REMOVED`]).
+#[must_use]
+pub fn removed_field(field: &str) -> String {
+    format!("{REMOVED}~{field}")
+}
 
 const META_FORMAT: &str = "format";
 const META_SCHEMA: &str = "schema";
@@ -313,6 +337,7 @@ fn create_tables(txn: &WriteTransaction) -> Result<(), IndexError> {
     txn.open_table(DIRS)?;
     txn.open_table(PAGES)?;
     txn.open_table(COUNTS)?;
+    txn.open_table(NEWEST)?;
     Ok(())
 }
 
@@ -487,6 +512,7 @@ impl Index {
         txn.delete_table(PAGES)?;
         txn.delete_table(FORMAT_2_POSTINGS)?;
         txn.delete_table(COUNTS)?;
+        txn.delete_table(NEWEST)?;
         create_tables(&txn)?;
         {
             let mut meta = txn.open_table(META)?;
@@ -518,6 +544,7 @@ impl Index {
             dirs: txn.open_table(DIRS)?,
             pages: txn.open_table(PAGES)?,
             counts: txn.open_table(COUNTS)?,
+            newest: txn.open_table(NEWEST)?,
             stats: Arc::clone(&self.stats),
         }))
     }
@@ -576,6 +603,7 @@ pub struct Snapshot {
     dirs: ReadOnlyTable<&'static str, &'static [u8]>,
     pages: ReadOnlyTable<(&'static str, u32), &'static [u8]>,
     counts: ReadOnlyTable<(&'static str, &'static str), u64>,
+    newest: ReadOnlyTable<&'static str, &'static [u8]>,
     stats: Arc<IndexStats>,
 }
 
@@ -600,6 +628,14 @@ pub struct Texted {
 /// `path` stops before.
 fn inside_end(path: &str) -> String {
     format!("{path}0")
+}
+
+/// Whether `resource` is `path` or a resource inside it.
+fn inside(path: &str, resource: &str) -> bool {
+    resource == path
+        || resource
+            .strip_prefix(path)
+            .is_some_and(|rest| rest.starts_with('/'))
 }
 
 impl Snapshot {
@@ -744,6 +780,60 @@ impl Snapshot {
         self.checked(read)
     }
 
+    /// The newest version the index holds of `resource`, else `None`: what a mark of it says,
+    /// read without the resource's log.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn newest(&self, resource: &str) -> Result<Option<Version>, IndexError> {
+        let read = (|| {
+            let Some(value) = self.newest.get(resource)? else {
+                return Ok(None);
+            };
+            let mut version = reflect::Stamp::of_value(&codec::get_value(value.value())?)
+                .ok_or(IndexError::Corrupt)?
+                .version;
+            resource.clone_into(&mut version.resource);
+            Ok(Some(version))
+        })();
+        self.checked(read)
+    }
+
+    /// The newest version of each resource of the document `path` (it and its items, and the
+    /// items a collection of one of them had removed), in path order, at most `page` of them,
+    /// and whether the document holds more: what a window's mark counts the unseen changes of,
+    /// reading no log and no more of the document than the page.
+    ///
+    /// # Errors
+    /// The index cannot be read or is corrupt.
+    pub fn newest_page(
+        &self,
+        path: &str,
+        page: usize,
+    ) -> Result<(Vec<(String, reflect::Stamp)>, bool), IndexError> {
+        let read = (|| {
+            let end = inside_end(path);
+            let mut out = Vec::new();
+            let mut more = false;
+            for entry in self.newest.range(path..end.as_str())? {
+                let (resource, value) = entry?;
+                let resource = resource.value();
+                if !inside(path, resource) {
+                    continue;
+                }
+                if out.len() == page {
+                    more = true;
+                    break;
+                }
+                let stamp = reflect::Stamp::of_value(&codec::get_value(value.value())?)
+                    .ok_or(IndexError::Corrupt)?;
+                out.push((resource.to_owned(), stamp));
+            }
+            Ok((out, more))
+        })();
+        self.checked(read)
+    }
+
     /// The list `list`, read page by page.
     ///
     /// # Errors
@@ -806,6 +896,8 @@ pub struct Contents {
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
     pub counts: std::collections::BTreeMap<(String, String), u64>,
+    /// Each resource's newest version, as it reads.
+    pub newest: std::collections::BTreeMap<String, String>,
 }
 
 impl Snapshot {
@@ -845,6 +937,16 @@ impl Snapshot {
                 out.lists.insert(name, entries);
             }
         }
+        for entry in self.newest.iter()? {
+            let (resource, value) = entry?;
+            out.newest.insert(
+                resource.value().to_owned(),
+                format!(
+                    "{:?}",
+                    reflect::Stamp::of_value(&codec::get_value(value.value())?)
+                ),
+            );
+        }
         for entry in self.counts.iter()? {
             let (key, count) = entry?;
             let (list, value) = key.value();
@@ -875,6 +977,7 @@ pub struct Tables<'t> {
     dirs: Table<'t, &'static str, &'static [u8]>,
     pages: Table<'t, (&'static str, u32), &'static [u8]>,
     counts: Table<'t, (&'static str, &'static str), u64>,
+    newest: Table<'t, &'static str, &'static [u8]>,
 }
 
 impl ListSource for Tables<'_> {
@@ -903,6 +1006,7 @@ impl<'t> Writer<'t> {
                 dirs: txn.open_table(DIRS)?,
                 pages: txn.open_table(PAGES)?,
                 counts: txn.open_table(COUNTS)?,
+                newest: txn.open_table(NEWEST)?,
             },
             lists: ListEdits::default(),
         })
@@ -1008,6 +1112,26 @@ impl<'t> Writer<'t> {
             return Ok(None);
         };
         Ok(Some(codec::get_text(value.value())?))
+    }
+
+    /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
+    /// after it: what a mark of it, or of the document holding it, reads without the resource's
+    /// log.
+    ///
+    /// # Errors
+    /// The index cannot be read or written.
+    pub fn put_newest(&mut self, resource: &str, stamp: &reflect::Stamp) -> Result<(), IndexError> {
+        if let Some(held) = self.tables.newest.get(resource)? {
+            let held = reflect::Stamp::of_value(&codec::get_value(held.value())?)
+                .ok_or(IndexError::Corrupt)?;
+            if !held.before(stamp) {
+                return Ok(());
+            }
+        }
+        self.tables
+            .newest
+            .insert(resource, codec::put_value(&stamp.value()).as_slice())?;
+        Ok(())
     }
 
     /// # Errors

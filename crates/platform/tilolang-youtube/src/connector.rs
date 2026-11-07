@@ -24,7 +24,7 @@ pub const ORIGIN: &str = "youtube";
 ///
 /// # Errors
 /// No door to take instances from.
-pub fn run(service: Arc<dyn Service>) -> Result<(), String> {
+pub fn run(service: &Arc<dyn Service>) -> Result<(), String> {
     let door = runtime_portal::origin_connector::take_door()
         .ok_or_else(|| "the launcher handed the YouTube connector no door".to_owned())?;
     let attachments = std::iter::from_fn(move || {
@@ -49,9 +49,9 @@ pub fn run(service: Arc<dyn Service>) -> Result<(), String> {
 
 /// Run the connector over `service` until `attachments` ends (the session closed its door):
 /// every instance that attaches has its questions answered.
-pub fn serve(service: Arc<dyn Service>, attachments: impl Iterator<Item = UnixStream>) {
+pub fn serve(service: &Arc<dyn Service>, attachments: impl Iterator<Item = UnixStream>) {
     for stream in attachments {
-        let service = Arc::clone(&service);
+        let service = Arc::clone(service);
         let spawned = std::thread::Builder::new()
             .name("youtube-attached".into())
             .spawn(move || answer_each(stream, &*service));

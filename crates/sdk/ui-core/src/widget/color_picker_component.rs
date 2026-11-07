@@ -76,7 +76,13 @@ impl Described for ColorPicker {
 
     /// A colour set elsewhere is shown in place; other swatches are built again.
     fn set_props(&mut self, props: ColorPickerProps) -> bool {
-        // A colour set elsewhere shows in place through the binding.
-        props.swatches.is_empty()
+        // A colour set elsewhere shows in place through the binding, and so does its spoken
+        // name; a palette of quick picks is what it is built around, so one that carries any
+        // is built again.
+        if !props.swatches.is_empty() {
+            return false;
+        }
+        self.accessible_name = props.label;
+        true
     }
 }

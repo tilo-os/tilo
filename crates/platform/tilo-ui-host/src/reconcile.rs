@@ -796,6 +796,49 @@ impl Reconciler {
             };
             self.reconcile_views(views, &old, &new);
         }
+        // A slot of components whose own views changed (a run's items, each holding a view of
+        // its own): the part's views change where they stand, so the widget keeps what they
+        // hold rather than being built again around them.
+        for slot in description
+            .slots
+            .iter()
+            .filter(|slot| slot.accepts.reads_components())
+        {
+            let old = crate::adapter::slot_parts(old_node, description, &slot.name);
+            let new = crate::adapter::slot_parts(new_node, description, &slot.name);
+            for child in &new {
+                let Some(part) = crate::adapter::description_of(child) else {
+                    continue;
+                };
+                let Some(before) = old
+                    .iter()
+                    .find(|old| old.key == child.key && old.kind == child.kind)
+                else {
+                    continue;
+                };
+                for of in part
+                    .slots
+                    .iter()
+                    .filter(|of| of.accepts == ui::component::Accepts::View)
+                {
+                    let old = crate::adapter::slot_nodes(before, part, &of.name);
+                    let new = crate::adapter::slot_nodes(child, part, &of.name);
+                    if old == new {
+                        continue;
+                    }
+                    let Some(views) = ui::component::part_views(
+                        &description.name,
+                        widget,
+                        &slot.name,
+                        &child.key,
+                        &of.name,
+                    ) else {
+                        return Some(self.build(new_node));
+                    };
+                    self.reconcile_views(views, &old, &new);
+                }
+            }
+        }
         None
     }
 

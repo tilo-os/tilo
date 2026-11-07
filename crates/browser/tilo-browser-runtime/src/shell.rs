@@ -1136,7 +1136,8 @@ impl BrowserShell {
                 // doing nothing.
                 DesktopAsk::FixedShortcut(action) => self.answer_fixed_shortcut(action),
                 // The page's own keys reach the browser's shortcuts.
-                // Leaving a workspace is a session's to carry out and say.
+                // Leaving or deleting a workspace is a session's to confirm,
+                // carry out and say: a page holds no device record of it.
                 // It places no desk widget, so no music control of one is
                 // here to press: steering a player is the session's, on the
                 // machine that runs it. A window that stopped answering is
@@ -1146,6 +1147,8 @@ impl BrowserShell {
                 // the walk's switcher — so no card of one is under its pointer.
                 DesktopAsk::Shortcut(_)
                 | DesktopAsk::LeftWorkspace(_)
+                | DesktopAsk::DeleteWorkspace { .. }
+                | DesktopAsk::DeletedWorkspace { .. }
                 | DesktopAsk::Music(_)
                 | DesktopAsk::WaitWindow(_)
                 | DesktopAsk::ForceQuitApp(_)
@@ -1157,7 +1160,7 @@ impl BrowserShell {
 
     /// Tell the person why a fixed chord the desk left to the page did not
     /// run here.
-    fn answer_fixed_shortcut(&mut self, action: ui::shortcut_table::FixedAction) {
+    fn answer_fixed_shortcut(&self, action: ui::shortcut_table::FixedAction) {
         let Some(outcome) = crate::fixed_chords::unserved(action) else {
             return;
         };

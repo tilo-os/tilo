@@ -16,6 +16,7 @@ mod common;
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use ed25519_dalek::SigningKey;
@@ -252,25 +253,19 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// Write what the session shows where a person can look at it, when the run
+/// Write what the sheet shows where a person can look at it, when the run
 /// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
-fn capture(session: &mut Session, name: &str) {
+fn capture(app: &mut HeadlessApp<InviteApp>, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
     else {
         return;
     };
-    let frame = session
-        .compositor()
-        .screenshot("HEADLESS-1")
-        .expect("a frame of the session");
-    let pixels = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba)
-        .expect("the frame's pixels fill it");
-    let mut png = Vec::new();
-    pixels
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .expect("the shot");
+    // Draw what the sheet holds now: the link arrives while the sheet is up,
+    // and the frame may still be the one from before it.
+    app.settle();
     std::fs::create_dir_all(&directory).expect("the directory for shots");
-    std::fs::write(directory.join(format!("{name}.png")), png).expect("the shot");
+    app.harness()
+        .render_png(&directory.join(format!("{name}.png")));
 }
 
 /// The invitations the desk's own action lists for the workspace in front.
@@ -289,13 +284,90 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
     serde_json::from_value(listed).expect("a list of invitations")
 }
 
-#[test]
-fn a_link_the_sheet_makes_admits_a_second_persons_device() {
-    let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, key, cert) = this_computer(home.env());
-    let person = hex::encode(cert.user_public_key);
+/// What a QR scanner reads from the sheet's code, `code`, drawn as the sheet
+/// draws it — at the width it gives a payload of that size — and read by a
+/// decoder that knows nothing of the widget. The version the decoder found
+/// comes back with the bytes.
+fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
+    use ui::widget::QrWidget;
+
+    let drawn = QrWidget::new(code.to_vec()).with_id("invite-code");
+    let px = tilo_sheets::invite::module_px(drawn.total_modules());
+    let widget = drawn.with_module_px(px);
+    if let Some(error) = widget.error() {
+        return Err(format!("the code does not fit: {error}"));
+    }
+    let quiet = widget.quiet_modules();
+    let modules = widget
+        .total_modules()
+        .saturating_sub(quiet.saturating_mul(2));
+    if modules == 0 {
+        return Err("the code draws nothing".to_owned());
+    }
+    // The code is drawn at the width the sheet draws it: a scanner reads it
+    // there or it is unreadable on the screen.
+    let scale = usize::try_from(px).map_err(|_| "no module width".to_owned())?;
+    let side = u32::try_from(widget.total_modules().saturating_mul(scale))
+        .map_err(|_| "the code is too wide to draw".to_owned())?;
+    let mut luma = image::GrayImage::from_pixel(side, side, image::Luma([255]));
+    for y in 0..modules {
+        for x in 0..modules {
+            if !widget.module(x, y) {
+                continue;
+            }
+            let left = u32::try_from(x.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
+            let top = u32::try_from(y.saturating_add(quiet).saturating_mul(scale)).unwrap_or(0);
+            for dy in 0..u32::try_from(scale).unwrap_or(1) {
+                for dx in 0..u32::try_from(scale).unwrap_or(1) {
+                    luma.put_pixel(
+                        left.saturating_add(dx),
+                        top.saturating_add(dy),
+                        image::Luma([0]),
+                    );
+                }
+            }
+        }
+    }
+    let mut prepared = rqrr::PreparedImage::prepare(luma);
+    let grids = prepared.detect_grids();
+    let grid = grids.first().ok_or("a scanner finds no code")?;
+    let mut read = Vec::new();
+    let meta = grid
+        .decode_to(&mut read)
+        .map_err(|error| format!("a scanner cannot read the code: {error:?}"))?;
+    Ok((read, meta.version.0))
+}
+
+/// The sheet's code for the link it made carries what the person hands over:
+/// the invitation's own text, or the short link that names it. A scanner
+/// reads it back byte for byte.
+fn scanned_back(created: &tilo_sheets::invite::Created) -> Result<Vec<u8>, String> {
+    let handed_over = if tilo_workspace_join::sealed::parse_link(&created.link).is_some() {
+        created.link.clone().into_bytes()
+    } else {
+        tilo_workspace_join::invitation_bytes(&created.link)?
+    };
+    if handed_over != created.code {
+        return Err("the code is not what the sheet hands over".to_owned());
+    }
+    scanned(&created.code).map(|(read, _)| read)
+}
+
+/// A session on a desk that holds [`WORKSPACE`], with the invite sheet up as
+/// the person who may invite there sees it: everything either test does
+/// before it can make a link.
+struct Hosted {
+    /// The identity root and the state directory the session reads from.
+    _kept: Vec<tempfile::TempDir>,
+    session: Session,
+    seat: tilo_sheets::invite::InviteSeat,
+    cert: DeviceCert,
+}
+
+/// [`Hosted`]: this computer holding the workspace, its bar offering Invite,
+/// and the sheet the person's press puts up.
+fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
+    let (identity, key, cert) = this_computer(home.env());
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let state = tempfile::tempdir().expect("a state directory");
     workspace_held_here(state.path(), workspace, &cert, &key);
@@ -325,37 +397,72 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         "the bar's Invite puts the invite sheet up"
     );
     assert!(seat.invite().may_invite, "the person may invite here");
+    Hosted {
+        _kept: vec![identity, state],
+        session,
+        seat,
+        cert,
+    }
+}
 
-    // They make a link at the part the sheet opens on: the sheet asks, the
-    // session makes it through the desk, and the sheet shows the link back.
-    let mut app =
-        HeadlessApp::<InviteApp>::for_person_with_lent("person", seat).expect("the sheet draws");
+/// The sheet for `seat`, drawn on a screen.
+fn sheet_app(seat: &tilo_sheets::invite::InviteSeat) -> HeadlessApp<InviteApp> {
+    let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone())
+        .expect("the sheet draws");
     app.harness()
         .resize((WIDTH as u32, HEIGHT as u32))
         .expect("a screen");
     app.settle();
+    app
+}
+
+/// Press the sheet's create button, and answer with the link it shows once
+/// the session has it: a short link is shown when its site has kept it.
+fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> String {
     app.harness()
         .perform_named("invite-create", &A11yAction::Activate)
         .expect("the create button is pressed");
     app.settle();
-    settle(&mut session);
+    settle(session);
     let mut link = String::new();
-    common::until(
-        &mut session,
-        "the sheet shows the link it made",
-        |session| {
-            link = session
-                .invite_sheet()
-                .and_then(|seat| {
-                    seat.invite()
-                        .created
-                        .as_ref()
-                        .map(|created| created.link.clone())
-                })
-                .unwrap_or_default();
-            !link.is_empty()
-        },
-    );
+    common::until(session, "the sheet shows the link it made", |session| {
+        link = session
+            .invite_sheet()
+            .and_then(|seat| {
+                seat.invite()
+                    .created
+                    .as_ref()
+                    .map(|created| created.link.clone())
+            })
+            .unwrap_or_default();
+        !link.is_empty()
+    });
+    link
+}
+
+#[test]
+fn a_link_the_sheet_makes_admits_a_second_persons_device() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    // This computer knows no community site, so the sheet hands over the
+    // invitation's own text: the long form, as every build has.
+    let community = home.config().join("community.toml");
+    std::fs::write(&community, "site = \"\"\n").expect("a config naming no site");
+    home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
+    let Hosted {
+        _kept,
+        mut session,
+        seat,
+        cert,
+    } = hosted(&mut home);
+    let person = hex::encode(cert.user_public_key);
+
+    // They make a link at the part the sheet opens on: the sheet asks, the
+    // session makes it through the desk, and the sheet shows the link back.
+    let mut app = sheet_app(&seat);
+    let link = press_create(&mut app, &mut session);
     assert!(
         link.len() > 40,
         "the link the sheet shows is a signed invitation: {link:?}"
@@ -365,7 +472,44 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         1,
         "the link is the desk's own invitation"
     );
-    capture(&mut session, "invite-sheet");
+    capture(&mut app, "invite-sheet");
+
+    // The link is shown as a code to scan, and the code is the invitation
+    // itself: a scanner reads back exactly what the person hands over.
+    let made = session
+        .invite_sheet()
+        .and_then(|seat| seat.invite().created)
+        .expect("the link the sheet made");
+    assert_eq!(
+        scanned_back(&made),
+        Ok(made.code.clone()),
+        "the code is the invitation, read back out of the QR the sheet draws"
+    );
+    // Every part the sheet offers makes a link of its own, and every link's
+    // code is that invitation the same way.
+    for part in 0..seat.invite().roles.len() {
+        app.harness()
+            .perform_named(
+                &format!("invite-role:segment:{part}"),
+                &A11yAction::Activate,
+            )
+            .expect("the part's chip is pressed");
+        app.settle();
+        app.harness()
+            .perform_named("invite-create", &A11yAction::Activate)
+            .expect("the create button is pressed");
+        app.settle();
+        settle(&mut session);
+        let made = session
+            .invite_sheet()
+            .and_then(|seat| seat.invite().created)
+            .expect("a link for the part");
+        assert_eq!(
+            scanned_back(&made),
+            Ok(made.code.clone()),
+            "the code of a link at part {part} is the invitation, read back"
+        );
+    }
 
     // Her own device, of her own person, joins with what was handed to her.
     let her_root = SigningKey::from_bytes(&[0x81; 32]);
@@ -389,4 +533,136 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         Some(MemberRole::Editor),
         "in the part the sheet asked for: {people:?}"
     );
+}
+
+/// A community site's shelf on this machine: it keeps the sealed invitations
+/// it is left, under the handle the request names, and answers them back.
+fn shelf() -> (test_http::Responder, Arc<Mutex<HashMap<String, String>>>) {
+    let kept = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let serving = Arc::clone(&kept);
+    let responder = test_http::Responder::handle(move |request| {
+        let Some((_, handle)) = request.target.rsplit_once("/i/") else {
+            return Some(test_http::Reply::status(404));
+        };
+        let handle = handle.to_owned();
+        Some(match request.method.as_str() {
+            "POST" => {
+                let stored: serde_json::Value = serde_json::from_slice(&request.body).ok()?;
+                let sealed = stored.get("sealed")?.as_str()?.to_owned();
+                serving
+                    .lock()
+                    .expect("the shelf's invitations")
+                    .insert(handle, sealed);
+                test_http::Reply::status(204)
+            }
+            "GET" => {
+                let sealed = serving
+                    .lock()
+                    .expect("the shelf's invitations")
+                    .get(&handle)
+                    .cloned()?;
+                test_http::Reply::status(200)
+                    .header("Content-Type", "application/json")
+                    .body(serde_json::json!({ "sealed": sealed }).to_string())
+            }
+            _ => test_http::Reply::status(405),
+        })
+    });
+    (responder, kept)
+}
+
+#[test]
+fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() {
+    let _settled = ui::motion::testing::settled();
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+
+    // This computer's community site is a shelf on this machine, and the
+    // sheet is configured with it: what it makes goes there, sealed.
+    let (responder, kept) = shelf();
+    let community = home.config().join("community.toml");
+    std::fs::write(&community, format!("site = \"{}/\"\n", responder.url()))
+        .expect("a community site");
+    home.env().set("TILO_COMMUNITY_CONFIG", &community);
+    let Hosted {
+        _kept,
+        mut session,
+        seat,
+        ..
+    } = hosted(&mut home);
+
+    // They make a link at the part the sheet opens on. What the sheet hands
+    // over is where the invitation waits and the key that opens it — not a
+    // kilobyte of signed invitation.
+    let mut app = sheet_app(&seat);
+    let link = press_create(&mut app, &mut session);
+    assert!(
+        link.starts_with(&format!("{}/i/", responder.url())),
+        "the sheet hands over the site's own link: {link}"
+    );
+    assert_eq!(
+        link.chars().filter(|c| *c == '#').count(),
+        1,
+        "the key follows the fragment, and is the only one: {link}"
+    );
+    assert!(
+        link.len() <= tilo_workspace_join::sealed::MAX_LINK_CHARS,
+        "the link is short enough to scan: {link}"
+    );
+    let key = link
+        .rsplit_once('#')
+        .expect("a key in the link")
+        .1
+        .to_owned();
+    assert_eq!(
+        key.chars().count(),
+        tilo_workspace_join::sealed::KEY_CHARS,
+        "the fragment is the key"
+    );
+
+    // The code the sheet draws carries exactly that link, and a scanner
+    // reads it back: forty-one modules, a version 6 code at medium error
+    // correction, not the version 39 the invitation's own kilobytes need.
+    let made = seat.invite().created.expect("the link the sheet made");
+    assert_eq!(
+        made.code,
+        link.clone().into_bytes(),
+        "the code is the link the person hands over"
+    );
+    capture(&mut app, "invite-sheet-short");
+    let (read, version) = scanned(&made.code).expect("a scanner reads the short code");
+    assert_eq!(read, made.code, "the scanner reads the link back whole");
+    assert!(
+        version <= 6,
+        "a short link fits a version 6 code, and this one is version {version}"
+    );
+
+    // The site was left the invitation sealed: it holds ciphertext, and the
+    // key the link carries never reached it.
+    let requests = responder.drain_requests();
+    let post = requests
+        .iter()
+        .find(|request| request.method == "POST")
+        .expect("the shelf was left the invitation");
+    assert!(post.target.starts_with("/i/"), "{}", post.target);
+    let body = post.body_text();
+    assert!(
+        body.contains("\"sealed\""),
+        "the invitation is sealed: {body}"
+    );
+    assert!(!body.contains(&key), "the key is in the link alone: {body}");
+    assert!(
+        !body.contains(&link),
+        "the link itself is not sent either: {body}"
+    );
+    let handle = post.target.rsplit('/').next().expect("the handle");
+    let kept = kept.lock().expect("the shelf's invitations");
+    let sealed = kept
+        .get(handle)
+        .expect("the shelf keeps it under its handle");
+    assert!(
+        !sealed.contains(&key),
+        "what the site holds does not carry the key: {sealed}"
+    );
+    drop(kept);
 }

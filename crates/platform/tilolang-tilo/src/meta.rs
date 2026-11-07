@@ -5,8 +5,8 @@
 //! action.
 
 use tilolang_runtime::meta::{
-    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, Ty, TypeMeta, element_record, field_kind,
-    parse_ty,
+    EffectClass, FieldKind, FieldMeta, Meta, ParamMeta, TriggerWhenMeta, Ty, TypeMeta,
+    element_record, field_kind, parse_ty,
 };
 
 use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema, lookup_in};
@@ -190,6 +190,18 @@ fn kind_of_ty(meta: &Meta, ty: &Ty) -> Option<(ColumnKind, Vec<String>)> {
 /// then one per other field a `filter` compares (a register of a scalar, a counter).
 fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSchema> {
     let mut out = Vec::new();
+    // A trigger's `at` is asked of the whole type ("the first of them after now"), wherever its
+    // records are placed, so the field it fires at is kept across the workspace too: with the
+    // type's filters, not with the collection a record is in.
+    let fires_at: Vec<&str> = meta
+        .triggers
+        .iter()
+        .filter(|trigger| trigger.ty == ty.id)
+        .filter_map(|trigger| match &trigger.when {
+            TriggerWhenMeta::At(field) => Some(field.as_str()),
+            TriggerWhenMeta::Every(_) => None,
+        })
+        .collect();
     for f in &ty.search.filters {
         // A filter on the time it is asked at or on the person it is asked for holds of
         // different items as time passes or for each of them: it is answered from the columns of
@@ -252,7 +264,7 @@ fn columns(meta: &Meta, ty: &TypeMeta, fields: &[FieldSchema]) -> Vec<ColumnSche
             kind,
             many: schema.kind == MergeKind::Set,
             pred: None,
-            filter: false,
+            filter: fires_at.contains(&schema.id.as_str()),
             cases,
         });
     }

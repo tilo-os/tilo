@@ -57,7 +57,7 @@ pub fn process_environment() -> super::HostEnvironment {
             config_home: path("XDG_CONFIG_HOME"),
             cache_home: path("XDG_CACHE_HOME"),
             pipeline_seed: path("TILO_PIPELINE_SEED_DIR"),
-            font_index: path("TILO_FONT_INDEX"),
+            font_index: path(super::FONT_INDEX_ENV),
             font_catalog: path("TILO_FONT_CATALOG"),
             font_artifact_cache: path("TILO_FONT_ASSET_CACHE"),
             public_identity_record: path("TILO_USER_IDENTITY"),

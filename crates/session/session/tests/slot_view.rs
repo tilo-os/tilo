@@ -67,7 +67,9 @@ view menu(m: desktop.WindowMenu) {
 
 /// A view of the window menu written in tilolang that shows the rows the menu
 /// offers, each a button invoking the menu's `choose`, over the surface the
-/// session publishes for the slot.
+/// session publishes for the slot. A rule between groups is a line, not a
+/// choice, so it draws no button; the rows of a row that opens a submenu are
+/// drawn beside it, as the menu itself offers them.
 const ROWS_VIEW: &str = r#"app so.tilo.slotrows "Window menu rows"
 
 use desktop as desktop
@@ -75,7 +77,12 @@ use desktop as desktop
 view menu(m: desktop.WindowMenu) {
   stack {
     for item in m.rows {
-      button(item.label, on: desktop.choose(m, row: item.id))
+      if not item.separator {
+        button(item.label, on: desktop.choose(m, row: item.id))
+        for child in item.children {
+          button(child.label, on: desktop.choose(m, row: child.id))
+        }
+      }
     }
   }
 }
@@ -189,6 +196,36 @@ fn rows(session: &Session) -> Value {
         .read(WINDOW_MENU)
         .and_then(|reading| reading.get("rows").cloned())
         .expect("the menu is up and offers its rows")
+}
+
+/// Whether the view draws a control for every row `rows` offers, the rows of
+/// a submenu with them: a row that opens one is a row too, and the rule
+/// between two groups is no choice to draw.
+fn draws_every_row(session: &Session, rows: &Value) -> bool {
+    rows.as_array().into_iter().flatten().all(|row| {
+        let drawn = row["separator"].as_bool() == Some(true)
+            || row["label"]
+                .as_str()
+                .is_some_and(|label| session.slot_control("window-menu", label).is_some());
+        drawn && draws_every_row(session, &row["children"])
+    })
+}
+
+/// The label of the row `id` offers, in a submenu or not.
+fn row_label(offered: &Value, id: &str) -> String {
+    fn search<'a>(rows: &'a Value, id: &str) -> Option<&'a Value> {
+        rows.as_array().into_iter().flatten().find_map(|row| {
+            if row["id"] == json!(id) {
+                Some(row)
+            } else {
+                search(&row["children"], id)
+            }
+        })
+    }
+    search(offered, id)
+        .and_then(|row| row["label"].as_str())
+        .unwrap_or_else(|| panic!("the menu offers `{id}`: {offered}"))
+        .to_owned()
 }
 
 /// Bind the window-menu slot to the view `view` of `app`, as a person or an
@@ -476,11 +513,11 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
                 .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
         },
     );
-    assert!(
-        session
-            .slot_control("window-menu", "Close the menu")
-            .is_none(),
-        "and the view went with the menu it drew"
+    let namespace = tilo_session::surfaces::namespace(tilo_session::mount::shell::WINDOW_MENU_SLOT);
+    assert_eq!(
+        session.compositor().layer_shown(&namespace),
+        Some(false),
+        "and the view it drew stands hidden until a menu opens again"
     );
 }
 
@@ -564,36 +601,27 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
     });
 
     // The view the person bound shows every row the menu offers, each labelled
-    // as the menu labels it: the rows of another app's reading read as the
-    // records the desk declares.
+    // as the menu labels it, the rows of its submenus with them: the rows of
+    // another app's reading read as the records the desk declares, and a
+    // submenu is a row of it rather than a second reading to walk.
     let offered = rows(&session);
-    let shown = |session: &Session, offered: &Value| {
-        offered
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|row| row["label"].as_str())
-            .all(|label| session.slot_control("window-menu", label).is_some())
-    };
     bind(&mut session, "so.tilo.slotrows", "menu");
     until(&mut session, "shows the rows the menu offers", |session| {
-        shown(session, &offered)
+        draws_every_row(session, &offered)
     });
+    let shares = row_label(&offered, "window-width");
+    assert!(
+        session
+            .slot_control("window-menu", &row_label(&offered, "window-width-wide"))
+            .is_some(),
+        "the view reaches a row inside `{shares}`: {:?}",
+        session.slot_labels("window-menu")
+    );
 
     // The person presses the row that maximizes the window: the view's own
     // `choose`, through the session's door, runs the command the row means and
     // the menu closes.
-    let label = |offered: &Value, id: &str| {
-        offered
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|row| row["id"] == json!(id))
-            .and_then(|row| row["label"].as_str())
-            .unwrap_or_else(|| panic!("the menu offers `{id}`: {offered}"))
-            .to_owned()
-    };
-    press(&mut session, &label(&offered, "window-maximize"));
+    press(&mut session, &row_label(&offered, "window-maximize"));
     until(
         &mut session,
         "chooses the row the person pressed",
@@ -625,7 +653,7 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
             .any(|row| row["id"] == json!("window-restore")),
         "the row the view chose maximized the window: {reopened}"
     );
-    let restore = label(&reopened, "window-restore");
+    let restore = row_label(&reopened, "window-restore");
     until(
         &mut session,
         "draws the rows the window offers now",

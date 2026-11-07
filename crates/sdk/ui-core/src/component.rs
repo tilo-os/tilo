@@ -1063,11 +1063,24 @@ impl<L: crate::widget::arrange::Layout + 'static> SlotViews
 }
 
 /// A widget made from props.
+///
+/// A described widget answers its own type through [`crate::widget::Widget::as_any_mut`]: the
+/// adapter reaches it with that to change its props in place, and a widget that answers no
+/// type is built again on every change it is told about. Declare the answer inside its
+/// [`Widget`](crate::widget::Widget) impl with [`crate::described!`].
 pub trait Described: crate::widget::Widget + Sized + 'static {
     type Props: Component;
 
     /// The widget of `props`, with `key` its stable id.
     fn from_props(key: &str, props: Self::Props) -> Self;
+
+    /// The events that are its control's own action: the widget keeps the action's binding, so
+    /// a press of it runs through the door with a route of its own, the same one an agent's
+    /// invocation takes. An event not named here is the view's: its press goes back to the view
+    /// as an intent, which no control can route.
+    fn press_events() -> &'static [&'static str] {
+        &[]
+    }
 
     /// Take changed props in place, damaging what they change: `false` when this widget cannot
     /// and is to be built again.
@@ -1082,6 +1095,34 @@ pub trait Described: crate::widget::Widget + Sized + 'static {
         let _ = slot;
         None
     }
+
+    /// The views its slot `slot` holds for the part `key` — a part being a component the slot
+    /// takes, whose props the widget reads — in that part's own view slot `of`, to change them
+    /// by key where they stand. `None` when a change inside a part builds the widget again.
+    fn part_views(&mut self, slot: &str, key: &str, of: &str) -> Option<&mut dyn SlotViews> {
+        let _ = (slot, key, of);
+        None
+    }
+}
+
+/// Say that a described widget is its own type, inside its [`Widget`](crate::widget::Widget)
+/// impl: `described!();`.
+///
+/// Without it the adapter reaches the widget as `dyn Widget`, cannot downcast it, and builds it
+/// again on every change it is told about, so what the person was doing with it — the focus in a
+/// field, a drag, the menu a press opened — goes with it. Every described component of the
+/// toolkit answers this; `component::tests` builds each one from the catalogue and holds it to it.
+#[macro_export]
+macro_rules! described {
+    () => {
+        fn as_any(&self) -> Option<&dyn std::any::Any> {
+            Some(self)
+        }
+
+        fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+            Some(self)
+        }
+    };
 }
 
 /// One described widget, as the generic adapter reaches it.
@@ -1094,6 +1135,10 @@ pub struct Entry {
     pub update: fn(&mut Element, &mut dyn Source) -> Result<bool, Error>,
     /// The views of one of its slots, to change by key in place.
     pub slot_views: for<'a> fn(&'a mut Element, &str) -> Option<&'a mut dyn SlotViews>,
+    /// The views of one part of a slot, to change by key in place.
+    pub part_views: for<'a> fn(&'a mut Element, &str, &str, &str) -> Option<&'a mut dyn SlotViews>,
+    /// The events that are its control's own action ([`Described::press_events`]).
+    pub press_events: fn() -> &'static [&'static str],
 }
 
 /// The [`Entry`] of the widget `W`.
@@ -1120,12 +1165,25 @@ pub fn entry<W: Described>() -> Entry {
             .and_then(|any| any.downcast_mut::<W>())?
             .slot_views(slot)
     }
+    fn part_views<'a, W: Described>(
+        widget: &'a mut Element,
+        slot: &str,
+        key: &str,
+        of: &str,
+    ) -> Option<&'a mut dyn SlotViews> {
+        widget
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<W>())?
+            .part_views(slot, key, of)
+    }
     Entry {
         name: W::Props::NAME,
         describe: W::Props::describe,
         build: build::<W>,
         update: update::<W>,
         slot_views: slot_views::<W>,
+        part_views: part_views::<W>,
+        press_events: W::press_events,
     }
 }
 
@@ -1144,6 +1202,14 @@ pub fn registry() -> &'static [Entry] {
 #[must_use]
 pub fn get(name: &str) -> Option<&'static Entry> {
     registry().iter().find(|entry| entry.name == name)
+}
+
+/// Whether the event `event` of the component `component` is its control's own action: the
+/// widget holds the binding, so the press and an agent's invocation of the action take one path
+/// ([`Described::press_events`]).
+#[must_use]
+pub fn presses(component: &str, event: &str) -> bool {
+    get(component).is_some_and(|entry| (entry.press_events)().contains(&event))
 }
 
 /// Build the component `name` of `source`.
@@ -1173,6 +1239,20 @@ pub fn update(name: &str, widget: &mut Element, source: &mut dyn Source) -> Resu
 #[must_use]
 pub fn parts() -> &'static [fn() -> Description] {
     &GENERATED_PARTS
+}
+
+/// The views its slot `slot` holds for the part `key`, in the part's own view slot `of`, built
+/// for an instance of `name`, to change by key in place: `None` when the widget changes them
+/// only by being built again.
+pub fn part_views<'a>(
+    name: &str,
+    widget: &'a mut Element,
+    slot: &str,
+    key: &str,
+    of: &str,
+) -> Option<&'a mut dyn SlotViews> {
+    let entry = get(name)?;
+    (entry.part_views)(widget, slot, key, of)
 }
 
 /// The views of the slot `slot` of `widget`, built for an instance of `name`, to change by key

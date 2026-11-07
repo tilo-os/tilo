@@ -376,11 +376,19 @@ fn the_session_answers_every_shortcut_of_its_side() {
             ShortcutAction::ShortcutHelp => {
                 until(&mut session, "the guide", |session| guide_up(session));
             }
-            ShortcutAction::QuickSettings
-            | ShortcutAction::Notifications
-            | ShortcutAction::ClipboardHistory => {
+            ShortcutAction::QuickSettings | ShortcutAction::ClipboardHistory => {
                 until(&mut session, "quick settings", |session| {
                     session.quick_settings_open()
+                });
+            }
+            // The bell opens the one list of notifications: the centre over
+            // the desk, not a page of quick settings.
+            ShortcutAction::Notifications => {
+                until(&mut session, "the notification centre", |session| {
+                    session
+                        .accessible_labels()
+                        .iter()
+                        .any(|label| label == "Retained notifications")
                 });
             }
             ShortcutAction::AskAgent | ShortcutAction::SaySomething => {
@@ -419,6 +427,25 @@ fn row_chord(session: &Session, row: &str) -> Option<String> {
         .get("shortcut")?
         .as_str()
         .map(str::to_owned)
+}
+
+/// The chord the catalogue fixes for `id`, in the system's own spelling: its
+/// Super form where it binds one.
+#[track_caller]
+fn fixed_chord(id: &str) -> String {
+    let fixed = fixed_shortcut(id).expect("the catalogue binds it");
+    let chords = fixed.chords();
+    chords
+        .iter()
+        .find(|chord| {
+            chord
+                .modifiers
+                .iter()
+                .any(|modifier| modifier.eq_ignore_ascii_case("super"))
+        })
+        .or_else(|| chords.first())
+        .expect("a fixed shortcut names a chord")
+        .display()
 }
 
 /// The resource `id` the session publishes, children searched too.
@@ -509,20 +536,21 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         Some(maximized.as_str()),
         "a row without one of its own takes the table's"
     );
-    let close = fixed_shortcut("fixed-close-tab").expect("closing the window is fixed");
+    let close = fixed_chord("fixed-close-tab");
     assert_eq!(
         row_chord(&session, "window-close").as_deref(),
-        Some(
-            close
-                .chords()
-                .iter()
-                .map(KeyChord::display)
-                .collect::<Vec<_>>()
-                .join("  /  ")
-                .as_str()
-        ),
-        "closing the window in front is a chord Settings cannot rebind, so the row \
-         shows the chords the catalogue binds"
+        Some(close.as_str()),
+        "closing a tab is a chord Settings cannot rebind, so the row shows it"
+    );
+    assert_eq!(
+        row_chord(&session, "window-close-window"),
+        None,
+        "the window's own close, which shuts every tab, is no chord's command"
+    );
+    assert_eq!(
+        row_chord(&session, "window-new-tab").as_deref(),
+        Some(fixed_chord("fixed-duplicate-tab").as_str()),
+        "opening the app's next window is the catalogue's chord too"
     );
     assert_eq!(
         row_chord(&session, "window-rename"),
@@ -530,6 +558,29 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         "a row no shortcut does says nothing"
     );
     capture(&mut session, "window-menu");
+
+    // A window of one tab is its tab: closing either is the same command, so
+    // its Close row reads the chord that closes a tab.
+    let mut single = desk_tree();
+    single.workspaces[0].strips[0].window_groups.truncate(1);
+    single.workspaces[0].strips[0].window_groups[0]
+        .tabs
+        .truncate(1);
+    let mut lone = session_with_config(single, SessionConfig::default());
+    press(&mut lone, ShortcutAction::TabMenu);
+    until(&mut lone, "the window menu", |session| {
+        menu_tab(session).as_deref() == Some("20")
+    });
+    assert_eq!(
+        row_chord(&lone, "window-close-window").as_deref(),
+        Some(fixed_chord("fixed-close-tab").as_str()),
+        "a window of one tab closes on the chord that closes its tab"
+    );
+    assert!(
+        row_chord(&lone, "window-close").is_none(),
+        "no tab to close"
+    );
+    capture(&mut lone, "window-menu-close");
 }
 
 /// A window's menu belongs to its window: one still up when the window in

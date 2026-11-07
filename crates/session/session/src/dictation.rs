@@ -246,7 +246,6 @@ impl Dictation {
             }
             (None, true) => {
                 seat.presentation().close();
-                seat.presentation().gone();
                 self.up.set(false);
             }
             _ => {}

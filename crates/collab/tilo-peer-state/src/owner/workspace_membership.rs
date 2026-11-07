@@ -138,7 +138,6 @@ mod tests {
     use crate::owner::application_record::tests::{Fixture, fixture};
     use crate::workspace_membership::WorkspaceMembershipCommand;
     use neighbour_wire::NeighbourMsg;
-    use tilo_action_policy::roles::AgentPreset;
 
     fn request(fixture: &Fixture, command: WorkspaceMembershipCommand) -> OwnerCommitRequest {
         OwnerCommitRequest {
@@ -148,6 +147,20 @@ mod tests {
                 caller: fixture.certificate.clone(),
                 command,
             },
+        }
+    }
+
+    /// The grant making `scribe` read the workspace, given by its person.
+    fn agent_grant() -> WorkspaceMembershipCommand {
+        WorkspaceMembershipCommand::Grant {
+            grant: tilo_action_policy::Grant::new(
+                "agent-member:scribe",
+                tilo_action_policy::Subject::agent("scribe"),
+                tilo_action_policy::TreePath::workspace(crate::owner::testing::WORKSPACE),
+                tilo_action_policy::KindSet::READ,
+                tilo_action_policy::Answer::Allow,
+                tilo_action_policy::Subject::person("owner"),
+            ),
         }
     }
 
@@ -179,13 +192,7 @@ mod tests {
     #[test]
     fn membership_commit_is_canonical_durable_and_exact_retry_is_idempotent() {
         let fixture = fixture();
-        let request = request(
-            &fixture,
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Observer,
-            },
-        );
+        let request = request(&fixture, agent_grant());
         assert!(agent_caps(&fixture.owner, &fixture).is_empty());
         let receipt = fixture
             .owner
@@ -193,7 +200,7 @@ mod tests {
             .unwrap();
         receipt.validate_for(&request).unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
-        assert_eq!(caps.len(), 2, "reading the workspace, and no governing it");
+        assert_eq!(caps.len(), 1, "the grant it was given");
         assert_eq!(
             caps[0].node,
             tilo_action_policy::TreePath::workspace(crate::owner::testing::WORKSPACE)
@@ -211,7 +218,7 @@ mod tests {
         let mut changed = request;
         if let CommitOperation::WorkspaceMembershipCommand { command, .. } = &mut changed.operation
         {
-            *command = WorkspaceMembershipCommand::RemoveAgent {
+            *command = WorkspaceMembershipCommand::RetiredRemoveAgent {
                 agent: "scribe".into(),
             };
         }
@@ -224,28 +231,18 @@ mod tests {
     }
 
     #[test]
-    fn removal_derives_all_agent_grants_and_wrong_signer_never_mutates() {
+    fn revoke_takes_the_grant_back_and_a_wrong_signer_never_mutates() {
         let fixture = fixture();
         fixture
             .owner
-            .commit_workspace_membership_command(
-                request(
-                    &fixture,
-                    WorkspaceMembershipCommand::AddAgent {
-                        agent: "scribe".into(),
-                        preset: AgentPreset::Operator,
-                    },
-                ),
-                &fixture.key,
-                fixture.now,
-            )
+            .commit_workspace_membership_command(request(&fixture, agent_grant()), &fixture.key, fixture.now)
             .unwrap();
         let before = agent_caps(&fixture.owner, &fixture);
         assert!(!before.is_empty());
         let removal = request(
             &fixture,
-            WorkspaceMembershipCommand::RemoveAgent {
-                agent: "scribe".into(),
+            WorkspaceMembershipCommand::Revoke {
+                grant: tilo_action_policy::GrantId::new("agent-member:scribe"),
             },
         );
         assert!(
@@ -272,13 +269,7 @@ mod tests {
     #[test]
     fn changed_caller_certificate_cannot_borrow_governor_signing_custody() {
         let fixture = fixture();
-        let mut add = request(
-            &fixture,
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Observer,
-            },
-        );
+        let mut add = request(&fixture, agent_grant());
         if let CommitOperation::WorkspaceMembershipCommand { caller, .. } = &mut add.operation {
             caller.device_label.push_str(" forged");
         }
@@ -295,13 +286,7 @@ mod tests {
     fn durable_membership_retires_to_a_reopenable_governor_checkpoint() {
         let mut fixture = fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
-        let add = request(
-            &fixture,
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Contributor,
-            },
-        );
+        let add = request(&fixture, agent_grant());
         fixture
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
@@ -331,12 +316,7 @@ mod tests {
         }
         assert_eq!(
             fixture.governor.agent_grants("scribe").unwrap(),
-            [
-                "agent-member:scribe:contributor",
-                "agent-member:scribe:contributor:comments",
-                "agent-member:scribe:contributor:no-governance",
-                "agent-member:scribe:contributor:reactions",
-            ]
+            ["agent-member:scribe"]
         );
     }
 
@@ -354,19 +334,13 @@ mod tests {
                 })
                 .unwrap()
         };
-        let add = request(
-            &fixture,
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Observer,
-            },
-        );
+        let add = request(&fixture, agent_grant());
         fixture
             .owner
             .commit_workspace_membership_command(add, &fixture.key, fixture.now)
             .unwrap();
         let caps = agent_caps(&fixture.owner, &fixture);
-        assert_eq!(caps.len(), 2, "written here at once");
+        assert_eq!(caps.len(), 1, "written here at once");
         let frames = outgoing(&fixture.owner);
         assert_eq!(frames.len(), 1, "one workspace delta to publish");
         let message: NeighbourMsg = postcard::from_bytes(&frames[0]).unwrap();
@@ -416,13 +390,7 @@ mod tests {
     #[test]
     fn failed_membership_publication_never_changes_the_committed_policy() {
         let fixture = fixture();
-        let add = request(
-            &fixture,
-            WorkspaceMembershipCommand::AddAgent {
-                agent: "scribe".into(),
-                preset: AgentPreset::Operator,
-            },
-        );
+        let add = request(&fixture, agent_grant());
         let path = fixture.directory.path().join("owner.json");
         let parts = crate::owner::file_store::parts_of(&path);
         let retained = fixture.directory.path().join("retained-owner.json");

@@ -824,6 +824,8 @@ fn columns_for(count: usize, width: f64, min_tile: f64, gap: f64) -> usize {
 }
 
 impl Widget for StatGroup {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -42,7 +42,7 @@ use tilolang_runtime::rich::RichValue;
 use tilolang_runtime::run::Journal;
 use tilolang_runtime::store::{
     Applied, ChangeNote, ChangeSummary, FieldSpec, FieldValue, Mutation, NewRecord, OutboxEntry,
-    Scalar, Store, StoreError, SubId, Txn,
+    Scalar, Store, StoreError, SubId, Txn, Version,
 };
 use tilolang_runtime::value::{ResourceRef, Value, from_json};
 use tilolang_runtime::{ActionInfo, Authority, Decision, ModuleHash, Principal, Runtime};
@@ -1077,6 +1077,13 @@ impl Store for TaskStore {
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {
         Err(StoreError::Invalid(format!(
             "a task reads no history of {doc} yet"
+        )))
+    }
+
+    fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
+        Err(StoreError::Invalid(format!(
+            "a task reads no history of {} yet",
+            at.id_string()
         )))
     }
 

@@ -39,7 +39,7 @@ use tilolang_tilo::runtime::Principal;
 /// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
 /// the name the view gives it for a person to read, its own words, rather than the state's name
 /// in the code (`typed`).
-pub const CANVAS_ENTRY: &str = "Find something, or ask";
+pub const CANVAS_ENTRY: &str = "Find something";
 /// The launcher's field, announced the same way: the view's own words for it, not the state's
 /// name in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";

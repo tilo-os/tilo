@@ -1,9 +1,9 @@
 //! A person's Allow, Ask first and Deny for one of their agents.
 
 use tilo_action_policy::{
-    ActionKind, Answer, Authority, Change, Context, Grant, Subject, TreePath, WorkspacePolicy,
+    ActionKind, Answer, Authority, Change, Context, Grant, KindSet, Subject, TreePath,
+    WorkspacePolicy,
     agent_answers::{self, AnswerScope},
-    roles::AgentPreset,
 };
 
 const WORKSPACE: &str = "r";
@@ -14,9 +14,22 @@ fn cx() -> Context<'static> {
     Context::at(1_000)
 }
 
-/// A workspace whose owner admitted the agent as an Operator, plus `extra`.
+/// A workspace granting the agent what it may change and reach, plus `extra`.
 fn grants(extra: Vec<Grant>) -> Vec<Grant> {
-    let mut grants = AgentPreset::Operator.grants(WORKSPACE, AGENT, &Subject::person(PERSON));
+    let grant = |id: &str, kinds, answer| {
+        Grant::new(
+            id.to_owned(),
+            Subject::agent(AGENT),
+            TreePath::workspace(WORKSPACE),
+            kinds,
+            answer,
+            Subject::person(PERSON),
+        )
+    };
+    let mut grants = vec![
+        grant("agent-member", KindSet::READ_UNDOABLE, Answer::Allow),
+        grant("agent-member:outside", KindSet::OUTSIDE, Answer::Ask),
+    ];
     grants.extend(extra);
     grants
 }

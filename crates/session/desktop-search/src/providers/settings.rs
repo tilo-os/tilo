@@ -41,9 +41,12 @@ const QUICK_ACTION_SETTINGS: &[&str] = &[
     "notifications.dnd",
 ];
 
-/// The index's copy, in the desktop's language.
+/// The index's copy, in the desktop's language: every window offers the same
+/// settings, so these words ride along in its language instead of deciding it.
 static CATALOG: ui::i18n::EmbeddedCatalog = {
-    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES).with_system_locale();
+    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
+        .with_system_locale()
+        .as_shared();
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");
     catalog

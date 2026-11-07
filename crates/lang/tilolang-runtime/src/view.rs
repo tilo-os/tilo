@@ -159,6 +159,10 @@ pub enum Patch {
     Remove {
         parent: Vec<String>,
         key: String,
+        /// Where the node stood among its parent's children, as the patches before it left
+        /// them, when it is a row of a list the host holds in order: it takes the node out
+        /// there, without reading the rows to find it. `None` where no order is kept.
+        at: Option<usize>,
     },
     Move {
         parent: Vec<String>,
@@ -195,9 +199,17 @@ pub type EventEq<'a> = &'a dyn Fn(Retained, Retained) -> bool;
 /// absent from the tree until then), against the rows the host holds: every row, shown or not.
 #[derive(Clone, Debug)]
 pub(crate) enum RowStep {
-    Remove(String),
+    /// The row `key` leaves, standing at `at` among the rows as the steps before it left them.
+    Remove {
+        key: String,
+        at: usize,
+    },
     Insert(usize, Box<UiNode>),
-    Move { key: String, from: usize, to: usize },
+    Move {
+        key: String,
+        from: usize,
+        to: usize,
+    },
 }
 
 /// What became of the rows of a virtual list when the boundary holding it ran: the steps from
@@ -310,9 +322,10 @@ fn virtual_rows(
 ) {
     for step in steps {
         out.push(match step {
-            RowStep::Remove(key) => Patch::Remove {
+            RowStep::Remove { key, at } => Patch::Remove {
                 parent: path.to_vec(),
                 key: key.clone(),
+                at: Some(*at),
             },
             RowStep::Insert(index, node) => Patch::Insert {
                 parent: path.to_vec(),
@@ -359,6 +372,7 @@ pub(crate) fn diff_at(
     out.push(Patch::Remove {
         parent: parent.to_vec(),
         key: old.key.clone(),
+        at: None,
     });
     out.push(Patch::Insert {
         parent: parent.to_vec(),
@@ -393,6 +407,7 @@ fn diff_children(
             out.push(Patch::Remove {
                 parent: path.to_vec(),
                 key: o.key.clone(),
+                at: None,
             });
         }
     }
@@ -429,6 +444,7 @@ fn diff_children(
             out.push(Patch::Remove {
                 parent: path.to_vec(),
                 key: n.key.clone(),
+                at: None,
             });
             out.push(Patch::Insert {
                 parent: path.to_vec(),
@@ -480,7 +496,12 @@ pub(crate) fn row_steps(
         if fresh.contains(key.as_str()) {
             current.push(key);
         } else {
-            out.push(RowStep::Remove(key.clone()));
+            // The row stands where the rows before it left it, the removals before this one
+            // taken out already.
+            out.push(RowStep::Remove {
+                key: key.clone(),
+                at: current.len(),
+            });
         }
     }
     let survivors: HashSet<&str> = current.iter().copied().collect();
@@ -568,7 +589,8 @@ mod tests {
         let p = diff(&a, &b, &same);
         assert!(p.contains(&Patch::Remove {
             parent: vec!["r".into()],
-            key: "b".into()
+            key: "b".into(),
+            at: None,
         }));
         assert!(
             p.iter()

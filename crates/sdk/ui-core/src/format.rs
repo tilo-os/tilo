@@ -27,6 +27,7 @@
 //! | memory | [`memory`] | `1.5 GiB` | `1,5 GiB` |
 //! | rate | [`rate`] | `6.7 MB/s` | `6,7 MB/s` |
 //! | count | [`count`], [`items`] | `12,345`, `12 items` | `12.345`, `12 Objekte` |
+//! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
 //!
 //! [`size`] uses SI decimal units and [`memory`] IEC binary units. The
@@ -79,7 +80,7 @@ impl Formats {
         match self.region.number {
             Some(NumberStyle::DecimalPoint) => (",", '.'),
             Some(NumberStyle::DecimalComma) => (".", ','),
-            None => language_separators(&crate::i18n::I18nManager::current_locale()),
+            None => language_separators(&crate::i18n::I18nManager::window_locale()),
         }
     }
 
@@ -88,6 +89,25 @@ impl Formats {
     pub fn count(&self, n: u64) -> String {
         let (group, _) = self.separators();
         group_digits(&n.to_string(), group)
+    }
+
+    /// The **money** style: an amount in millionths of the currency, in the
+    /// dollars model providers bill in (`$5`, `$0.42`, `$1,250`).
+    ///
+    /// Whole amounts read without cents and fractional ones with two places,
+    /// grouped and marked by the person's number style.
+    #[must_use]
+    pub fn money(&self, micros: u64) -> String {
+        let (group, mark) = self.separators();
+        let cents = micros / 10_000;
+        let (units, hundredths) = (cents / 100, cents % 100);
+        let mut out = String::from("$");
+        out.push_str(&group_digits(&units.to_string(), group));
+        if hundredths != 0 {
+            out.push(mark);
+            out.push_str(&format!("{hundredths:02}"));
+        }
+        out
     }
 
     /// A count of things in a folder, a selection or a result: `12 items`.
@@ -501,6 +521,19 @@ pub fn rate(bytes_per_sec: f64) -> String {
 #[must_use]
 pub fn count(n: u64) -> String {
     Formats::current().count(n)
+}
+
+/// An amount in millionths of the currency: `$5`, `$0.42`, `$1,250`. See
+/// [`Formats::money`].
+///
+/// ```
+/// use tilo_ui::format::money;
+/// assert_eq!(money(5_000_000), "$5");
+/// assert_eq!(money(420_000), "$0.42");
+/// ```
+#[must_use]
+pub fn money(micros: u64) -> String {
+    Formats::current().money(micros)
 }
 
 /// A count of things: `12 items`. See [`Formats::items`].

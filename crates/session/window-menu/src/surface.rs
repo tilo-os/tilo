@@ -62,6 +62,44 @@ struct Row {
     reason: Option<String>,
     /// The chord that does the same thing, as the session's table binds it.
     shortcut: Option<String>,
+    /// The picture of the command the row runs, as the session names it.
+    icon: Option<ui::icons::Icon>,
+    /// The rows a row that opens a submenu offers.
+    children: Vec<Row>,
+    /// A rule between two groups of rows, which chooses nothing.
+    separator: bool,
+}
+
+impl Row {
+    /// The row `text` spells, when it is one; its submenu's rows with it.
+    fn parse(text: &Value) -> Option<Self> {
+        Some(Self {
+            id: text.get("id")?.as_str()?.to_owned(),
+            label: text.get("label")?.as_str()?.to_owned(),
+            enabled: text.get("enabled")?.as_bool()?,
+            reason: text
+                .get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            shortcut: text
+                .get("shortcut")
+                .and_then(Value::as_str)
+                .map(str::to_owned),
+            icon: text
+                .get("icon")
+                .and_then(Value::as_str)
+                .and_then(ui::icons::Icon::from_name),
+            children: text
+                .get("children")
+                .and_then(Value::as_array)
+                .map(|children| children.iter().filter_map(Self::parse).collect())
+                .unwrap_or_default(),
+            separator: text
+                .get("separator")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        })
+    }
 }
 
 impl Reading {
@@ -75,18 +113,7 @@ impl Reading {
             .get("rows")?
             .as_array()?
             .iter()
-            .map(|row| {
-                Some(Row {
-                    id: row.get("id")?.as_str()?.to_owned(),
-                    label: row.get("label")?.as_str()?.to_owned(),
-                    enabled: row.get("enabled")?.as_bool()?,
-                    reason: row.get("reason").and_then(Value::as_str).map(str::to_owned),
-                    shortcut: row
-                        .get("shortcut")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned),
-                })
-            })
+            .map(Row::parse)
             .collect::<Option<Vec<Row>>>()?;
         let subject = value.get("subject").and_then(|subject| {
             Some(Subject {
@@ -114,8 +141,12 @@ impl Reading {
 /// The view: the context menu, and the reading it draws.
 pub struct WindowMenuSurface {
     menu: ContextMenu,
-    /// The row each item of the menu is for, as the reading listed it.
-    ids: Vec<String>,
+    /// The row each item of the menu is for, as the reading listed it:
+    /// nothing for a rule and for the row that opens a submenu.
+    ids: Vec<Option<String>>,
+    /// The rows of each item's submenu, aligned with `ids`: empty where the
+    /// item opens none.
+    nested: Vec<Vec<Option<String>>>,
     reading: Reading,
     /// The session's resource, once a worker reached it.
     opened: Arc<Mutex<Option<SessionResource>>>,
@@ -137,6 +168,7 @@ impl Default for WindowMenuSurface {
         Self {
             menu: ContextMenu::default(),
             ids: Vec::new(),
+            nested: Vec::new(),
             reading: Reading::default(),
             opened: Arc::new(Mutex::new(None)),
             asking: Arc::new(AtomicBool::new(false)),
@@ -254,23 +286,18 @@ impl WindowMenuSurface {
         if !self.reading.is_open() {
             self.menu.close();
             self.ids.clear();
+            self.nested.clear();
             return;
         }
         let mut items = Vec::with_capacity(self.reading.rows.len());
         self.ids = Vec::with_capacity(self.reading.rows.len());
+        self.nested = Vec::with_capacity(self.reading.rows.len());
         for row in &self.reading.rows {
-            let mut item = MenuItem::selection(row.label.clone());
-            if let Some(shortcut) = &row.shortcut {
-                item = item.with_shortcut(shortcut.as_str());
-            }
-            if !row.enabled {
-                item = item.with_enabled(false);
-                if let Some(reason) = &row.reason {
-                    item = item.with_detail(reason.clone());
-                }
-            }
+            let (item, choice) = item_of(row);
             items.push(item);
-            self.ids.push(row.id.clone());
+            self.ids.push(choice);
+            self.nested
+                .push(row.children.iter().map(|child| item_of(child).1).collect());
         }
         self.menu.set_items(items);
         // The session heard the secondary press that opened the menu and
@@ -324,11 +351,21 @@ impl WindowMenuSurface {
         });
     }
 
-    /// The row the open menu was just asked for, if the person chose one.
+    /// The row the open menu was just asked for, if the person chose one: a
+    /// row of a submenu by its row's place and its own.
     fn take_choice(&mut self) -> Option<String> {
+        if let Some((row, nested)) = self.menu.take_submenu_selection() {
+            self.menu.close();
+            return self
+                .nested
+                .get(row)
+                .and_then(|children| children.get(nested))
+                .cloned()
+                .flatten();
+        }
         let index = self.menu.take_selection()?;
         self.menu.close();
-        self.ids.get(index).cloned()
+        self.ids.get(index).cloned().flatten()
     }
 
     /// The labels of the rows shown, in order: what a test reads to see the
@@ -341,6 +378,7 @@ impl WindowMenuSurface {
         self.menu
             .items()
             .iter()
+            .filter(|item| !item.is_separator())
             .filter_map(|item| item.label().map(str::to_owned))
             .collect()
     }
@@ -356,6 +394,34 @@ impl WindowMenuSurface {
     pub fn item_rect(&self, index: usize) -> Option<Rect> {
         self.menu.item_rect(index)
     }
+}
+
+/// The menu item `row` draws as, and the row id choosing it sends: nothing
+/// for a rule and for the row that opens its children as a submenu.
+fn item_of(row: &Row) -> (MenuItem, Option<String>) {
+    if row.separator {
+        return (MenuItem::separator(), None);
+    }
+    let mut item = if row.children.is_empty() {
+        MenuItem::selection(row.label.clone())
+    } else {
+        let children = row.children.iter().map(|child| item_of(child).0).collect();
+        MenuItem::submenu(row.label.clone(), children)
+    };
+    if let Some(icon) = row.icon {
+        item = item.with_icon(icon);
+    }
+    if let Some(shortcut) = &row.shortcut {
+        item = item.with_shortcut(shortcut.as_str());
+    }
+    if !row.enabled {
+        item = item.with_enabled(false);
+        if let Some(reason) = &row.reason {
+            item = item.with_detail(reason.clone());
+        }
+    }
+    let choice = row.children.is_empty().then(|| row.id.clone());
+    (item, choice)
 }
 
 impl Widget for WindowMenuSurface {
@@ -487,7 +553,13 @@ mod tests {
             ["Normal", "Move to workspace"],
             "in the order the session lists them"
         );
-        assert_eq!(surface.ids, ["window-normal", "window-move-workspace"]);
+        assert_eq!(
+            surface.ids,
+            [
+                Some("window-normal".to_owned()),
+                Some("window-move-workspace".to_owned())
+            ]
+        );
     }
 
     /// The view starts after the session published the menu, so its first
@@ -510,6 +582,114 @@ mod tests {
         woken_at
             .recv_timeout(Duration::from_secs(10))
             .expect("the view is woken once its worker lands, and draws its reading");
+    }
+
+    /// The rows as the session publishes a window's menu: a rule between
+    /// what covers the window and what carries it elsewhere, the places in a
+    /// submenu, and each command's own picture.
+    const GROUPED: &str = r#"{
+        "tab": "20",
+        "anchor": { "x": 40, "y": 50 },
+        "rows": [
+            {
+                "id": "window-fullscreen",
+                "label": "Full screen",
+                "enabled": true,
+                "icon": "fullscreen",
+                "shortcut": "Super+F"
+            },
+            { "id": "", "label": "", "enabled": false, "separator": true },
+            {
+                "id": "window-move-to-strip",
+                "label": "Move to strip",
+                "enabled": true,
+                "icon": "arrow-up-down",
+                "children": [
+                    {
+                        "id": "window-move-to-strip:90",
+                        "label": "Research",
+                        "enabled": true
+                    }
+                ]
+            },
+            {
+                "id": "window-close-window",
+                "label": "Close this window",
+                "enabled": true,
+                "icon": "x"
+            }
+        ]
+    }"#;
+
+    #[test]
+    fn the_view_draws_each_rows_picture_its_rule_and_its_submenu() {
+        let surface = WindowMenuSurface::showing(GROUPED);
+        let items = surface.menu.items();
+        assert_eq!(
+            items.len(),
+            4,
+            "a rule is an item of the menu, so the rows stay where the session put them"
+        );
+        assert!(
+            !items[0].is_separator(),
+            "the first group's row, not a rule before it"
+        );
+        assert!(items[1].is_separator(), "the rule between the groups");
+        assert!(items[2].submenu_items().is_some(), "the places are nested");
+        assert!(items[3].submenu_items().is_none());
+        assert_eq!(
+            surface.nested[2],
+            [Some("window-move-to-strip:90".to_owned())],
+            "the submenu's rows are the session's rows"
+        );
+        assert_eq!(
+            surface.ids[2], None,
+            "the submenu's own row chooses nothing"
+        );
+        assert_eq!(surface.ids[1], None, "and a rule chooses nothing");
+
+        let icon = |item: &MenuItem| match item {
+            MenuItem::Action { icon, .. } => *icon,
+            _ => None,
+        };
+        assert_eq!(
+            [
+                icon(&items[0]),
+                icon(&items[1]),
+                icon(&items[2]),
+                icon(&items[3])
+            ],
+            [
+                Some(ui::icons::Icon::Fullscreen),
+                None,
+                Some(ui::icons::Icon::ArrowUpDown),
+                Some(ui::icons::Icon::X)
+            ],
+            "every command draws the picture the session names, the rule none"
+        );
+        assert_eq!(
+            items[0]
+                .shortcut()
+                .map(|chord| chord.label(ui::platform::PlatformConventions::new(
+                    ui::platform::Platform::Linux
+                ))),
+            Some(ui::platform::Shortcut::from("Super+F").label(
+                ui::platform::PlatformConventions::new(ui::platform::Platform::Linux)
+            ))
+        );
+    }
+
+    /// A row of a submenu is the choice: the session hears its id, not the
+    /// submenu's.
+    #[test]
+    fn choosing_a_submenu_row_chooses_the_row_it_stands_for() {
+        let mut surface = WindowMenuSurface::showing(GROUPED);
+        assert!(surface.menu.choose_submenu_item(2, 0));
+        assert_eq!(
+            surface.take_choice(),
+            Some("window-move-to-strip:90".to_owned())
+        );
+        assert!(!surface.menu.is_open(), "the menu closes on a choice");
     }
 
     /// A menu where one row has a shortcut and the other has none.

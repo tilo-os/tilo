@@ -181,13 +181,17 @@ pub fn spawn_with_agent_grants(
         "Agent integration workspace",
     );
     workspace.set_owner(principal.clone());
+    let owner_id = principal.clone();
     let owner = tilo_action_policy::Subject::person(principal);
-    // Operators answer in the workspace's documents.
-    workspace.admit_agent_preset(
-        "scribe",
-        tilo_action_policy::roles::AgentPreset::Operator,
-        &owner,
-    );
+    // Agents answer in the workspace's documents, inside a turn of the
+    // owner's.
+    let turn = |agent: &str| {
+        tilo_action_policy::roles::agent_turn(&TEST_WORKSPACE.to_string(), agent, &owner_id, &[])
+            .grants
+    };
+    for grant in turn("scribe") {
+        workspace.grant(grant);
+    }
     let everything = |id: String, agent: &str, node: tilo_action_policy::TreePath| {
         tilo_action_policy::Grant::new(
             id,
@@ -246,11 +250,9 @@ pub fn spawn_with_agent_grants(
     // App fixtures use the same agent-only endpoint as Scribe. Device
     // enrollment, workspace membership, and exact app authority remain separate.
     for host in ["ada", "photos", "files"] {
-        workspace.admit_agent_preset(
-            host,
-            tilo_action_policy::roles::AgentPreset::Operator,
-            &owner,
-        );
+        for grant in turn(host) {
+            workspace.grant(grant);
+        }
     }
     // Integration fixtures exercise the canonical routes and the dev.tilo test
     // routes. Grant each observed route explicitly: the production capability

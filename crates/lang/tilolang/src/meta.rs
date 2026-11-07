@@ -274,11 +274,13 @@ pub struct DefaultViewMeta {
     pub view: String,
 }
 
-/// Words a view shows as it wrote them (`"{n} new"` given to a label): a message of the
-/// package's catalogue, an attribute of the view's own message.
+/// Words a view shows as it wrote them (`"{n} new"` given to a label), or an action tells as
+/// it wrote them (`notify`'s title and body): a message of the package's catalogue, an
+/// attribute of that declaration's own message.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WordMeta {
-    /// The view's id.
+    /// The id of the declaration whose message the words are an attribute of: the view that
+    /// shows them, or the action whose notification says them.
     pub view: String,
     /// The attribute naming it under the view's message: `w-` and a slug of its words.
     pub key: String,

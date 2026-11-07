@@ -31,6 +31,7 @@ mod activity;
 mod activity_models;
 mod activity_provider;
 pub mod agent_door;
+mod agents;
 mod ambient_brightness;
 mod app_icons;
 mod app_liveness;
@@ -61,7 +62,7 @@ mod continuations;
 pub mod controller_nav;
 pub mod controllers;
 mod controls;
-pub mod conversation;
+mod conversations;
 mod desk;
 mod desk_doc;
 mod desk_migration;
@@ -131,11 +132,11 @@ mod projection;
 mod projection_video;
 mod questions;
 pub mod quick_settings;
+mod record_index;
 mod records;
 pub mod recovery;
 mod rotation;
 pub mod run;
-mod run_programs;
 mod seams;
 mod search;
 mod search_ask;
@@ -172,6 +173,7 @@ mod window_move;
 mod window_share;
 mod window_transfer;
 mod window_warmth;
+mod workspace_delete;
 mod workspace_gate;
 mod workspace_settings;
 mod workspaces;
@@ -221,8 +223,6 @@ pub use rotation::Accelerometer;
 pub use run::{Backend, Reach};
 pub use search::{AppActions, SearchOptions};
 pub use setup::BeforeDesk;
-/// The resource the session's runs of what people ask its agents are read on.
-pub use tilo_agent_runs::wire::RESOURCE as AGENT_RUNS_RESOURCE;
 pub use tilo_service::{Service, Services};
 
 use crate::mount::panels::mount_activities;
@@ -236,6 +236,7 @@ use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
+use tilo_sheets::delete_workspace::DeleteWorkspaceSeat;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
@@ -337,15 +338,14 @@ struct Shared {
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
-    /// The runs of what people ask this session's agents to do, fed every
-    /// pass who sits here and what the workspace in front admits.
-    agent_runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
-    /// Each run's program host, reached by the agent's calls and by the
-    /// person's lines in its conversation alike (shell.md §8.1).
-    run_programs: run_programs::Shared,
-    /// The runs' conversations (shell.md §8.1): a line typed in one is a
-    /// program run as the person, or a sentence to the run.
-    conversation: std::sync::Arc<conversation::Conversation>,
+    /// The turns this session's agents answer: a person's message in a
+    /// conversation the agent takes part in, read every pass from Chat's
+    /// record of each workspace.
+    conversations: conversations::Conversations,
+    /// The agents each workspace keeps, read every pass from its record of
+    /// them: who keeps an agent is that record's word, and what the broker
+    /// admits an agent's session on.
+    agents: agents::Agents,
     /// The agents the person admitted at its agent door, as the desk and the bar show them.
     seats: std::sync::Arc<agent_door::Seats>,
     /// It runs in a window of a desktop it did not start (see
@@ -372,8 +372,9 @@ struct Shared {
     wake_handle: tilo_service::Wake,
     /// What plays, as the desk's music widget shows it.
     music: tilo_desktop::desk_widgets::DeskMusic,
-    /// The power menu, workspace settings, and the questions the session
-    /// asks for apps and services, by their seats.
+    /// The power menu, workspace settings, the questions the session asks
+    /// for apps and services, and the one deleting a workspace asks, by
+    /// their seats.
     power: Option<PowerSeat>,
     workspace_settings: Option<WorkspaceSettingsSeat>,
     /// The desk revision workspace settings was last fed at: its panes are
@@ -400,6 +401,9 @@ struct Shared {
     /// from, and what it made in this opening.
     invite: Option<InviteSeat>,
     invite_made: RefCell<invite::Made>,
+    /// The question deleting a workspace asks, and the workspace it is about.
+    delete_workspace: Option<DeleteWorkspaceSeat>,
+    delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceSlot>>,
     /// What the sites this computer knows list as public workspaces, read
     /// on a worker of its own.
     directory_store: directory::Store,
@@ -588,6 +592,8 @@ pub struct Session {
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The quick settings panel coming and going, which the compositor draws.
+    quick_settings_panel: quick_settings::PanelMotion,
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     warmth: window_warmth::Windows,
@@ -926,17 +932,6 @@ impl Session {
             }
             desk_doc::Kept::None => {}
         }
-        // The runs people ask this session's agents for, and each run's program host: the
-        // conversation over them (shell.md §8.1) is the shell's, and its lines reach here.
-        let the_runs = options.agent_runs.take().unwrap_or_else(|| {
-            std::sync::Arc::new(tilo_agent_runs::AgentRuns::new(Some(options.wake.handle())))
-        });
-        let the_programs = std::sync::Arc::new(run_programs::Programs::new());
-        let conversation = std::sync::Arc::new(conversation::Conversation::new(
-            std::sync::Arc::clone(&the_runs),
-            std::sync::Arc::clone(&the_programs),
-            &options.person,
-        ));
         // What each window shows, as the broker knows it: the desk offers the
         // windows a person may share from, and the sharing doors read it.
         let notes = options.launches.notes();
@@ -971,14 +966,11 @@ impl Session {
                     .unwrap_or_default()
             })
         };
-        doors.add(Rc::new(RefCell::new(
-            arrangement::ArrangementDoor::new(
-                Rc::clone(&arrangement),
-                Rc::new(move || underway.get()),
-                find.clone(),
-            )
-            .with_conversation(std::sync::Arc::clone(&conversation)),
-        )));
+        doors.add(Rc::new(RefCell::new(arrangement::ArrangementDoor::new(
+            Rc::clone(&arrangement),
+            Rc::new(move || underway.get()),
+            find.clone(),
+        ))));
         // What the person's settings say the desk shows: a device that kept
         // no picture yet takes the choice, and otherwise the workspaces keep
         // the pictures this device kept for them until the setting changes.
@@ -1091,6 +1083,20 @@ impl Session {
         let channels_fanout =
             std::sync::Arc::new(tilo_action_broker::collab_broker::FanoutState::new());
         let channel_link = channels::ChannelLink::new();
+        // Search reads the workspaces' records off the records themselves,
+        // with no window of their app running: what this device holds is
+        // found before anything changes, and every change after it.
+        let record_index = engine.as_ref().map(|engine| {
+            crate::record_index::RecordIndex::start(
+                std::sync::Arc::clone(engine)
+                    as std::sync::Arc<dyn crate::record_index::RecordSource>,
+                std::sync::Arc::new(crate::record_index::AppReader::of_device()),
+                options.search.content.clone(),
+            )
+        });
+        let record_changes = record_index.clone().map(|index| {
+            index as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+        });
         let channels = engine.as_ref().and_then(|engine| {
             channels::Channels::open(
                 engine,
@@ -1108,6 +1114,7 @@ impl Session {
             Some(sync::PeerDocuments::new(
                 std::sync::Arc::clone(&channels_broker),
                 std::sync::Arc::clone(&channels_fanout),
+                record_changes.clone(),
             )),
         );
         // The content the workspaces' records reference: kept beside their
@@ -1246,6 +1253,7 @@ impl Session {
                     identify: numbers.ask(),
                     invitable: Rc::clone(&invitable),
                 },
+                engine: engine.clone(),
             },
             sync.clone(),
             &overview,
@@ -1261,17 +1269,10 @@ impl Session {
         // The desk as the session publishes it, which the shell reads through the door.
         let chrome_door = shell::chrome_door(options.shell, &chrome, surfaces.clone());
         doors.add(Rc::clone(&chrome_door));
-        // The runs people ask of this session's agents: the session keeps
-        // its own, or plays the run channel a test handed it. Its broker
-        // delivers them, it is one of the session's services, and the desk
-        // shows each run's conversation.
-        let agent_runs = std::sync::Arc::clone(&the_runs);
-        let run_programs = std::sync::Arc::clone(&the_programs);
-        // The seam the agent door's connections ask this session's own doors on, and where a
-        // task's programs are kept: made before the plane starts, which serves the programs.
+        // The seam the agent door's connections ask this session's own doors on: made before
+        // the plane starts, which serves the programs.
         let session_doors = std::sync::Arc::new(agent_door::SessionDoors::new(
             options.wake.handle(),
-            std::sync::Arc::clone(&run_programs),
             &options.person,
         ));
         let task_programs = Some(std::sync::Arc::new(task_programs::TaskPrograms::new(
@@ -1280,7 +1281,6 @@ impl Session {
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
-            runs: std::sync::Arc::clone(&agent_runs),
             seats: std::sync::Arc::clone(&seats),
             handle: handle.clone(),
             person: options.person.clone(),
@@ -1361,6 +1361,7 @@ impl Session {
             file_picker,
             directory,
             invite,
+            delete_workspace,
             display_confirm,
             displays: display_seat,
             shortcut_guide: guide_seat,
@@ -1475,6 +1476,14 @@ impl Session {
         // workspaces the engine holds: the broker's decisions and the
         // automation's arming both refuse a device its workspace revoked.
         let revocations = engine::revocations_of(engine.as_ref());
+        // The conversations this session's agents answer in, read from
+        // Chat's record of each workspace: the broker delivers their turns to
+        // the agents and admits what they do there.
+        let conversations =
+            conversations::Conversations::new(cli::data_home(), options.wake.handle());
+        // The agents each workspace keeps, read from its record of them: who
+        // keeps an agent, and so whose session runs it.
+        let agents = agents::Agents::new(cli::data_home(), options.wake.handle());
         // The typed opens an app asks this session for: one service, made
         // here so the broker below serves Files' waits for its lists'
         // changes, and started from the doors table.
@@ -1488,8 +1497,11 @@ impl Session {
             &handle,
             std::sync::Arc::new(shortcut_library),
             &activity,
-            std::sync::Arc::clone(&agent_runs),
-            Some(tools.clone()),
+            mount::services::Knitted {
+                turns: Some(conversations.runs()),
+                agents: Some(agents.roster()),
+                tools: Some(tools.clone()),
+            },
             mount::services::Collaboration {
                 revocations: std::sync::Arc::clone(&revocations),
                 sync: sync.as_deref(),
@@ -1499,6 +1511,7 @@ impl Session {
                     keys: engine.as_ref().map(|engine| engine.keys()),
                 },
                 content: Some(std::sync::Arc::clone(&record_content)),
+                records: record_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
@@ -1649,11 +1662,6 @@ impl Session {
         if let Some(shell) = &shell {
             shell.share_records(&services);
         }
-        services
-            .borrow_mut()
-            .add(Box::new(tilo_agent_runs::Served::new(
-                std::sync::Arc::clone(&agent_runs),
-            )));
         // The shell's own readings and verbs, on the same door every other
         // service answers on.
         mount::shell::Shell::mount(&services, &handle, overlays.clone(), Rc::clone(&shortcuts));
@@ -1688,6 +1696,7 @@ impl Session {
 
         let search = Rc::new(SessionSearch::new(
             options.search,
+            options.person.clone(),
             options.apps,
             Some(options.wake.handle()),
         ));
@@ -1732,9 +1741,6 @@ impl Session {
             services,
             table,
             window_shares,
-            agent_runs,
-            run_programs,
-            conversation,
             seats,
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),
@@ -1751,9 +1757,13 @@ impl Session {
             capabilities_fed: Cell::new(None),
             fs_authority: fs_authority::Publisher::for_session(),
             workspace_tabs,
+            conversations,
+            agents,
             directory,
             invite,
             invite_made: RefCell::default(),
+            delete_workspace,
+            delete_workspace_ask: RefCell::default(),
             directory_store,
             boot_join: RefCell::new(boot_join),
             community: RefCell::new(community),
@@ -1775,18 +1785,26 @@ impl Session {
             here_at: Cell::new(0),
             here_seen: Cell::new(0),
             places_seen: RefCell::default(),
-            notifications: Rc::new(RefCell::new(notifications::SessionNotifications::new(
-                options
-                    .desktop
-                    .as_ref()
-                    .map(|desktop| desktop.notifications().clone()),
-                notices,
-                banners.clone(),
-                notification_policy,
-                notice_signals,
-                options.power.clone(),
-                notice_history,
-            ))),
+            notifications: {
+                let notifications = notifications::SessionNotifications::new(
+                    options
+                        .desktop
+                        .as_ref()
+                        .map(|desktop| desktop.notifications().clone()),
+                    notices,
+                    banners.clone(),
+                    notification_policy,
+                    notice_signals,
+                    options.power.clone(),
+                    notice_history,
+                );
+                // Notifications continue on the person's other devices, when
+                // this session runs as one of them.
+                if let Some(link) = &fabric {
+                    notifications.attach_fabric(std::sync::Arc::clone(link));
+                }
+                Rc::new(RefCell::new(notifications))
+            },
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,
@@ -1938,6 +1956,9 @@ impl Session {
             capture_io,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            quick_settings_panel: quick_settings::PanelMotion::new(
+                (options.presentation)().theme.motion(),
+            ),
             warmth,
             language: mount::language::Language::new(),
             night_light,

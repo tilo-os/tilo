@@ -14,7 +14,7 @@ use crate::error::RuntimeError;
 use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
-    KEEP_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
+    KEEP_ACTION, MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, SET_ACTION, THEN_ACTION, UNDO_ACTION,
 };
 use crate::ids::{DocId, ModuleHash, Principal};
 use crate::live::{Live, LiveStats};
@@ -45,6 +45,9 @@ pub enum ViewEvent {
     /// `undo(v)` or `undo(run)` was pressed: take back, through the platform's history, the
     /// step a version is part of, or every step of a task run.
     Undo(UndoAsk),
+    /// *Mark all seen* was pressed and moved `count` marks: the window says so, and the person
+    /// can take the move back with it.
+    Seen { count: usize },
 }
 
 /// What an `undo(...)` a view applied takes back.
@@ -557,6 +560,23 @@ impl ViewInstance {
                     _ => return Err(RuntimeError::BadArgs("a malformed `undo`".into())),
                 };
                 self.events.borrow_mut().push(ViewEvent::Undo(ask));
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
+            MARK_SEEN_ACTION => {
+                let [Value::List(ids)] = aref.args.as_slice() else {
+                    return Err(RuntimeError::BadArgs("a malformed `mark seen`".into()));
+                };
+                let ids: Vec<String> = ids
+                    .iter()
+                    .filter_map(|id| id.as_text().map(str::to_owned))
+                    .collect();
+                let count = self
+                    .core
+                    .mark_all_seen(&self.live.viewer.0, &ids)
+                    .map_err(|error| RuntimeError::Package(error.to_string()))?;
+                if count > 0 {
+                    self.events.borrow_mut().push(ViewEvent::Seen { count });
+                }
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             THEN_ACTION => {

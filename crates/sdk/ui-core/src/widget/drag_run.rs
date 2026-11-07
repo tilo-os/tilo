@@ -38,6 +38,8 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
 use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
+
+use crate::component::SlotViews;
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 /// Which way a run goes.
@@ -219,6 +221,8 @@ pub struct DragRun {
     /// bar's or a dock's controls are a finger's target under a coarse pointer, as any
     /// button's are.
     interaction: crate::interaction::InteractionEnvironment,
+    /// The item whose view a host is changing, in [`SlotViews`]' own terms.
+    editing: Option<usize>,
     dirty: bool,
 }
 
@@ -246,6 +250,7 @@ impl DragRun {
             reporter: None,
             activated: None,
             interaction: crate::interaction::InteractionEnvironment::default(),
+            editing: None,
             dirty: false,
         }
     }
@@ -314,6 +319,137 @@ impl DragRun {
         });
         self.views.push(item.view);
         self
+    }
+
+    /// Take the items of a run whose keys stay, in place: what each item says about itself
+    /// changes where it stands, and its view changes where it stands, so the run keeps what
+    /// those views hold (a menu a person opened on the bar) rather than being built again.
+    /// `false` when these are other items: one key other, or another order.
+    pub(crate) fn take_items(&mut self, items: Vec<RunItem>) -> bool {
+        if items.len() != self.keys.len()
+            || items
+                .iter()
+                .zip(&self.keys)
+                .any(|(item, keys)| item.key != keys.key)
+        {
+            return false;
+        }
+        let mut views = Vec::with_capacity(items.len());
+        self.keys = items
+            .into_iter()
+            .map(|item| {
+                views.push(item.view);
+                Keys {
+                    key: item.key,
+                    label: item.label,
+                    item: item.item,
+                    group: item.group,
+                }
+            })
+            .collect();
+        if self.items.is_none() {
+            // Nothing is laid out yet: the views it holds are the ones it takes.
+            self.views = views;
+        }
+        true
+    }
+
+    /// What the run was told it is.
+    pub(crate) fn name_of(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+
+    /// The way it runs.
+    pub(crate) fn axis_of(&self) -> RunAxis {
+        self.axis
+    }
+
+    /// Where its items pack along it.
+    pub(crate) fn distribute_of(&self) -> Distribute {
+        self.distribute
+    }
+
+    /// Where its items pack across it.
+    pub(crate) fn align_of(&self) -> Align {
+        self.align
+    }
+
+    /// The item known by `key`, by its place in the run.
+    pub(crate) fn index_of(&self, key: &str) -> Option<usize> {
+        self.keys.iter().position(|keys| keys.key == key)
+    }
+
+    /// Change the view of the item at `index`, in [`SlotViews`]' own terms.
+    pub(crate) fn edit_item(&mut self, index: Option<usize>) {
+        self.editing = index;
+    }
+
+    /// Presses and let go without moving go to `activated` from now on.
+    pub(crate) fn replace_activate(&mut self, activated: Option<Box<dyn FnMut(&str)>>) {
+        self.activated = activated;
+    }
+
+    /// Drops go to `reporter` from now on.
+    pub(crate) fn replace_reporter(&mut self, reporter: Option<Box<dyn FnMut(&DragDrop)>>) {
+        self.reporter = reporter;
+    }
+
+    /// The row an item's view stands in, where it stands.
+    fn item_row_mut(&mut self, index: usize) -> Option<&mut crate::widget::arrange::Row> {
+        let at = self
+            .groups
+            .iter()
+            .position(|members| members.as_ref().is_some_and(|held| held.contains(&index)))?;
+        let inside = self.groups[at]
+            .as_ref()?
+            .iter()
+            .position(|held| *held == index)?;
+        let items = self.items.as_mut()?;
+        if self.nested {
+            let columns = items
+                .as_any_mut()?
+                .downcast_mut::<crate::widget::arrange::Grid>()?;
+            let row = columns.child_mut(at)?;
+            let row = row
+                .as_any_mut()?
+                .downcast_mut::<crate::widget::arrange::Row>()?;
+            row.child_mut(inside)?
+                .as_any_mut()?
+                .downcast_mut::<crate::widget::arrange::Row>()
+        } else {
+            let rows = items
+                .as_any_mut()?
+                .downcast_mut::<crate::widget::arrange::Row>()?;
+            rows.child_mut(at)?
+                .as_any_mut()?
+                .downcast_mut::<crate::widget::arrange::Row>()
+        }
+    }
+
+    /// The view of the item at `index`, where it stands.
+    fn item_view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        if self.items.is_none() {
+            return self.views.get_mut(index);
+        }
+        self.item_row_mut(index)?.child_mut(0)
+    }
+
+    /// Show `view` as the view of the item being changed instead of the one it holds.
+    fn put_item_view(&mut self, view: Element) {
+        let Some(index) = self.editing else {
+            return;
+        };
+        if self.items.is_none() {
+            if let Some(held) = self.views.get_mut(index) {
+                *held = view;
+            }
+            return;
+        }
+        let Some(row) = self.item_row_mut(index) else {
+            return;
+        };
+        <crate::widget::arrange::Row as SlotViews>::replace(row, 0, view);
+        self.dirty = true;
     }
 
     /// The run's key, as a drop names it.
@@ -1075,6 +1211,14 @@ impl Widget for DragRun {
         "DragRun"
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn test_id(&self) -> Option<&str> {
         Some(&self.id)
     }
@@ -1101,6 +1245,38 @@ impl Widget for DragRun {
         if let Some(items) = self.items.as_mut() {
             Widget::set_interaction_environment(&mut **items, environment);
         }
+    }
+}
+
+/// The view of the item a host is changing, where the item stands: the view in the slot its
+/// run gave it, so a part of the bar changes what it shows without the bar being built again.
+impl SlotViews for DragRun {
+    fn len(&self) -> usize {
+        usize::from(self.editing.is_some())
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        if index != 0 {
+            return None;
+        }
+        let at = self.editing?;
+        self.item_view_mut(at)
+    }
+
+    fn insert(&mut self, _index: usize, view: Element) {
+        self.put_item_view(view);
+    }
+
+    fn remove(&mut self, _index: usize) {
+        self.put_item_view(Box::new(crate::widget::Spacer::token(
+            crate::tokens::SpacingStep::S0,
+        )));
+    }
+
+    fn move_view(&mut self, _from: usize, _to: usize) {}
+
+    fn replace(&mut self, _index: usize, view: Element) {
+        self.put_item_view(view);
     }
 }
 
@@ -1139,6 +1315,18 @@ mod tests {
             .push(group_item("clock", 50.0, RunGroup::Center))
             .push(group_item("people", 70.0, RunGroup::Trailing))
             .push(group_item("status", 24.0, RunGroup::Trailing))
+    }
+
+    /// The bar a person's shell shows is a run: a host taking its parts' changing views in
+    /// place reaches it by its own type, or every tick of the clock builds the bar again.
+    #[test]
+    fn the_run_answers_its_own_type() {
+        let mut run: Element = Box::new(DragRun::new("bar").name("Bar").push(item("a", 24.0)));
+        assert!(
+            run.as_any().is_some_and(|any| any.is::<DragRun>())
+                && run.as_any_mut().is_some_and(|any| any.is::<DragRun>()),
+            "a run is a widget the adapter reaches by its type"
+        );
     }
 
     fn harness(run: DragRun) -> crate::headless::FrameHarness {

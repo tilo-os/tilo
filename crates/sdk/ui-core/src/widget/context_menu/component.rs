@@ -174,6 +174,32 @@ pub struct MenuButtonProps {
     pub items: Vec<MenuItemProps>,
 }
 
+/// The button a menu button stands on: its words, its glyph, and the kind of button it is.
+fn face(
+    key: &str,
+    label: String,
+    icon: Option<Icon>,
+    icon_only: bool,
+    role: Option<ButtonRole>,
+) -> crate::widget::Button {
+    match icon {
+        Some(icon) if icon_only => crate::widget::Button::icon_only(key, icon, &label),
+        Some(icon) => crate::widget::Button::new(key, &label)
+            .with_icon(icon)
+            .role(role.unwrap_or_default()),
+        None => crate::widget::Button::new(key, &label).role(role.unwrap_or_default()),
+    }
+}
+
+/// The rows a menu button lists: its commands, then the actions offered on something.
+fn rows(items: Vec<MenuItemProps>, actions: Vec<OfferedAction>) -> Vec<MenuItem> {
+    items
+        .into_iter()
+        .chain(actions.into_iter().map(MenuItemProps::from))
+        .map(MenuItemProps::into_item)
+        .collect()
+}
+
 impl Described for MenuButton {
     type Props = MenuButtonProps;
 
@@ -187,19 +213,27 @@ impl Described for MenuButton {
             subject: _,
             items,
         } = props;
-        let button = match icon {
-            Some(icon) if icon_only => crate::widget::Button::icon_only(key, icon, &label),
-            Some(icon) => crate::widget::Button::new(key, &label)
-                .with_icon(icon)
-                .role(role.unwrap_or_default()),
-            None => crate::widget::Button::new(key, &label).role(role.unwrap_or_default()),
-        };
-        button.with_menu(
-            items
-                .into_iter()
-                .chain(actions.into_iter().map(MenuItemProps::from))
-                .map(MenuItemProps::into_item)
-                .collect(),
-        )
+        face(key, label, icon, icon_only, role).with_menu(rows(items, actions))
+    }
+
+    /// Take changed props in place: the button says the desk's new words and its menu lists the
+    /// workspaces the desk has now, while the menu the person opened stays open where it stands
+    /// (a bar whose workspace the desk renamed or switched under it closes nothing).
+    fn set_props(&mut self, props: MenuButtonProps) -> bool {
+        let MenuButtonProps {
+            label,
+            icon,
+            icon_only,
+            role,
+            actions,
+            subject: _,
+            items,
+        } = props;
+        let fresh = face("", label, icon, icon_only, role);
+        if !self.button.take_words(&fresh) {
+            return false;
+        }
+        self.menu.set_items(rows(items, actions));
+        true
     }
 }

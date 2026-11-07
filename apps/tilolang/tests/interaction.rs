@@ -333,15 +333,20 @@ fn draft(app: &mut TestApp<TlApp>) -> String {
 /// edits, Leo views, and the agent `planner` was admitted. Zoe is in the workspace's roster, but no
 /// member.
 fn members_of_the_workspace(app: &mut TestApp<TlApp>) {
-    use ui::permissions::policy::{self, Role, Subject, roles::AgentPreset};
+    use ui::permissions::policy::{self, Role, Subject};
     let me = app.permissions().standing().person.clone();
     let id = app.permissions().standing().workspace().to_owned();
     let mut policy = policy::WorkspacePolicy::new(&id, &me);
     policy.members.insert("u_mia".to_owned(), Role::Editor);
     policy.members.insert("u_leo".to_owned(), Role::Viewer);
-    policy
-        .grants
-        .extend(AgentPreset::Contributor.grants(&id, "planner", &Subject::person(&me)));
+    policy.grants.push(policy::Grant::new(
+        "agent-member:planner",
+        Subject::agent("planner"),
+        policy::TreePath::workspace(&id),
+        policy::KindSet::READ_UNDOABLE,
+        policy::Answer::Allow,
+        Subject::person(&me),
+    ));
     let standing = policy::Standing::person(policy, me);
     app.set_permissions(ui::permissions::PermissionContext::from_standing(
         &id, standing,

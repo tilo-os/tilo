@@ -322,6 +322,9 @@ pub struct SemanticNode {
     /// Its place in its collection and its depth, as a screen reader says
     /// them ("3 of 5, level 2").
     pub place: SetPlace,
+    /// The item of its app's collection this node shows
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
+    pub item: Option<String>,
 }
 
 /// Where a node sits in its collection and how deep, from its
@@ -359,6 +362,7 @@ impl SemanticNode {
             && self.name == other.name
             && self.value == other.value
             && self.description == other.description
+            && self.item == other.item
             && self.state == other.state
             && self.bounds == other.bounds
             && self.actions == other.actions
@@ -450,6 +454,7 @@ impl SemanticTree {
                 widget_taffy_id: None,
                 semantic_target: None,
                 place: SetPlace::default(),
+                item: None,
             },
         );
         Self {
@@ -697,6 +702,7 @@ impl SemanticTree {
                 widget_taffy_id: None,
                 semantic_target: None,
                 place: SetPlace::default(),
+                item: None,
             },
         );
 
@@ -878,6 +884,18 @@ impl SemanticTree {
                 .iter()
                 .find_map(|component| component.nodes.get(id))
         })
+    }
+
+    /// The nodes showing the item `item` of its app's collection
+    /// ([`SemanticNode::item`]), in reading order.
+    pub(crate) fn nodes_showing_item<'tree>(
+        &'tree self,
+        item: &'tree str,
+    ) -> impl Iterator<Item = &'tree SemanticNode> + 'tree {
+        self.order
+            .iter()
+            .filter_map(move |id| self.node(id))
+            .filter(move |node| node.item.as_deref() == Some(item))
     }
 
     /// Includes the root.
@@ -1654,6 +1672,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
                 _ => access.action_target.clone(),
             },
             place: SetPlace::of(&access),
+            item: access.item.clone(),
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1727,6 +1746,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
                 _ => semantic_target.map(str::to_owned),
             },
             place: SetPlace::of(access),
+            item: access.item.clone(),
         };
         self.order.push(id.clone());
         self.insert_node(node);
@@ -1919,6 +1939,7 @@ mod tests {
                 widget_taffy_id: None,
                 semantic_target: None,
                 place: SetPlace::default(),
+                item: None,
             };
             tree.nodes
                 .insert(group.clone(), node(group.clone(), vec![deep.clone()]));

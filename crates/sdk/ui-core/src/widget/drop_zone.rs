@@ -78,6 +78,10 @@ impl ZoneMetrics {
     }
 }
 
+#[path = "drop_zone_component.rs"]
+mod component;
+pub use component::DropZoneProps;
+
 /// Immediate-mode drop zone.
 #[derive(Clone, Copy, Debug)]
 pub struct DropZoneFace<'a> {
@@ -272,11 +276,17 @@ impl DropZone {
     /// action `drop`, so a person's drop, a script and an agent hand files
     /// over through the same action.
     #[must_use]
+    pub fn on_files_view(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
+        self.set_on_files_view(f);
+        self
+    }
+
+    /// [`Self::on_files_view`] on a zone already built.
     #[expect(
         clippy::expect_used,
         reason = "the generated text parameter and its action are internally consistent"
     )]
-    pub fn on_files_view(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
+    pub fn set_on_files_view(&mut self, f: impl FnMut(Vec<PathBuf>) + 'static) {
         use crate::tilo_actions::{
             ActionBinding, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
             ResourceSpec,
@@ -327,7 +337,6 @@ impl DropZone {
         self.files_action = Some(crate::widget::ActionEmitter::new(binding));
         self.native_resource = Some(resource);
         self.on_files = Some(Box::new(f));
-        self
     }
 
     /// For hosts with their own drag tracking: whether a drag hovers.
@@ -405,6 +414,8 @@ impl DropZone {
 }
 
 impl Widget for DropZone {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

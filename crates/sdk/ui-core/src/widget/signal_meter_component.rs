@@ -29,4 +29,10 @@ impl Described for SignalMeter {
     fn from_props(_key: &str, props: SignalMeterProps) -> Self {
         Self::new(props.level)
     }
+
+    /// A stronger or weaker signal fills its bars where the meter stands.
+    fn set_props(&mut self, props: SignalMeterProps) -> bool {
+        self.set_level(props.level);
+        true
+    }
 }

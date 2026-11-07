@@ -186,6 +186,8 @@ directory-error-no-workspace = that site has no public workspaces to show
 directory-error-unreachable = the site could not be reached
 directory-error-unreadable = the site answered with something that is not a directory
 directory-error-status = the site would not share its workspaces just now
+directory-error-invitation-gone = that invitation has lapsed, or the person who made it took it back
+directory-error-invitation-broken = that link does not open the invitation it names
 directory-here-more = +{ $count }
 directory-sites-unread = Some sites could not be read, so this list is short: { $error }
 directory-listing-gone = That workspace is no longer listed. Read the site again.
@@ -556,3 +558,11 @@ display-sheet-layouts = Displays
 display-confirm-question = Display change
 portal-sheet-question = System question
 workspace-settings-lens = Workspace settings
+
+# Deleting a workspace, asked wherever it was asked from: the confirm sheet
+# and the workspace settings' own question say the same words.
+workspace-delete-title = Delete { $name }?
+workspace-delete-body = Everything in this workspace goes with it: its windows, its groups, its history. It disappears from every device that has it.
+workspace-delete-confirm = Delete
+workspace-delete-keep = Keep
+workspace-delete-lens = Delete workspace

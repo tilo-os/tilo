@@ -1859,10 +1859,36 @@ impl Renderer {
     pub async fn new_async_deferring_reporting(
         device: &Device,
         options: RendererOptions,
-        mut deferral: PipelineDeferral,
+        deferral: PipelineDeferral,
         built: &mut dyn FnMut(),
     ) -> Result<Self> {
+        Self::build_async(device, options, deferral, built, false).await
+    }
+
+    /// [`Self::new_async_deferring_reporting`] for a renderer whose every
+    /// render must be the same picture: it sums each tile's segments in a
+    /// fixed order from the start, as [`Self::new_with_canonical_segment_order`]
+    /// does (Tilo patch), rather than compiling a second shader set for it.
+    pub async fn new_async_canonical_reporting(
+        device: &Device,
+        options: RendererOptions,
+        deferral: PipelineDeferral,
+        built: &mut dyn FnMut(),
+    ) -> Result<Self> {
+        Self::build_async(device, options, deferral, built, true).await
+    }
+
+    async fn build_async(
+        device: &Device,
+        options: RendererOptions,
+        mut deferral: PipelineDeferral,
+        built: &mut dyn FnMut(),
+        canonical_segment_order: bool,
+    ) -> Result<Self> {
         let mut engine = WgpuEngine::new(options.use_cpu, options.pipeline_cache.clone());
+        if canonical_segment_order {
+            engine.enable_canonical_segment_order();
+        }
         engine.initialize_gpu_timestamps(device);
         // As in `new_deferring`: GL compiles under one context lock.
         if device.adapter_info().backend == wgpu::Backend::Gl {

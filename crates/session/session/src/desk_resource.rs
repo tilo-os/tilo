@@ -26,20 +26,7 @@ use crate::notifications::NoticeSignals;
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct DeskKey {
     /// The revisions, the minute, the signals and the names the reading is made of.
-    reading: (
-        u64,
-        i64,
-        u32,
-        bool,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        u64,
-        String,
-        u64,
-    ),
+    reading: (u64, i64, u32, bool, u64, u64, u64, u64, u64, u64, String),
     /// The agents seated at the person's agent door.
     agents: u64,
     /// Whether the switcher's panel shows: it comes up on its own while Alt is held, with no
@@ -344,9 +331,6 @@ pub(crate) struct Desk {
     pub(crate) tray: Option<std::sync::Arc<tilo_tray_host::Tray>>,
     /// The notification centre the reading lists, and what it last said.
     pub(crate) notices: tilo_desktop_surface::DesktopNotifications,
-    /// The runs of what the person asked the session's agents: each run's conversation is
-    /// the desk's to show (shell.md §8.1).
-    pub(crate) runs: std::sync::Arc<tilo_agent_runs::AgentRuns>,
     /// The agents the person admitted at its agent door: each works here as itself, and the
     /// bar shows it as its own presence.
     pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
@@ -683,7 +667,6 @@ impl Desk {
                 self.notices.revision(),
                 self.surfaces.overlays.revision(),
                 self.surfaces.overlays.here(),
-                self.runs.revision(),
             ),
             agents: self.seats.revision(),
             revealed: self.surfaces.overlays.revealed(std::time::Instant::now()),
@@ -744,7 +727,6 @@ impl Desk {
                     .collect()
             })
         });
-        let conversations = Conversations::of(&self.runs.readings());
         self.handle.read(|tree| DeskReading {
             person: self.person.clone(),
             clock: ui::clock::time_of_day(&now),
@@ -777,9 +759,6 @@ impl Desk {
                     current: workspace.slot == tree.active,
                 })
                 .collect(),
-            // The native session runs no agent tasks of its own yet: none is published until a
-            // task host reports to it.
-            tasks: Vec::new(),
             here: self.surfaces.overlays.here(),
             switcher_revealed: self.surfaces.overlays.revealed(instant),
             switcher_scope: self.surfaces.overlays.scope().name().to_owned(),
@@ -810,9 +789,6 @@ impl Desk {
             badges: self.signals.badges(),
             people,
             tray: self.tray_items(),
-            runs: conversations.runs,
-            run_entries: conversations.entries,
-            entry_refs: conversations.refs,
             // What the screen says of its edges moves without the desk; the link publishes it
             // beside this reading and carries it over (`SessionLink::publish_edges`).
             ..DeskReading::default()
@@ -931,119 +907,6 @@ fn notice_actions(
                 })
         })
         .collect()
-}
-
-/// The runs of the session's agents as the desk names them: each run, each entry of its
-/// conversation, and what each program in it printed and changed (shell.md §8.1), keyed so
-/// an entry keeps its key while older ones are let go.
-#[derive(Default)]
-struct Conversations {
-    runs: Vec<shell_part::RunReading>,
-    entries: Vec<shell_part::RunEntryReading>,
-    refs: Vec<shell_part::EntryRefReading>,
-}
-
-impl Conversations {
-    fn of(runs: &[tilo_agent_runs::wire::Run]) -> Self {
-        use tilo_agent_runs::wire::Said;
-        let mut made = Self::default();
-        for run in runs {
-            made.runs.push(shell_part::RunReading {
-                key: run.id.clone(),
-                title: run.title.clone(),
-                agent: run.agent.clone(),
-                phase: phase_name(run.phase).to_owned(),
-                active: run.phase.active(),
-                live: run
-                    .live
-                    .as_ref()
-                    .filter(|live| live.end.is_none())
-                    .map(|live| live.text.clone())
-                    .unwrap_or_default(),
-            });
-            for entry in &run.transcript {
-                let key = format!("{}/{}", run.id, entry.seq);
-                let mut reading = shell_part::RunEntryReading {
-                    key: key.clone(),
-                    run: run.id.clone(),
-                    seq: i64::try_from(entry.seq).unwrap_or(i64::MAX),
-                    author: entry.author.clone(),
-                    by_agent: entry.by_agent(),
-                    ..shell_part::RunEntryReading::default()
-                };
-                match &entry.said {
-                    Said::Prose { text } => reading.text.clone_from(text),
-                    Said::Step { step } => {
-                        reading.step = true;
-                        match serde_json::from_value::<tilo_reference::ProgramStep>(step.clone()) {
-                            Ok(step) => made.step(&key, &mut reading, step),
-                            Err(error) => {
-                                // The runs wrote it from a `ProgramStep`: one that does not read
-                                // back is a bug of theirs, said where it shows and logged.
-                                tracing::error!(%error, entry = key, "a run's step does not read");
-                                "failed".clone_into(&mut reading.outcome);
-                                reading.answer = format!("This step does not read: {error}");
-                            }
-                        }
-                    }
-                }
-                made.entries.push(reading);
-            }
-        }
-        made
-    }
-
-    /// The program `step` into `reading`, and what it printed and changed under `entry`.
-    fn step(
-        &mut self,
-        entry: &str,
-        reading: &mut shell_part::RunEntryReading,
-        step: tilo_reference::ProgramStep,
-    ) {
-        use tilo_reference::StepOutcome;
-        reading.text = step.program;
-        match step.outcome {
-            StepOutcome::Done => "done",
-            StepOutcome::Rejected => "rejected",
-            StepOutcome::Preview => "preview",
-            StepOutcome::Asked => "asked",
-            StepOutcome::Failed => "failed",
-        }
-        .clone_into(&mut reading.outcome);
-        reading.answer = step.answer.join("\n");
-        let printed = step.refs.into_iter().map(|at| (at, false, String::new()));
-        let changed = step
-            .changes
-            .into_iter()
-            .map(|change| (change.resource, true, change.action));
-        for (number, (at, changed, action)) in printed.chain(changed).enumerate() {
-            self.refs.push(shell_part::EntryRefReading {
-                key: format!("{entry}/{number}"),
-                entry: entry.to_owned(),
-                changed,
-                resource: at.reference.id,
-                app_id: at.app,
-                type_kind: at.reference.kind,
-                label: at.reference.label,
-                change: action,
-            });
-        }
-    }
-}
-
-/// A run's phase, by the name its reading gives it.
-const fn phase_name(phase: tilo_agent_runs::wire::Phase) -> &'static str {
-    use tilo_agent_runs::wire::Phase;
-    match phase {
-        Phase::Approved => "approved",
-        Phase::Accepted => "accepted",
-        Phase::Planning => "planning",
-        Phase::Executing => "executing",
-        Phase::Waiting => "waiting",
-        Phase::Done => "done",
-        Phase::Failed => "failed",
-        Phase::Stopped => "stopped",
-    }
 }
 
 /// The name of the strip in front in the workspace in front, when it has one: what the bar

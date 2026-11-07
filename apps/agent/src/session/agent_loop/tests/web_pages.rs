@@ -53,6 +53,7 @@ impl TurnTransport for LooksAtSites {
             },
             stop_reason: StopReason::ToolCalls,
             usage: Usage::default(),
+            cost_micros: 0,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(TurnEvent::Finished(Ok(
@@ -157,6 +158,7 @@ impl TurnTransport for ReadsManyPages {
             },
             stop_reason: StopReason::ToolCalls,
             usage: Usage::default(),
+            cost_micros: 0,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(TurnEvent::Finished(Ok(
@@ -167,17 +169,14 @@ impl TurnTransport for ReadsManyPages {
     }
 }
 
-/// The first Browser read asks its person; once they allow it for the task
-/// (the host then answers the run's further page reads itself, which the
-/// broker's `allowing_one_page_read_for_the_issue_answers_the_runs_other_page_reads`
-/// proves), the run waits that once and reads every other page unasked.
+/// A run walks a list of pages it reads one by one: every page is read
+/// once, and the run finishes with what it found.
 #[test]
-fn one_answer_on_the_first_page_read_and_the_run_reads_the_rest() {
+fn the_run_reads_every_page_of_a_list_once() {
     const PAGES: usize = 16;
     let mut f = fixture(
         "Read the candidates' sites",
         World {
-            awaiting: Some(("read-page".into(), 1)),
             browser: Some(format!("tilo.content:{}", "0".repeat(64))),
             ..World::default()
         },
@@ -200,20 +199,13 @@ fn one_answer_on_the_first_page_read_and_the_run_reads_the_rest() {
         }
     );
     assert_eq!(f.world.borrow().steps.len(), PAGES, "every page read once");
-    let sent = f.sent.borrow();
-    let waits = sent
-        .iter()
-        .filter(|request| {
-            matches!(
-                request,
-                CollabRequest::InvokeTaskAction { wait: Some(_), .. }
-            )
-        })
-        .count();
-    assert_eq!(waits, 1, "the person was asked once");
-    let asked: Vec<_> = notes(&sent)
-        .into_iter()
-        .filter(|note| note.starts_with("Waiting for your confirmation"))
-        .collect();
-    assert_eq!(asked.len(), 1, "{asked:?}");
+    // No step is held waiting for its person: a conversation has nowhere
+    // to put that question, so a step that asks first is refused instead.
+    assert!(
+        !f.sent.borrow().iter().any(|request| matches!(
+            request,
+            CollabRequest::InvokeTaskAction { wait: Some(_), .. }
+        )),
+        "no step waits for a person"
+    );
 }

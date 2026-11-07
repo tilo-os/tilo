@@ -5,10 +5,16 @@ use crate::widget::Tone;
 use chrono::NaiveDate;
 
 /// Speak `locale` on this thread, the toolkit's catalogue loaded.
+/// The window speaks `locale`: its own catalogue is in it and the person
+/// selected it. Formats follow the window's language, so a process whose own
+/// copy is English keeps English dates whatever the device's locale says.
 fn speak(locale: &str) {
-    I18nManager::init("en-US");
+    let mut catalogues = vec![("en-US", "")];
+    if locale != "en-US" {
+        catalogues.push((locale, ""));
+    }
+    I18nManager::install("en-US", locale, &catalogues).expect("the window's catalogues install");
     I18nManager::register_widget_messages();
-    I18nManager::set_locale(locale);
 }
 
 fn day(y: i32, m: u32, d: u32) -> NaiveDate {
@@ -329,6 +335,20 @@ fn counts_group_digits_by_language_until_a_number_style_is_chosen() {
     });
     assert_eq!(comma.count(1_234_567), "1.234.567");
     assert_eq!(comma.size(1_500_000), "1,5 MB");
+}
+
+#[test]
+fn money_reads_whole_amounts_without_cents() {
+    speak("en-US");
+    assert_eq!(H24.money(0), "$0");
+    assert_eq!(H24.money(4_999), "$0", "less than a cent reads as none");
+    assert_eq!(H24.money(420_000), "$0.42");
+    assert_eq!(H24.money(1_500_000), "$1.50");
+    assert_eq!(H24.money(5_000_000), "$5");
+    assert_eq!(H24.money(1_250_000_000), "$1,250");
+    speak("de-DE");
+    assert_eq!(H24.money(420_000), "$0,42");
+    assert_eq!(H24.money(1_250_000_000), "$1.250");
 }
 
 #[test]

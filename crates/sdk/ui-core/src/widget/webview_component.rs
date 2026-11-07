@@ -56,4 +56,11 @@ impl Described for WebView {
         let _ = (&navigate, &fail);
         view
     }
+
+    /// The title a page is named by changes where the view stands: the page it shows is the
+    /// engine's, and keeps showing.
+    fn set_props(&mut self, props: WebViewProps) -> bool {
+        self.set_accessible_name(props.title.unwrap_or_default());
+        true
+    }
 }

@@ -1252,6 +1252,18 @@ impl NotificationStack {
         self.more_rect = rect;
     }
 
+    /// The card every banner of `n` starts from, on the stack and on the
+    /// machine-wide displays: the sender's mark, the body as previewed and
+    /// the app's caption.
+    fn banner_face(n: &Notification) -> ToastCard<'_> {
+        let mark = n.mark();
+        ToastCard::new(&n.title, n.severity.toast_kind())
+            .icon(mark.icon)
+            .app_image(mark.image)
+            .body(if n.show_preview { &n.body } else { "" })
+            .caption(n.app_name.as_deref().unwrap_or(""))
+    }
+
     /// The shared card for banner `n`, with its interaction state.
     fn banner_card<'a>(
         &self,
@@ -1264,17 +1276,9 @@ impl NotificationStack {
         // The stack owns what to show and click routing; the toast
         // widget owns the card's look and hands back the close rect.
         // Plain information leads with what sent it: the person when one is
-        // named, else the app's own glyph. A severity glyph wins over both,
+        // named, else the app's own mark. A severity glyph wins over both,
         // so an alert never loses its state colour.
-        let app_glyph = n
-            .app_id
-            .as_deref()
-            .map(|app| ui::icons::app_glyph(app, None));
-        let mut card = ToastCard::new(&n.title, n.severity.toast_kind())
-            .icon(n.icon_kind.icon().or(app_glyph))
-            .app_image(n.app_image.as_ref())
-            .body(if n.show_preview { &n.body } else { "" })
-            .caption(n.app_name.as_deref().unwrap_or(""))
+        let mut card = Self::banner_face(n)
             .time(time)
             // A card that offers its own way out ("Not now", "Dismiss")
             // needs no second one in its corner.
@@ -1636,12 +1640,7 @@ impl NotificationStack {
         let mut y = transient_slot(viewport, viewport.y0, (width, MIN_BANNER_H), window_bars).y0;
         let mut covered = Rect::ZERO;
         for n in banners {
-            let card = ToastCard::new(&n.title, n.severity.toast_kind())
-                .icon(n.icon_kind.icon())
-                .app_image(n.app_image.as_ref())
-                .body(if n.show_preview { &n.body } else { "" })
-                .caption(n.app_name.as_deref().unwrap_or(""))
-                .closable(false);
+            let card = Self::banner_face(n).closable(false);
             let height = ui::widget::toast::card_height(text_renderer, theme, &card, width)
                 .max(TOAST_HEIGHT);
             if y + height > bottom {

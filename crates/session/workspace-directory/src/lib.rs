@@ -33,7 +33,7 @@ pub use client::{
     Granted, Person, SiteEntry, SiteWorkspace, client, fetch_directory, invited_workspace, join,
     read_site, site_entry, verify_invitation, web_origin,
 };
-pub use store::{Joined, Store, Wake};
+pub use store::{Joined, Shelved, Store, Wake};
 pub use view::Held;
 
 /// One public workspace a directory lists, with where it is joined.

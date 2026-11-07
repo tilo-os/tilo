@@ -275,7 +275,7 @@ async fn a_store_admits_the_workspaces_members_and_no_one_else() {
     // A makes the workspace on its own device and writes, sealed.
     let a = open_file(&directory.path().join("a.json")).unwrap();
     let workspace_id = a
-        .create_workspace("Launch review", &a_cert, &a_key, now)
+        .create_workspace(WorkspaceId::new(), "Launch review", &a_cert, &a_key, now)
         .unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     let record = ApplicationRecord::host(APP, RECORD).unwrap();

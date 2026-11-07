@@ -239,6 +239,7 @@ impl Inner {
     /// Take the document `doc` as chunk `chunk`: the store's mirror of it is a copy of it, the
     /// resources it holds are read again, and each index catches up with it.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
+        self.stats.attaches = self.stats.attaches.saturating_add(1);
         self.versions = None;
         self.nested.clear();
         let mirror = mirror_of(doc);
@@ -427,6 +428,7 @@ impl Inner {
             before.insert(doc, (app.to_owned(), ty));
         }
         let mut ends: BTreeMap<String, idx::reflect::Ends> = BTreeMap::new();
+        let mut placed = idx::reflect::Placed::new();
         let mut changed = crate::reads::Changed::default();
         for (chunk, heads) in &held.heads {
             let Some(doc) = self.chunks.mirror(*chunk) else {
@@ -435,6 +437,7 @@ impl Inner {
             };
             let since = doc.committed_document().get_changes(heads);
             ends.extend(idx::reflect::ends_of(&since, doc, &self.index));
+            placed.extend(idx::reflect::placed_by(&since));
             changed.take_in(changed_by(&since, doc, &before));
         }
         for doc in &changed.nested {
@@ -453,8 +456,10 @@ impl Inner {
         let nested = &self.nested;
         let written = index.write(|writer| {
             let mut derive = Derive::new(&self.chunks, &docs, nested);
+            derive.removed_before(writer, app, &ends, &placed)?;
             derive.changes(writer, app, &reached)?;
             derive.versions(writer, app, &ends)?;
+            derive.removed(writer, app, &ends)?;
             writer.set_heads(&now)?;
             Ok(derive.reads)
         });

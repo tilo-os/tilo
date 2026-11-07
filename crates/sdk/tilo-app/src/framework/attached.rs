@@ -252,7 +252,9 @@ impl AttachedView {
                 record: checkout.id.as_str().into(),
             }
         };
-        cache.hydrate(key, document, Some(me.as_bytes().to_vec()))?;
+        // The record is written by the page that opens it, which mints its
+        // own writer then; the handle writes what it does through actions.
+        cache.hydrate(key, document, None)?;
         let cache_kept = cache.clone();
         let records = RecordOwners::portable(cache.clone())
             .open(definition.app_id(), workspace)
@@ -831,7 +833,7 @@ impl AttachedView {
                     record: record.as_str().into(),
                 },
                 bytes.clone(),
-                Some(self.me.as_bytes().to_vec()),
+                None,
             )?;
             self.records
                 .try_open_record(&checkout)

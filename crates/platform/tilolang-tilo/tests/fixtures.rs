@@ -123,6 +123,18 @@ impl Replica {
         }
     }
 
+    /// Commit what the runtime committed on its own as `who`'s steps, as another person at their
+    /// window made them.
+    pub fn commit_as(&mut self, who: &str) {
+        for committed in self.host.take_committed() {
+            self.apply_as(
+                &committed.action,
+                ActionInvoker::actor(who.to_owned()),
+                None,
+            );
+        }
+    }
+
     fn apply_as(
         &mut self,
         action: &DynAction,
@@ -198,9 +210,15 @@ impl Replica {
 
     /// Exchange every change with `other`, as sync does.
     pub fn sync_with(&mut self, other: &mut Self) {
-        self.doc.merge_incoming(&mut other.doc).unwrap();
+        self.send_to(other);
+        other.send_to(self);
+    }
+
+    /// Hand this replica's changes to `other`, as a sync does from one side: the order two
+    /// replicas receive each other's changes in is theirs, so what they read must not depend
+    /// on it.
+    pub fn send_to(&mut self, other: &mut Self) {
         other.doc.merge_incoming(&mut self.doc).unwrap();
-        self.host.sync_from(&self.doc);
         other.host.sync_from(&other.doc);
     }
 

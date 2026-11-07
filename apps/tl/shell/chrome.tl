@@ -167,7 +167,6 @@ migration action seed(s: Shell) {
         s.bar_parts.insert(BarPart(slot: .menu, title: "Tilo"))
         s.bar_parts.insert(BarPart(slot: .workspace, title: "Workspace"))
         s.bar_parts.insert(BarPart(slot: .strip, title: "Strip"))
-        s.bar_parts.insert(BarPart(slot: .tasks, title: "Tasks"))
         s.bar_parts.insert(BarPart(slot: .agent, title: "Agents", shown: false))
         s.bar_parts.insert(BarPart(slot: .space, title: "Gap"))
         s.bar_parts.insert(BarPart(slot: .clock, title: "Clock"))
@@ -183,6 +182,12 @@ migration action seed(s: Shell) {
 /// A shell that kept the retired `power` part beside the status loses it.
 migration action drop_the_power_part(s: Shell) {
     s.bar_parts.remove_where(p -> p.slot == Slot.power)
+}
+
+/// A shell that kept the retired `tasks` part loses it: what an agent does is the turn of a
+/// conversation, which Chat shows, so the bar has no running-tasks cluster.
+migration action drop_the_tasks_part(s: Shell) {
+    s.bar_parts.remove_where(p -> p.slot == Slot.tasks)
 }
 
 /// Uses the preset `to`: every setting it names at once. The result is exactly that preset,

@@ -2,7 +2,7 @@
 //! file of its own, installed in one place, so a part can be written and
 //! read without reading the whole host.
 
-pub mod agent_runs;
+pub mod agents;
 pub mod app_tabs;
 pub mod apps;
 pub mod audio;

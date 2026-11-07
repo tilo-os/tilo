@@ -55,7 +55,7 @@ pub fn workspace_topic_id(workspace: tilo_desktop_model::WorkspaceId) -> u64 {
 /// the two devices has to update ([`services::Services::peer_version`]).
 fn relay_error(host: &iroh::EndpointId, error: &tilo_relay_session::ClientError) -> String {
     if let Some(theirs) = error.peer_version() {
-        services::peer_version(host.to_string(), String::new(), theirs);
+        services::peer_version(host.to_string(), theirs);
     }
     error.to_string()
 }

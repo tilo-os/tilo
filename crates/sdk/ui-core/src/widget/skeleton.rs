@@ -300,6 +300,8 @@ pub struct Skeleton {
     shape: SkeletonShape,
     rect: Rect,
     theme: Option<Theme>,
+    /// Its shape changed since the last frame drew it.
+    dirty: bool,
 }
 
 impl Skeleton {
@@ -309,7 +311,18 @@ impl Skeleton {
             shape,
             rect: Rect::ZERO,
             theme: None,
+            dirty: true,
         }
+    }
+
+    /// Stand in for `shape` from now on: a skeleton that says what waits changed, and the
+    /// space it keeps with it.
+    pub fn set_shape(&mut self, shape: SkeletonShape) {
+        if self.shape == shape {
+            return;
+        }
+        self.shape = shape;
+        self.dirty = true;
     }
 
     #[must_use]
@@ -325,6 +338,8 @@ impl Skeleton {
 }
 
 impl Widget for Skeleton {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -388,8 +403,10 @@ impl Widget for Skeleton {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.dirty
     }
+
+    crate::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "Skeleton"

@@ -579,6 +579,8 @@ impl ProgressRing {
 }
 
 impl Widget for ProgressRing {
+    crate::described!();
+
     fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
         if let Some(reading) = self.source.as_mut().and_then(|read| read()) {
             self.apply_reading(reading);
@@ -869,6 +871,8 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
+    crate::described!();
+
     crate::widget::chart_navigation::chart_leaf!();
 
     fn draw(

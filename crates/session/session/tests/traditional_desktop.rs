@@ -189,14 +189,9 @@ fn the_desktop_draws_every_window_with_a_bar_naming_it() {
     }
 }
 
-/// A press on a dock item opens or focuses what it stands for: the app's place on the desk comes
-/// to the front, and the dock says it runs.
+/// A press on a dock item opens or focuses what it stands for: the app's window on the desk
+/// comes to the front, and the dock says it runs.
 #[test]
-#[ignore = concat!(
-    "the desktop preset does not draw in a session yet: a record change after ",
-    "apply(windows_desktop) never marks the shell's root boundary dirty, so the ",
-    "tree the view built never reaches the window",
-)]
 fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();
@@ -204,40 +199,58 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
     until(&mut session, "the bar", |session| {
         on_screen(session, BELL).is_some()
     });
+    // Another app's window beside the note: the desk is left on mail's window, so pressing the
+    // dock's Notes has a window of its own to bring back to the front.
     place(&mut session, &notes[0], 100, 120, 480, 360);
-    place(&mut session, &notes[1], 700, 120, 480, 360);
+    let mail = root_of(&session, ".Mail");
+    place(&mut session, &mail, 700, 120, 480, 360);
     show(&mut session, root.path(), "Desktop");
 
-    // The dock shows the app the placed windows belong to, running: Notes.
-    until(&mut session, "the dock's item for Notes", |session| {
-        on_screen(session, "Notes").is_some()
+    // The dock shows the apps the placed windows belong to, running: Notes and Mail.
+    until(&mut session, "the dock's items", |session| {
+        on_screen(session, "Notes").is_some() && on_screen(session, "Mail").is_some()
     });
-    // A press brings the place in front of its window to the front there: the window the person
-    // presses in the dock is the window they are in.
-    let front_before = session
-        .arrangement()
-        .borrow()
-        .reading()
-        .strips
-        .into_iter()
-        .find(|strip| strip.placed)
-        .map(|strip| strip.active)
-        .unwrap_or_default();
-    common::press(&mut session, "Notes");
-    let front_after = common::wait_for(&mut session, "the dock's press", |session| {
-        let reading = session.arrangement().borrow().reading();
-        let front = reading
-            .strips
-            .into_iter()
-            .find(|strip| strip.placed)
-            .map(|strip| strip.active)
-            .unwrap_or_default();
-        (front != front_before).then_some(front)
-    });
-    assert!(
-        !front_after.is_empty(),
-        "a dock press focuses a window on the desk"
+    assert_eq!(
+        focused_app(&session).as_deref(),
+        Some("so.tilo.lang.notes"),
+        "the desk was left on the note's window"
     );
+
+    // The press brings mail's window, which the dock stands for by its app, to the front there.
+    common::press(&mut session, "Mail");
+    common::wait_for(&mut session, "the dock's press", |session| {
+        (focused_app(session).as_deref() == Some("so.tilo.lang.mail")).then_some(())
+    });
+    assert_eq!(
+        common::places(&session).len(),
+        2,
+        "the press opens no second window of an app already there"
+    );
+}
+
+/// The app of the window in front on the desk, as the session publishes it: `None` while no
+/// window is.
+fn focused_app(session: &Session) -> Option<String> {
+    let desk = session.read("session:desk")?;
+    desk["windows"]
+        .as_array()?
+        .iter()
+        .find(|window| window["focused"] == true)
+        .and_then(|window| window["app_key"].as_str().map(str::to_owned))
+}
+
+/// The id of the seeded app's root resource, by the suffix of its kind (`".Mail"`).
+fn root_of(session: &Session, suffix: &str) -> String {
+    fn find(resources: &[tilo_actions::ResourceSpec], suffix: &str) -> Option<String> {
+        resources.iter().find_map(|resource| {
+            if resource.kind.ends_with(suffix) {
+                Some(resource.id.as_str().to_owned())
+            } else {
+                find(&resource.children, suffix)
+            }
+        })
+    }
+    find(&session.resources(), suffix).unwrap_or_else(|| panic!("the seed holds a {suffix} root"))
 }
 
 /// The top bar lists the focused window's actions, and pressing one runs it: the window in front
@@ -245,11 +258,6 @@ fn a_dock_item_press_opens_or_focuses_what_it_stands_for() {
 /// button names the window; the list it opens is the app's own, filled by the host from what its
 /// resource publishes.
 #[test]
-#[ignore = concat!(
-    "the desktop preset does not draw in a session yet: a record change after ",
-    "apply(windows_desktop) never marks the shell's root boundary dirty, so the ",
-    "tree the view built never reaches the window",
-)]
 fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();
@@ -269,11 +277,19 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
 
     // The bar names the window in front on its own row, and pressing it lists the resource's
     // actions: the note's unpin, retitle and tag, which no control of the desk's shows.
-    let bar = on_screen(&session, &name).expect("the bar names the window in front");
-    assert!(
-        bar.1 < 40.0,
-        "the focused window's menu stands on the top bar: {name:?} at {bar:?}"
-    );
+    // The window in front is named twice: once by its frame on the desk, which stands where it
+    // was placed, and once by the menu the top bar carries it as. The bar's stands on the bar's
+    // row, above every frame.
+    let bar = session
+        .shell_controls(&name)
+        .into_iter()
+        .find(|&(_, y, _, _)| y < 40.0)
+        .unwrap_or_else(|| {
+            panic!(
+                "the bar names the window in front: {name:?} at {:?}",
+                session.shell_controls(&name)
+            )
+        });
     common::press(&mut session, &name);
     until(
         &mut session,
@@ -289,8 +305,8 @@ fn the_top_bar_lists_the_focused_windows_actions_and_runs_one() {
     );
 }
 
-/// Two frames placed by the canvas's own typed line stand clear of each other: a new place takes
-/// the free space nearest its anchor and never covers what is already there (canvas.md §6).
+/// Two frames placed at points closer than a frame is wide stand clear of each other: a new place
+/// takes the free space nearest its anchor and never covers what is already there (canvas.md §6).
 #[test]
 fn two_frames_placed_at_one_point_do_not_overlap() {
     let _settled = ui::motion::testing::settled();
@@ -301,16 +317,10 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
     });
     show(&mut session, root.path(), "Frames");
 
-    // Two typed lines at two points, as the canvas's entry sends them, 600 apart: less than a
+    // Two places at two points, each the size a place takes by default, 600 apart: less than a
     // frame's 720 width, so the second would lie over the first.
     for (note, x) in [(&notes[0], 100), (&notes[1], 700)] {
-        session
-            .invoke(
-                "shell:arrangement",
-                "conversation",
-                json!({"line": note, "x": x, "y": 120}).as_object().unwrap(),
-            )
-            .unwrap_or_else(|error| panic!("conversation: {error:?}"));
+        place(&mut session, note, x, 120, 720, 520);
     }
     until(&mut session, "two frames", |session| {
         frames(session).len() == 2
@@ -328,11 +338,6 @@ fn two_frames_placed_at_one_point_do_not_overlap() {
 /// The bar's bell opens the notification centre in every preset: a press on it shows the centre,
 /// not the quick settings, and the next press closes it again.
 #[test]
-#[ignore = concat!(
-    "the desktop preset does not draw in a session yet: a record change after ",
-    "apply(windows_desktop) never marks the shell's root boundary dirty, so the ",
-    "tree the view built never reaches the window",
-)]
 fn the_bells_press_opens_the_notification_centre_in_every_preset() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();

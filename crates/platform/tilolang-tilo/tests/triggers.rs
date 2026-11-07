@@ -34,7 +34,20 @@ type Reminder {
     rings: Int merge counter
 }
 
+/// A bell that rings at a time, held in a rack: a trigger runs for the items of a type wherever
+/// they are, so what a large collection reads is the same as a small one.
+type Bell {
+    at: Option<Time> = .none
+    chimes: Int merge counter
+}
+
+type Rack {
+    bells: Collection<Bell>
+}
+
 action tick(b: Board) { b.ticks += 1 }
+
+action chime(bell: Bell) { bell.chimes += 1 }
 
 action ring(r: Reminder) { r.rings += 1 }
 
@@ -43,6 +56,8 @@ action remind(r: Reminder, at: Time) { r.at = .some(at) }
 trigger often(b: Board) every 30m: tick(b)
 
 trigger due(r: Reminder) at r.at: ring(r)
+
+trigger bell(b: Bell) at b.at: chime(b)
 
 root Board
 root Reminder
@@ -114,6 +129,23 @@ fn counted(replica: &Replica, doc: &str, ty: &str, field: &str) -> i64 {
     }
 }
 
+/// How many times the rack's `i`th bell has rung.
+fn chimes(replica: &Replica, i: usize) -> i64 {
+    use tilolang_runtime::meta::FieldKind;
+    use tilolang_runtime::store::{FieldSpec, FieldValue, Store as _};
+
+    let spec = FieldSpec {
+        id: crate::fixtures::field_id(&meta(replica), "Bell", "chimes"),
+        kind: FieldKind::Counter,
+    };
+    let at = ResourceRef::root("rack".to_owned(), type_id(replica, "Rack"))
+        .item(&format!("bell-{i:05}"), type_id(replica, "Bell"));
+    match replica.host.store().read(&at, &spec).unwrap() {
+        FieldValue::Counter(rung) => rung,
+        other => panic!("a bell is {other:?}"),
+    }
+}
+
 /// A replica with the package loaded, its board root made, and a reminder root made.
 fn workspace() -> (Replica, String, String) {
     let (mut ada, _) = Replica::new("ada", AutoCommit::new(), &packages());
@@ -127,6 +159,57 @@ fn workspace() -> (Replica, String, String) {
 fn reminder_root(replica: &Replica) -> String {
     let ty = type_id(replica, "Reminder");
     replica.host.root_record(APP, &ty).unwrap().doc
+}
+
+/// The id of a rack holding `n` bells, its `first` bell due at `now` and every other an hour or
+/// more later, all made in one change as a workspace is seeded.
+fn rack(replica: &mut Replica, n: usize, first: usize, now: i64) -> String {
+    use serde_json::json;
+    use tilo_resource::{Collection, Id, Model as _};
+    use tilolang_tilo::action::{DynAction, DynEdit};
+    use tilolang_tilo::record::DynRecord;
+
+    let meta = meta(replica);
+    let rack_ty = meta.types.iter().find(|t| t.name == "Rack").unwrap();
+    let bell_ty = meta.types.iter().find(|t| t.name == "Bell").unwrap();
+    let schema = tilolang_tilo::schema::lookup(&bell_ty.id).unwrap();
+    let mut bells = Collection::default();
+    for i in 0..n {
+        let mut bell = DynRecord::empty(schema).unwrap();
+        let at = if i == first {
+            now
+        } else {
+            // An hour later, and each the minute after the one before it.
+            now.saturating_add(3600)
+                .saturating_add(i64::try_from(i).unwrap_or(i64::MAX).saturating_mul(60))
+        };
+        if let Some(tilolang_tilo::record::DynValue::Register(slot)) =
+            bell.get_mut(&crate::fixtures::field_id(&meta, "Bell", "at"))
+        {
+            *slot = json!({ "some": tilolang_tilo::host::iso_utc(at.cast_unsigned()) });
+        }
+        bells.push(Id::from_raw(format!("bell-{i:05}")), bell);
+    }
+    let mut record = DynRecord::empty(tilolang_tilo::schema::lookup(&rack_ty.id).unwrap()).unwrap();
+    if let Some(tilolang_tilo::record::DynValue::Collection(slot)) =
+        record.get_mut(&crate::fixtures::field_id(&meta, "Rack", "bells"))
+    {
+        *slot = bells;
+    }
+    let create = DynAction {
+        app: APP.to_owned(),
+        kind: "tl.t.trig.seed".to_owned(),
+        action_id: "$create".to_owned(),
+        args: serde_json::Value::Null,
+        authorship: tilolang_tilo::Authorship::default(),
+        edits: vec![DynEdit::Create {
+            id: "rack".to_owned(),
+            record: record.to_json(),
+        }],
+    };
+    replica.apply(&create);
+    replica.commit();
+    "rack".to_owned()
 }
 
 /// Run the triggers and commit what they did, as a window of the app does each turn.
@@ -237,6 +320,70 @@ fn a_wake_comes_at_the_next_instant_a_trigger_is_due() {
     let next = ada.host.next_trigger(ten).unwrap();
     assert!(next > ten && next <= ten + PERIOD, "{next} after {ten}");
     assert_eq!(next % PERIOD, 0);
+}
+
+#[test]
+fn a_large_collection_is_read_at_its_next_instant_not_whole() {
+    let now = tilolang::calendar::instant("2026-10-27T10:07:30Z").unwrap();
+    let period = now.div_euclid(PERIOD) * PERIOD;
+
+    // What one turn costs at a rack of `n` bells: the bell due at `now` rings, and nothing reads
+    // the bells that are not.
+    let work = |n: usize| {
+        let (mut ada, _, _) = workspace();
+        rack(&mut ada, n, 0, now);
+        // The board's half hour ticks first, in the turn that starts its period: the turn read
+        // below is the bells' alone.
+        assert_eq!(turn(&mut ada, period), 1, "the board ticks, no bell is due");
+        let before = ada.host.store().read_stats();
+        let next = ada.host.next_trigger(now - 1);
+        let ran = ada.host.run_triggers(now);
+        let after = ada.host.store().read_stats();
+        ada.commit();
+        (
+            ran,
+            next,
+            after.doc.entries - before.doc.entries,
+            after.evaluated - before.evaluated,
+            after.index.pages - before.index.pages,
+            chimes(&ada, 0),
+            chimes(&ada, 1),
+            ada.host.next_trigger(now),
+        )
+    };
+
+    let (ran, next, small_entries, small_evaluated, small_pages, first, second, after_small) =
+        work(20);
+    assert_eq!(next, Some(now), "the bell due is the next instant");
+    assert_eq!(ran, 1, "the one bell due rings");
+    assert_eq!((first, second), (1, 0), "and no other");
+    assert_eq!(
+        after_small,
+        Some(period + PERIOD),
+        "the board's next half hour, the bells' times all past it"
+    );
+
+    let (ran, next, entries, evaluated, pages, first, second, after_large) = work(10_000);
+    assert_eq!(next, Some(now), "the bell due is the next instant");
+    assert_eq!(ran, 1, "the one bell due rings");
+    assert_eq!((first, second), (1, 0), "and no other");
+    assert!(
+        entries <= small_entries && entries < 64,
+        "reading {entries} record entries, against {small_entries} of twenty"
+    );
+    assert_eq!(
+        (evaluated, small_evaluated),
+        (0, 0),
+        "no bell checked one by one"
+    );
+    assert!(
+        pages <= small_pages + 8 && pages < 64,
+        "reading {pages} index pages, against {small_pages} of twenty"
+    );
+    assert_eq!(
+        after_large, after_small,
+        "and what it wakes for is the same"
+    );
 }
 
 #[test]

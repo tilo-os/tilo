@@ -17,6 +17,7 @@ fn task_run_wire_is_typed_and_rejects_unknown_fields() {
         planning: TaskRunPlanning::RulesOnly,
         presentation_version: None,
         execution_budget: None,
+        spend: None,
         action_context: serde_json::json!({"purpose": "Review proposal"}),
     };
     let json = serde_json::to_string(&envelope).unwrap();
@@ -77,6 +78,7 @@ fn task_run_carries_the_selection_it_is_about_without_breaking_older_runs() {
         lease: "broker-lease".into(),
         planning: TaskRunPlanning::Model,
         execution_budget: None,
+        spend: None,
         action_context: serde_json::json!({"purpose": "Tighten this"}),
     };
     let json = serde_json::to_value(&envelope).unwrap();
@@ -118,6 +120,7 @@ fn the_request_is_the_persons_own_words_without_context_or_conversation() {
         lease: "broker-lease".into(),
         planning: TaskRunPlanning::Model,
         execution_budget: None,
+        spend: None,
         action_context: serde_json::json!({}),
     };
     let plain = envelope("make a summary note of this");
@@ -131,4 +134,37 @@ fn the_request_is_the_persons_own_words_without_context_or_conversation() {
         "and in Writer?{INSTRUCTION_CONVERSATION}\nPerson: hi"
     ));
     assert_eq!(recalled.request(), "and in Writer?");
+}
+
+#[test]
+fn a_run_carries_what_its_agent_may_spend_today() {
+    let spend = super::TaskRunSpend {
+        day: "2026-11-06".into(),
+        limit_micros: Some(5_000_000),
+        spent_micros: 420_000,
+    };
+    assert_eq!(spend.left("2026-11-06"), Some(4_580_000));
+    assert_eq!(
+        spend.left("2026-11-07"),
+        Some(5_000_000),
+        "a day's limit is fresh on the next day"
+    );
+    let unlimited = super::TaskRunSpend {
+        limit_micros: None,
+        ..spend.clone()
+    };
+    assert_eq!(unlimited.left("2026-11-06"), None);
+    let json = serde_json::to_value(&spend).unwrap();
+    assert_eq!(json["day"], "2026-11-06");
+    assert_eq!(
+        serde_json::from_value::<super::TaskRunSpend>(json).unwrap(),
+        spend
+    );
+    // An agent of an older host reads a run without it.
+    assert!(serde_json::from_str::<TaskRunEnvelope>(
+        r#"{"version":1,"task_id":"t","title":"x","run_id":1,"lease":"l","planning":"rules_only","action_context":{}}"#
+    )
+    .unwrap()
+    .spend
+    .is_none());
 }

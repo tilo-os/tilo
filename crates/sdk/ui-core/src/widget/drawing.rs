@@ -354,6 +354,8 @@ impl Drawing {
 }
 
 impl Widget for Drawing {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

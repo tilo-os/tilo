@@ -52,6 +52,9 @@ pub enum JournalEntry {
     /// the write from the journal and makes it no more, so it neither doubles what it wrote nor
     /// takes back what the call it made wrote on top of it.
     Wrote { item: Option<String> },
+    /// A person was told something (`notify`), and the run carries on: a replay tells them no
+    /// more than the first run did.
+    Notified,
 }
 
 impl JournalEntry {
@@ -62,7 +65,11 @@ impl JournalEntry {
     pub fn is_outside_effect(&self) -> bool {
         matches!(
             self,
-            Self::Clock(_) | Self::Random { .. } | Self::Web { .. } | Self::Model { .. }
+            Self::Clock(_)
+                | Self::Random { .. }
+                | Self::Web { .. }
+                | Self::Model { .. }
+                | Self::Notified
         )
     }
 }

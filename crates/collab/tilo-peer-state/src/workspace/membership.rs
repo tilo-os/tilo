@@ -485,9 +485,9 @@ fn sandbox(
 
 /// The grants the batch adds that assign one of the workspace's saved grant sets
 /// (`preset:<id>:<set>:<rule>`), written by someone who may assign that set
-/// by a grant on it ([`tilo_action_policy::roles::preset_assign_node`]) and given
-/// by them: each one of the set's rules placed in this workspace, no more than
-/// they hold. Any other grant is left to the workspace's grant rule.
+/// ([`tilo_action_policy::roles::assign_preset_verdict`]) and given by them:
+/// each one of the set's rules placed in this workspace, no more than they
+/// hold. Any other grant is left to the workspace's grant rule.
 fn assignments(
     workspace: &str,
     at: &AutoCommit,
@@ -511,13 +511,7 @@ fn assignments(
         else {
             continue;
         };
-        let on_set = authority
-            .decide(
-                &roles::preset_assign_node(workspace, &preset.name),
-                roles::GOVERNANCE_KIND,
-                cx,
-            )
-            .answer
+        let on_set = roles::assign_preset_verdict(authority, workspace, &preset.name, cx).answer
             == tilo_action_policy::Answer::Allow;
         if !on_set {
             continue;

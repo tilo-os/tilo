@@ -10,7 +10,7 @@ use channel_crypto::{ChannelGate, ChannelPeer, VaultKey};
 use collab_types::inbound::OpAdmission;
 use collab_types::{ContentRetention, document_artifact_id, document_channel_id};
 use tilo_action_broker::collab_core::BrokerChannels;
-use tilo_browser_peer::document_admission;
+use tilo_browser_peer::{document_admission, document_history_admission};
 use tilo_peer_state::document_frame::DocumentRoute;
 
 #[test]
@@ -55,6 +55,15 @@ fn the_browser_and_the_broker_give_one_verdict_for_one_gate() {
                 document_admission(Some(gate), true, false, &route, encryption),
                 verdict
             );
+            // The record's retained history is admitted as the broker admits
+            // it: its cleartext base reads even under a gate, and a sealed
+            // write is not cleartext at all.
+            assert!(broker.document_history_allowed(&route.cluster_id, channel, encryption));
+            assert_eq!(
+                document_history_admission(Some(gate), true, false, &route, encryption)
+                    .admits_cleartext(),
+                Some(encryption.is_none())
+            );
         }
     }
 }
@@ -96,6 +105,10 @@ fn cleartext_before_the_workspaces_governance_is_known_is_never_admitted() {
         assert_eq!(
             document_admission(gate, false, false, &route, None).admits_cleartext(),
             None
+        );
+        assert_eq!(
+            document_history_admission(gate, false, false, &route, None),
+            OpAdmission::Unstated
         );
     }
 }

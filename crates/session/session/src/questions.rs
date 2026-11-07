@@ -425,16 +425,12 @@ impl Asker {
         match sheet {
             Sheet::Portal => {
                 if let Some(portal) = &self.portal {
-                    portal.show(None);
                     portal.presentation().close();
-                    portal.presentation().gone();
                 }
             }
             Sheet::Files => {
                 if let Some(picker) = &self.picker {
-                    picker.ask(None);
                     picker.presentation().close();
-                    picker.presentation().gone();
                 }
             }
         }

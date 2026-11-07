@@ -158,6 +158,21 @@ pub struct KeyHints {
 }
 
 impl KeyHints {
+    /// The hints it shows changed where the strip stands: measured again for what they say.
+    pub fn set_hints(&mut self, hints: Vec<KeyHint>) {
+        let same = self.hints.len() == hints.len()
+            && self
+                .hints
+                .iter()
+                .zip(&hints)
+                .all(|(was, now)| was.keys == now.keys && was.label == now.label);
+        if same {
+            return;
+        }
+        self.hints = hints;
+        self.dirty = true;
+    }
+
     #[must_use]
     pub fn new(hints: Vec<KeyHint>) -> Self {
         Self {
@@ -170,6 +185,8 @@ impl KeyHints {
 }
 
 impl crate::widget::Widget for KeyHints {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
@@ -213,7 +230,7 @@ impl crate::widget::Widget for KeyHints {
 
     crate::rect_geometry!();
 
-    // Its keys never change: it is measured again only in a new theme.
+    // The strip is measured again in a new theme, and when its hints change.
     fn is_layout_dirty(&self) -> bool {
         self.dirty
     }

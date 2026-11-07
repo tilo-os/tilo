@@ -497,6 +497,56 @@ pub(crate) fn kind_color(kind: ToastKind, theme: &Theme) -> vello::peniko::Color
     }
 }
 
+/// The mark a notification leads with, on its banner and on its row in the
+/// notification centre: the sender's own artwork when one arrived with it,
+/// else the glyph standing for what sent it. Both surfaces paint this one
+/// value, so an app's row and its banner lead with the same picture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SenderMark<'a> {
+    /// The sender's artwork, when one arrived with the notification.
+    pub image: Option<&'a crate::icons::AppImage>,
+    /// The glyph painted when there is no artwork, or it cannot be decoded.
+    pub icon: Option<crate::icons::Icon>,
+}
+
+impl<'a> SenderMark<'a> {
+    #[must_use]
+    pub const fn new(
+        image: Option<&'a crate::icons::AppImage>,
+        icon: Option<crate::icons::Icon>,
+    ) -> Self {
+        Self { image, icon }
+    }
+
+    /// Paint the mark filling `rect`: the artwork keeps its own colours, the
+    /// glyph takes `color`. Returns whether anything was painted.
+    pub fn paint(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        rect: Rect,
+        color: vello::peniko::Color,
+    ) -> bool {
+        if let Some(image) = self.image
+            && crate::icons::draw_app_image(scene, transform, rect, image)
+        {
+            return true;
+        }
+        let Some(icon) = self.icon else {
+            return false;
+        };
+        crate::icons::draw_icon(
+            scene,
+            transform,
+            rect,
+            icon,
+            color,
+            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        );
+        true
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Shared notification-card renderer
 // ---------------------------------------------------------------------------
@@ -1171,40 +1221,29 @@ fn paint_leading(
         Point::new(left + side / 2.0, block.title_centre),
         (side, side),
     );
-    if card.kind == ToastKind::Info
-        && let Some(image) = card.app_image
-    {
-        let faded = alpha < 0.999;
-        if faded {
-            ctx.scene.push_layer(
-                Fill::NonZero,
-                BlendMode::default(),
-                alpha,
-                ctx.transform,
-                &mark,
-            );
-        }
-        let painted = crate::icons::draw_app_image(ctx.scene, ctx.transform, mark, image);
-        if faded {
-            ctx.scene.pop_layer();
-        }
-        if painted {
-            return;
-        }
-    }
-    let (icon, color) = match (card.kind, card.icon) {
-        (ToastKind::Info, Some(icon)) => (icon, theme.tokens.colors.text_dim),
-        (ToastKind::Info, None) => return,
-        (kind, _) => (kind_icon(kind), kind_color(kind, theme)),
+    let (image, icon, color) = match card.kind {
+        // A sender's mark is foreground ink: a dim glyph all but vanishes
+        // on the light theme's pale card.
+        ToastKind::Info => (card.app_image, card.icon, theme.tokens.colors.text_primary),
+        kind => (None, Some(kind_icon(kind)), kind_color(kind, theme)),
     };
-    crate::icons::draw_icon(
-        ctx.scene,
-        ctx.transform,
-        mark,
-        icon,
-        color.with_alpha(alpha),
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
-    );
+    if image.is_none() && icon.is_none() {
+        return;
+    }
+    let faded = alpha < 0.999;
+    if faded {
+        ctx.scene.push_layer(
+            Fill::NonZero,
+            BlendMode::default(),
+            alpha,
+            ctx.transform,
+            &mark,
+        );
+    }
+    SenderMark::new(image, icon).paint(ctx.scene, ctx.transform, mark, color);
+    if faded {
+        ctx.scene.pop_layer();
+    }
 }
 
 /// Where a card's text landed: the centre of the title's first line and

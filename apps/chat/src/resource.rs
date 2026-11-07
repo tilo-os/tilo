@@ -13,6 +13,7 @@ use std::rc::Rc;
 use tilo_content::ContentStore;
 use ui::framework::{EffectAnswer, EffectCx, Publishes, ResourceApp, RunMode, SeedCx, ViewCx};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
+use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
 use ui::tilo_resource::{Id, Invoke, SearchEntry};
 use ui::widget::Element;
 
@@ -28,10 +29,13 @@ use crate::record::chat;
 
 impl Chat {
     /// What search finds in the chat record: the workspace's channels,
-    /// categories, reviewed reports and people, each opening the item it
-    /// names. The messages are the window's to offer
-    /// (`ChatApp::search_entries`): they are kept in parts the record
-    /// does not hold.
+    /// conversations, categories, reviewed reports and people, each opening
+    /// the item it names.
+    ///
+    /// The messages are the messages' own record to offer
+    /// ([`ChatPart::search`](crate::parts::ChatPart::search)): they are kept
+    /// in parts beside this record, and a device that never opened Chat finds
+    /// them there.
     #[must_use]
     pub fn search(&self) -> Vec<SearchEntry> {
         let anchor = |field: &str, id: &Id| item_resource_id::<Self>(field, id);
@@ -42,6 +46,23 @@ impl Chat {
             .map(|(id, channel)| {
                 SearchEntry::new(channel.name.clone(), channel.topic.clone())
                     .anchored(anchor("channels", id))
+                    .of_kind(IndexKind::Conversation)
+                    .with_icon(CONVERSATION_ICON)
+            });
+        // A conversation the record holds as an item: a group of people, or a
+        // person and an agent. What it is called is what its participants are
+        // called, until they name it; the row shows those participants beside
+        // it.
+        let conversations = self
+            .channels
+            .iter()
+            .filter(|(_, conversation)| !conversation.is_channel())
+            .map(|(id, _)| {
+                SearchEntry::new(self.display_names(id, None), "")
+                    .anchored(anchor("channels", id))
+                    .of_kind(IndexKind::Conversation)
+                    .with_icon(CONVERSATION_ICON)
+                    .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
@@ -53,13 +74,44 @@ impl Chat {
             Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
-            SearchEntry::new(&person.name, "Person")
-                .anchored(anchor("people", &Id::from_raw(person.id.0.clone())))
+            let person_anchor = anchor("people", &Id::from_raw(person.id.0.clone()));
+            SearchEntry::new(&person.name, "")
+                .anchored(person_anchor.clone())
+                .of_kind(IndexKind::Person)
+                .showing(vec![IndexPerson {
+                    name: person.name.trim().to_owned(),
+                    anchor: person_anchor,
+                    identity: person.id.0.clone(),
+                    agent: person.agent,
+                }])
         });
         channels
+            .chain(conversations)
             .chain(categories)
             .chain(feedback)
             .chain(people)
+            .collect()
+    }
+
+    /// The people in the conversation `id`, as a row shows them: named by the
+    /// record when it knows them, else by what their own entry is called.
+    fn participant_rows(&self, id: &Id) -> Vec<IndexPerson> {
+        self.conversation_participants(id)
+            .into_iter()
+            .map(|participant| IndexPerson {
+                name: self
+                    .people
+                    .iter()
+                    .find(|person| person.id.0 == participant.id())
+                    .map(|person| person.name.trim().to_owned())
+                    .unwrap_or_default(),
+                anchor: item_resource_id::<Self>(
+                    "people",
+                    &Id::from_raw(participant.id().to_owned()),
+                ),
+                identity: participant.id().to_owned(),
+                agent: participant.is_agent(),
+            })
             .collect()
     }
 
@@ -99,6 +151,9 @@ impl Chat {
 /// Chat as every host runs and mounts it: the chat widget is the window
 /// over [`Chat`], kept by the workspace as its own record.
 pub struct ChatShell;
+
+/// The glyph a conversation leads with when the row has no face of its own.
+const CONVERSATION_ICON: &str = "message-circle";
 
 /// Every named scenario `--shots --scenario NAME` captures.
 #[cfg(feature = "samples")]
@@ -235,15 +290,13 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
-        let entries = chat;
         let window = cx.publishing(
             Publishes::new()
                 // The effects offered on the channels, categories, messages,
                 // reports and people the window shows: merged into the item
                 // resources the record publishes.
                 .live_rows(move || rows.borrow().published_rows())
-                .live_row(move |id| row.borrow().published_row(id))
-                .search_entries(move || entries.borrow().search_entries()),
+                .live_row(move |id| row.borrow().published_row(id)),
             Box::new(window),
         );
         Box::new(
@@ -655,6 +708,12 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             chat.open_conversation(&id, &state);
             return Ok(chat.read_direct_answer(public_key, &id, &state));
         }
+        ChatEffect::OpenAgent { agent } => {
+            let state = cx.live().get();
+            let mut chat = chat.borrow_mut();
+            chat.open_agent(agent, &state);
+            return Ok(ui::framework::Effected::done());
+        }
         ChatEffect::SendDirectMessage { public_key, text } => {
             let state = cx.live().get();
             let (peer, id) = chat.borrow().direct_conversation(public_key, &state)?;
@@ -720,27 +779,6 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         ));
     }
     chat.borrow_mut().answer_effect(effect)
-}
-
-impl ChatApp {
-    /// The messages this window holds, across the parts of the chat it
-    /// has: each hit reveals the message it names.
-    pub(crate) fn search_entries(&self) -> Vec<SearchEntry> {
-        self.search_messages
-            .iter()
-            .map(|message| {
-                let author = self
-                    .search_users
-                    .iter()
-                    .find(|user| user.id == message.author)
-                    .map_or(message.author.as_str(), |user| user.name.as_str());
-                SearchEntry::new(author, &message.text).anchored(item_resource_id::<Chat>(
-                    "messages",
-                    &Id::from_raw(message.id.clone()),
-                ))
-            })
-            .collect()
-    }
 }
 
 impl ChatApp {

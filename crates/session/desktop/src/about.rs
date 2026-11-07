@@ -373,6 +373,12 @@ impl TiloMenu {
         self.menu.is_open()
     }
 
+    /// Where the menu stands while it is open: as big as its rows, which no
+    /// anchor says, so a press that misses it can close it.
+    pub fn menu_rect(&self) -> Option<Rect> {
+        self.menu.is_open().then(|| self.menu.get_rect())
+    }
+
     pub fn is_about_open(&self) -> bool {
         self.about.is_open()
     }

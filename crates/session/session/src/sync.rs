@@ -2518,10 +2518,14 @@ fn endpoint_for(
     // directory gate and its public relays held back
     // ([`tilo_endpoint_reachability`]): binding with an empty relay map
     // keeps net report, address discovery and port mapping off the network
-    // until a workspace this session shows has someone else in it.
+    // until a workspace this session shows has someone else in it. A peer's
+    // key also resolves on the local network
+    // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices
+    // that share one find each other while their relays rest.
     let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
         .address_lookup(tilo_endpoint_reachability::collaborating())
+        .address_lookup(tilo_endpoint_reachability::lan())
         .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
     Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
@@ -2535,6 +2539,8 @@ fn endpoint_for(
 pub struct PeerDocuments {
     channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
     fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+    /// What search reads again of a record a peer wrote.
+    changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
 }
 
 impl PeerDocuments {
@@ -2544,8 +2550,13 @@ impl PeerDocuments {
     pub fn new(
         channels: Arc<std::sync::Mutex<tilo_action_broker::collab_core::BrokerChannels>>,
         fanout: Arc<tilo_action_broker::collab_broker::FanoutState>,
+        changes: Option<Arc<dyn tilo_action_broker::services::RecordIndexChanges>>,
     ) -> Self {
-        Self { channels, fanout }
+        Self {
+            channels,
+            fanout,
+            changes,
+        }
     }
 
     /// Hand one admitted input's app document to this device's apps on its
@@ -2555,6 +2566,8 @@ impl PeerDocuments {
             return;
         };
         let author = input.author();
+        let workspace = input.workspace().to_string();
+        let (app, record) = (write.app_id.clone(), write.record_id.clone());
         tilo_action_broker::collab_inbound::deliver(
             &self.channels,
             &self.fanout,
@@ -2568,6 +2581,11 @@ impl PeerDocuments {
             },
             |_| format!("peer@{}", hex::encode(author)),
         );
+        // What search holds of the record is read again from what the peer
+        // wrote into it.
+        if let Some(changes) = &self.changes {
+            changes.changed(&workspace, &app, &record);
+        }
     }
 }
 

@@ -48,6 +48,19 @@ impl Described for PropertyList {
             Self::new(props.properties.into_iter().map(Property::from).collect()).with_id(key);
         if props.striped { list.striped() } else { list }
     }
+
+    /// The facts and the striping change where the list stands.
+    fn set_props(&mut self, props: PropertyListProps) -> bool {
+        self.groups = vec![(
+            None,
+            props.properties.into_iter().map(Property::from).collect(),
+        )];
+        self.striped = props.striped;
+        self.layout = super::ListLayout::empty();
+        self.metrics = None;
+        self.dirty = true;
+        true
+    }
 }
 
 /// [`PropertyProps`] in a slot of any number of them.

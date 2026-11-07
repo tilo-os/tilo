@@ -64,7 +64,13 @@ impl Described for DatePicker {
 
     /// The day chosen changes in place; its marked days are built again.
     fn set_props(&mut self, props: DatePickerProps) -> bool {
-        // A day set elsewhere shows in place through the binding.
-        props.marked.is_empty() && !self.has_marked()
+        // A day set elsewhere shows in place through the binding; its spoken name changes
+        // where it stands. Days that hold something are the calendar's own marks, which only
+        // building it again lays out.
+        if !props.marked.is_empty() || self.has_marked() {
+            return false;
+        }
+        self.accessible_name = props.label;
+        true
     }
 }

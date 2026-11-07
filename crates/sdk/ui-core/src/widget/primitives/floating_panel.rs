@@ -298,8 +298,13 @@ impl FloatingPanel {
     /// A fixed width, in logical pixels (a menu, a utility panel).
     #[must_use]
     pub fn width(mut self, px: f32) -> Self {
-        self.width = Some(px);
+        self.set_width(Some(px));
         self
+    }
+
+    /// [`Self::width`] after construction; `None` takes its content's width.
+    pub fn set_width(&mut self, px: Option<f32>) {
+        self.width = px;
     }
 
     /// Take the width of the room it is offered rather than the width of

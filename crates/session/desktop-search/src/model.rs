@@ -19,13 +19,30 @@ use ui::search::system::{self, KindGroup, ResourceKind};
 
 use crate::workers::{Answer, SearchWorkers};
 
+/// Where the view of an application a row opens goes: what a modifier held
+/// as the row is chosen asks of it ([`ActivationModifier`]), and what the
+/// selected row says it will do before it is.
+///
+/// [`ActivationModifier`]: ui::search::ActivationModifier
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum LaunchPlace {
+    /// In the window the app already has, raised, or a window of its own
+    /// when it has none: what choosing without a modifier does.
+    #[default]
+    Focus,
+    /// As a tab of the window in front.
+    TabHere,
+    /// As a window of its own, beside the one in front.
+    Beside,
+}
+
 /// What choosing a hit does. The host performs it exactly as its other
 /// controls do: a launch opens a window, a window hit focuses it, an action
 /// runs through the host's action door.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Target {
-    /// Open the application in a new window beside the focused one.
-    Launch { app: String },
+    /// Open the application where the person asks of it (`place`).
+    Launch { app: String, place: LaunchPlace },
     /// Focus the window showing this tab, of the app `app` when it is one.
     Window { tab: u64, app: Option<String> },
     /// Run an action an application publishes, resolved against the live
@@ -57,6 +74,16 @@ pub enum Target {
     /// Search `source` from now on, or stop: the person's own choice, kept
     /// with their settings by the host ([`crate::preferences`]).
     Prefer { source: String, enabled: bool },
+}
+
+/// A line as the palette compares it: folded, and without the sentence
+/// punctuation that ends it, so a description that repeats its own name up
+/// to a full stop is still the same line said twice.
+#[must_use]
+pub fn spoken(text: &str) -> String {
+    ui::search::fold_search_text(text.trim())
+        .trim_end_matches(['.', ',', ';', ':', '!', '?', '\u{2026}', ' '])
+        .to_owned()
 }
 
 /// The provider name of what the desktop itself publishes (its chrome's and
@@ -299,7 +326,7 @@ impl Hit {
     #[must_use]
     pub fn thing(&self) -> Thing {
         match &self.target {
-            Target::Launch { app } if self.kind == ResourceKind::Application => {
+            Target::Launch { app, .. } if self.kind == ResourceKind::Application => {
                 Thing::App(app_identity(app))
             }
             // The window row is the window, and so is the place the person
@@ -1144,6 +1171,7 @@ mod tests {
                         100,
                         Target::Launch {
                             app: "so.tilo.notes".into(),
+                            place: LaunchPlace::Focus,
                         },
                     ),
                     hit(
@@ -1154,6 +1182,7 @@ mod tests {
                         100,
                         Target::Launch {
                             app: "so.tilo.sheets".into(),
+                            place: LaunchPlace::Focus,
                         },
                     ),
                 ],
@@ -1377,6 +1406,7 @@ mod tests {
                 100,
                 Target::Launch {
                     app: "host:org.gnome.Notes.desktop".into(),
+                    place: LaunchPlace::Focus,
                 },
             )],
         );
@@ -1472,7 +1502,8 @@ mod tests {
         };
         assert_eq!(
             offer(Target::Launch {
-                app: "so.tilo.sheets".into()
+                app: "so.tilo.sheets".into(),
+                place: LaunchPlace::Focus,
             })
             .availability(),
             system::Availability::TiloCatalogue,

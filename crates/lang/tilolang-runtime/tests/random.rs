@@ -11,8 +11,7 @@ mod cases {
     use super::common::*;
     use tilolang_runtime::run::{JournalEntry, RunOutcome};
     use tilolang_runtime::{
-        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority,
-        Store, Value,
+        AmStore, InvokeOutcome, Resolution, ResourceRef, Runtime, SimpleAuthority, Store, Value,
     };
 
     const DICE: &str = r#"app so.tilo.dice "Dice"
@@ -148,7 +147,10 @@ action start(b: board.Board) -> Int uses random {
         let out = rt
             .invoke_action(
                 &me(),
-                (runner.action("start").as_str(), vec![Value::resource(&board)]),
+                (
+                    runner.action("start").as_str(),
+                    vec![Value::resource(&board)],
+                ),
             )
             .unwrap();
         let InvokeOutcome::Suggested(first) = out else {

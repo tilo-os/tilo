@@ -317,10 +317,18 @@ pub struct Hosted {
     /// `join-call` reaches.
     pub native_media: Option<tilo_native_media::NativeMediaService>,
     pub content: Option<std::sync::Arc<AppContentIndex>>,
+    /// The records' content in that index, read from the records themselves:
+    /// what search finds of an app that never opened them here.
+    pub records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
     pub desk: std::sync::Arc<DeskAuthority>,
     pub shortcuts: std::sync::Arc<ShortcutLibrary>,
     pub activity: std::sync::Arc<ActivityWire>,
-    pub agent_runs: Option<std::sync::Arc<tilo_agent_runs::AgentRuns>>,
+    /// The turns this session's agents answer, which the broker delivers
+    /// as runs.
+    pub turns: Option<std::sync::Arc<crate::conversations::Runs>>,
+    /// Who keeps each workspace's agents, as its record of them names them:
+    /// what the broker admits an agent's session on.
+    pub agents: Option<std::sync::Arc<dyn tilo_action_broker::services::AgentRoster>>,
     /// The workspaces' sealed records: what the broker gates, and where an
     /// endpoint follows a route's keys.
     pub sealed: Sealed,
@@ -429,6 +437,9 @@ pub fn serve(
     // lists as each app's name and offered actions, and what decides the
     // reach the device's settings app has of the settings document.
     launches.watching(hosted.lists.clone());
+    // What search reads of the records themselves, for the changes this
+    // session commits and takes in below.
+    let records = hosted.records.clone();
     let services = host_services(
         link,
         launches,
@@ -437,7 +448,7 @@ pub fn serve(
         Some(certificates),
         memberships,
     );
-    let publisher = owner_publisher(engine);
+    let publisher = owner_publisher(engine, records);
     tilo_action_broker::collab_broker::spawn_with_services(
         socket,
         Some(membership),
@@ -455,12 +466,16 @@ pub fn serve(
 /// them.
 pub(crate) fn owner_publisher(
     engine: Option<std::sync::Arc<crate::engine::Engine>>,
+    records: Option<std::sync::Arc<crate::record_index::RecordIndex>>,
 ) -> std::sync::Arc<PeerPublisher> {
+    let records = records.map(|records| {
+        records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
+    });
     engine.map_or_else(PeerPublisher::disabled, |engine| {
         PeerPublisher::with_optional_owner_commit(
             None,
             std::sync::Arc::new(tilo_action_broker::owner_commits::NativeOwnerCommits::new(
-                engine,
+                engine, records,
             )),
         )
     })
@@ -727,10 +742,12 @@ fn seams(
         live_activities,
         native_media,
         content,
+        records,
         desk,
         shortcuts,
         activity,
-        agent_runs,
+        turns,
+        agents,
         sealed,
         own_device,
         engine,
@@ -818,9 +835,13 @@ fn seams(
             "the sound service publishes its outputs as a resource of its own",
         ),
         workspace_memberships: Seam::when(memberships),
-        // What people ask this session's agents to do: a run is the broker's
-        // to deliver, and its reports come back to the run.
-        tracker_runs: Seam::when(agent_runs.map(|runs| runs as std::sync::Arc<dyn TrackerRuns>)),
+        // What people ask this session's agents to do: a turn a person's
+        // message in a conversation started. A run is the broker's to
+        // deliver, and its reports come back to the turn.
+        tracker_runs: Seam::when(turns.map(|turns| turns as std::sync::Arc<dyn TrackerRuns>)),
+        // Which agents each workspace keeps, and whose session runs each: the
+        // record the broker admits an agent's join on.
+        agents: Seam::when(agents),
         // Which devices this person's identity certifies now: what the broker
         // admits a join with, and what it decides a retained action against.
         native_certificates: Seam::served(certificates),
@@ -870,6 +891,11 @@ fn seams(
         // it runs, once it is closed and after a restart.
         search_index: Seam::when(content.map(|content| {
             std::sync::Arc::new(ContentIndex(content)) as std::sync::Arc<dyn SearchIndexServices>
+        })),
+        // The records' content in that index, read from the records
+        // themselves: a change to a workspace's record is indexed here.
+        record_index_changes: Seam::when(records.map(|records| {
+            records as std::sync::Arc<dyn tilo_action_broker::services::RecordIndexChanges>
         })),
         // Content a record references is kept on this device beside the
         // workspace's records, and asked of the workspace's other devices.
@@ -1236,6 +1262,7 @@ mod tests {
         Hosted {
             live_activities: std::sync::Arc::new(runtime_collab::LiveActivities::default()),
             content,
+            records: None,
             desk: std::sync::Arc::new(DeskAuthority::new(
                 tilo_desktop_model::DesktopTree::default(),
                 crate::engine::revocations_of(None),
@@ -1243,7 +1270,8 @@ mod tests {
             )),
             shortcuts: library(),
             activity: crate::activity_provider::wire(requests()),
-            agent_runs: None,
+            turns: None,
+            agents: None,
             native_media: None,
             sealed: Sealed {
                 broker: std::sync::Arc::new(Mutex::new(BrokerChannels::default())),
@@ -1315,6 +1343,7 @@ mod tests {
                 fields: Vec::new(),
                 secret: false,
                 references: Vec::new(),
+                ..IndexEntry::default()
             }],
             ..IndexDelta::default()
         };
@@ -1509,7 +1538,14 @@ mod tests {
             None,
         );
         let decisions = decided.decisions();
-        assert_eq!(decisions.len(), 41, "the broker's seams, each decided");
+        // The broker names its seams, so a seam is decided here and never
+        // dropped from the list: the field's conversion above would not
+        // notice a name that went missing.
+        assert_eq!(
+            decisions.iter().map(|(seam, _)| *seam).collect::<Vec<_>>(),
+            tilo_action_broker::services::HostServices::SEAMS,
+            "the broker's seams, each decided in its order"
+        );
         let mut names = std::collections::BTreeSet::new();
         for (name, why) in &decisions {
             assert!(names.insert(*name), "`{name}` is decided once");

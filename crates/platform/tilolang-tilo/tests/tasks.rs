@@ -562,7 +562,6 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
-        view.poll_patches().unwrap();
     };
     // Into the empty lane, then a second card above it.
     drop(&mut view, Some("Doing"), &books, 0);
@@ -572,6 +571,9 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     // Below a lane's last card.
     drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
+    // A window hears of a change once, after the record holds it: it runs again now, and shows
+    // the cards where they landed.
+    view.poll_patches().unwrap();
     assert_eq!(
         lanes(&view),
         [
@@ -1317,13 +1319,13 @@ fn the_assignee_is_one_person_field_whose_chip_shows_each_pick() {
     // assignee as a chip, with no label beside it.
     let shown = texts(page.tree());
     assert!(
-        shown.join(" ").contains("You unassigned this"),
+        shown.join(" ").contains("You unassigned it"),
         "clearing the assignee last, the step says so: {shown:?}"
     );
     pick_the_assignee(&mut ada, &mut page, &key, &Value::text("ben"));
     let shown = texts(page.tree());
     assert!(
-        shown.join(" ").contains("You assigned this to"),
+        shown.join(" ").contains("You assigned it to"),
         "assigned last, the step says that instead: {shown:?}"
     );
     assert!(
@@ -2006,6 +2008,9 @@ fn spec_commands() -> Vec<&'static str> {
         "Next week",
         "Pick date…",
         "No date",
+        // It says when the task comes back to the person, once, as they are told of it: it
+        // stands with the commands that say when a task is due, before how much it matters.
+        "Remind",
         "No priority",
         "Low",
         "Medium",
@@ -2114,8 +2119,8 @@ pub(crate) fn page_commands(view: &ViewInstance) -> Vec<Command> {
 }
 
 /// A task's row menu is every command a person can run on that task, worded once, in one order:
-/// it takes something away before it adds, dates before priorities, and a move a gesture also
-/// runs among the commands like any other.
+/// it takes something away before it adds, dates before priorities, a reminder with the dates,
+/// and a move a gesture also runs among the commands like any other.
 #[test]
 fn a_tasks_row_menu_offers_every_command_in_one_order() {
     let (mut ada, root) = workspace();
@@ -2139,19 +2144,19 @@ fn a_tasks_row_menu_offers_every_command_in_one_order() {
         "the dates are one run"
     );
     assert_eq!(commands[6].group.as_deref(), Some("Due"));
-    assert_eq!(commands[7].group.as_deref(), Some("Priority"));
+    assert_eq!(commands[8].group.as_deref(), Some("Priority"));
     assert!(
         !commands[6].enabled && commands[6].reason.as_deref() == Some("It has no date"),
         "a command that cannot run stays listed and says why: {:?}",
         commands[6]
     );
     assert!(
-        !commands[7].enabled && commands[7].reason.as_deref() == Some("It has no priority"),
+        !commands[8].enabled && commands[8].reason.as_deref() == Some("It has no priority"),
         "what it already is cannot be chosen: {:?}",
-        commands[7]
+        commands[8]
     );
     assert_eq!(
-        commands[16].key.as_deref(),
+        commands[17].key.as_deref(),
         Some("Ctrl+Shift+d"),
         "Duplicate"
     );

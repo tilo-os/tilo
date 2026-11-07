@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish = false
 license.workspace = true
-description = "Issue tracker of a workspace: nested issues on a list and a board, handed to agents"
+description = "Issue tracker of a workspace: nested issues on a list and a board, worked by people and agents"
 
 [lib]
 name = "tasks"
@@ -23,7 +23,6 @@ samples = []
 [dependencies]
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 serde_json.workspace = true
-tilo-agent-models = { path = "../../crates/platform/tilo-agent-models" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The record the app draws: its types, verbs and typed action arguments,

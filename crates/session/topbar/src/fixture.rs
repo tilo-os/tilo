@@ -76,6 +76,7 @@ fn status() -> SystemStatus {
 
 fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
     WorkspaceMenuModel {
+        place: tilo_desktop::workspace_menu::MenuPlace::Bar,
         desk: Vec::new(),
         workspaces: tree
             .workspaces
@@ -103,6 +104,7 @@ fn workspace_menu(tree: &DesktopTree) -> WorkspaceMenuModel {
         ],
         can_rename: true,
         can_add_strip: true,
+        can_delete: false,
     }
 }
 

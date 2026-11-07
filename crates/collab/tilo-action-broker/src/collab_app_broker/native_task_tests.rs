@@ -10,7 +10,6 @@ use crate::services::{
     WorkspaceMemberships,
 };
 use ed25519_dalek::{Signer as _, SigningKey};
-use tilo_action_policy::roles::AgentPreset;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
 };
@@ -51,9 +50,30 @@ struct Native {
 
 /// The issue the fixture's agent runs.
 const ISSUE: &str = "tasks.tracker/issues/release";
+/// The grant admitting the fixture's agent to read the workspace.
+const AGENT_GRANT: &str = "agent-member:scribe";
 fn workspace_id() -> tilo_desktop_model::WorkspaceId {
     tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE).unwrap()
 }
+impl crate::services::AgentRoster for Native {
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
+        let mut kept = None;
+        self.with_tree(&mut |tree| {
+            if let Some(held) = crate::services::workspace_in(tree, workspace)
+                && held.policy.grants.iter().any(|grant| {
+                    grant.node == held.node()
+                        && grant.answer == Answer::Allow
+                        && matches!(&grant.subject, Subject::Agent(named) if named == agent)
+                })
+            {
+                kept = held.owner().cloned();
+            }
+        })
+        .ok()?;
+        kept
+    }
+}
+
 impl WorkspaceAuthority for Native {
     fn with_tree(
         &self,
@@ -336,11 +356,19 @@ impl Fixture {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: native.certificate.clone(),
-                command: WorkspaceMembershipCommand::AddAgent {
-                    agent: "scribe".into(),
-                    // Reading only, as a fresh session admits an agent:
-                    // what its runs may do comes from their starter.
-                    preset: AgentPreset::Observer,
+                // Reading only, as a fresh session admits an agent: what
+                // its runs may do comes from their starter.
+                command: WorkspaceMembershipCommand::Grant {
+                    grant: tilo_action_policy::Grant::new(
+                        AGENT_GRANT,
+                        tilo_action_policy::Subject::agent("scribe"),
+                        tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
+                        tilo_action_policy::KindSet::READ,
+                        tilo_action_policy::Answer::Allow,
+                        tilo_action_policy::Subject::person(hex::encode(
+                            native.certificate.user_public_key,
+                        )),
+                    ),
                 },
             },
         };
@@ -369,6 +397,7 @@ impl Fixture {
                 launcher,
                 app_action_grants: Some(native.clone()),
                 tracker_runs: Some(native.clone()),
+                agents: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 host_steps,
                 record_changes,
@@ -438,8 +467,8 @@ impl Fixture {
             operation: CommitOperation::WorkspaceMembershipCommand {
                 invocation: uuid::Uuid::new_v4(),
                 caller: self.native.certificate.clone(),
-                command: WorkspaceMembershipCommand::RemoveAgent {
-                    agent: "scribe".into(),
+                command: WorkspaceMembershipCommand::Revoke {
+                    grant: tilo_action_policy::GrantId::new(AGENT_GRANT),
                 },
             },
         };
@@ -526,13 +555,12 @@ impl Fixture {
             .admitted;
         let route = CrdtRoute::record(app, workspace, "main");
         if agent {
-            admit_agent_delegation(
-                &WorkspaceAuthority::snapshot(self.native.as_ref()).unwrap(),
-                &route,
-                &mut admitted,
+            let kept = crate::test_support::KeptAgents::default().keeping(
+                &route.cluster_id,
                 "scribe",
-            )
-            .unwrap();
+                &admitted.principal_id,
+            );
+            admit_kept_agent(&kept, &route.cluster_id, &mut admitted, "scribe").unwrap();
         }
         self.admitted_handle(peer, &route, admitted)
     }

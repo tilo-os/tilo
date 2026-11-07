@@ -9,7 +9,7 @@ use ui::widget::{
     TextInput,
 };
 
-use super::{Parts, Settings, WorkspaceSettingsEffect};
+use super::{Confirm, Decision, Parts, Settings, WorkspaceSettingsEffect};
 
 /// One group of the tab: its title and what it explains.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -62,6 +62,18 @@ pub struct General {
     pub leave: Group,
     pub leave_label: String,
     pub leavable: bool,
+    /// Why leaving is not on offer here, when it is not.
+    pub leave_note: Option<String>,
+    /// The row that deletes the workspace, with everything in it: shown
+    /// where deleting is on offer at all.
+    pub delete: Option<Group>,
+    pub delete_label: String,
+    /// Why it cannot be deleted here, when it cannot: a workspace that can
+    /// be deleted, being the person's own, alone and on this device only,
+    /// has no reason to say.
+    pub delete_note: Option<String>,
+    /// The question deleting asks, when it is on offer.
+    pub delete_decision: Decision,
 }
 
 /// The General tab of `settings`.
@@ -101,7 +113,7 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     groups.push(devices(general, parts));
     // Leaving stands apart, last and under a rule, where nothing else is
     // reached for on the way to it.
-    groups.push(Box::new(Section::new(vec![
+    let mut leaving: Vec<Element> = vec![
         Box::new(Divider::horizontal()),
         Box::new(
             ListRow::new("ws-general-leave-row", general.leave.title.clone())
@@ -111,11 +123,32 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
                     button(parts, "ws-general-leave", &general.leave_label, || {
                         WorkspaceSettingsEffect::Delete
                     })
-                    .role(ButtonRole::Destructive)
                     .with_enabled(general.leavable),
                 )),
         ),
-    ])));
+    ];
+    // A control the person may not press says why, beside itself.
+    if let Some(note) = &general.leave_note {
+        leaving.push(caption(note));
+    }
+    if let Some(delete) = &general.delete {
+        let asking = parts.clone();
+        leaving.push(Box::new(
+            ListRow::new("ws-general-delete-row", delete.title.clone())
+                .secondary(delete.description.clone())
+                .two_line_secondary()
+                .trailing(Box::new(
+                    Button::new("ws-general-delete", &general.delete_label)
+                        .on_view(move || asking.confirm(Confirm::DeleteWorkspace))
+                        .role(ButtonRole::Destructive)
+                        .with_enabled(general.delete_note.is_none()),
+                )),
+        ));
+        if let Some(note) = &general.delete_note {
+            leaving.push(caption(note));
+        }
+    }
+    groups.push(Box::new(Section::new(leaving)));
     Box::new(
         groups.into_iter().fold(
             Column::new()
@@ -127,8 +160,9 @@ pub(super) fn pane(settings: &Settings, parts: &Parts) -> Element {
     )
 }
 
-/// The devices that show the workspace, each shown or hidden, and the
-/// buttons that move it up or down their sidebars.
+/// The devices that show the workspace, each shown or hidden, and, with more
+/// than one of them, the buttons that move the workspace up or down their
+/// sidebars.
 fn devices(general: &General, parts: &Parts) -> Element {
     let mut devices: Vec<Element> = general
         .device_rows
@@ -154,19 +188,22 @@ fn devices(general: &General, parts: &Parts) -> Element {
             ) as Element
         })
         .collect();
-    devices.push(buttons(vec![
-        button(parts, "ws-general-move-up", &general.move_labels[0], || {
-            WorkspaceSettingsEffect::Move { step: -1 }
-        })
-        .with_enabled(general.move_enabled[0]),
-        button(
-            parts,
-            "ws-general-move-down",
-            &general.move_labels[1],
-            || WorkspaceSettingsEffect::Move { step: 1 },
-        )
-        .with_enabled(general.move_enabled[1]),
-    ]));
+    // One device has no order to choose between.
+    if general.device_rows.len() > 1 {
+        devices.push(buttons(vec![
+            button(parts, "ws-general-move-up", &general.move_labels[0], || {
+                WorkspaceSettingsEffect::Move { step: -1 }
+            })
+            .with_enabled(general.move_enabled[0]),
+            button(
+                parts,
+                "ws-general-move-down",
+                &general.move_labels[1],
+                || WorkspaceSettingsEffect::Move { step: 1 },
+            )
+            .with_enabled(general.move_enabled[1]),
+        ]));
+    }
     described(&general.devices, devices)
 }
 
@@ -259,6 +296,23 @@ pub(super) fn sample() -> General {
         ),
         leave_label: "Leave".to_owned(),
         leavable: true,
+        leave_note: None,
+        delete: Some(Group::new(
+            "Delete workspace",
+            "Everything in it goes: its windows, its groups, its history. It \
+             disappears from every device that has it.",
+        )),
+        delete_label: "Delete".to_owned(),
+        delete_note: None,
+        delete_decision: Decision {
+            title: "Delete Design studio?".to_owned(),
+            description: "Everything in this workspace goes with it: its windows, its groups, \
+                          its history. It disappears from every device that has it."
+                .to_owned(),
+            keep: "Keep".to_owned(),
+            review: String::new(),
+            confirm: "Delete".to_owned(),
+        },
     }
 }
 
@@ -270,6 +324,7 @@ pub(super) fn sample_viewer() -> General {
         rename_note: Some("Only admins can rename the workspace.".to_owned()),
         invite: Group::new("Invite people", "Only admins can invite people."),
         can_invite: false,
+        delete: None,
         ..sample()
     }
 }

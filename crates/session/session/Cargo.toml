@@ -125,6 +125,10 @@ tilo-app-state = { path = "../../system/app-state" }
 # The records' framework as an app window opens one: the workspace's emoji is
 # Chat's record, and the settings tab reads and changes it the same way.
 tilo-app = { path = "../../sdk/tilo-app" }
+# The conversations this session's agents answer in: what Chat keeps of a
+# workspace, read here the way the app reads it, so this session runs an agent
+# on a turn a person's message started.
+chat = { path = "../../../apps/chat", default-features = false }
 durable-store = { path = "../../system/durable-store" }
 automerge.workspace = true
 # Where this device keeps its state: the root the record indexes are under.
@@ -278,7 +282,6 @@ tilo-crash-records = { path = "../crash-records" }
 tilo-session-logging = { path = "../session-logging" }
 # The runs of what people ask this session's agents to do: what the agent
 # composer and a run's window follow, and what the broker delivers a run on.
-tilo-agent-runs = { path = "../agent-runs" }
 # The watchdog that ends a session whose main loop stopped for good.
 tilo-liveness = { path = "../liveness" }
 # The room left on the person's filesystems, for the storage notice.
@@ -415,6 +418,9 @@ ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-suppor
 # as the person's own gesture.
 tilo-app = { path = "../../sdk/tilo-app", features = ["test-support"] }
 wayland-client.workspace = true
+# What a scanner reads from a code the session draws: the invite sheet's
+# test decodes the invitation back out of its QR.
+rqrr = { workspace = true, default-features = true }
 # The text a field asks a keyboard for, as an app's toolkit speaks it.
 wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 # A display tool speaking `wlr-output-management` to the session's compositor.

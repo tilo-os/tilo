@@ -211,8 +211,8 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         // The notification centre: the panel's row opens the one list, on
         // the desk, rather than a page of its own.
         QsEffect::ShowCentre => {
-            put(&mut arguments, "surface", "centre");
-            (DESK, "show-surface")
+            put(&mut arguments, "open", &true);
+            (CHROME, "notifications")
         }
         QsEffect::SetDoNotDisturb { on } => {
             put(&mut arguments, "on", on);
@@ -374,8 +374,8 @@ mod tests {
     fn the_notifications_row_opens_the_desks_own_centre() {
         assert_eq!(
             said(&QsEffect::ShowCentre).as_deref(),
-            Some("desktop:desk show-surface surface=centre"),
-            "one list, in the shell's centre"
+            Some("desktop:chrome notifications open=true"),
+            "one list, in the desk's own centre"
         );
     }
 

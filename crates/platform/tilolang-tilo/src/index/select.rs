@@ -254,6 +254,114 @@ impl View<'_> {
         )
     }
 
+    /// The items of the collection `field` of `resource` under the item `node` (above it, for
+    /// `down` false) by the reference field `parent`: the items under it in the order the
+    /// collection keeps them, the items above it from the nearest, each with the type it is
+    /// (the collection's `schema`).
+    ///
+    /// The field's column holds its values as runs ([`super::columns`]): the run of the node
+    /// names its children, and each child's run the items under it, so what a walk reads is
+    /// the subtree it answers, never the collection. `None` when the field is no column of the
+    /// type, and the caller's own walk runs instead.
+    ///
+    /// # Errors
+    ///
+    /// The index cannot be read.
+    pub fn relatives(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        parent: &str,
+        node: &str,
+        down: bool,
+    ) -> Result<Option<Vec<(String, String)>>, StoreError> {
+        let Some(column) = schema.column(parent).filter(|column| {
+            column.kind == ColumnKind::Ref && !column.many && column.pred.is_none()
+        }) else {
+            return Ok(None);
+        };
+        let member = member_list(resource, field);
+        let touched = self.overlay.touched_reading(
+            &member,
+            &|path| self.is_item_of(path, (resource, field)),
+            &|written| written == parent,
+        );
+        let mut found: Vec<(String, Rc<str>)> = Vec::new();
+        let mut walked: HashSet<String> = HashSet::from([node.to_owned()]);
+        if down {
+            let mut above = vec![node.to_owned()];
+            while let Some(at) = above.pop() {
+                for (key, id) in self.children((resource, field), schema, column, &at, &touched)? {
+                    if walked.insert(id.to_string()) {
+                        above.push(id.to_string());
+                        found.push((key, id));
+                    }
+                }
+            }
+            found.sort_by(|(a, ai), (b, bi)| (a.as_str(), &**ai).cmp(&(b.as_str(), &**bi)));
+        } else {
+            let mut at = node.to_owned();
+            while let Lit::Ref(held) = self.lit_of_field(&child(resource, &at), schema, parent)? {
+                let Some(id) = super::derive::id_of(&held).map(str::to_owned) else {
+                    break;
+                };
+                if !walked.insert(id.clone()) {
+                    break;
+                }
+                found.push((String::new(), Rc::from(id.as_str())));
+                at = id;
+            }
+        }
+        Ok(Some(
+            found
+                .into_iter()
+                .map(|(_, id)| (id.to_string(), schema.id.clone()))
+                .collect(),
+        ))
+    }
+
+    /// The items of the collection `field` of `resource` whose `parent` column holds `above`,
+    /// as the open writes leave them: their collection order key and id.
+    fn children(
+        &self,
+        (resource, field): (&str, &str),
+        schema: &TypeSchema,
+        column: &crate::schema::ColumnSchema,
+        above: &str,
+        touched: &std::collections::BTreeSet<String>,
+    ) -> Result<Vec<(String, Rc<str>)>, StoreError> {
+        let here = child(resource, above);
+        let list = scope_list(resource, field, &column.name);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let run = columns::value_run(&here);
+        let (start, end) =
+            run_bounds(self.snapshot, (&list, &pages), Some(column), &run).map_err(index_error)?;
+        let mut out = Vec::with_capacity(end.saturating_sub(start));
+        for index in start..end {
+            let Some((key, id)) = pages.entry(index) else {
+                break;
+            };
+            // What an open write changed it to is read below, as it is now.
+            if touched.contains(&*id) {
+                continue;
+            }
+            out.push((after_value(&key).to_owned(), id));
+        }
+        for id in touched {
+            let path = child(resource, id);
+            let Some(key) = self.key_in(&path, (resource, field)).map_err(index_error)? else {
+                continue;
+            };
+            let now = self
+                .column_values(&path, schema, column)
+                .map_err(index_error)?;
+            if now.contains(&here) {
+                out.push((key, Rc::from(id.as_str())));
+            }
+        }
+        Ok(out)
+    }
+
     /// [`Self::query`]'s run read page by page, when the chosen run is in the collection's order
     /// or the order of the column it runs over: the entries of that run whose items the other
     /// conjuncts hold of, `None` when the run is not read that way (another order, or the
@@ -943,6 +1051,81 @@ impl View<'_> {
             None => Ok(kept),
             Some(order) => self.ordered(kept.into_iter().map(|p| (p.clone(), p)), schema, order),
         }
+    }
+
+    /// The resource of the type `schema` anywhere in the index that `pred` holds of and comes
+    /// first in `order`, or `None` when `pred` holds of none: [`Self::select`]'s query asked for
+    /// one answer. When one exact run of a column answers the predicate and that column is what
+    /// `order` (or no order) keeps the resources by, the first entry of the run is read, and the
+    /// rest of the run is not: a query that ends at its first answer costs the pages up to it.
+    ///
+    /// # Errors
+    /// The index cannot be read, or `pred` cannot compare what a field holds.
+    pub fn first(
+        &self,
+        schema: &TypeSchema,
+        pred: &Pred,
+        order: Option<&Order>,
+        evaluated: &Cell<u64>,
+    ) -> Result<Option<String>, StoreError> {
+        let Some(conj) = conjuncts(Some(pred))? else {
+            return Ok(None);
+        };
+        let Some((at, access)) = choose(schema, &conj, true) else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let [run] = access.as_slice() else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let [one] = run.runs.as_slice() else {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        };
+        let ascending = order.is_none_or(|o| {
+            !o.descending
+                && !o.absent_last
+                && o.then.is_none()
+                && schema
+                    .column(&o.field)
+                    .is_some_and(|column| column.name == run.column)
+        });
+        if !run.exact
+            || !ascending
+            || (run.repeats && !membership(conj.get(at).copied().unwrap_or(&Pred::Const(false))))
+        {
+            return Ok(self
+                .select(schema, pred, order, evaluated)?
+                .into_iter()
+                .next());
+        }
+        let list = type_list(&schema.id, &run.column);
+        let pages = self.snapshot.pages(&list).map_err(index_error)?;
+        let (start, end) = bounds(&pages, one);
+        let residual = rest(&conj, Some(at));
+        for index in start..end {
+            let Some((_, path)) = pages.entry(index) else {
+                break;
+            };
+            if self.text(&path, TYPE).map_err(index_error)?.is_none() {
+                continue;
+            }
+            if let Some(p) = &residual {
+                evaluated.set(evaluated.get().saturating_add(1));
+                if !self.holds(&path, schema, p)? {
+                    continue;
+                }
+            }
+            return Ok(Some(path.to_string()));
+        }
+        Ok(None)
     }
 
     /// How many items of the collection `field` of `resource` hold each value of the column

@@ -1,6 +1,6 @@
 # Tilo: layout on device pixels, flex items measured as laid out
 
-Source: crates.io `taffy` 0.10.1, carried as it ships apart from the two changes below.
+Source: crates.io `taffy` 0.10.1, carried as it ships apart from the three changes below.
 
 - Registry checksum: `aea22054047c16c3f34d3ac473a2170be1424b1115b2a3adcf28cfb067c88859`
 - Repository: https://github.com/DioxusLabs/taffy
@@ -44,3 +44,20 @@ ultrawide window).
   size by its min and max cross sizes first, as the layout does.
 
 Remove this part once upstream clamps the known cross size there.
+
+## A measurement answers only the constraint it was taken under
+
+`Cache::get` answered a query that knows a dimension with any entry that came to
+that same size, whatever space the entry was measured under. Under a min-content
+constraint a block of text wraps into its narrowest lines, so a card holding it
+comes to the height of that wrapping; a card whose content names a width it will
+not go under (`min-width: 400px`) comes to that same width there. The solve then
+asks for the card at 400 px wide and is handed the min-content height: the card
+stood 393 px tall in the 87 px row of a transcript that centres it, its content
+87 px at its top and the rest past both edges of the row.
+
+- `src/tree/cache.rs`: `answers` filters both the final-layout and the measure
+  paths; where the query knows a dimension an entry left out, the entry answers
+  only if it was measured under the space the query offers.
+
+Remove this part once upstream compares the available space there too.

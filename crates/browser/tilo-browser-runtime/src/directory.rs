@@ -169,7 +169,7 @@ impl PageDirectory {
                 let ask: Ask = Rc::new(move |effect: DirectoryEffect| {
                     asked.borrow_mut().push(effect);
                 });
-                self.content = Some(directory::sheet(&shown, &self.query, &ask));
+                self.content = Some(directory::sheet(&shown, &self.query, &ask, None));
                 self.replaced = true;
                 changed = true;
             }

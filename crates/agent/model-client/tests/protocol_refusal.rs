@@ -117,6 +117,7 @@ async fn administration_refusal_and_inference_share_connection_without_sharing_a
                     },
                     stop_reason: StopReason::Refusal,
                     usage: Usage::default(),
+                    cost_micros: 0,
                 };
                 send(&mut peer, success(serde_json::to_string(&refused).unwrap())).await;
             }

@@ -59,15 +59,15 @@ impl Described for Link {
         link
     }
 
-    /// A link showing something else now takes the new address and what it says in place.
+    /// A link showing something else now shows and opens the new address where it stands, and
+    /// does what a press is now told to do: a change of its words or its event costs the link's
+    /// own fields, never the widget.
     fn set_props(&mut self, props: LinkProps) -> bool {
-        if props.activate.is_none() != self.has_action() {
-            return false;
-        }
         self.set_url(&props.url);
-        if let Some(label) = props.label {
-            self.set_label(&label);
-        }
+        self.set_label(props.label.as_deref().unwrap_or(&props.url));
+        self.text_role = props.role;
+        self.click = props.activate.handler();
+        self.dirty = true;
         true
     }
 }

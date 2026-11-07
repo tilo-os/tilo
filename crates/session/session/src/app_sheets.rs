@@ -153,7 +153,6 @@ impl AppSheets {
             };
             let file = offer.file.to_string_lossy().into_owned();
             seat.presentation().close();
-            seat.presentation().gone();
             self.asked.borrow_mut().insert(file.clone());
             let mut arguments = Map::new();
             arguments.insert(wire::FILE_PARAM.to_owned(), Value::from(file));
@@ -196,7 +195,6 @@ impl AppSheets {
                 continue;
             };
             seat.presentation().close();
-            seat.presentation().gone();
             if let UninstallEffect::Confirm { .. } = effect {
                 let (action, confirmed) = match app.removal {
                     Removal::Uninstall => (wire::UNINSTALL, true),
@@ -535,6 +533,12 @@ mod tests {
                 )
                 .expect("the app");
         }
+        // The entries are this test's own writes: the memoised scan is told to
+        // read them now, as a writer in this process that must see its own
+        // change does, rather than waiting for a directory notification that
+        // says the same thing later — or, on a machine whose application
+        // directories cannot be watched, never.
+        desktop_entry::cache::refresh();
         desktop_id
     }
 
@@ -639,9 +643,10 @@ mod tests {
             desk.offers().is_empty(),
             "the question was answered, so there is no offer left"
         );
-        assert!(
-            !desk.add.presentation().is_drawn(),
-            "and the question is taken down"
+        assert_eq!(
+            desk.add.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
         );
     }
 
@@ -685,7 +690,11 @@ mod tests {
         // can still add it.
         assert!(desk.apps().is_empty(), "nothing was added");
         assert!(desk.home.home().join("Downloads/Krita.AppImage").is_file());
-        assert!(!desk.add.presentation().is_drawn(), "the question is gone");
+        assert_eq!(
+            desk.add.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
+        );
 
         // It keeps running, and it is not asked about again.
         for _ in 0..4 {
@@ -735,9 +744,8 @@ mod tests {
             "Tilo Imager",
             &[applications.clone(), downloads.clone()],
         );
-        // The entry is written once per copy, so the registry's reading may
-        // first land between the two writes: wait for the one that lists
-        // every copy, which is what the question is built from.
+        // The entry is written once per copy; the registry reads both, and the
+        // question is built from the reading that lists every copy.
         desk.until("the app, with every copy of it", || {
             desk.apps().first().is_some_and(|app| app.copies.len() == 2)
         });
@@ -795,9 +803,10 @@ mod tests {
         });
         desk.uninstall.answer(UninstallEffect::Cancel);
         desk.settle();
-        assert!(
-            !desk.uninstall.presentation().is_drawn(),
-            "the question goes"
+        assert_eq!(
+            desk.uninstall.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
         );
         assert!(file.is_file(), "the app's file stays");
         assert_eq!(desk.apps().len(), 1, "and so does the app");

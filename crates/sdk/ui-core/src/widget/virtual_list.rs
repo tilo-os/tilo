@@ -879,8 +879,14 @@ impl<M: ListModel> VirtualList<M> {
     /// a click with its modifiers, the keyboard, `Escape` clearing it, or a row opened onto.
     #[must_use]
     pub fn on_selected(mut self, callback: impl FnMut(&[M::Key]) + 'static) -> Self {
-        self.on_selected = Some(Box::new(callback));
+        self.set_on_selected(callback);
         self
+    }
+
+    /// [`Self::on_selected`] on a list already built: what the list reports is the callback
+    /// standing now, so a list whose items are given again tells its new host.
+    pub fn set_on_selected(&mut self, callback: impl FnMut(&[M::Key]) + 'static) {
+        self.on_selected = Some(Box::new(callback));
     }
 
     /// Select the row the keyboard moves to, as a single-selection list
@@ -894,11 +900,22 @@ impl<M: ListModel> VirtualList<M> {
 
     /// Restore stable-key selection and discard keys absent from this model.
     #[must_use]
-    pub fn with_selection(mut self, mut selection: KeySelection<M::Key>) -> Self {
+    pub fn with_selection(mut self, selection: KeySelection<M::Key>) -> Self {
+        self.set_selection(selection);
+        self
+    }
+
+    /// [`Self::with_selection`] on a list already built: the rows chosen now, keys absent from
+    /// the model dropped, and the rows on screen show it where they stand.
+    pub fn set_selection(&mut self, mut selection: KeySelection<M::Key>) {
         selection.reconcile(|key| self.model.index_of(key).is_some());
         self.reported_many = selection.is_select_all() || selection.stored_keys().count() > 1;
         self.selection = selection;
-        self
+    }
+
+    /// How many of the rows the model holds the selection names.
+    pub fn selection_len(&self) -> usize {
+        self.selection.len(self.model.len())
     }
 
     #[must_use]
@@ -921,14 +938,24 @@ impl<M: ListModel> VirtualList<M> {
 
     #[must_use]
     pub fn on_select(mut self, callback: impl FnMut(M::Key, bool) + 'static) -> Self {
-        self.on_select = Some(Box::new(callback));
+        self.set_on_select(callback);
         self
+    }
+
+    /// [`Self::on_select`] on a list already built.
+    pub fn set_on_select(&mut self, callback: impl FnMut(M::Key, bool) + 'static) {
+        self.on_select = Some(Box::new(callback));
     }
 
     #[must_use]
     pub fn on_activate(mut self, callback: impl FnMut(M::Key) + 'static) -> Self {
-        self.on_activate = Some(Box::new(callback));
+        self.set_on_activate(callback);
         self
+    }
+
+    /// [`Self::on_activate`] on a list already built.
+    pub fn set_on_activate(&mut self, callback: impl FnMut(M::Key) + 'static) {
+        self.on_activate = Some(Box::new(callback));
     }
 
     /// Told when a row's subtasks fold away or open, which way it went, however they were

@@ -43,7 +43,8 @@ use std::time::Duration;
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
 use tilo_desktop_surface::notifications::{
-    Notification as DeskNotification, NotificationSeverity, PERSISTENT_DISMISS,
+    Notification as DeskNotification, NotificationIconKind, NotificationSeverity,
+    PERSISTENT_DISMISS,
 };
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
@@ -129,6 +130,9 @@ impl Notice {
             urgency: self.urgency,
             machine_wide: self.machine_wide,
             suppress_sound: self.sound.is_some(),
+            // The session raises its own notice: it is the system's word
+            // about the machine, not a sender's.
+            system: true,
             ..Notification::new(0)
         }
     }
@@ -158,6 +162,7 @@ impl Notice {
             .unwrap_or(PERSISTENT_DISMISS);
         let mut desk_notice = DeskNotification::new(self.title, self.body)
             .with_app_name(self.app)
+            .with_icon_kind(NotificationIconKind::System)
             .with_severity(severity)
             .with_dismiss_after(dismiss_after);
         desk_notice.actions = self.actions;
@@ -626,12 +631,16 @@ pub(crate) fn update_state_notice() -> Notice {
 /// The notice that a collaborator's device speaks another peer protocol
 /// version, so the two cannot work together until one of them updates: this
 /// device fetches the newest system when theirs is the newer one, and
-/// otherwise theirs is the one to update. Raised once per device and version
-/// by the clock that finishes the update ([`crate::update_finish`]).
-pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch) -> Notice {
-    let device = mismatch.device.as_str();
-    let (title, body) = if mismatch.theirs_is_newer() {
-        (
+/// otherwise theirs is the one to update. `device` is the person's name for
+/// it, when the fabric holds the endpoint it was heard at. Raised once per
+/// device and version by the clock that finishes the update
+/// ([`crate::update_finish`]).
+pub(crate) fn version_mismatch_notice(
+    mismatch: &crate::network::VersionMismatch,
+    device: Option<&str>,
+) -> Notice {
+    let (title, body) = match (mismatch.theirs_is_newer(), device) {
+        (true, Some(device)) => (
             t_args(
                 "version-mismatch-updating-title",
                 &[("device", device.into())],
@@ -640,9 +649,8 @@ pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch
                 "version-mismatch-updating-body",
                 &[("device", device.into())],
             ),
-        )
-    } else {
-        (
+        ),
+        (false, Some(device)) => (
             t_args(
                 "version-mismatch-needs-update-title",
                 &[("device", device.into())],
@@ -651,7 +659,18 @@ pub(crate) fn version_mismatch_notice(mismatch: &crate::network::VersionMismatch
                 "version-mismatch-needs-update-body",
                 &[("device", device.into())],
             ),
-        )
+        ),
+        // The device was never met on the person's fabric, so its endpoint is
+        // all this device knows of it: said plainly rather than as a hex
+        // string nobody reads.
+        (true, None) => (
+            t("version-mismatch-unknown-updating-title"),
+            t("version-mismatch-unknown-updating-body"),
+        ),
+        (false, None) => (
+            t("version-mismatch-unknown-needs-update-title"),
+            t("version-mismatch-unknown-needs-update-body"),
+        ),
     };
     Notice {
         app: t("system-update-app-name"),
@@ -1497,5 +1516,151 @@ mod tests {
             .invoke(&resource, "invoke", &arguments)
             .expect("the action is offered");
         assert_eq!(*tapped.lock().unwrap(), [(id, RESTART_ACTION.to_owned())]);
+    }
+
+    /// A collaborator's device at another protocol version reaches the person
+    /// as a calm notice naming the device and what to do about it; one this
+    /// device only knows by its endpoint is said plainly rather than spelled
+    /// out. It waits until it is read.
+    #[test]
+    fn a_device_on_another_version_is_named_and_told_what_to_do() {
+        let ours: u32 = 30;
+        let newer = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: ours.wrapping_add(1),
+            ours,
+        };
+        let notice = version_mismatch_notice(&newer, Some("Framework 16"));
+        assert!(
+            notice.title.contains("Framework 16") && notice.title.contains("newer Tilo"),
+            "the device names the title: {}",
+            notice.title
+        );
+        assert!(
+            notice.body.contains("restarts"),
+            "the body says what happens here: {}",
+            notice.body
+        );
+        assert!(notice.machine_wide, "the whole machine's news");
+        assert!(notice.expires_after.is_none(), "it waits until it is read");
+
+        let older = crate::network::VersionMismatch {
+            theirs: ours.wrapping_sub(1),
+            ..newer.clone()
+        };
+        let notice = version_mismatch_notice(&older, Some("Framework 16"));
+        assert!(
+            notice.title.contains("Framework 16") && notice.title.contains("needs to update"),
+            "the device names the title: {}",
+            notice.title
+        );
+        assert!(
+            notice.body.contains("Update Tilo there"),
+            "the one behind is the one that updates: {}",
+            notice.body
+        );
+
+        for mismatch in [&newer, &older] {
+            let unknown = version_mismatch_notice(mismatch, None);
+            assert!(
+                unknown.title.to_lowercase().contains("another device"),
+                "a device the fabric cannot name is still named plainly: {}",
+                unknown.title
+            );
+            assert!(
+                !unknown.title.contains("zpeerexample") && !unknown.body.contains("zpeerexample"),
+                "its endpoint is not the person's language"
+            );
+        }
+    }
+
+    /// A desk with no notifications service to show a notice still shows it
+    /// as the system's: its own name and the system's mark, never a
+    /// sender's claim and a generic window.
+    #[test]
+    fn a_notice_with_no_service_to_show_it_is_still_the_systems() {
+        let desks = DesktopNotifications::default();
+        let newer = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: 31,
+            ours: 30,
+        };
+        version_mismatch_notice(&newer, Some("Framework 16")).tell_desk(&desks);
+        let banner = desks.log().active().first().cloned().expect("it is shown");
+        assert_eq!(banner.app_name.as_deref(), Some("Updates"));
+        assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));
+    }
+
+    /// The banner a person reads: the title names the device on one line and
+    /// the body says what happens here in one sentence. Both are painted
+    /// whole at the banner's own width, never cut with an ellipsis.
+    #[test]
+    fn a_version_mismatch_notice_reads_whole_on_its_banner() {
+        // The card painted at a given width: its glyphs and its runs, where
+        // every run is one line of one field.
+        fn painted(
+            text: &mut ui::text_render::TextRenderer,
+            theme: &ui::theme::Theme,
+            card: &ui::widget::toast::ToastCard<'_>,
+            width: f64,
+        ) -> (usize, usize) {
+            let rect = ui::vello::kurbo::Rect::new(
+                0.0,
+                0.0,
+                width,
+                ui::widget::toast::card_height(text, theme, card, width),
+            );
+            let mut scene = ui::vello::Scene::new();
+            ui::widget::toast::paint_card(
+                &mut scene,
+                ui::vello::kurbo::Affine::IDENTITY,
+                text,
+                theme,
+                rect,
+                card,
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            let glyphs = runs.iter().map(|run| run.glyphs.len()).sum();
+            (glyphs, runs.len())
+        }
+        let ours: u32 = 30;
+        let newer = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: ours.wrapping_add(1),
+            ours,
+        };
+        let older = crate::network::VersionMismatch {
+            theirs: ours.wrapping_sub(1),
+            ..newer.clone()
+        };
+        for mismatch in [&newer, &older] {
+            for device in [Some("Framework 16"), None] {
+                let notice = version_mismatch_notice(mismatch, device);
+                let card = ui::widget::toast::ToastCard::new(
+                    &notice.title,
+                    ui::widget::toast::ToastKind::Info,
+                )
+                .body(&notice.body)
+                .caption(&notice.app)
+                .icon(Some(ui::icons::Icon::AppWindow))
+                .time("now")
+                .closable(true);
+                let mut text = ui::text_render::TextRenderer::new();
+                let theme = ui::theme::Theme::dark();
+                // A banner card is 360 points wide; at 2000 points nothing
+                // needs eliding or clamping. A line break may drop the space
+                // that ended it, so the banner may paint exactly one glyph
+                // fewer per extra line and not one more.
+                let (banner_glyphs, banner_lines) = painted(&mut text, &theme, &card, 360.0);
+                let (whole_glyphs, whole_lines) = painted(&mut text, &theme, &card, 2000.0);
+                assert_eq!(
+                    banner_glyphs + (banner_lines - whole_lines),
+                    whole_glyphs,
+                    "the banner cut the notice: {} / {}",
+                    notice.title,
+                    notice.body
+                );
+            }
+        }
     }
 }

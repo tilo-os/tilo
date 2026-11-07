@@ -9,14 +9,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use automerge::{ObjId, ReadDoc};
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::place::{Place, Resolved};
-use tilolang_runtime::store::{ANY_FIELD, FieldKey, FieldValue, LINKS, LinkHow, Scalar, doc_of};
+use tilolang_runtime::store::{
+    ANY_FIELD, FieldKey, FieldValue, LINKS, Left, LinkHow, Scalar, Version, VersionKind, doc_of,
+};
 
 use super::columns::{
     self, reversed, scope_entry, scope_list, scope_prefix, type_entry, type_list,
 };
 use super::lists::Entry;
 use super::reflect::{self, CREATED, Ends, Stamp, UPDATED};
-use super::{CYCLES, IN, IndexError, KEY, TYPE, Writer};
+use super::{CHUNK, CYCLES, IN, IndexError, KEY, LEFT, TYPE, Writer, removed_field};
 use crate::chunk::{ChunkNo, Chunks};
 use crate::items::{Items, Nested, fits};
 use crate::reads::{Placed, default_value, field_of_slot, type_at};
@@ -193,7 +195,25 @@ pub trait Sink {
     /// It cannot be written.
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError>;
 
+    /// Drop the text `key` of `resource`: what the index holds there is no more. A sink that
+    /// holds this pass's writes over the index keeps the empty text, which reads as none.
+    ///
+    /// # Errors
+    /// It cannot be written.
+    fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
+        self.put_text(resource, key, "")
+    }
+
+    /// Keep `stamp`'s version as the newest version of `resource`, unless one it holds comes
+    /// after it ([`super::Snapshot::newest`]): what a mark of it, or of the document holding
+    /// it, reads without the resource's log.
+    ///
+    /// # Errors
+    /// It cannot be read or written.
+    fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError>;
+
     /// Drop `resource` and everything inside it: fields, lists, and what search finds them by.
+    /// The newest version kept of it stays, as the record's log keeps its versions.
     ///
     /// # Errors
     /// It cannot be written.
@@ -268,6 +288,10 @@ pub trait Sink {
 }
 
 impl Sink for Writer<'_> {
+    fn put_newest(&mut self, resource: &str, stamp: &Stamp) -> Result<(), IndexError> {
+        Writer::put_newest(self, resource, stamp)
+    }
+
     fn field(&mut self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
         Writer::field(self, resource, field)
     }
@@ -287,6 +311,10 @@ impl Sink for Writer<'_> {
 
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError> {
         Writer::put_text(self, resource, key, text)
+    }
+
+    fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
+        self.remove_field(resource, key)
     }
 
     fn remove(&mut self, resource: &str) -> Result<(), IndexError> {
@@ -339,7 +367,7 @@ impl Sink for Writer<'_> {
         let kept: Vec<(String, String, Vec<u8>)> = self
             .subtree(resource)?
             .into_iter()
-            .filter(|(_, field, _)| reflect::is_reflected(field))
+            .filter(|(_, field, _)| reflect::is_reflected(field) || field == LEFT)
             .collect();
         Sink::remove(self, resource)?;
         for (held, field, bytes) in kept {
@@ -355,9 +383,11 @@ impl Sink for Writer<'_> {
             .filter(|(_, field, _)| field == TYPE)
             .map(|(resource, _, _)| resource.as_str())
             .collect();
+        // An item the record places in no collection keeps where it left from, which the next
+        // removal of it reads: its other fields go.
         let stale: Vec<(String, String)> = held
             .iter()
-            .filter(|(resource, _, _)| !typed.contains(resource.as_str()))
+            .filter(|(resource, field, _)| !typed.contains(resource.as_str()) && field != LEFT)
             .map(|(resource, field, _)| (resource.clone(), field.clone()))
             .collect();
         for (resource, field) in stale {
@@ -454,6 +484,13 @@ pub struct Derive<'d> {
     /// Fields a change moved on resources it did not name, per document: a link target's
     /// [`LINKS`] when what links to it moved, so a view reading them runs again.
     pub notified: BTreeMap<DocId, Vec<FieldKey>>,
+    /// The items the changes removed from a collection, with where they left from and the
+    /// version that removed them: what a row of what left it is written from once the changes
+    /// are derived, when the item is in no collection.
+    left: Vec<(String, FieldKey, Stamp, Option<String>)>,
+    /// The chunk each item's map is stored in, by its path in the index: a collection derives
+    /// where the items of its runs are, and each item's fields are read there.
+    chunks_of: BTreeMap<String, ChunkNo>,
 }
 
 /// The collection an item is in, and its order key: where its columns' entries go.
@@ -492,6 +529,157 @@ fn write_ends(sink: &mut impl Sink, resource: &str, end: &Ends) -> Result<(), In
     Ok(())
 }
 
+/// A row of what left a collection: the item, and the version that removed it, which says
+/// when that happened and where the change stands causally.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LeftRow {
+    pub path: String,
+    pub version: Version,
+}
+
+impl LeftRow {
+    /// What orders it among the rows of what left a collection, as [`Version`] orders versions.
+    fn order(&self) -> (&str, u64, &str) {
+        self.version.order()
+    }
+
+    /// Whether it left before `other`.
+    fn before(&self, other: &Self) -> bool {
+        self.order() < other.order()
+    }
+}
+
+/// The items that left each collection, by the resource holding the collection and its field,
+/// in the order they left, each with the version that removed it ([`super::REMOVED`]).
+pub type Removed = BTreeMap<(String, String), Vec<LeftRow>>;
+
+/// The items that left the collection `field` of `holder`, as `sink` holds them.
+fn read_removed(
+    sink: &mut impl Sink,
+    holder: &str,
+    field: &str,
+) -> Result<Vec<LeftRow>, IndexError> {
+    let Some(json) = sink.text(holder, &removed_field(field))? else {
+        return Ok(Vec::new());
+    };
+    serde_json::from_str(&json).map_err(|_| IndexError::Corrupt)
+}
+
+/// Keep `left` as the items that left the collection `field` of `holder` ([`super::REMOVED`]).
+fn write_removed(
+    sink: &mut impl Sink,
+    holder: &str,
+    field: &str,
+    left: &[LeftRow],
+) -> Result<(), IndexError> {
+    let mut left = left.to_vec();
+    left.sort_by(|one, other| one.order().cmp(&other.order()));
+    let json = serde_json::to_string(&left).map_err(|_| IndexError::Corrupt)?;
+    sink.put_text(holder, &removed_field(field), &json)
+}
+
+/// The type an item of the collection `key` is, as the version that placed one recorded it:
+/// what a row of what left it shows is.
+fn collection_ty(sink: &mut impl Sink, key: &FieldKey) -> Result<Option<String>, IndexError> {
+    Ok(sink
+        .text(&key.resource, TYPE)?
+        .and_then(|held| lookup(&held))
+        .and_then(|schema| {
+            schema
+                .fields
+                .iter()
+                .find(|field| field.id == key.field)
+                .and_then(|field| field.record.clone())
+        }))
+}
+
+/// Keep the item at `path` a row of what left the collection `key` names, with the version
+/// `end` holds of it; the later removal of it stays.
+fn note_left(
+    sink: &mut impl Sink,
+    key: &FieldKey,
+    path: &str,
+    stamp: &Stamp,
+    ty: Option<&str>,
+) -> Result<(), IndexError> {
+    let mut left = read_removed(sink, &key.resource, &key.field)?;
+    let row = left_version(stamp, path, key, ty.map(str::to_owned));
+    match left.iter().position(|held| held.path == path) {
+        Some(at) => {
+            if let Some(held) = left.get_mut(at)
+                && held.before(&row)
+            {
+                *held = row;
+            }
+        }
+        None => left.push(row),
+    }
+    write_removed(sink, &key.resource, &key.field, &left)?;
+    sink.put_text(path, LEFT, &in_of(&key.resource, &key.field))
+}
+
+/// Drop the item at `path` from what left the collection `key` names, when it is a row of the
+/// collection again.
+fn drop_left(sink: &mut impl Sink, key: &FieldKey, path: &str) -> Result<(), IndexError> {
+    let mut left = read_removed(sink, &key.resource, &key.field)?;
+    let Some(at) = left.iter().position(|held| held.path == path) else {
+        return Ok(());
+    };
+    left.remove(at);
+    write_removed(sink, &key.resource, &key.field, &left)?;
+    sink.drop_text(path, LEFT)
+}
+
+/// The item at `path` is in a collection again: the row of what left the collection it left
+/// from goes, and where it left from is forgotten ([`LEFT`]).
+fn returned(sink: &mut impl Sink, path: &str) -> Result<(), IndexError> {
+    let Some(held) = sink.text(path, LEFT)? else {
+        return Ok(());
+    };
+    if let Some((holder, field)) = split_in(&held) {
+        let key = FieldKey {
+            resource: holder.to_owned(),
+            field: field.to_owned(),
+        };
+        drop_left(sink, &key, path)?;
+    }
+    sink.drop_text(path, LEFT)
+}
+
+/// The items that left the collections `schema` holds in `resource`, as `sink` keeps them:
+/// what a derivation anew of it writes back, as the record holds where an item is now, never
+/// where it was.
+fn kept_removed(
+    sink: &mut impl Sink,
+    resource: &str,
+    schema: &TypeSchema,
+) -> Result<Vec<(String, String)>, IndexError> {
+    let mut held = Vec::new();
+    for field in schema
+        .fields
+        .iter()
+        .filter(|field| field.kind == MergeKind::Collection)
+    {
+        let name = removed_field(&field.id);
+        if let Some(json) = sink.text(resource, &name)? {
+            held.push((name, json));
+        }
+    }
+    Ok(held)
+}
+
+/// Write back what [`kept_removed`] read off a resource before it was derived anew.
+fn restore_removed(
+    sink: &mut impl Sink,
+    resource: &str,
+    held: &[(String, String)],
+) -> Result<(), IndexError> {
+    for (field, json) in held {
+        sink.put_text(resource, field, json)?;
+    }
+    Ok(())
+}
+
 /// The value of `field` of the resource at `path` as the sink holds it, its default when it
 /// holds none; a collection as the [`FieldValue::Counter`] of its items.
 pub(super) fn field_value(
@@ -506,6 +694,23 @@ pub(super) fn field_value(
     Ok(sink
         .field(path, &field.id)?
         .unwrap_or_else(|| default_value(field)))
+}
+
+/// The version that removed the item at `path` from the collection `key` names, with where it
+/// stood: what a list shows of it struck ([`super::REMOVED`]).
+fn left_version(stamp: &Stamp, path: &str, key: &FieldKey, ty: Option<String>) -> LeftRow {
+    let mut version = stamp.version.clone();
+    path.clone_into(&mut version.resource);
+    version.kind = VersionKind::Removed;
+    version.left = Some(Left {
+        holder: key.resource.clone(),
+        field: key.field.clone(),
+        ty,
+    });
+    LeftRow {
+        path: path.to_owned(),
+        version,
+    }
 }
 
 impl<'d> Derive<'d> {
@@ -523,13 +728,28 @@ impl<'d> Derive<'d> {
             bulk: None,
             moved: BTreeMap::new(),
             wholes: BTreeSet::new(),
+            chunks_of: BTreeMap::new(),
             notified: BTreeMap::new(),
+            left: Vec::new(),
         }
     }
 
     /// The document the resource `id` is stored in, when the store holds its chunk.
     fn source(&self, id: &str) -> Option<&'d Doc> {
         self.chunks.doc(id)
+    }
+
+    /// The chunk the map at `path` is stored in: the item's own, or the record's.
+    fn chunk_of(&self, path: &str) -> ChunkNo {
+        self.chunks_of
+            .get(path)
+            .copied()
+            .unwrap_or_else(|| self.chunks.chunk(doc_of(path)))
+    }
+
+    /// The document the map at `path` is stored in, when the store holds its chunk.
+    fn source_of(&self, path: &str) -> Option<&'d Doc> {
+        self.chunks.mirror(self.chunk_of(path))
     }
 
     /// Derive every record of `app` into `sink`, which holds none of them.
@@ -557,7 +777,8 @@ impl<'d> Derive<'d> {
 
     /// Derive every record of `app` into `sink`, which holds none of them, with the versions
     /// `ends` holds of its resources: the first and last of the record's whole log and the
-    /// last change of each field ([`reflect::ends_of`]).
+    /// last change of each field ([`reflect::ends_of`]), and the items `removed` holds that
+    /// left their collections ([`super::REMOVED`]).
     ///
     /// # Errors
     /// The sink cannot be written.
@@ -566,6 +787,7 @@ impl<'d> Derive<'d> {
         sink: &mut impl Sink,
         app: &str,
         ends: &BTreeMap<String, Ends>,
+        removed: &Removed,
     ) -> Result<(), IndexError> {
         // Written first, so the columns of each resource are derived with its versions; those
         // of resources the record no longer holds go again once the records are derived.
@@ -577,9 +799,161 @@ impl<'d> Derive<'d> {
             write_ends(sink, resource, end)?;
         }
         self.all(sink, app)?;
-        for (resource, _) in of_app {
+        // What a mark reads of a resource without its log, once the records are derived: of a
+        // resource the record no longer holds, the version that removed it.
+        for (resource, end) in &of_app {
             if sink.text(resource, TYPE)?.is_none() {
                 sink.remove(resource)?;
+            }
+            sink.put_newest(resource, &end.newest())?;
+        }
+        for ((holder, field), left) in removed {
+            if left.is_empty() || !self.of_app(holder, app) {
+                continue;
+            }
+            let mut rows = Vec::new();
+            for row in left {
+                // An item in a collection again is no row of what left one: a later move it
+                // is not, when the collection it moved into is gone too.
+                if sink.text(&row.path, IN)?.is_some() {
+                    sink.drop_text(&row.path, LEFT)?;
+                    continue;
+                }
+                rows.push(row.clone());
+            }
+            write_removed(sink, holder, field, &rows)?;
+            for row in &rows {
+                sink.put_text(&row.path, LEFT, &in_of(holder, field))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Keep the items that left each collection the changes moved items of, with the version
+    /// that removed each, and drop those that came back ([`super::REMOVED`]): what a list shows
+    /// struck until the person has seen them go. Called after [`Self::changes`]: what a row is
+    /// is where the item is now.
+    ///
+    /// # Errors
+    /// The sink cannot be read or written.
+    pub fn removed(
+        &mut self,
+        sink: &mut impl Sink,
+        app: &str,
+        ends: &BTreeMap<String, Ends>,
+    ) -> Result<(), IndexError> {
+        // Where each item the changes removed left from, read before they were derived: what
+        // the record held of its place is gone with them.
+        for (path, key, stamp, ty) in std::mem::take(&mut self.left) {
+            // An item in a collection again is no row of what left one, whatever the change
+            // that returned it was derived with.
+            if sink.text(&path, IN)?.is_some() {
+                returned(sink, &path)?;
+                drop_left(sink, &key, &path)?;
+                continue;
+            }
+            note_left(sink, &key, &path, &stamp, ty.as_deref())?;
+        }
+        // What came back is no row of what left one, whether or not the changes derived it.
+        let back: Vec<String> = ends
+            .keys()
+            .filter(|path| self.of_app(path, app))
+            .filter(|path| matches!(sink.text(path, IN), Ok(Some(_))))
+            .cloned()
+            .collect();
+        for path in &back {
+            returned(sink, path)?;
+        }
+        let moved = std::mem::take(&mut self.moved);
+        let written = self.removed_of(sink, app, ends, &moved);
+        self.moved = moved;
+        written
+    }
+
+    /// Take in what `ends` holds as removed of each collection, read before the changes that
+    /// removed it are derived: where an item was is in the record the changes take away, and a
+    /// record derived anew holds no item it lost. [`Self::removed`] writes the rows afterwards,
+    /// when each item's place is read again.
+    ///
+    /// # Errors
+    /// The sink cannot be read or written.
+    pub fn removed_before(
+        &mut self,
+        sink: &mut impl Sink,
+        app: &str,
+        ends: &BTreeMap<String, Ends>,
+        placed: &reflect::Placed,
+    ) -> Result<(), IndexError> {
+        for (path, end) in ends {
+            let Some((stamp, VersionKind::Removed)) = &end.moved else {
+                continue;
+            };
+            if !self.of_app(path, app) {
+                continue;
+            }
+            let anywhere = |held: Option<String>| {
+                held.as_deref()
+                    .and_then(split_in)
+                    .map(|(holder, field)| (holder.to_owned(), field.to_owned()))
+            };
+            // Where it is, or where it left from when a removal already took it out of the
+            // index.
+            let mut held = anywhere(sink.text(path, IN)?);
+            if held.is_none() {
+                held = anywhere(sink.text(path, LEFT)?);
+            }
+            // An item placed and removed in the same batch was never in the index: the change
+            // that placed it says where it left from.
+            let Some((holder, field)) = held.or_else(|| {
+                placed
+                    .get(path)
+                    .map(|left| (left.holder.clone(), left.field.clone()))
+            }) else {
+                continue;
+            };
+            let key = FieldKey {
+                resource: holder,
+                field,
+            };
+            let ty = collection_ty(sink, &key)?;
+            self.left.push((path.clone(), key, stamp.clone(), ty));
+        }
+        Ok(())
+    }
+
+    /// [`Self::removed`], for the collections `moved` names: what a local write's plan placed
+    /// and took out, derived into the overlay before the record holds its change.
+    ///
+    /// # Errors
+    /// The sink cannot be read or written.
+    pub fn removed_of(
+        &mut self,
+        sink: &mut impl Sink,
+        app: &str,
+        ends: &BTreeMap<String, Ends>,
+        moved: &BTreeMap<FieldKey, BTreeSet<String>>,
+    ) -> Result<(), IndexError> {
+        for (key, items) in moved {
+            if !self.of_app(&key.resource, app) {
+                continue;
+            }
+            let within = in_of(&key.resource, &key.field);
+            let doc = doc_of(&key.resource).to_owned();
+            let ty = collection_ty(sink, key)?;
+            for item in items {
+                let path = item_path(&doc, item);
+                let back = sink.text(&path, IN)?.as_deref() == Some(within.as_str());
+                match ends.get(&path).and_then(|end| end.moved.as_ref()) {
+                    // It left the collection, in a batch that removed it.
+                    Some((stamp, VersionKind::Removed)) if !back => {
+                        note_left(sink, key, &path, stamp, ty.as_deref())?;
+                    }
+                    // It is in the collection again, or alive elsewhere: it is no row of what
+                    // left this one.
+                    Some(_) => drop_left(sink, key, &path)?,
+                    // The batch did not move it: what the index holds of it stands.
+                    None => {}
+                }
             }
         }
         Ok(())
@@ -607,6 +981,9 @@ impl<'d> Derive<'d> {
             if !self.of_app(resource, app) {
                 continue;
             }
+            // The newest version of it, whatever the record holds of it now: a mark of an item
+            // the record no longer has reads the version that took it out of its collection.
+            sink.put_newest(resource, &end.newest())?;
             let Some(schema) = sink.text(resource, TYPE)?.and_then(|ty| lookup(&ty)) else {
                 continue;
             };
@@ -687,13 +1064,19 @@ impl<'d> Derive<'d> {
         let (Some(source), chunk) = (self.chunks.doc(doc), self.chunks.chunk(doc)) else {
             return Ok(());
         };
+        let schema = lookup(ty);
+        let held = match schema {
+            Some(schema) => kept_removed(sink, doc, schema)?,
+            None => Vec::new(),
+        };
         sink.clear(doc)?;
         let obj = crate::reads::resource_obj(source, app, doc);
         self.reads.located = self.reads.located.saturating_add(1);
-        match (obj, lookup(ty)) {
+        match (obj, schema) {
             (Some(obj), Some(schema)) => {
                 sink.doc(doc, Some(ty), chunk)?;
-                let items = Items::scan(source, &obj, schema);
+                // A collection's items are spread over the chunks of its runs.
+                let items = Items::across(self.chunks, app, doc, schema);
                 self.reads.listings = self.reads.listings.saturating_add(1);
                 self.reads.entries = self
                     .reads
@@ -713,6 +1096,7 @@ impl<'d> Derive<'d> {
             }
             _ => sink.doc(doc, None, chunk)?,
         }
+        restore_removed(sink, doc, &held)?;
         self.done.insert(doc.to_owned());
         Ok(())
     }
@@ -748,11 +1132,14 @@ impl<'d> Derive<'d> {
         obj: Option<&ObjId>,
         schema: &'static TypeSchema,
     ) -> Result<&'static TypeSchema, IndexError> {
-        let source = self.source(doc_of(path));
+        let source = self.source_of(path);
+        let chunk = self.chunk_of(path);
         let ty = obj
             .and_then(|obj| source.and_then(|source| type_at(source, obj)))
             .unwrap_or_else(|| schema.id.clone());
         sink.put_text(path, TYPE, &ty)?;
+        // Where a read or a write of the resource goes: the chunk that holds its map.
+        sink.put_text(path, CHUNK, &chunk.to_string())?;
         // An item of a collection of several types is its stored type's.
         let schema = lookup(&ty).unwrap_or(schema);
         for field in &schema.fields {
@@ -975,12 +1362,14 @@ impl<'d> Derive<'d> {
             let child = item_path(whole.doc, &id);
             sink.put_text(&child, KEY, &key)?;
             sink.put_text(&child, IN, &in_of(path, &field.id))?;
+            returned(sink, &child)?;
             let Some(found) = whole.items.found.get(&id) else {
                 continue;
             };
             let Some(item_schema) = found.ty.as_deref().and_then(lookup) else {
                 continue;
             };
+            self.chunks_of.insert(child.clone(), found.chunk);
             let values = self.tree(
                 sink,
                 &child,
@@ -1027,12 +1416,12 @@ impl<'d> Derive<'d> {
     /// there.
     fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
         let doc = doc_of(path);
-        let source = self.source(doc)?;
         let (root, schema) = self.record_of(doc)?;
         let Some(item) = id_of(path) else {
             return Some((Some(root), schema));
         };
-        let found = crate::items::find(source, (doc, &root, schema), self.nested, item)?;
+        let (app, _) = self.docs.get(doc)?;
+        let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, item)?;
         Some((found.obj, found.ty.as_deref().and_then(lookup)?))
     }
 
@@ -1140,10 +1529,10 @@ impl<'d> Derive<'d> {
         if sink.text(doc, CYCLES)?.is_some() {
             return self.whole(sink, app, doc);
         }
-        let Some((root, schema)) = self.record_of(doc) else {
+        let Some((_, schema)) = self.record_of(doc) else {
             return Ok(());
         };
-        let Some(source) = self.source(doc) else {
+        let Some((held_app, _)) = self.docs.get(doc).cloned() else {
             return Ok(());
         };
         let mut pending: Vec<(String, bool)> =
@@ -1159,7 +1548,14 @@ impl<'d> Derive<'d> {
                     continue;
                 }
                 self.reads.located = self.reads.located.saturating_add(1);
-                let found = crate::items::find(source, (doc, &root, schema), self.nested, &id);
+                let found = crate::items::find_across(
+                    self.chunks,
+                    &held_app,
+                    doc,
+                    schema,
+                    self.nested,
+                    &id,
+                );
                 let item_schema = found
                     .as_ref()
                     .and_then(|found| found.ty.as_deref())
@@ -1186,12 +1582,21 @@ impl<'d> Derive<'d> {
                     _ => None,
                 };
                 progressed = true;
+                // The chunk that holds its map now: where its fields are read and written.
+                let chunk = found
+                    .as_ref()
+                    .map_or_else(|| self.chunk_of(&path), |found| found.chunk);
                 let before = placed_in(sink, &path)?;
                 match (before, target) {
                     (None, None) => {}
                     (Some(before), None) => {
                         self.leave(sink, &path, &before)?;
                         self.remove_tree(sink, &path)?;
+                        // It went with the item that held it, as a card goes with its column:
+                        // `leave` keeps the row of what left for the item holding it, and
+                        // where it left from is not kept for an item the record no longer
+                        // holds. A derivation of the record anew writes it the same way, and
+                        // the index reads the same however it was derived.
                     }
                     (None, Some(place)) => {
                         // An item that was in no collection, and that the changes did not
@@ -1202,17 +1607,7 @@ impl<'d> Derive<'d> {
                         let (Some(found), Some(item_schema)) = (found, item_schema) else {
                             continue;
                         };
-                        sink.clear(&path)?;
-                        let own = self.own_fields(sink, &path, found.obj.as_ref(), item_schema)?;
-                        for field in own
-                            .fields
-                            .iter()
-                            .filter(|f| f.kind == MergeKind::Collection)
-                        {
-                            sink.replace(&member_list(&path, &field.id), Vec::new())?;
-                        }
-                        self.arrive(sink, (&path, own), &place)?;
-                        self.done.insert(path);
+                        self.made_into(sink, &path, &found, item_schema, &place, chunk)?;
                     }
                     (Some(before), Some(place)) => {
                         let holder = place_holder(doc, &place);
@@ -1223,7 +1618,7 @@ impl<'d> Derive<'d> {
                             continue;
                         };
                         self.leave(sink, &path, &before)?;
-                        self.arrive(sink, (&path, own), &place)?;
+                        self.arrive(sink, (&path, own), &place, chunk)?;
                     }
                 }
             }
@@ -1233,6 +1628,33 @@ impl<'d> Derive<'d> {
             }
             pending = deferred;
         }
+        Ok(())
+    }
+
+    /// The row of an item the changes made, as it arrives in the collection `place` names: its
+    /// own fields derived where it now stands, and what left its collections kept.
+    fn made_into(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        found: &crate::items::Found,
+        item_schema: &'static TypeSchema,
+        place: &Place,
+        chunk: ChunkNo,
+    ) -> Result<(), IndexError> {
+        let held = kept_removed(sink, path, item_schema)?;
+        sink.clear(path)?;
+        let own = self.own_fields(sink, path, found.obj.as_ref(), item_schema)?;
+        for field in own
+            .fields
+            .iter()
+            .filter(|field| field.kind == MergeKind::Collection)
+        {
+            sink.replace(&member_list(path, &field.id), Vec::new())?;
+        }
+        self.arrive(sink, (path, own), place, chunk)?;
+        restore_removed(sink, path, &held)?;
+        self.done.insert(path.to_owned());
         Ok(())
     }
 
@@ -1316,13 +1738,18 @@ impl<'d> Derive<'d> {
         sink: &mut impl Sink,
         (path, schema): (&str, &'static TypeSchema),
         place: &Place,
+        chunk: ChunkNo,
     ) -> Result<(), IndexError> {
         let Some(id) = id_of(path) else {
             return Ok(());
         };
         let holder = place_holder(doc_of(path), place);
+        self.chunks_of.insert(path.to_owned(), chunk);
         sink.put_text(path, KEY, &place.key)?;
         sink.put_text(path, IN, &in_of(&holder, &place.field))?;
+        // An item moved into a run of another chunk is read and written there now.
+        sink.put_text(path, CHUNK, &chunk.to_string())?;
+        returned(sink, path)?;
         sink.insert(
             &member_list(&holder, &place.field),
             (place.key.clone(), id.to_owned()),
@@ -1508,7 +1935,7 @@ impl<'d> Derive<'d> {
             // A collection is its items' placements, which are derived as they are written.
             return Ok(());
         }
-        let now = self.value(self.source(doc_of(path)), obj.as_ref(), spec);
+        let now = self.value(self.source_of(path), obj.as_ref(), spec);
         let before = sink.field(path, field)?;
         if before.as_ref() == Some(&now) {
             return Ok(());

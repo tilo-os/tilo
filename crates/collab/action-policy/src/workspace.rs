@@ -225,6 +225,17 @@ impl std::fmt::Display for Refusal {
 
 impl std::error::Error for Refusal {}
 
+/// Whether two grants say the same thing: the same id and terms, whoever the
+/// workspace records as having given it.
+fn same_terms(held: &Grant, wanted: &Grant) -> bool {
+    held.id == wanted.id
+        && held.subject == wanted.subject
+        && held.node == wanted.node
+        && held.kinds == wanted.kinds
+        && held.answer == wanted.answer
+        && held.lifetime == wanted.lifetime
+}
+
 impl WorkspacePolicy {
     /// A new workspace: its owner and every role's preset grants.
     #[must_use]
@@ -524,8 +535,7 @@ impl WorkspacePolicy {
             return self.admit_action(actor, governance::GRANT, cx, approved);
         };
         self.check_not_held_off(actor, cx)?;
-        let node = roles::preset_assign_node(&self.workspace, set);
-        let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
+        let verdict = roles::assign_preset_verdict(actor, &self.workspace, set, cx);
         Self::resolved(&verdict, approved)
     }
 
@@ -653,6 +663,11 @@ impl WorkspacePolicy {
             }
         };
         self.check_change(actor_person, actor, &change, cx)?;
+        if let Change::Grant(grant) = &change
+            && self.grants.iter().any(|held| same_terms(held, grant))
+        {
+            return Ok(());
+        }
         self.spend(&spent);
         match change {
             Change::AddMember { person, role } => {
@@ -825,7 +840,12 @@ impl WorkspacePolicy {
                 if grant.node.workspace_id() != Some(self.workspace.as_str()) {
                     return Err(Refusal::OutsideWorkspace(grant.node.clone()));
                 }
-                if self.grants.iter().any(|held| held.id == grant.id) {
+                if let Some(held) = self.grants.iter().find(|held| held.id == grant.id) {
+                    // The same grant again converges: a replayed command
+                    // leaves the workspace as it was instead of refusing.
+                    if same_terms(held, grant) {
+                        return Ok(());
+                    }
                     return Err(Refusal::DuplicateGrant(grant.id.clone()));
                 }
                 Self::check_within(actor, grant, cx)

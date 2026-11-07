@@ -176,6 +176,12 @@ pub struct Notification {
     pub category: Option<String>,
     /// The sender asked for no sound (`suppress-sound`).
     pub suppress_sound: bool,
+    /// The desktop's own notice about the machine rather than an app's.
+    /// Never from the wire: only a producer inside the session sets it, and
+    /// then the name it carries is the desktop's own, marked as the
+    /// system's, never as a sender's claim.
+    #[serde(default)]
+    pub system: bool,
     /// The sender filed it as a call ringing now (`call.incoming`). Trusted
     /// only together with a verified sender person
     /// ([`Self::contact_endpoint`]): a bare category is the app's word alone.
@@ -219,6 +225,7 @@ impl Notification {
             sender_name: None,
             category: None,
             suppress_sound: false,
+            system: false,
             incoming_call: false,
             machine_wide: false,
             priority_contact: false,

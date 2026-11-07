@@ -24,7 +24,7 @@ use std::sync::{Mutex, PoisonError};
 use tilo_actions::{ActionAddress, Availability, ResourceSpec};
 use ui::search::{PagePoll, PendingToken, SearchQuery};
 
-use crate::model::{ActionTarget, Hit, Source, Target};
+use crate::model::{ActionTarget, Hit, LaunchPlace, Source, Target};
 use crate::rank;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, rank_fields};
 
@@ -113,6 +113,7 @@ impl Source for Applications {
                     icon: None,
                     target: Target::Launch {
                         app: app.id.clone(),
+                        place: LaunchPlace::Focus,
                     },
                 })
             })
@@ -514,8 +515,7 @@ impl Published {
             // once: the row's line under the name is for what the name
             // does not already say.
             subtitle: action.description.clone().filter(|description| {
-                ui::search::fold_search_text(description)
-                    != ui::search::fold_search_text(&action.action_label)
+                crate::model::spoken(description) != crate::model::spoken(&action.action_label)
             }),
             facts: Vec::new(),
             score,
@@ -1666,7 +1666,8 @@ mod tests {
         assert_eq!(
             first.target,
             Target::Launch {
-                app: "so.tilo.sheets".into()
+                app: "so.tilo.sheets".into(),
+                place: LaunchPlace::Focus,
             }
         );
         assert!(groups.iter().any(|g| g.kind.label() == WINDOWS_KIND));

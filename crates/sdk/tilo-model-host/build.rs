@@ -5,9 +5,13 @@
 //! document host runs. A test that proved the host on a linked-in model would prove nothing
 //! about that, so the fixture is the app's own crate, compiled the way an app's module is.
 //!
-//! The build has a target directory of its own under `OUT_DIR`: a build script that shared
-//! the outer run's target directory would ask cargo to build while cargo is building, and the
-//! two would wait on each other.
+//! The cargo that builds it has a target directory of its own beside `OUT_DIR`: a build script
+//! that shared the outer run's target directory would ask cargo to build while cargo is
+//! building, and the two would wait on each other. `OUT_DIR` keeps the module alone, because that
+//! is the tree a build's compiler cache keeps of a build script's run, and a target directory in
+//! it is far larger than one run may be to keep: t refused every run with "its `OUT_DIR` ... is
+//! too large to key", so no build ever kept this one, and every build started that cargo again
+//! for a module a build without tests never reads.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -26,6 +30,15 @@ fn main() -> Result<(), String> {
     ];
     let out =
         PathBuf::from(std::env::var_os("OUT_DIR").ok_or("cargo sets OUT_DIR for build scripts")?);
+    // Where the module is built: beside `OUT_DIR`, in this build's own directory, never in the
+    // tree the cache keeps (the module's documentation above says why).
+    let target = out
+        .parent()
+        .ok_or("cargo's OUT_DIR lies in a build directory")?
+        .join("model-target");
+    // A build before this kept its target directory in `OUT_DIR`; nothing reads it now, and its
+    // size is what kept this run out of every cache.
+    let _ = std::fs::remove_dir_all(out.join("target"));
     let module = out.join("tasks_model.wasm");
     // Every source the module is built from: cargo watches a directory's own entry only, so a
     // file changed under it is not seen.
@@ -39,7 +52,7 @@ fn main() -> Result<(), String> {
     if sources.iter().all(|source| fresh(&module, source)) {
         return Ok(());
     }
-    if let Err(error) = build(&model, &out) {
+    if let Err(error) = build(&model, &target, &module) {
         // A host that cannot be tested without a module still builds; the test that needs one
         // says so itself, rather than every build of this crate failing on a wasm toolchain.
         println!("cargo::warning=the model module fixture was not built: {error}");
@@ -47,9 +60,8 @@ fn main() -> Result<(), String> {
     Ok(())
 }
 
-/// Build `model` for `wasm32-unknown-unknown` into `out/target`, and copy the module beside it.
-fn build(model: &Path, out: &Path) -> Result<(), String> {
-    let target = out.join("target");
+/// Build `model` for `wasm32-unknown-unknown` into `target`, and copy the module to `module`.
+fn build(model: &Path, target: &Path, module: &Path) -> Result<(), String> {
     // A toolchain that can build a module, not whatever `cargo` is first on PATH: a wrapper may
     // hand the build to another machine, which cannot build one here, and a system Rust may
     // have no wasm32 target installed.
@@ -77,7 +89,7 @@ fn build(model: &Path, out: &Path) -> Result<(), String> {
         .arg("--target")
         .arg("wasm32-unknown-unknown")
         .arg("--target-dir")
-        .arg(&target)
+        .arg(target)
         .current_dir(model)
         // The module's entropy is the host's, through the import `tilo-model-guest` answers:
         // getrandom's custom backend, as the host that runs the module provides it. The build's
@@ -117,7 +129,7 @@ fn build(model: &Path, out: &Path) -> Result<(), String> {
         .join("wasm32-unknown-unknown")
         .join("debug")
         .join("tasks_model.wasm");
-    std::fs::copy(&built, out.join("tasks_model.wasm"))
+    std::fs::copy(&built, module)
         .map_err(|error| format!("could not copy {}: {error}", built.display()))?;
     Ok(())
 }

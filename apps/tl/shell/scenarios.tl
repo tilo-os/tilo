@@ -36,7 +36,6 @@ scenario "an afternoon at the desk" {
             unseen: 3,
         ),
     )
-    d.tasks.insert(Task(key: "fieldwork", title: "Sorting the inbox", state: "running"))
     d.rooms.insert(
         Room(
             key: "studio",
@@ -1377,48 +1376,6 @@ scenario "an empty notification centre" {
     d.unread = 0
 }
 
-/// The composer with two tasks running and one done, and what they did.
-scenario "the composer with tasks" {
-    let d = root Desk
-    d.person = "Ada Lovelace"
-    d.workspace = "Studio"
-    d.here = "composer"
-    d.tasks.insert(Task(key: "t1", title: "Sorting the inbox", state: "running"))
-    d.tasks.insert(Task(key: "t2", title: "Drafting the release notes", state: "running"))
-    d.tasks.insert(Task(key: "t3", title: "Filed the receipts", state: "done"))
-    d.agents.insert(
-        Agent(
-            key: "fieldwork",
-            name: "Fieldwork",
-            state: "running",
-            doing: "Sorting the inbox",
-            mark: "3 threads filed",
-            unseen: 3,
-        ),
-    )
-    d.agents.insert(
-        Agent(
-            key: "scribe",
-            name: "Scribe",
-            state: "running",
-            doing: "Drafting the release notes",
-            mark: "4 paragraphs",
-            unseen: 1,
-        ),
-    )
-    d.agents.insert(
-        Agent(
-            key: "clerk",
-            name: "Clerk",
-            state: "done",
-            doing: "",
-            mark: "12 receipts filed",
-            unseen: 0,
-        ),
-    )
-    d.people.insert(Person(key: "mia", name: "Mia Clayton"))
-}
-
 /// The workspaces: every one the person is in, with who is there and what it holds.
 scenario "the workspaces" {
     let d = root Desk
@@ -1546,190 +1503,6 @@ scenario "a person's menu" {
             doing: "Sorting the inbox",
             mark: "3 threads filed",
             unseen: 3,
-        ),
-    )
-}
-
-/// A conversation with the session's agent: what Ada asked, the agent's words between its
-/// steps, a program it ran that printed two notes, one that changed a note, one of Ada's own
-/// that did not compile, and the agent's answer.
-scenario "a conversation with the agent" {
-    let d = root Desk
-    d.person = "Ada Lovelace"
-    d.clock = "10:42 AM"
-    d.workspace = "Studio"
-    d.here = "conversation"
-    seed_run(d)
-}
-
-/// The conversation as a place on the spaces canvas (shell.md §8.1): the run's place stands as
-/// its conversation, beside a terminal in its well.
-scenario "a conversation on the canvas" -> Arrangement {
-    let d = root Desk
-    d.person = "Ada Lovelace"
-    d.clock = "10:42 AM"
-    d.workspace = "Studio"
-    seed_run(d)
-    let v = viewing
-    v.showing = .spaces
-    let a = root Arrangement
-    let row = a_workspace(a, "Desk")
-    let s = a_strip(a, row, "Spaces", 667)
-    let strip = a.strips.find(st -> st.key == s)
-    if let held = strip {
-        held.canvas_x = 0
-        held.canvas_y = 0
-        held.canvas_width = 1100
-        held.canvas_height = 1200
-        held.placed = true
-    }
-    a.places.insert(
-        ArrangementPlace(
-            key: "x-run",
-            strip: s,
-            shows: "so.tilo.shell",
-            shown_as: "conversation",
-            record: "agent-run:r1",
-            title: "Tidy the launch notes",
-            name: "Tidy the launch notes — Shell",
-            shell: "so.tilo.shell.strips",
-        ),
-    )
-    a.places.insert(
-        ArrangementPlace(
-            key: "x-terminal",
-            strip: s,
-            shows: "so.tilo.terminal",
-            title: "A terminal",
-            name: "A terminal — Terminal",
-            shell: "so.tilo.shell.strips",
-        ),
-    )
-    a
-}
-
-/// The run a conversation starts from: what Ada asked, the agent's words between its steps, a
-/// program it ran that printed two notes, one that changed a note, one of Ada's own that did not
-/// compile, and the agent's answer.
-action seed_run(d: Desk) {
-    d.runs.insert(
-        Run(
-            key: "r1",
-            title: "Tidy the launch notes",
-            agent: "claude",
-            phase: "done",
-            active: false,
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/1",
-            run: "r1",
-            seq: 1,
-            author: "ada",
-            text: "Tidy the launch notes: pin the checklist and drop the old draft title.",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/2",
-            run: "r1",
-            seq: 2,
-            author: "agent:claude",
-            by_agent: true,
-            text: "I will look for the launch notes first.",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/3",
-            run: "r1",
-            seq: 3,
-            author: "agent:claude",
-            by_agent: true,
-            step: true,
-            text: "find(notes.Note, \"launch\")",
-            outcome: "done",
-            answer: "n1 \"Launch checklist\"\nn2 \"Launch day (old draft)\"",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r1/3/0",
-            entry: "r1/3",
-            resource: "tl:so.tilo.lang.notes:n1",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Launch checklist",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r1/3/1",
-            entry: "r1/3",
-            resource: "tl:so.tilo.lang.notes:n2",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Launch day (old draft)",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/4",
-            run: "r1",
-            seq: 4,
-            author: "agent:claude",
-            by_agent: true,
-            step: true,
-            text: "notes.pin(n1)\nn2.title = \"Launch day\"",
-            outcome: "done",
-            answer: "n1 \"Launch checklist\" pinned\nn2 \"Launch day\"",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r1/4/0",
-            entry: "r1/4",
-            changed: true,
-            resource: "tl:so.tilo.lang.notes:n1",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Launch checklist",
-            change: "Pin",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r1/4/1",
-            entry: "r1/4",
-            changed: true,
-            resource: "tl:so.tilo.lang.notes:n2",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Launch day",
-            change: "Rename",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/5",
-            run: "r1",
-            seq: 5,
-            author: "ada",
-            step: true,
-            text: "notes.Note.count(",
-            outcome: "rejected",
-            answer: "// line 1: expected an argument or `)` after `(`",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r1/6",
-            run: "r1",
-            seq: 6,
-            author: "agent:claude",
-            by_agent: true,
-            text: "The checklist is pinned and the old draft is called Launch day now.",
         ),
     )
 }
@@ -2102,7 +1875,6 @@ scenario "the traditional desktop" {
     d.workspaces.insert(Workspace(key: "home", name: "Home"))
     d.workspaces.insert(Workspace(key: "studio", name: "Studio", current: true))
     d.people.insert(Person(key: "mia", name: "Mia Clayton"))
-    d.tasks.insert(Task(key: "sort-mail", title: "Sorting the inbox", state: "running"))
     d.windows.insert(
         Win(
             key: "w1",
@@ -2277,68 +2049,6 @@ scenario "the traditional desktop, a terminal in front" {
     }
     a_foreign_place(a, desk, 1, "A terminal")
     v.focused = desk
-}
-
-/// The agent at work in the conversation: the person's ask, its first step done, and the words
-/// it is saying now as the model streams them, before its turn ends.
-scenario "a conversation, the agent answering" {
-    let d = root Desk
-    d.person = "Ada Lovelace"
-    d.clock = "10:44 AM"
-    d.workspace = "Studio"
-    d.here = "conversation"
-    d.runs.insert(
-        Run(
-            key: "r2",
-            title: "Find the launch date",
-            agent: "claude",
-            phase: "executing",
-            active: true,
-            live: "The checklist names the 14th, but Mia's note from Tuesday moves it to",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r2/1",
-            run: "r2",
-            seq: 1,
-            author: "ada",
-            text: "When is the launch now? Mia moved it, I think.",
-        ),
-    )
-    d.run_entries.insert(
-        RunEntry(
-            key: "r2/2",
-            run: "r2",
-            seq: 2,
-            author: "agent:claude",
-            by_agent: true,
-            step: true,
-            text: "find(notes.Note, \"launch\")",
-            outcome: "done",
-            answer: "n1 \"Launch checklist\"\nn3 \"Notes from Tuesday\"",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r2/2/0",
-            entry: "r2/2",
-            resource: "tl:so.tilo.lang.notes:n1",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Launch checklist",
-        ),
-    )
-    d.entry_refs.insert(
-        EntryRef(
-            key: "r2/2/1",
-            entry: "r2/2",
-            resource: "tl:so.tilo.lang.notes:n3",
-            app_id: "so.tilo.lang.notes",
-            type_kind: "notes.Note",
-            label: "Notes from Tuesday",
-        ),
-    )
 }
 
 /// The default shell with the agents on the bar: the person showed the Agents part, and the

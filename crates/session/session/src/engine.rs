@@ -58,6 +58,20 @@ pub struct Person {
     pub removed: bool,
 }
 
+/// Why a workspace is not the person's to delete here, when it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotDeletable {
+    /// This device does not hold it.
+    NotHeld,
+    /// Someone else is still in it, so it is not this device's to delete.
+    OthersInIt,
+    /// Another of the person's devices holds it too: deleting it here would
+    /// not delete it for them.
+    OtherDevice,
+    /// It belongs to someone else.
+    NotOwner,
+}
+
 /// An invitation this device made: the link a person hands over, the part it
 /// brings whoever redeems it in at, and when it stops working.
 #[derive(Clone, Debug)]
@@ -141,6 +155,10 @@ pub struct Engine {
     /// runs: a record the workspace's hosts send only once asked is asked for
     /// here, and the plane is gone while this is `None`.
     link: std::sync::Mutex<Option<Arc<channels::ChannelLink>>>,
+    /// The desk's workspaces this device could not found here: founding one
+    /// is asked for again only by a later session, not by every pass over the
+    /// desk.
+    unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
 
 impl std::fmt::Debug for Engine {
@@ -182,6 +200,7 @@ impl Engine {
             identity,
             keys: ChannelKeyProvider::default(),
             link: std::sync::Mutex::new(None),
+            unfounded: std::sync::Mutex::new(std::collections::BTreeSet::new()),
         })
     }
 
@@ -276,6 +295,18 @@ impl Engine {
                 DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
             }
         })
+    }
+
+    /// Every record `workspace` holds here, by its app and id: what a reader
+    /// of the workspace's records is asked to index, without being told each
+    /// route. A workspace this device does not hold lists nothing.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or its documents cannot be listed now.
+    pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
+        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        self.owner
+            .with_current(workspace, |view| Ok(view.peer().records()))
     }
 
     /// Take part in the channel of `record` of `workspace`, whose keys this
@@ -528,6 +559,60 @@ impl Engine {
                     .may_invite(&identity.device_signing_key, SystemTime::now()))
             })
             .unwrap_or(false)
+    }
+
+    /// Whether this device's person may delete `workspace`: they own it, no
+    /// one else is in it, and this device is the only one holding it — so a
+    /// workspace taken off this device is a workspace gone everywhere, and
+    /// not one another of their devices would list again.
+    #[must_use]
+    pub fn may_delete(&self, workspace: WorkspaceId) -> bool {
+        self.not_deletable(workspace).is_none()
+    }
+
+    /// Why `workspace` is not this device's person's to delete here, when it
+    /// is not: what the surfaces offering deleting say beside a delete they
+    /// cannot offer.
+    #[must_use]
+    pub fn not_deletable(&self, workspace: WorkspaceId) -> Option<NotDeletable> {
+        if !self.holds(workspace) {
+            return Some(NotDeletable::NotHeld);
+        }
+        let identity = self.identity();
+        let person = hex::encode(identity.device_cert.user_public_key);
+        let device = identity.device_cert.device_public_key;
+        let workspace_id = workspace.to_string();
+        let alone = self.people(&workspace_id).is_ok_and(|people| {
+            people
+                .iter()
+                .all(|member| member.removed || member.person == person)
+        });
+        if !alone {
+            return Some(NotDeletable::OthersInIt);
+        }
+        let only_here = self
+            .roster_devices(&workspace_id)
+            .is_ok_and(|devices| devices == [device]);
+        if !only_here {
+            return Some(NotDeletable::OtherDevice);
+        }
+        if !self
+            .owner_of(&workspace_id)
+            .is_ok_and(|owner| owner == person)
+        {
+            return Some(NotDeletable::NotOwner);
+        }
+        None
+    }
+
+    /// Take `workspace` out of this device's record, with everything of it
+    /// this device holds: what a deleted workspace leaves behind. Answers
+    /// whether the record held it.
+    ///
+    /// # Errors
+    /// The record cannot be published.
+    pub(crate) fn delete(&self, workspace: WorkspaceId) -> Result<bool, String> {
+        self.owner.release_workspace(workspace)
     }
 
     /// The parts this device's person may hand out in an invitation into
@@ -793,6 +878,39 @@ impl Engine {
         &self.identity
     }
 
+    /// Found `workspace` — made on this desk in `slot`, under `name` — when
+    /// this device is the one that made it and nothing here holds it yet:
+    /// who is in the workspace, who may invite into it and what its apps
+    /// record there become the workspace's own, hosted here, instead of what
+    /// this desk alone keeps. An earlier session's workspace is founded the
+    /// same way, once.
+    ///
+    /// A workspace this device may not own, or one that could not be
+    /// published, stays the desk's own: it is not asked for again until a
+    /// later session.
+    pub(crate) fn found(&self, slot: WorkspaceSlot, workspace: WorkspaceId, name: &str) {
+        if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
+            return;
+        }
+        let identity = self.identity();
+        if !identity.device_cert.capabilities.can_own_workspaces {
+            return;
+        }
+        match self.owner.create_workspace(
+            workspace,
+            name,
+            &identity.device_cert,
+            &identity.device_signing_key,
+            SystemTime::now(),
+        ) {
+            Ok(_) => self.bind(slot, workspace),
+            Err(error) => {
+                tracing::warn!(%error, %workspace, "the workspace was not founded here");
+                self.unfounded.lock_recover().insert(workspace);
+            }
+        }
+    }
+
     /// Name the workspace a join is installing into by the workspace id it
     /// holds: an enrollment only installs into the workspace made for it, and
     /// says so before the host is asked.
@@ -929,4 +1047,126 @@ pub(crate) fn revocations_of(engine: Option<&Arc<Engine>>) -> Revocations {
 /// Where this device's workspaces are kept under `state`.
 fn record_path(state: &Path) -> PathBuf {
     state.join("tilo").join(FILE)
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "in a test these are the assertion, not a hazard"
+    )]
+
+    use super::*;
+    use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+
+    /// A device of a person, certified for their root, with `capabilities`,
+    /// and the person's root key.
+    fn identity(capabilities: DeviceCapabilities) -> (HostIdentity, [u8; 32]) {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
+        let root = person.verifying_key().to_bytes();
+        let mut cert = DeviceCert {
+            user_public_key: root,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Laptop".to_owned(),
+            capabilities,
+            issued_at_ns: tilo_clock::unix_now_ns(),
+            expires_at_ns: None,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        let identity = HostIdentity {
+            device_cert: cert,
+            device_signing_key: device,
+            workspace_device_certs: std::collections::HashMap::new(),
+            workspace_revocations: std::collections::HashMap::new(),
+            identity_paths: None,
+        };
+        (identity, root)
+    }
+
+    /// This device's engine, kept in `state`.
+    fn engine(state: &Path, identity: HostIdentity) -> Engine {
+        Engine::open(identity, Some(state), Vec::new()).expect("an engine")
+    }
+
+    #[test]
+    fn a_desk_workspace_is_founded_under_the_identity_the_desk_made() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, person) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        let slot = WorkspaceSlot(7);
+
+        engine.found(slot, workspace, "Desk");
+        // Again, as every pass over the desk does: one workspace, still the
+        // one the desk made.
+        engine.found(slot, workspace, "Desk");
+
+        assert!(
+            engine.holds(workspace),
+            "a workspace made on the desk is held here"
+        );
+        assert_eq!(engine.workspaces(), vec![workspace]);
+        assert_eq!(
+            engine.owner_of(&workspace.to_string()),
+            Ok(hex::encode(person)),
+            "the workspace is the person's at this device"
+        );
+        assert!(
+            engine.may_invite(&workspace.to_string()),
+            "its owner may invite into it"
+        );
+    }
+
+    #[test]
+    fn a_workspace_made_here_and_held_nowhere_else_may_be_deleted() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+        engine.found(WorkspaceSlot(7), workspace, "Desk");
+
+        assert!(
+            engine.may_delete(workspace),
+            "its owner, in it alone, on its only device, may delete it"
+        );
+        assert_eq!(
+            engine.delete(workspace),
+            Ok(true),
+            "the record it was held in is taken out"
+        );
+        assert!(!engine.holds(workspace));
+        assert!(!engine.may_delete(workspace));
+        assert_eq!(
+            engine.delete(workspace),
+            Ok(false),
+            "a record holding nothing of it has nothing to take out"
+        );
+    }
+
+    #[test]
+    fn a_workspace_this_device_holds_no_record_of_may_not_be_deleted() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let engine = engine(state.path(), identity);
+
+        assert!(!engine.may_delete(WorkspaceId::new()));
+    }
+
+    #[test]
+    fn a_device_that_may_not_own_workspaces_founds_none() {
+        let state = tempfile::tempdir().expect("a state directory");
+        let (identity, _) = identity(DeviceCapabilities::member());
+        let mut identity = identity;
+        identity.device_cert.capabilities.can_own_workspaces = false;
+        let engine = engine(state.path(), identity);
+        let workspace = WorkspaceId::new();
+
+        engine.found(WorkspaceSlot(7), workspace, "Desk");
+
+        assert!(!engine.holds(workspace));
+        assert!(!engine.may_invite(&workspace.to_string()));
+    }
 }

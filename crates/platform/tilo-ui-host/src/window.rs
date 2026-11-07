@@ -599,6 +599,7 @@ impl AppWindow {
     /// What the app offers the person at the window now: every action, or the actions of the
     /// resources whose labels moved, which replace theirs where they sit.
     fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
+        let shown = self.catalogue();
         match catalogue {
             wire::ActionCatalogue::All(actions) => self.actions = crate::catalogue::read(&actions)?,
             wire::ActionCatalogue::Relabeled(actions) => {
@@ -621,6 +622,24 @@ impl AppWindow {
                     }
                 }
             }
+        }
+        // The controls whose events run one of these are bound to it, and the window publishes
+        // each action as the resource its controls stand on.
+        let published = self.catalogue();
+        self.reconciler
+            .borrow()
+            .adapter()
+            .published(published.clone());
+        // A control is bound to the action its event runs when its widget is built: controls
+        // whose events would now take the other path are built again, so a press and anyone
+        // else running the action take the one path.
+        if self
+            .built
+            .as_ref()
+            .is_some_and(|built| rebinding(&shown, &published, built))
+        {
+            self.built = None;
+            self.compose();
         }
         Ok(())
     }
@@ -2169,6 +2188,29 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
         .into_iter()
         .find(|event| node.events.contains_key(*event))
         .map(|event| (node.key.clone(), event.to_owned()))
+}
+
+/// Whether some control of the tree `node` an app built while the actions `before` were
+/// published would take the other path now that `after` are: an event that runs an action the
+/// app publishes is bound to the action itself, and one that runs an action it does not
+/// publish is the view's own.
+fn rebinding(
+    before: &[tilo_actions::ResourceSpec],
+    after: &[tilo_actions::ResourceSpec],
+    node: &UiNode,
+) -> bool {
+    node.events.values().any(|event| {
+        let Some((resource, action)) = event.invokes.as_ref() else {
+            return false;
+        };
+        let bound = |published: &[tilo_actions::ResourceSpec]| {
+            crate::adapter::bound_to(published, resource, action).is_some()
+        };
+        bound(before) != bound(after)
+    }) || node
+        .children
+        .iter()
+        .any(|child| rebinding(before, after, child))
 }
 
 /// The first control in `node`'s tree, itself included, that answers the shortcut `pressed`.

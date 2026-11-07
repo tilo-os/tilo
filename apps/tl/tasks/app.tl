@@ -38,6 +38,8 @@ type Task {
     due: Option<Date> = .none
     /// The moment on that day it is due at, if it has one.
     at: Option<Time> = .none
+    /// When to tell whoever is doing it that its moment came, if a reminder is set.
+    remind: Option<Time> = .none
     /// Anything worth remembering about it.
     notes: RichText
     /// Who is doing it.
@@ -215,6 +217,41 @@ action schedule(t: Task, due: Option<Date>) (
 action due_clear(t: Task) (label: "No date", group: "Due") {
     require t.due != .none "It has no date"
     t.due = .none
+}
+
+/// Rings a task's reminder when its moment comes, with no window of this app open: the
+/// workspace's own device runs it, once for all of them.
+trigger ring(t: Task) at t.remind: remind(t)
+
+/// Sets when to remind whoever is doing a task of it, counted from now, or clears the
+/// reminder.
+action remind_at(t: Task, after: Option<Duration>) uses time (
+    label: "Remind me",
+    icon: .bell,
+    group: "Remind",
+) {
+    t.remind = if let d = after { .some(now + d) } else { .none }
+}
+
+/// Tells whoever is doing a task, or the one who made it, what the task is and when it is due
+/// or which project it is in, and opens the task when they choose the notice. A task already
+/// done is not told of. A reminder is told once: the moment it named is cleared as it is told.
+action remind(t: Task) uses notify {
+    t.remind = .none
+    if t.done {
+        return
+    }
+    let who: Option<Principal> = if let a = t.assignee {
+        .some(a)
+    } else if let made = created(t) { .some(made.who) } else { .none }
+    if let w = who {
+        notify(
+            to: w,
+            title: t.title,
+            body: if let d = t.due { "Due {d}" } else if let p = t.project { p.name } else { "" },
+            opens: t,
+        )
+    }
 }
 
 /// Sets how much a task matters.
@@ -859,6 +896,24 @@ view task_page(t: Task) {
                         ui.MenuItem(p.name, icon: .folder, checked: t.project == p) {
                             on choose: file(t, p)
                         }
+                    }
+                }
+                // When the person is told of it, or nothing while it is not.
+                ui.MenuButton(
+                    if t.remind == .none { "Remind" } else { "Reminder set" },
+                    icon: .bell,
+                ) {
+                    ui.MenuItem("In 10 minutes", icon: .clock) {
+                        on choose: remind_at(t, .some(10m))
+                    }
+                    ui.MenuItem("In an hour", icon: .clock) {
+                        on choose: remind_at(t, .some(1h))
+                    }
+                    ui.MenuItem("Tomorrow at this time", icon: .alarm_clock) {
+                        on choose: remind_at(t, .some(1d))
+                    }
+                    ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
+                        on choose: remind_at(t, .none)
                     }
                 }
             }

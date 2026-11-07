@@ -159,8 +159,73 @@ fn search_follows_a_peer_and_matches_a_full_index() {
     assert_eq!(indexed(&ada), all_hits(&ada, &meta, &root));
 }
 
-struct Refusing;
+#[test]
+fn a_window_publishes_what_it_reaches_and_the_whole_workspace_when_asked() {
+    let (ada, meta, root) = workspace();
+    let ids = item_ids(&ada, &meta, &root);
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    let mut published = Publications::new(&ada.host);
+    // This publication is a window's: it holds the rows on screen, not the workspace.
+    published.window();
+    published.update(&ada.host, &planner);
+    // A window the turn is not drawn for publishes nothing: the workspace is not read for a
+    // surface nothing shows.
+    assert!(
+        published.trees().is_empty(),
+        "a window that showed nothing published {} records",
+        published.trees().len()
+    );
+    // What the window shows of one item: its record, published down to it, and nothing of the
+    // other two the record holds.
+    let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
+    let trees = published.reached(&ada.host, &planner, APP, &shown);
+    let reached = trees.first().expect("the item's record is published");
+    assert_eq!(reached.id.as_str(), resource_id(APP, &root));
+    assert_eq!(
+        reached
+            .children
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["eggs"],
+        "one item shown publishes one item"
+    );
+    assert_eq!(
+        published.visited(),
+        1,
+        "what the window shows of three items reads one record"
+    );
+    // Nothing moved and the window shows what it showed: a frame reads nothing again.
+    let again = published.reached(&ada.host, &planner, APP, &shown);
+    assert!(
+        Rc::ptr_eq(&again[0], &trees[0]),
+        "a frame that showed the same read the record again"
+    );
+    // A caller that asks about the whole workspace reads all of it, and publishes nothing of
+    // it to the window.
+    let whole = published.everything(&ada.host, &planner);
+    assert_eq!(
+        whole
+            .iter()
+            .flat_map(|record| record.children.iter())
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["milk", "eggs", "bread"],
+        "the whole workspace is read when it is asked for"
+    );
+    let again = published.reached(&ada.host, &planner, APP, &shown);
+    assert_eq!(
+        again[0]
+            .children
+            .iter()
+            .map(|item| item.label.as_str())
+            .collect::<Vec<_>>(),
+        ["eggs"],
+        "what the window shows is what it still holds"
+    );
+}
 
+struct Refusing;
 impl Planner for Refusing {
     fn plan(&self, _: &PlanRequest<'_>) -> Result<DynAction, String> {
         Err("not in this test".into())
@@ -689,15 +754,32 @@ fn planning_an_action_changes_nothing_anyone_follows() {
 }
 
 #[test]
-fn the_first_publication_does_not_hold_up_the_frame() {
+fn a_host_without_frames_publishes_the_whole_workspace_and_takes_a_change_in_after_it() {
     let (mut ada, meta, root) = workspace();
-    let planner: Arc<dyn Planner> = Arc::new(Refusing);
-    let mut published = Publications::new(&ada.host);
-    // The frame that starts it returns at once; the workspace is read on another thread.
-    assert!(published.update(&ada.host, &planner).is_empty());
-    assert!(published.is_building());
-    // A change while it reads is taken in after what it read.
     let ids = item_ids(&ada, &meta, &root);
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    // A window publishes nothing up front: a record is read when a window reaches it.
+    let mut windowed = Publications::new(&ada.host);
+    windowed.window();
+    assert!(windowed.update(&ada.host, &planner).is_empty());
+    assert!(!windowed.is_building());
+    // What the window shows is read on the frame that shows it, and only that.
+    let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
+    assert_eq!(windowed.reached(&ada.host, &planner, APP, &shown).len(), 1);
+    assert_eq!(
+        windowed.visited(),
+        1,
+        "what the window shows of three items reads one record"
+    );
+    // A host without frames publishes the whole workspace, read on another thread, and a
+    // change made while it reads is taken in after what it read.
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root),
+        "every record is published for a caller that reads the whole workspace"
+    );
     retype(&mut ada, &meta, &root, &ids[1], "oat milk");
     published.settle(&ada.host, &planner);
     assert!(!published.is_building());

@@ -408,6 +408,33 @@ fn a_surface_the_desktops_own_chrome_shows_is_not_the_sessions_to_open() {
 }
 
 #[test]
+fn a_press_on_the_desk_closes_the_workspace_menu_the_chrome_hangs_off_its_chip() {
+    // The chrome draws the menu and says where it stands; a press on the desk
+    // never reaches the chrome drawn over it, so the session's reader of
+    // presses outside is what closes the menu.
+    let mut session = session();
+    let chip = (86.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
+    press(&mut session, chip.0, chip.1);
+    assert_eq!(slots(&session), ["workspace-menu"], "the chip opened it");
+    // Its release comes up before the chrome takes its next pass, as a quick
+    // click's does.
+    quick_click(&mut session, 100.0, 400.0);
+    session.step(REFRESH).expect("a turn of the session");
+    assert!(
+        slots(&session).is_empty(),
+        "the press on the desk closed it"
+    );
+    // And the menu it draws followed the stack: the chip opens it again
+    // rather than closing the one still standing under the person's finger.
+    press(&mut session, chip.0, chip.1);
+    assert_eq!(
+        slots(&session),
+        ["workspace-menu"],
+        "the chip opens it again"
+    );
+}
+
+#[test]
 fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     let (mut session, _panel) = session_with_quick_settings();
     let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();

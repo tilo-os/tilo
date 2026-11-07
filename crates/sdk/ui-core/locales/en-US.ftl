@@ -592,7 +592,11 @@ participant-numbered = { $name } ({ $number })
 participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
-interaction-action-status = { $action } ({ $phase }) - { $name }
+# What an actor is doing: its name, then the action in the present tense.
+interaction-working = working
+interaction-action-doing = { $name } · { $doing }
+# The same, with the phase said where only a person can settle it.
+interaction-action-status = { $name } · { $doing }, { $phase }
 interaction-inspecting = Inspecting
 interaction-applying = Applying
 interaction-waiting = Waiting
@@ -952,6 +956,34 @@ change-mark-in-run = { $what } in “{ $run }”
 change-window = { $count ->
     [one] One change by { $who }
    *[other] { $count } changes by { $who }
+}
+# A window's mark when the type names what an item of it is ($noun, plural): everyone who
+# changed what the window shows, and how many items they changed.
+change-window-changed = { $who } changed { $count ->
+    [one] one { $noun }
+   *[other] { $count } { $noun }
+}
+# The names a window's mark lists, as a sentence reads them; past three it names the first two
+# and counts the rest, as its faces do.
+change-mark-names-two = { $first } and { $second }
+change-mark-names-three = { $first }, { $second } and { $third }
+change-mark-names-more = { $first }, { $second } and { $count } others
+# A row's mark, under its title: what they did, in the words history says it with, and how
+# many more changes of the row wait behind it.
+change-mark-said = { $who } { $said }
+change-mark-said-more = { $said } and { $count ->
+    [one] one more
+   *[other] { $count } more
+}
+# A window's mark that counted a page of what it shows, with more than it says.
+change-window-more = { $who } changed at least { $count ->
+    [one] one change
+   *[other] { $count } changes
+}
+# The same, when the type names what an item of it is ($noun, plural).
+change-window-changed-more = { $who } changed at least { $count ->
+    [one] one { $noun }
+   *[other] { $count } { $noun }
 }
 
 # One step of an agent's task: the program it ran, what it answered, what it

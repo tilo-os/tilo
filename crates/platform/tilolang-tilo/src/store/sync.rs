@@ -54,7 +54,6 @@ impl TiloStore {
         }
         let before = inner.index.clone();
         let from = inner.chunks.heads();
-        let old_overlay = std::mem::take(&mut inner.overlay);
         let old_snapshots: BTreeMap<AppId, Arc<idx::Snapshot>> = inner
             .apps
             .iter()
@@ -67,7 +66,16 @@ impl TiloStore {
         // copy below.
         let mut items = inner.drop_committed_local(chunk);
         inner.rollback(chunk);
-        let (changed, ends) = inner.apply_new_changes(chunk, doc, &before);
+        // What the splices below are measured from is the record as those who read the mirror
+        // saw it before this change: the writes of this store's are not the record's until it
+        // takes them, whatever chunk they were written into, and the change told here is what
+        // brings them. An item a write placed is a joined one for whoever reads, not one already
+        // at its place, so the one the change names has its step.
+        inner.reapply_derived(chunk);
+        inner.rebuild_unsaved_overlay();
+        let old_overlay = std::mem::take(&mut inner.overlay);
+        inner.rollback(chunk);
+        let (changed, ends, placed) = inner.apply_new_changes(chunk, doc, &before);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
@@ -108,7 +116,11 @@ impl TiloStore {
                 placed: changed.placed.clone(),
             }
         };
-        let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends)));
+        let (moved, wholes, notified) = inner.derive_all(&reached, Some((&from, &ends, &placed)));
+        // A write of another chunk's that stays pending is the record's once the change above
+        // tells the versions its action made: the index holds what it wrote, and the write keeps
+        // its edits for that chunk's record alone.
+        inner.settle_versions(&ends);
         // The overlay was the old transaction's, and what an origin derives was written onto
         // the mirror again: derive it over the indexes as the record's changes left them, so a
         // later write into one of its collections sees the items it holds, at their places.
@@ -148,22 +160,22 @@ impl TiloStore {
 
 impl Inner {
     /// Apply the changes of `source` since the mirror's heads to the mirror of `chunk`, when it
-    /// holds no change of its own: what they changed, and the versions they made of each
-    /// resource they changed ([`idx::reflect::ends_of`]). `None` when the mirror must be copied
-    /// anew.
+    /// holds no change of its own: what they changed, the versions they made of each resource
+    /// they changed ([`idx::reflect::ends_of`]), and where they placed the items they did.
+    /// `None` when the mirror must be copied anew.
     fn apply_new_changes(
         &mut self,
         chunk: ChunkNo,
         source: &Doc,
         before: &BTreeMap<DocId, (AppId, TypeId)>,
-    ) -> (Option<Changed>, Ends) {
+    ) -> (Option<Changed>, Ends, idx::reflect::Placed) {
         let seen = self.chunks.seen(chunk);
         let caught_up = self
             .chunks
             .mirror(chunk)
             .is_some_and(|mirror| mirror.committed_document().get_heads() == seen);
         if !caught_up {
-            return (None, Ends::new());
+            return (None, Ends::new(), idx::reflect::Placed::new());
         }
         let changes = source.committed_document().get_changes(seen);
         let applied = self.chunks.mirror_mut(chunk).map(|mirror| {
@@ -186,7 +198,7 @@ impl Inner {
             Some(mirror) => idx::reflect::ends_of(&changes, mirror, before),
             None => Ends::new(),
         };
-        (what, ends)
+        (what, ends, idx::reflect::placed_by(&changes))
     }
     /// The steps each listed collection took from the indexes `before` (with the overlay
     /// `overlay` over them) to the indexes now, for the items `items`; per document.

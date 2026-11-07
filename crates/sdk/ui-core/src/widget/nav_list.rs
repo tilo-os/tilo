@@ -701,6 +701,8 @@ impl NavShared {
             // Choosing the chosen destination again still navigates to it.
             if let Some(action) = self.selection_actions.get_mut(&id) {
                 let _ = action.emit(());
+            } else if let Some(view) = self.view.as_mut() {
+                (view.handler)(id.clone());
             }
             self.selection_emitted = false;
             return;
@@ -724,17 +726,23 @@ impl NavShared {
     /// The person activated the row of `key` (Enter): the chosen
     /// destination's screen opens again.
     fn activate(&mut self, key: &str) {
-        let Some(id) = key.strip_prefix("item:") else {
+        let Some(id) = key.strip_prefix("item:").map(str::to_owned) else {
             return;
         };
-        if self.blocked(id) {
+        if self.blocked(&id) {
             return;
         }
         self.navigated = true;
-        if !std::mem::take(&mut self.selection_emitted)
-            && let Some(action) = self.selection_actions.get_mut(id)
-        {
+        if std::mem::take(&mut self.selection_emitted) {
+            return;
+        }
+        if let Some(action) = self.selection_actions.get_mut(&id) {
             let _ = action.emit(());
+        } else if self.view.is_some() {
+            // A list that answers through its view action opens the place
+            // itself: the row was selected on the way here, as an
+            // activation's selection is, so no choice of its own is due.
+            self.choose(key);
         }
     }
 
@@ -796,8 +804,13 @@ pub struct NavList {
     /// The feed the list answers "which place is here?" through, for a
     /// drag the app runs over it ([`NavFeed::place_at`]).
     feed: Option<NavFeed>,
+    /// The name assistive technology, agents and tests read for the list as
+    /// a whole: what it narrows, apart from the app's own title.
+    semantic_key: Option<String>,
     /// The actions at the trailing edge of every item that offers them.
     row_actions: Vec<NavAction>,
+    /// The key the list was built under: what its sections are addressed by.
+    key: String,
     /// A drag staged for a capture, shown once the rows stand placed
     /// ([`Self::stage_drag`]).
     staged_drag: Option<(String, String)>,
@@ -879,7 +892,9 @@ impl NavList {
             source: None,
             headings: false,
             feed: None,
+            semantic_key: None,
             row_actions: Vec::new(),
+            key: String::new(),
             staged_drag: None,
         };
         list.refresh_shared();
@@ -909,7 +924,9 @@ impl NavList {
     /// Give the list a stable id for tests and inspection.
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.list = Box::new(self.list.with_id(id));
+        let id = id.into();
+        self.list = Box::new(self.list.with_id(id.clone()));
+        self.key = id;
         self
     }
 
@@ -920,10 +937,14 @@ impl NavList {
         self
     }
 
-    /// The list's stable identity for assistive technology.
+    /// The list's stable identity for assistive technology: its place in the
+    /// window, on its own, for what it narrows rather than the app.
     #[must_use]
-    pub fn with_semantic_key(self, key: impl Into<String>) -> Self {
-        self.with_id(key)
+    pub fn with_semantic_key(mut self, key: impl Into<String>) -> Self {
+        let key = key.into();
+        self.list = Box::new(self.list.with_id(key.clone()));
+        self.semantic_key = Some(key);
+        self
     }
 
     /// Choose `id` and bring its row into view. Does not report through
@@ -993,11 +1014,17 @@ impl NavList {
     #[must_use]
     pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
         let id = id.into();
+        self.set_on_view(id.clone(), f);
+        self.with_id(id)
+    }
+
+    /// [`Self::on_view`] after construction: what choosing a destination does.
+    fn set_on_view(&self, id: impl Into<String>, f: impl FnMut(String) + 'static) {
+        let id = id.into();
         self.shared.borrow_mut().view = Some(NavView {
-            choice: crate::widget::view_choice::ViewChoice::new(id.clone(), "Go to"),
+            choice: crate::widget::view_choice::ViewChoice::new(id, "Go to"),
             handler: Box::new(f),
         });
-        self.with_id(id)
     }
 
     /// The published selection ([`Self::on_view`]), offering the current
@@ -1091,8 +1118,13 @@ impl NavList {
     /// trailing action is pressed.
     #[must_use]
     pub fn on_section_action(self, f: impl FnMut(&str, &str) + 'static) -> Self {
-        self.shared.borrow_mut().on_section_action = Some(Box::new(f));
+        self.set_section_action(f);
         self
+    }
+
+    /// [`Self::on_section_action`] after construction.
+    fn set_section_action(&self, f: impl FnMut(&str, &str) + 'static) {
+        self.shared.borrow_mut().on_section_action = Some(Box::new(f));
     }
 
     /// Report renames to `f`: how a [`NavFeed`] hears of them.
@@ -2290,6 +2322,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
         let mut access = crate::widget::Widget::accessibility_shared(&*self.list)?;
         access.node.role = crate::a11y::Role::Tree;
+        if let Some(key) = &self.semantic_key {
+            access.node.semantic_key = Some(key.clone());
+        }
         let shared = self.shared.borrow();
         if any_unavailable(&shared) {
             disable_unavailable(&mut access.node, &shared);
@@ -2345,6 +2380,9 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
     fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
         let mut root = crate::widget::Widget::accessibility_root(&*self.list)?;
         root.role = crate::a11y::Role::Tree;
+        if let Some(key) = &self.semantic_key {
+            root.semantic_key = Some(key.clone());
+        }
         disable_unavailable(&mut root, &self.shared.borrow());
         Some(root)
     }

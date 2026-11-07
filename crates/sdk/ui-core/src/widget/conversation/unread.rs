@@ -121,9 +121,21 @@ impl crate::component::Described for UnreadDivider {
             name: props.name.unwrap_or_default(),
         }
     }
+
+    /// The name it is called changes where the divider stands.
+    fn set_props(&mut self, props: UnreadDividerProps) -> bool {
+        let name = props.name.unwrap_or_default();
+        if self.name != name {
+            self.name = name;
+            self.drawn = false;
+        }
+        true
+    }
 }
 
 impl crate::widget::Widget for UnreadDivider {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,

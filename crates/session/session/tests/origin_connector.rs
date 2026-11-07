@@ -75,7 +75,7 @@ fn youtube_connector_child() {
         }
     });
     // The production connector loop, over the scripted service rather than YouTube.
-    tilolang_youtube::connector::serve(tilolang_youtube::scripted(scripted()), attachments);
+    tilolang_youtube::connector::serve(&tilolang_youtube::scripted(scripted()), attachments);
 }
 
 /// The scripted YouTube service: one search's answer.

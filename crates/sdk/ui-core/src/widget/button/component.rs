@@ -103,6 +103,12 @@ impl Default for ButtonProps {
 impl Described for Button {
     type Props = ButtonProps;
 
+    /// A press is the button's own action: the widget holds the binding, so the press is a route
+    /// an agent's invocation of it lands on, and both run from the door.
+    fn press_events() -> &'static [&'static str] {
+        &["press"]
+    }
+
     fn from_props(key: &str, props: ButtonProps) -> Self {
         let ButtonProps {
             label,
@@ -190,7 +196,12 @@ impl Described for Button {
             props.label == self.label && heard == self.accessible_name.as_deref()
         };
         let same_face = named
-            && props.faces == self.faces
+            && props.faces.len() == self.faces.len()
+            && props
+                .faces
+                .iter()
+                .zip(&self.faces)
+                .all(|(name, (shown, _))| name == shown)
             && props.icon == self.icon
             && role == self.role
             && size == self.control_size

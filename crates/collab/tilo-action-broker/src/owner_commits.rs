@@ -87,15 +87,21 @@ pub trait OwnerCustody: Send + Sync + 'static {
 pub struct NativeOwnerCommits {
     custody: Arc<dyn OwnerCustody>,
     writes: OwnerWrites,
+    /// What hears of a record committed here: search reads it again.
+    changes: Option<Arc<dyn crate::services::RecordIndexChanges>>,
 }
 
 impl NativeOwnerCommits {
     /// Commits into the owner `custody` names.
     #[must_use]
-    pub fn new(custody: Arc<dyn OwnerCustody>) -> Self {
+    pub fn new(
+        custody: Arc<dyn OwnerCustody>,
+        changes: Option<Arc<dyn crate::services::RecordIndexChanges>>,
+    ) -> Self {
         Self {
             custody,
             writes: OwnerWrites::default(),
+            changes,
         }
     }
 }
@@ -154,6 +160,7 @@ impl OwnerCommitService for NativeOwnerCommits {
     ) -> CommitFuture {
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();
+        let changes = self.changes.clone();
         Box::pin(writes.run(move || {
             let owner = custody
                 .resolve_owner()
@@ -171,7 +178,18 @@ impl OwnerCommitService for NativeOwnerCommits {
                         custody.prepare_record(&owner, room, app, record, kind)?;
                     }
                 }
+                let record = match &request.operation {
+                    CommitOperation::Document { app, record, .. } => {
+                        Some((request.workspace.clone(), app.clone(), record.clone()))
+                    }
+                    _ => None,
+                };
                 let receipt = owner.commit_document(request, now)?;
+                // What search holds of the record is read again from what it
+                // now holds.
+                if let (Some(changes), Some((workspace, app, record))) = (&changes, record) {
+                    changes.changed(&workspace, &app, &record);
+                }
                 // What the owner committed leaves for the workspace's peers
                 // from its custody, the one copy every write goes through.
                 custody.schedule_publication(room);

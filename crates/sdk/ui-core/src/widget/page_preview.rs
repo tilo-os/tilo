@@ -83,6 +83,8 @@ impl PagePreview {
 }
 
 impl Widget for PagePreview {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,

@@ -69,7 +69,6 @@ impl TaskPrograms {
                 .with_work_group(group)
                 .with_task_hosts(Some(Arc::new(crate::agent_door::TaskHosts::new(
                     person.unwrap_or_else(|| self.doors.person()),
-                    self.doors.runs(),
                     Arc::clone(&self.doors),
                 )))),
         );
@@ -265,11 +264,7 @@ mod tests {
     /// The step as the session serves it, on a door nothing asks beyond.
     fn programs() -> TaskPrograms {
         let wake = tilo_service::LoopWake::default();
-        let doors = Arc::new(crate::agent_door::SessionDoors::new(
-            wake.handle(),
-            Arc::new(crate::run_programs::Programs::new()),
-            "Pat",
-        ));
+        let doors = Arc::new(crate::agent_door::SessionDoors::new(wake.handle(), "Pat"));
         TaskPrograms::new(doors)
     }
 

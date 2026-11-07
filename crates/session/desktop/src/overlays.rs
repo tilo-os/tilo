@@ -18,9 +18,10 @@
 //! either one's modality.
 //!
 //! The slots the desktop's own chrome still draws (`Slot::is_chrome`) are
-//! mirrored from the widgets that own their state, and keep their own
-//! dismissal until each moves behind a view of its own; the two the session
-//! puts up itself (the window menu and quick settings) declare
+//! mirrored from the widgets that own their state; a press outside one closes
+//! it here where the widget says where it stands, and through the widget that
+//! holds the press when the press is the chrome's. The two the session puts up
+//! itself (the window menu and quick settings) declare
 //! [`Slot::session_closes`] and are closed by the session's own verbs.
 
 use std::cell::RefCell;
@@ -497,9 +498,17 @@ struct SlotState {
     /// Where this opening put it; the slot's own anchor while the verb named
     /// none.
     anchor: Option<Anchor>,
+    /// Where the widget drawing it says it stands, while it is up: a menu is
+    /// as big as its rows, which the slot's anchor cannot say.
+    stands: Option<Rect>,
     /// Whether a press outside last closed it: it does not open again for
     /// that press, which is still being delivered.
     dismissed: bool,
+    /// Whether the stack took it down and the widget drawing it has yet to
+    /// follow: while it has not, the widget's own open state is the one being
+    /// left behind, not a new opening to put back up. The widget's
+    /// [`Overlays::close`] is how it follows.
+    awaiting_close: bool,
 }
 
 /// The displays surfaces are placed on: every output's rect, and the one the
@@ -608,6 +617,21 @@ impl Overlays {
         Self::default()
     }
 
+    /// Ask for the next pass of whatever draws what the stack holds, set by
+    /// the host that draws it: a surface the stack takes down is one the
+    /// widget showing it has to take up a pass to close, and nothing else
+    /// tells it the press went down.
+    pub fn wake_with(&self, wake: Rc<std::cell::Cell<bool>>) {
+        *self.0.borrow_mut().wake.borrow_mut() = Some(wake);
+    }
+
+    /// The stack changed under what draws it: let it take up a pass.
+    fn woke(&self) {
+        if let Some(wake) = self.0.borrow().wake.borrow().as_ref() {
+            wake.set(true);
+        }
+    }
+
     /// The displays surfaces are placed on: every output, and the one the
     /// person works on.
     pub fn set_displays(&self, outputs: &[Rect], focused: Option<Rect>) {
@@ -639,37 +663,73 @@ impl Overlays {
     /// opened, so the others go down with it. Their widgets follow the stack
     /// ([`Self::is_open`]), which is how the chrome learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
-        let mut stack = self.0.borrow_mut();
-        if slot.stands_beside() {
-            for other in Slot::ALL {
-                if other != slot
-                    && other.stands_beside()
-                    && let Some(state) = stack.slots.get_mut(&other)
-                {
-                    state.open = false;
+        {
+            let mut stack = self.0.borrow_mut();
+            if slot.stands_beside() {
+                for other in Slot::ALL {
+                    if other != slot
+                        && other.stands_beside()
+                        && let Some(state) = stack.slots.get_mut(&other)
+                        && state.open
+                    {
+                        state.open = false;
+                        state.awaiting_close = true;
+                    }
                 }
             }
+            let state = stack.slots.entry(slot).or_default();
+            state.open = true;
+            state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
+            state.dismissed = false;
+            state.awaiting_close = false;
         }
-        let state = stack.slots.entry(slot).or_default();
-        state.open = true;
-        state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
-        state.dismissed = false;
+        self.woke();
     }
 
-    /// Take `slot` down.
+    /// Take `slot` down, as the widget drawing it does once the stack has:
+    /// what the stack took down is settled by this, and a slot that is
+    /// already down moved nothing.
     pub fn close(&self, slot: Slot) {
-        if let Some(state) = self.0.borrow_mut().slots.get_mut(&slot) {
+        {
+            let mut stack = self.0.borrow_mut();
+            let Some(state) = stack.slots.get_mut(&slot) else {
+                return;
+            };
+            let followed = std::mem::take(&mut state.awaiting_close);
+            if !state.open && !followed {
+                return;
+            }
             state.open = false;
+        }
+        self.woke();
+    }
+
+    /// Say where the widget drawing `slot` paints it, while it is up.
+    ///
+    /// A surface the session places is judged by the rect its anchor and size
+    /// settle; the chrome's own menus hang off the bar as big as their rows,
+    /// which only the widget knows. `None` takes back the last answer, as a
+    /// surface going down does.
+    pub fn stands(&self, slot: Slot, stands: Option<Rect>) {
+        let mut stack = self.0.borrow_mut();
+        match stack.slots.get_mut(&slot) {
+            Some(state) => state.stands = stands,
+            None if stands.is_some() => stack.slots.entry(slot).or_default().stands = stands,
+            None => {}
         }
     }
 
     /// A press outside `slot` closed it: it stays down for that press, which
     /// is still being delivered.
     pub fn dismiss(&self, slot: Slot) {
-        let mut stack = self.0.borrow_mut();
-        let state = stack.slots.entry(slot).or_default();
-        state.open = false;
-        state.dismissed = true;
+        {
+            let mut stack = self.0.borrow_mut();
+            let state = stack.slots.entry(slot).or_default();
+            state.open = false;
+            state.dismissed = true;
+            state.awaiting_close = true;
+        }
+        self.woke();
     }
 
     /// The button that press came from is up: the press is over. What it
@@ -701,6 +761,18 @@ impl Overlays {
             .slots
             .get(&slot)
             .is_some_and(|state| state.dismissed)
+    }
+
+    /// Whether `slot` was taken down by the stack and the widget drawing it
+    /// has yet to follow: its open state is the one being left behind, not a
+    /// new opening to put back up.
+    #[must_use]
+    pub fn awaiting_close(&self, slot: Slot) -> bool {
+        self.0
+            .borrow()
+            .slots
+            .get(&slot)
+            .is_some_and(|state| state.awaiting_close)
     }
 
     /// Whether `slot` is up.
@@ -753,19 +825,26 @@ impl Overlays {
     }
 
     /// The surface a press at this point closes, by the dismissal table: the
-    /// topmost popup standing where the point is not. A surface its own view
-    /// places has no rect the session can judge, so its view closes it.
+    /// topmost popup standing where the point is not. What the session placed
+    /// is judged by the rect its anchor settles; a surface its own widget
+    /// draws says where it stands, and one that says neither is its view's to
+    /// close.
     #[must_use]
     pub fn press_outside(&self, x: f64, y: f64) -> Option<Slot> {
         let stack = self.0.borrow();
         Slot::ALL.into_iter().find(|slot| {
-            if !slot.session_closes() || !slot.role().closes_on_press_outside() {
+            if !slot.role().closes_on_press_outside() {
                 return false;
             }
-            stack
-                .entry(*slot)
-                .and_then(|entry| entry.place)
-                .is_some_and(|place| !place.contains(Point::new(x, y)))
+            let Some(state) = stack.slots.get(slot).filter(|state| state.open) else {
+                return false;
+            };
+            let place = match state.stands {
+                Some(place) => Some(place),
+                None if slot.session_closes() => stack.entry(*slot).and_then(|entry| entry.place),
+                None => None,
+            };
+            place.is_some_and(|place| !place.contains(Point::new(x, y)))
         })
     }
 }
@@ -778,6 +857,9 @@ struct Stack {
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
+    /// What draws the surfaces the stack holds, asked for its next pass
+    /// whenever the stack changes under it ([`Overlays::wake_with`]).
+    wake: std::cell::RefCell<Option<Rc<std::cell::Cell<bool>>>>,
 }
 
 impl Stack {
@@ -1060,6 +1142,39 @@ mod tests {
     }
 
     #[test]
+    fn a_change_in_the_stack_asks_what_draws_it_for_a_pass() {
+        let overlays = overlays();
+        let asked = Rc::new(std::cell::Cell::new(false));
+        overlays.wake_with(Rc::clone(&asked));
+        assert!(!asked.replace(false), "nothing asked yet");
+
+        overlays.open(Slot::WorkspaceMenu, None);
+        assert!(asked.replace(false), "the menu came up");
+        overlays.dismiss(Slot::WorkspaceMenu);
+        assert!(
+            asked.replace(false),
+            "a press outside took it down: the widget has to close it"
+        );
+        // The widget closing it follows the stack, which hears that: what the
+        // widget shows next is a surface of its own again, not the state the
+        // stack took down.
+        overlays.close(Slot::WorkspaceMenu);
+        assert!(
+            !overlays.awaiting_close(Slot::WorkspaceMenu),
+            "the widget followed the stack"
+        );
+        assert!(asked.replace(false), "the widget followed it");
+        assert!(
+            !asked.replace(false),
+            "and nothing is left to draw after that"
+        );
+        overlays.open(Slot::QuickSettings, None);
+        assert!(asked.replace(false), "another surface came up");
+        overlays.close(Slot::QuickSettings);
+        assert!(asked.replace(false), "and went down");
+    }
+
+    #[test]
     fn a_dismissed_surface_stays_down_for_the_press_that_dismissed_it() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
@@ -1086,6 +1201,42 @@ mod tests {
         assert!(
             !overlays.dismissed_recently(Slot::QuickSettings),
             "opened again, it is nobody's dismissed surface"
+        );
+    }
+
+    #[test]
+    fn a_surface_that_says_where_it_stands_is_closed_by_a_press_that_misses_it() {
+        let overlays = overlays();
+        let panel = Rect::new(52.0, 40.0, 289.0, 240.0);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "nothing is up, so the press is the desk's"
+        );
+        overlays.open(Slot::WorkspaceMenu, None);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "an anchor alone does not say where a menu as big as its rows stands"
+        );
+
+        overlays.stands(Slot::WorkspaceMenu, Some(panel));
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            Some(Slot::WorkspaceMenu),
+            "a press on the desk misses the panel"
+        );
+        assert_eq!(
+            overlays.press_outside(panel.center().x, panel.center().y),
+            None,
+            "a press on the panel is the menu's own"
+        );
+
+        overlays.stands(Slot::WorkspaceMenu, None);
+        assert_eq!(
+            overlays.press_outside(640.0, 700.0),
+            None,
+            "the widget takes its word back when the menu goes"
         );
     }
 

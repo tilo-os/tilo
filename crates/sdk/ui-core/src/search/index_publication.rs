@@ -20,6 +20,6 @@
 //! whole set again (`reset`) only on a new route.
 
 pub use tilo_resource::search_index::{
-    IndexAction, IndexDelta, IndexEntry, IndexState, IndexWeight, MAX_DELTA_BYTES, MAX_ENTRIES,
-    MAX_FIELDS, MAX_ID_BYTES, MAX_TEXT_BYTES, Publisher,
+    IndexAction, IndexDelta, IndexEntry, IndexKind, IndexPerson, IndexState, IndexWeight,
+    MAX_DELTA_BYTES, MAX_ENTRIES, MAX_FIELDS, MAX_ID_BYTES, MAX_TEXT_BYTES, Publisher,
 };

@@ -24,6 +24,11 @@ use crate::ChannelContentKeys;
 /// The message a page shows when its browser cannot join live.
 pub const UNSUPPORTED: &str = "this browser cannot join live";
 
+/// The message a page shows in its members' place when its live plane cannot
+/// be opened: the page keeps asking quietly, and nobody is listed from the
+/// plane until one opens.
+pub const UNREACHABLE: &str = "this page cannot reach live presence";
+
 /// Why the page could not join the live plane: one reason of its own — the
 /// browser has no WebTransport to join with — and everything the plane itself
 /// answers with, which a page reports as it is.

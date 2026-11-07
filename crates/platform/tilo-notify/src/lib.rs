@@ -27,6 +27,10 @@
 //! URIs of their own, handed over the same way where the platform shows
 //! them (Linux; elsewhere they are left out).
 //!
+//! Where the platform says why a notification went away, [`set_close_handler`]
+//! hands the app its tag and a [`CloseReason`]: the freedesktop service's
+//! `NotificationClosed` on Linux. The app's own withdrawal is never reported.
+//!
 //! [`availability`] says which [`Feature`]s the target has; a backend may do
 //! less at run time (no notification service on this session), never more.
 
@@ -242,6 +246,92 @@ pub(crate) fn activated(uri: &str) {
         }
     };
     handler(uri);
+}
+
+/// Why the platform closed a notification the app showed, before the app took it back itself,
+/// as `org.freedesktop.Notifications`' `NotificationClosed` names it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseReason {
+    /// The notification ran out of time.
+    Expired,
+    /// The person dismissed it.
+    Dismissed,
+    /// The app closed it with [`Notifier::withdraw`], or the platform did so because the
+    /// notification was replaced.
+    Closed,
+}
+
+impl CloseReason {
+    /// The specification's `reason` code for it.
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::Expired => 1,
+            Self::Dismissed => 2,
+            Self::Closed => 3,
+        }
+    }
+
+    /// The reason `code` names; `None` for a code the specification leaves open.
+    #[must_use]
+    pub fn from_code(code: u32) -> Option<Self> {
+        match code {
+            1 => Some(Self::Expired),
+            2 => Some(Self::Dismissed),
+            3 => Some(Self::Closed),
+            _ => None,
+        }
+    }
+}
+
+/// Receives the tags of closed notifications.
+type CloseHandler = Arc<dyn Fn(&str, CloseReason) + Send + Sync>;
+
+/// The installed close handlers by tag prefix. Several apps share a process on a Tilo desktop,
+/// so each owns only the tags it names.
+fn close_handlers() -> &'static Mutex<std::collections::HashMap<String, CloseHandler>> {
+    static HANDLERS: OnceLock<Mutex<std::collections::HashMap<String, CloseHandler>>> =
+        OnceLock::new();
+    HANDLERS.get_or_init(Mutex::default)
+}
+
+/// Call `handler` with the tag and reason of every notification whose tag starts with `prefix`
+/// that the platform closes, on whatever thread reports it. Replaces an earlier handler for
+/// `prefix`; where prefixes nest, the longest one wins.
+///
+/// Only some platforms report this ([`Feature::Close`]), and only for notifications they closed
+/// themselves: a notification the app withdrew is the app's own doing and is not reported. A
+/// dismissal ([`CloseReason::Dismissed`]) is the person's answer; [`CloseReason::Expired`] and
+/// [`CloseReason::Closed`] say nothing about them.
+pub fn set_close_handler(
+    prefix: &str,
+    handler: impl Fn(&str, CloseReason) + Send + Sync + 'static,
+) {
+    let Ok(mut handlers) = close_handlers().lock() else {
+        return;
+    };
+    handlers.insert(prefix.to_owned(), Arc::new(handler));
+}
+
+/// A backend's report that the platform closed the notification `tag`.
+#[cfg_attr(
+    not(target_os = "linux"),
+    allow(dead_code, reason = "only the freedesktop backend reports closes")
+)]
+pub(crate) fn closed(tag: &str, reason: CloseReason) {
+    let handler = {
+        let Ok(handlers) = close_handlers().lock() else {
+            return;
+        };
+        handlers
+            .iter()
+            .filter(|(prefix, _)| tag.starts_with(prefix.as_str()))
+            .max_by_key(|(prefix, _)| prefix.len())
+            .map(|(_, handler)| Arc::clone(handler))
+    };
+    if let Some(handler) = handler {
+        handler(tag, reason);
+    }
 }
 
 /// Why a notification could not be shown, scheduled or withdrawn.
@@ -590,5 +680,59 @@ mod tests {
     #[test]
     fn a_recording_notifier_conforms() {
         conformance::check_contract(&conformance::Recording::default());
+    }
+
+    #[test]
+    fn a_close_reason_is_the_specifications_code() {
+        for (reason, code) in [
+            (CloseReason::Expired, 1),
+            (CloseReason::Dismissed, 2),
+            (CloseReason::Closed, 3),
+        ] {
+            assert_eq!(reason.code(), code);
+            assert_eq!(CloseReason::from_code(code), Some(reason));
+        }
+        assert_eq!(CloseReason::from_code(0), None);
+        assert_eq!(CloseReason::from_code(4), None);
+    }
+
+    #[test]
+    fn a_close_reaches_the_handler_that_names_its_tag_and_nothing_else() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        set_close_handler("tilo-close-test:", move |tag, reason| {
+            sink.lock().unwrap().push((tag.to_owned(), reason));
+        });
+        closed("tilo-close-other:1", CloseReason::Dismissed);
+        closed("tilo-close-test:1", CloseReason::Dismissed);
+        closed("tilo-close-test:2", CloseReason::Expired);
+        closed("tilo-close-test:3", CloseReason::Closed);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [
+                ("tilo-close-test:1".to_owned(), CloseReason::Dismissed),
+                ("tilo-close-test:2".to_owned(), CloseReason::Expired),
+                ("tilo-close-test:3".to_owned(), CloseReason::Closed),
+            ],
+            "every reason reaches it, and only its own tags"
+        );
+    }
+
+    #[test]
+    fn the_longest_matching_prefix_receives_a_close() {
+        let narrow = Arc::new(Mutex::new(Vec::new()));
+        let wide = Arc::new(Mutex::new(Vec::new()));
+        for (prefix, seen) in [
+            ("tilo-narrow-test:", Arc::clone(&narrow)),
+            ("tilo-narrow-test:one/", Arc::clone(&wide)),
+        ] {
+            set_close_handler(prefix, move |tag, _| {
+                seen.lock().unwrap().push(tag.to_owned());
+            });
+        }
+        closed("tilo-narrow-test:one/1", CloseReason::Dismissed);
+        closed("tilo-narrow-test:two/1", CloseReason::Dismissed);
+        assert_eq!(*wide.lock().unwrap(), ["tilo-narrow-test:one/1"]);
+        assert_eq!(*narrow.lock().unwrap(), ["tilo-narrow-test:two/1"]);
     }
 }

@@ -610,6 +610,10 @@ pub(crate) fn paint_pill(
               removed-this-frame); merging them into a bitflags/enum would \
               not change behavior"
 )]
+#[path = "chip_component.rs"]
+mod component;
+pub use component::ChipProps;
+
 pub struct Chip {
     label: String,
     /// Whose face leads it ([`Self::with_face`]); empty: the label is the name.
@@ -930,6 +934,12 @@ impl Chip {
     /// reader, a script and an agent all remove it the same way.
     #[must_use]
     pub fn on_remove_view(mut self, f: impl FnMut() + 'static) -> Self {
+        self.set_on_remove_view(f);
+        self
+    }
+
+    /// [`Self::on_remove_view`] on a chip already built.
+    pub fn set_on_remove_view(&mut self, f: impl FnMut() + 'static) {
         self.removable = true;
         let id = self.activation.id().to_owned();
         let label = self.label.clone();
@@ -941,7 +951,7 @@ impl Chip {
             super::control_verb::VerbArgument::Flag,
         ));
         self.on_remove = Some(Box::new(f));
-        self
+        self.dirty = true;
     }
 
     /// The selection was flipped by a person.
@@ -1025,6 +1035,8 @@ impl Chip {
 }
 
 impl Widget for Chip {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

@@ -38,7 +38,9 @@
 //! relays for conditions that last as long as the process.
 
 pub mod directory;
+pub mod lan;
 pub use directory::{Gate, Watchonly, collaborating};
+pub use lan::lan;
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;

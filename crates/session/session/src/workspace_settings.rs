@@ -275,14 +275,16 @@ fn ask(
         }
         // Closing is the sheet's own.
         sheet::WorkspaceSettingsEffect::Close => {}
-        sheet::WorkspaceSettingsEffect::AddAgent { name } => add_agent(seat, fed, &name),
+        sheet::WorkspaceSettingsEffect::AddAgent {
+            name,
+            model,
+            colour,
+        } => add_agent(seat, fed, &name, &model, &colour),
         sheet::WorkspaceSettingsEffect::ToggleDevice { device } => {
             toggle_workspace_device(seat, fed, &device);
         }
         sheet::WorkspaceSettingsEffect::Rename { name } => {
-            intents
-                .borrow_mut()
-                .push(ChromeIntent::RenameWorkspace { name });
+            intent(intents, ChromeIntent::RenameWorkspace { name });
         }
         sheet::WorkspaceSettingsEffect::Move { step } => move_workspace(handle, step),
         sheet::WorkspaceSettingsEffect::SetRole { member, role } => {
@@ -316,11 +318,9 @@ fn ask(
             });
         }
         sheet::WorkspaceSettingsEffect::ReviewActivity => {
-            intents.borrow_mut().push(ChromeIntent::ShowActivity(None));
+            intent(intents, ChromeIntent::ShowActivity(None));
         }
-        sheet::WorkspaceSettingsEffect::Invite => {
-            intents.borrow_mut().push(ChromeIntent::Invite);
-        }
+        sheet::WorkspaceSettingsEffect::Invite => intent(intents, ChromeIntent::Invite),
         sheet::WorkspaceSettingsEffect::NextWorkspaceDefault { resource } => {
             next_workspace_default(seat, fed, &resource);
         }
@@ -329,8 +329,11 @@ fn ask(
         }
         // The workspace leaves this device's desktop; it stays for
         // everyone in it, on their devices.
-        sheet::WorkspaceSettingsEffect::Delete => {
-            intents.borrow_mut().push(ChromeIntent::LeaveWorkspace);
+        sheet::WorkspaceSettingsEffect::Delete => intent(intents, ChromeIntent::LeaveWorkspace),
+        // The person answered the sheet's own question: the desk deletes the
+        // workspace with everything in it, and tells the session it went.
+        sheet::WorkspaceSettingsEffect::DeleteWorkspace => {
+            intent(intents, ChromeIntent::DeleteWorkspaceConfirmed);
         }
         sheet::WorkspaceSettingsEffect::AddEmoji
         | sheet::WorkspaceSettingsEffect::RemoveEmoji { .. }
@@ -356,9 +359,17 @@ fn ask(
         sheet::WorkspaceSettingsEffect::SetAgentModel { agent, model } => {
             set_agent_model(seat, fed, &agent, &model);
         }
+        sheet::WorkspaceSettingsEffect::SetAgentColour { agent, colour } => {
+            set_agent_colour(seat, fed, &agent, &colour);
+        }
         sheet::WorkspaceSettingsEffect::AddBot => add_bot(fed),
         sheet::WorkspaceSettingsEffect::RemoveBot { bot } => withdraw_bot(seat, fed, &bot),
     }
+}
+
+/// Say what the desk does next, for the sheet.
+fn intent(intents: &RefCell<Vec<ChromeIntent>>, what: ChromeIntent) {
+    intents.borrow_mut().push(what);
 }
 
 /// Open the Store's bots, where a member finds one and asks the workspace's
@@ -608,24 +619,28 @@ fn workspace_in_front(fed: &Feeding<'_>) -> Option<Workspace> {
     fed.handle.read(|tree| tree.active_workspace().cloned())
 }
 
-/// Make an agent called `name` where the workspace keeps its agents, and
-/// admit it with the grants it works with here: the name and the record are
-/// Chat's, the grants are the workspace's own governance, and both are
-/// decided again on their own paths.
-fn add_agent(seat: &sheet::WorkspaceSettingsSeat, fed: &Feeding<'_>, name: &str) {
+/// Make an agent called `name` where the workspace keeps its agents: the
+/// record is the agent's admission, and Chat's grants decide who may make
+/// one.
+fn add_agent(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    name: &str,
+    model: &str,
+    colour: &str,
+) {
     let workspace = workspace_in_front(fed);
-    let id = match fed.tabs.agents.create(workspace.as_ref(), fed.person, name) {
-        Ok(id) => id,
-        Err(reason) => return refuse(seat, fed, &reason),
-    };
-    govern(seat, fed, |ws, actor| {
-        Ok(domain::admit_agent(
-            ws,
-            actor,
-            &id,
-            domain::AgentPreset::Contributor,
-        ))
-    });
+    let colour =
+        ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok());
+    // The record is the admission: the agent works here because Chat's
+    // record names it and this person keeps it.
+    if let Err(reason) = fed
+        .tabs
+        .agents
+        .create(workspace.as_ref(), fed.person, name, model, colour)
+    {
+        refuse(seat, fed, &reason);
+    }
 }
 
 /// Retire the agent `agent`, and take back what the workspace admitted it
@@ -665,6 +680,33 @@ fn set_agent_model(
         Ok(()) => {
             let shown = seat.settings();
             show(seat, fed, shown.tab, Some(agent));
+        }
+        Err(reason) => refuse(seat, fed, &reason),
+    }
+}
+
+/// Draw an agent in the colour its keeper picked, as their devices run it.
+fn set_agent_colour(
+    seat: &sheet::WorkspaceSettingsSeat,
+    fed: &Feeding<'_>,
+    agent: &str,
+    colour: &str,
+) {
+    let Some(colour) =
+        ui::tokens::PresenceHue::from_id(colour).and_then(|hue| u8::try_from(hue.slot()).ok())
+    else {
+        tracing::debug!(%colour, "no such presence colour: nothing changed");
+        return;
+    };
+    let workspace = workspace_in_front(fed);
+    match fed
+        .tabs
+        .agents
+        .set_colour(workspace.as_ref(), fed.person, agent, colour)
+    {
+        Ok(()) => {
+            let shown = seat.settings();
+            show(seat, fed, shown.tab, None);
         }
         Err(reason) => refuse(seat, fed, &reason),
     }
@@ -796,6 +838,7 @@ fn general(
             .position(|one| one.slot == workspace.slot)
     });
     let last = tree.workspaces.len().saturating_sub(1);
+    let going = going(tree, engine);
     sheet::General {
         identity: sheet::Group {
             title: t("workspace-settings-identity-title"),
@@ -835,9 +878,77 @@ fn general(
             description: t("workspace-settings-leave-description"),
         },
         leave_label: t("workspace-settings-leave-action"),
-        // The desk keeps the person one workspace, so the last one is not
-        // theirs to leave.
-        leavable: tree.workspaces.len() > 1,
+        leavable: going.leavable,
+        leave_note: going.leave_note.clone(),
+        delete: (going.sole_member && workspace.is_some()).then(|| sheet::Group {
+            title: t("workspace-settings-delete"),
+            description: t("workspace-settings-delete-description"),
+        }),
+        delete_label: t("workspace-settings-delete-action"),
+        delete_note: going.delete_note,
+        delete_decision: going.decision,
+    }
+}
+
+/// What leaving and deleting offer here, and why not when they do not:
+/// deleting is for the person's own workspace alone, one nobody else is in
+/// and no other device of theirs holds, so taking it off here takes it
+/// everywhere. Nobody else in it also makes leaving say nothing — there is
+/// nobody it could stay for — so the two trade places.
+struct Going {
+    sole_member: bool,
+    leavable: bool,
+    leave_note: Option<String>,
+    delete_note: Option<String>,
+    decision: sheet::Decision,
+}
+
+fn going(tree: &DesktopTree, engine: Option<&Engine>) -> Going {
+    let workspace = tree.active_workspace();
+    let sole_member = workspace.is_some_and(|workspace| workspace.roster().len() <= 1);
+    let delete_note = workspace.filter(|_| sole_member).and_then(|workspace| {
+        engine.map_or_else(
+            || Some(t("workspace-settings-delete-not-held")),
+            |engine| engine.not_deletable(workspace.id()).map(not_deletable),
+        )
+    });
+    let leavable = tree.workspaces.len() > 1 && !sole_member;
+    let name = workspace.map(|workspace| workspace.name.clone());
+    let decision = sheet::Decision {
+        title: tilo_sheets::words(
+            "workspace-delete-title",
+            &[("name", name.as_deref().unwrap_or_default())],
+        ),
+        description: tilo_sheets::word("workspace-delete-body"),
+        keep: tilo_sheets::word("workspace-delete-keep"),
+        review: String::new(),
+        confirm: tilo_sheets::word("workspace-delete-confirm"),
+    };
+    Going {
+        sole_member,
+        leavable,
+        leave_note: (!leavable).then(|| {
+            if sole_member {
+                t("workspace-settings-leave-sole-member")
+            } else {
+                // The desk keeps the person one workspace, so the last one is
+                // not theirs to leave.
+                t("workspace-settings-leave-last")
+            }
+        }),
+        delete_note,
+        decision,
+    }
+}
+
+/// Why a workspace is not the person's to delete here, in their words.
+fn not_deletable(reason: crate::engine::NotDeletable) -> String {
+    use crate::engine::NotDeletable;
+    match reason {
+        NotDeletable::NotHeld => t("workspace-settings-delete-not-held"),
+        NotDeletable::OthersInIt => t("workspace-settings-delete-others"),
+        NotDeletable::OtherDevice => t("workspace-settings-delete-elsewhere"),
+        NotDeletable::NotOwner => t("workspace-settings-delete-not-owner"),
     }
 }
 

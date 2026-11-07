@@ -26,7 +26,7 @@ use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_action_broker::services::LaunchPlace;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, InvokeArgument, InvokeRequest,
-    RemoteActionTarget, application_provider,
+    RemoteActionTarget, application_open_target, application_provider,
 };
 use tilo_actions::{ActionDescriptor, DoorError, ExecutionLocus, InvocationId};
 use tilo_app_launch::routing;
@@ -34,13 +34,19 @@ use tilo_app_launch::{
     Answer, Authority, Cause, Doors as WindowDoors, HeldDoor, Instance, Kind, Launch, PlanContext,
     Planned, Routed, SessionEnvironment, Shown, Spawner, StartAlone, Workspace,
 };
+use tilo_desktop_search::LaunchPlace as OpenPlace;
 use tilo_desktop_search::providers::PublishedActions;
 use tilo_desktop_search::providers::jobs::JobEntry;
 use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
+use crate::agents::Kept;
 use crate::mount::connectors::ConnectorHost;
 use crate::search::AppActions;
+
+/// The agent the person's workspace records name: a participant without a
+/// window, which the session runs for the person who keeps it.
+const AGENT_PACKAGE: &str = "so.tilo.agent";
 
 /// The apps this session starts, and everything that asks it for one.
 pub struct Apps {
@@ -112,6 +118,20 @@ struct State {
     /// What wakes the session's loop: a delivery completes on the broker's
     /// own runtime, and the loop reads its answer on its next pass.
     wake: Option<tilo_service::Wake>,
+    /// The agents this device runs because the person here keeps them, by
+    /// workspace and id: what each was started with, and the launch running
+    /// it while one does.
+    agents: BTreeMap<(String, String), AgentProcess>,
+}
+
+/// An agent this device started, as the record of it the launch pass keeps.
+struct AgentProcess {
+    /// The name and model it was started with: a change to either is what
+    /// starts it again, so a process that ended is not started in a loop.
+    wanted: (String, Option<String>),
+    /// The launch running it; `None` once it ended, and after it never
+    /// started.
+    launch: Option<u64>,
 }
 
 /// What a launch does about the app it names: the window the app has, or is
@@ -167,6 +187,7 @@ impl Apps {
                 tool_context: None,
                 broker: None,
                 wake,
+                agents: BTreeMap::new(),
             }),
         }
     }
@@ -590,6 +611,18 @@ impl Apps {
     fn follow_ended(&self) {
         let ended = self.state.borrow().spawner.events();
         for event in ended {
+            // An agent has no window and no place of its own on the desk:
+            // its end is logged, and the record's next change starts it
+            // again rather than this pass starting it in a loop.
+            if let Some((workspace, agent)) = self.agent_ended(event.id) {
+                tracing::warn!(
+                    %agent,
+                    %workspace,
+                    end = %event.end,
+                    "an agent stopped"
+                );
+                continue;
+            }
             // The launch is over: its door retires with it, so the app's next
             // window there starts a process again.
             self.state.borrow_mut().held.remove(&event.id);
@@ -752,6 +785,41 @@ impl Apps {
         launched
     }
 
+    /// What a search row names, run as the person's own choice runs it: an
+    /// app in the workspace it was published in, and the action to run
+    /// there. `place` is where they asked the window of an `open` to go.
+    fn invoke_at(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        place: OpenPlace,
+    ) -> Result<(), DoorError> {
+        let Some((workspace, _)) = application_provider(&target.provider) else {
+            return Err(no_action_host());
+        };
+        let workspace = workspace.to_owned();
+        let app = target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            .map(str::to_owned);
+        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
+        match (open, app) {
+            (true, Some(app)) => {
+                let workspace = self.workspace_named(&workspace);
+                let launch = Launch::Package { app, open: None };
+                match place {
+                    // A tab of the window in front is the desk's to arrange:
+                    // the session opens the app the way it opens, and the
+                    // desk puts the tab where the person asked.
+                    OpenPlace::Focus | OpenPlace::TabHere => self.start(&launch, &workspace),
+                    OpenPlace::Beside => self.start_beside(&launch, &workspace, None),
+                }
+            }
+            _ => self.deliver(target, arguments, &workspace),
+        }
+    }
+
     /// Start `launch` in `workspace`, unless the app already has a window
     /// there: that one is raised and nothing starts.
     ///
@@ -778,6 +846,115 @@ impl Apps {
     ) -> Result<(), DoorError> {
         self.start_window(launch, workspace, true, instance)
             .map(|_| ())
+    }
+
+    /// Start the agent `kept` in its workspace, unless this session already
+    /// runs it: one process per agent per session, so nothing starts twice,
+    /// and one that ended is not started again — the record's next change to
+    /// its name or model is.
+    pub(crate) fn start_agent(&self, kept: &Kept) {
+        let key = (kept.workspace.clone(), kept.id.clone());
+        if !self.agent_due(&key, kept) {
+            return;
+        }
+        let launch = match self.agent_plan(kept) {
+            Ok(planned) => match self.spawn(&planned, None, &kept.workspace, None) {
+                Ok(launch) => Some(launch),
+                Err(error) => {
+                    tracing::warn!(
+                        agent = %kept.id,
+                        workspace = %kept.workspace,
+                        %error,
+                        "an agent did not start"
+                    );
+                    None
+                }
+            },
+            Err(error) => {
+                tracing::warn!(
+                    agent = %kept.id,
+                    workspace = %kept.workspace,
+                    %error,
+                    "an agent did not start"
+                );
+                None
+            }
+        };
+        self.remember_agent(key, kept, launch);
+    }
+
+    /// Whether this session is due to start `kept`: it has not started it
+    /// with this name and model, and has not tried. A process it started is
+    /// not started again after it ended, so an agent that cannot stay up is
+    /// not restarted in a loop.
+    fn agent_due(&self, key: &(String, String), kept: &Kept) -> bool {
+        let wanted = (kept.name.clone(), kept.model.clone());
+        self.state
+            .borrow()
+            .agents
+            .get(key)
+            .is_none_or(|run| run.wanted != wanted)
+    }
+
+    /// Write down what this session started for `kept`, and the launch
+    /// running it while one does.
+    fn remember_agent(&self, key: (String, String), kept: &Kept, launch: Option<u64>) {
+        self.state.borrow_mut().agents.insert(
+            key,
+            AgentProcess {
+                wanted: (kept.name.clone(), kept.model.clone()),
+                launch,
+            },
+        );
+    }
+
+    /// What the launcher is asked to run for `kept`: its package as a
+    /// service, with the agent's own argv after the entrypoint. A service is
+    /// handed no display — it draws nothing — and the launcher refuses one
+    /// with a socket.
+    fn agent_plan(&self, kept: &Kept) -> Result<Planned, DoorError> {
+        let workspace = self.workspace_named(&kept.workspace);
+        let launch = Launch::Package {
+            app: AGENT_PACKAGE.to_owned(),
+            open: None,
+        };
+        let planned = {
+            let state = self.state.borrow();
+            let mut environment = state.environment.clone();
+            environment.wayland_socket = None;
+            environment.x11_display = None;
+            // The agent joins as its own actor through the broker, so it is
+            // handed none of the person's authority or identity record.
+            let context = PlanContext {
+                environment: &environment,
+                workspace: &workspace,
+                launcher: state.launcher.clone(),
+                identity: None,
+                authority: None,
+                render_node: None,
+                new_window: false,
+                continuity_instance: None,
+                connector: None,
+            };
+            Planned::of(&launch, &context)
+        };
+        let mut planned = planned.map_err(|error| DoorError::Failed(error.to_string()))?;
+        let provider = provider_selection(&agent_provider_config::ProviderConfig::load(), kept);
+        planned.args.extend(agent_argv(kept, provider.as_deref()));
+        Ok(planned)
+    }
+
+    /// The agent whose launch `id` was, marked as ended. A process that
+    /// ended is not started again by the next pass, so an agent that cannot
+    /// stay up is not restarted in a loop.
+    fn agent_ended(&self, id: u64) -> Option<(String, String)> {
+        let mut state = self.state.borrow_mut();
+        let (key, run) = state
+            .agents
+            .iter_mut()
+            .find(|(_, run)| run.launch == Some(id))?;
+        run.launch = None;
+        Some(key.clone())
     }
 
     /// `workspace` as this launch starts in it: when the launch opens a
@@ -856,8 +1033,8 @@ impl Apps {
         let asked = launch.id();
         let Some(doors) = self.state.borrow().doors.clone() else {
             return self
-                .spawn(&planned, &asked, &workspace.id, None)
-                .map(|()| true);
+                .spawn(&planned, Some(&asked), &workspace.id, None)
+                .map(|_| true);
         };
         // The app's own window with nothing named to open is the one its
         // running process opens itself, as it opens any later one.
@@ -878,7 +1055,7 @@ impl Apps {
             Ok(reservation) => reservation,
         };
         let door = doors.hold(&planned.app, &workspace.id);
-        let started = self.spawn(&planned, &asked, &workspace.id, door);
+        let started = self.spawn(&planned, Some(&asked), &workspace.id, door);
         if started.is_ok()
             && let Some(reservation) = reservation
         {
@@ -886,7 +1063,7 @@ impl Apps {
             // spent, not given up.
             reservation.launched();
         }
-        started.map(|()| true)
+        started.map(|_| true)
     }
 
     /// How a window that must start a process of its own starts it: what a
@@ -910,7 +1087,7 @@ impl Apps {
                 let Some(apps) = me.upgrade() else {
                     return;
                 };
-                if let Err(error) = apps.spawn(&planned, &asked, &workspace, None) {
+                if let Err(error) = apps.spawn(&planned, Some(&asked), &workspace, None) {
                     tracing::warn!(%error, app = %planned.app, "an app did not start");
                 }
             })
@@ -919,16 +1096,22 @@ impl Apps {
 
     /// Start `planned` with the door `door`, which the launch holds until it
     /// ends, and write it down as a launch of this session before the app can
-    /// reach a service of it.
+    /// reach a service of it. `asked` is what the app was asked as, when a
+    /// window of it is what the launch is: a service asked as nothing has no
+    /// window to offer again.
     fn spawn(
         &self,
         planned: &Planned,
-        asked: &str,
+        asked: Option<&str>,
         workspace: &str,
         door: Option<HeldDoor>,
-    ) -> Result<(), DoorError> {
+    ) -> Result<u64, DoorError> {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
+        // The open is timed from the session starting the process to its
+        // first presented frame: the launcher's and the app's share in the
+        // launch-latency log, the surface's in the compositor's.
+        let timed = tilo_startup_metrics::launch_requested(&planned.app);
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a
@@ -939,10 +1122,16 @@ impl Apps {
         });
         let started = match started {
             Ok(started) => started,
-            Err(error) => return Err(DoorError::Failed(error.to_string())),
+            Err(error) => {
+                tilo_startup_metrics::launch_failed(timed);
+                return Err(DoorError::Failed(error.to_string()));
+            }
         };
         let (started, door) = started;
-        state.running.insert(started.id, asked.to_owned());
+        tilo_startup_metrics::launch_spawned(timed, started.pid);
+        if let Some(asked) = asked {
+            state.running.insert(started.id, asked.to_owned());
+        }
         if let Some(door) = door {
             state.held.insert(started.id, door);
         }
@@ -953,8 +1142,67 @@ impl Apps {
             "started {}",
             planned.describe()
         );
-        Ok(())
+        Ok(started.id)
     }
+}
+
+/// The argv an agent is run with: the launcher's `--service`, whose own
+/// arguments follow the package's entrypoint, then the agent's options.
+fn agent_argv(kept: &Kept, provider: Option<&str>) -> Vec<String> {
+    let mut argv = vec![
+        "--service".to_owned(),
+        "--workspace".to_owned(),
+        kept.workspace.clone(),
+        "--app".to_owned(),
+        AGENT_PACKAGE.to_owned(),
+        "--agent-id".to_owned(),
+        kept.id.clone(),
+        "--name".to_owned(),
+        kept.name.clone(),
+    ];
+    if let Some(provider) = provider {
+        argv.push("--provider".to_owned());
+        argv.push(provider.to_owned());
+    }
+    argv
+}
+
+/// The model `kept` plans with, as the agent's `--provider` selection: the
+/// keeper's choice on the record, else this device's Settings for it. A
+/// launched agent cannot read Settings, so without a selection it plans by
+/// keyword only. The selection names a profile and a model; the gateway
+/// holds the endpoint and the credential, and neither is here.
+fn provider_selection(
+    config: &agent_provider_config::ProviderConfig,
+    kept: &Kept,
+) -> Option<String> {
+    let (profile, model) = match kept
+        .model
+        .as_deref()
+        .and_then(|chosen| chosen.split_once('/'))
+    {
+        Some((profile, model)) => {
+            let profile = config
+                .profiles
+                .iter()
+                .find(|held| held.id == profile && held.enabled)?;
+            (
+                profile,
+                profile.models.iter().find(|held| held.id == model)?,
+            )
+        }
+        None => config.selection_for(&kept.id)?,
+    };
+    Some(
+        serde_json::json!({
+            "profile_id": profile.id,
+            "model_id": model.id,
+            "protocol": profile.protocol,
+            "tool_calling": model.tool_calling,
+            "vision": model.vision,
+        })
+        .to_string(),
+    )
 }
 
 impl AppActions for Apps {
@@ -1022,25 +1270,23 @@ impl AppActions for Apps {
         target: RemoteActionTarget,
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<(), DoorError> {
-        // What a search row names: an app in the workspace it was published
-        // in, and the action to run there.
-        let Some((workspace, _)) = application_provider(&target.provider) else {
-            return Err(no_action_host());
-        };
-        let workspace = workspace.to_owned();
-        let app = target
-            .address
-            .resource
-            .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            .map(str::to_owned);
-        let open = target.address.action == APPLICATION_OPEN_ACTION && arguments.is_empty();
-        match (open, app) {
-            (true, Some(app)) => {
-                let workspace = self.workspace_named(&workspace);
-                self.start(&Launch::Package { app, open: None }, &workspace)
-            }
-            _ => self.deliver(target, arguments, &workspace),
-        }
+        self.invoke_at(target, arguments, OpenPlace::Focus)
+    }
+
+    /// Open `app` where the person asked it, through the same run of the
+    /// workspace's `open` as [`Self::invoke`]: `place` is what the modifier
+    /// they held over the row asked of the window.
+    fn open_application(
+        &self,
+        workspace: &str,
+        app: &str,
+        place: OpenPlace,
+    ) -> Result<(), DoorError> {
+        self.invoke_at(
+            application_open_target(workspace, app),
+            serde_json::Map::new(),
+            place,
+        )
     }
 
     fn cancel(&self, _app: &str, _workspace: &str, _invocation: &str) -> Result<(), DoorError> {
@@ -1175,6 +1421,142 @@ fn unix_seconds() -> u64 {
 mod tests {
     use super::*;
     use tilo_app_launch::{End, Event};
+
+    const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
+
+    fn kept() -> Kept {
+        Kept {
+            workspace: WORKSPACE.to_owned(),
+            id: "scribe".to_owned(),
+            name: "Scribe".to_owned(),
+            model: None,
+        }
+    }
+
+    fn apps() -> Apps {
+        Apps::with_launcher(SessionEnvironment::default(), None, None)
+    }
+
+    /// An agent is a service the launcher runs, and the agent's own options
+    /// follow the entrypoint: the workspace its record names it in, the id
+    /// its actor works as, and the model it plans with.
+    #[test]
+    fn an_agent_is_run_as_a_service_with_its_own_argv() {
+        let kept = kept();
+        let provider = r#"{"profile_id":"p","model_id":"m","protocol":"anthropic"}"#;
+        assert_eq!(
+            agent_argv(&kept, Some(provider)),
+            [
+                "--service",
+                "--workspace",
+                WORKSPACE,
+                "--app",
+                "so.tilo.agent",
+                "--agent-id",
+                "scribe",
+                "--name",
+                "Scribe",
+                "--provider",
+                provider,
+            ]
+        );
+        assert_eq!(
+            agent_argv(&kept, None),
+            [
+                "--service",
+                "--workspace",
+                WORKSPACE,
+                "--app",
+                "so.tilo.agent",
+                "--agent-id",
+                "scribe",
+                "--name",
+                "Scribe",
+            ],
+            "an agent with no model configured plans without a selection, and by keyword"
+        );
+    }
+
+    /// The keeper's choice on the record is what the agent plans with; with
+    /// none it follows this device's Settings for it.
+    #[test]
+    fn an_agents_model_is_the_keepers_choice_then_the_devices_own() {
+        use agent_provider_config::ProviderConfig;
+
+        let mut config: ProviderConfig = serde_json::from_value(serde_json::json!({
+            "profiles": [
+                {
+                    "id": "keeper",
+                    "label": "Keeper's provider",
+                    "enabled": true,
+                    "models": [{"id": "chosen", "label": "Chosen"}],
+                },
+                {
+                    "id": "here",
+                    "label": "This device's provider",
+                    "enabled": true,
+                    "default_model": "default",
+                    "models": [{"id": "default", "label": "Default"}],
+                },
+            ],
+            "default_profile": "here",
+        }))
+        .expect("a configuration");
+        // The keeper chose a model on the record, for a profile this device
+        // holds: that is the one.
+        let mut chosen = kept();
+        chosen.model = Some("keeper/chosen".to_owned());
+        let selection = provider_selection(&config, &chosen).expect("a selection");
+        assert!(
+            selection.contains(r#""profile_id":"keeper""#),
+            "{selection}"
+        );
+        assert!(selection.contains(r#""model_id":"chosen""#), "{selection}");
+        // A profile or model this device does not hold is not guessed.
+        chosen.model = Some("elsewhere/model".to_owned());
+        assert!(provider_selection(&config, &chosen).is_none());
+        // No choice on the record: what this device's Settings hold for it.
+        config.agent_models.insert(
+            "scribe".to_owned(),
+            agent_provider_config::AgentModel {
+                profile: "here".to_owned(),
+                model: "default".to_owned(),
+            },
+        );
+        let selection = provider_selection(&config, &kept()).expect("this device's selection");
+        assert!(selection.contains(r#""profile_id":"here""#), "{selection}");
+        assert!(selection.contains(r#""model_id":"default""#), "{selection}");
+    }
+
+    /// One process per agent per session: a pass that sees the same record
+    /// starts nothing, a process that ended is not started again, and the
+    /// record's next change is.
+    #[test]
+    fn an_agent_is_started_once_and_not_restarted_after_it_ends() {
+        let apps = apps();
+        let kept = kept();
+        let key = (kept.workspace.clone(), kept.id.clone());
+        assert!(apps.agent_due(&key, &kept));
+        apps.remember_agent(key.clone(), &kept, Some(7));
+        assert!(!apps.agent_due(&key, &kept), "a running agent starts once");
+        apps.state.borrow().spawner.report(Event {
+            id: 7,
+            app: "so.tilo.agent".to_owned(),
+            title: "Agent".to_owned(),
+            end: End::exited(1),
+        });
+        apps.follow();
+        assert!(
+            !apps.agent_due(&key, &kept),
+            "an agent that ended is not started in a loop"
+        );
+        let mut renamed = kept;
+        renamed.name = "Amanuensis".to_owned();
+        assert!(
+            apps.agent_due(&key, &renamed),
+            "the record's next change starts the agent again"
+        );
+    }
 
     /// The desktop the apps are started from, laid out as wide as an output:
     /// what its notice tabs draw on.

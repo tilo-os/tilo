@@ -687,8 +687,9 @@ struct GaveUp {
     records: HashSet<DocumentRoute>,
 }
 
-/// The routes of `workspace_id` in `routes` still sealed for `needs`:
-/// documents that arrived and open only once the member holds their keys.
+/// The routes of `workspace_id` in `routes` still undecided for `needs`:
+/// documents that arrived and open only once the member holds their keys, or
+/// has the surface they were written with and their workspace's governance.
 fn sealed_for(
     routes: &BTreeMap<DocumentRoute, tilo_browser_peer::session::RouteStatus>,
     workspace_id: u64,
@@ -704,7 +705,7 @@ fn sealed_for(
     routes
         .iter()
         .filter(|(route, status)| {
-            status.awaiting_keys > 0
+            status.waiting() > 0
                 && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
                     == Some(workspace_id)
                 && match needs {
@@ -803,8 +804,9 @@ impl Workspace {
         }
     }
 
-    /// The records of the workspace that `needs` reads and that arrived sealed:
-    /// they open once the member holds their keys.
+    /// The records of the workspace that `needs` reads and that hold
+    /// undecided documents: they open once what the documents wait for
+    /// arrives.
     fn sealed(&self, workspace_id: u64, needs: Needs<'_>) -> Vec<DocumentRoute> {
         sealed_for(
             &self.peer.status().routes,

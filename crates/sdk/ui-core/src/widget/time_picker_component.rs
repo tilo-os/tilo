@@ -74,8 +74,10 @@ impl Described for TimePicker {
     }
 
     /// The time changes in place.
-    fn set_props(&mut self, _props: TimePickerProps) -> bool {
-        // A time set elsewhere shows in place through the binding.
+    fn set_props(&mut self, props: TimePickerProps) -> bool {
+        // A time set elsewhere shows in place through the binding; its spoken name changes
+        // where it stands.
+        self.accessible_name = props.label;
         true
     }
 }

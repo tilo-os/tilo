@@ -12,7 +12,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
-use crate::component::{Component, Described};
+use crate::component::{Component, Described, SlotViews};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -122,6 +122,13 @@ impl Described for ChromeBody {
         built
     }
 
+    /// The body it holds changes where it stands: the bar's controls keep what they hold (the
+    /// menu a person opened, the field they were typing in) while what they show changes under
+    /// them, rather than the body being built again around them.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
+        (slot == "body").then_some(self as &mut dyn SlotViews)
+    }
+
     fn set_props(&mut self, props: ChromeProps) -> bool {
         self.name = props.name;
         self.shape = props.shape.unwrap_or_default();
@@ -130,6 +137,31 @@ impl Described for ChromeBody {
         // The body in the slot is reconciled in place; what the body is made of changed, so
         // the container is built again around it by the host when the shape changed.
         true
+    }
+}
+
+/// The body the chrome holds: one view, which changes where it stands.
+impl SlotViews for ChromeBody {
+    fn len(&self) -> usize {
+        usize::from(self.container.has_child())
+    }
+
+    fn view_mut(&mut self, index: usize) -> Option<&mut Element> {
+        (index == 0).then(|| self.container.child_mut()).flatten()
+    }
+
+    fn insert(&mut self, _index: usize, view: Element) {
+        self.container.set_child(view);
+    }
+
+    fn remove(&mut self, _index: usize) {
+        self.container.take_child();
+    }
+
+    fn move_view(&mut self, _from: usize, _to: usize) {}
+
+    fn replace(&mut self, _index: usize, view: Element) {
+        self.container.replace_child(view);
     }
 }
 

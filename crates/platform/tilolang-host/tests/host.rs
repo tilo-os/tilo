@@ -512,14 +512,19 @@ fn a_press_in_the_window_is_a_step_on_the_instances_connection_and_undo_takes_it
         "published on its own connection"
     );
 
-    // The person presses + in the window: the instance runs it and commits it as their step.
+    // The person presses + in the window: its control is bound to the instance's own action, so
+    // the window sends the invocation, and the instance runs it and commits it as their step.
     let before = documents_sent(&sent);
-    let (key, event) = window.increment();
-    window.send(&[ToApp::Fire {
-        lane: Lane::Root,
-        key,
-        event,
-        value: None,
+    let address = hosted
+        .published()
+        .iter()
+        .find(|action| action.action_label == "Increment")
+        .expect("the instance publishes the action the button runs")
+        .address
+        .clone();
+    window.send(&[ToApp::Invoke {
+        address,
+        argument: None,
     }]);
     settle(&mut host, &mut window);
     let hosted = host.instances().next().unwrap();
@@ -2350,7 +2355,7 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     // Search reads that index through its production source: a word that appears only inside a
     // message's body (not its subject, its sender or its conversation's snippet) finds the
     // message, with no window running a search of its own.
-    let content = IndexedContent::new(std::sync::Arc::clone(&index), ToOwned::to_owned);
+    let content = IndexedContent::new(std::sync::Arc::clone(&index), ToOwned::to_owned, "");
     let found = content.query("widths");
     assert_eq!(
         found.len(),

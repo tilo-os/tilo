@@ -49,6 +49,17 @@ impl ChatApp {
         Ok((person.id.0.clone(), id))
     }
 
+    /// Show the conversation with `agent`, as search's agent hit does: a
+    /// direct conversation's id names the two it is between, so an agent the
+    /// window has not talked to yet still opens where the conversation is.
+    pub(crate) fn open_agent(&mut self, agent: &str, chat: &Chat) {
+        let id = Chat::direct_id([
+            Participant::person(self.me.id.clone()),
+            Participant::agent(agent.to_owned()),
+        ]);
+        self.open_conversation(&id, chat);
+    }
+
     /// Show the conversation `id`, as choosing it in the sidebar does, and
     /// mark it read up to what this window holds.
     pub(crate) fn open_conversation(&mut self, id: &Id, chat: &Chat) {

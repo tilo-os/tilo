@@ -46,7 +46,6 @@ use start_cards::{DisplayPad, EmptyWorkspace};
 use crate::about::{TiloMenu, TiloMenuAction};
 use crate::chrome::{ChromeIntent, TopBarPresence};
 use crate::desk_verbs::{self, OpenSearch, chrome_resource, desk_resource, launchpad_resource};
-use crate::desk_widgets::music::MusicAction;
 use crate::display_identify::DisplayIdentify;
 use crate::emoji_picker::{EmojiLink, EmojiPicker};
 use crate::fullscreen_hint::FullscreenHint;
@@ -62,7 +61,8 @@ use crate::topbar::{BarSpace, Placement, Reveals, TOPBAR_HEIGHT_PX, TopBarChrome
 use crate::window_flight::WindowFlight;
 use crate::window_switcher::{Switcher, SwitcherAsk, WindowSource};
 use crate::workspace_menu::{
-    WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice, WorkspaceMenuModel,
+    MenuPlace, WorkspaceAction, WorkspaceChoice, WorkspaceMenu, WorkspaceMenuChoice,
+    WorkspaceMenuModel,
 };
 
 /// The next deadline a child widget reports, for the earliest of them.
@@ -73,92 +73,12 @@ fn wake_deadline(child: &dyn Widget) -> Option<ui::time::Instant> {
 /// Workspace menu keys: a workspace of this desktop, by id, and one of the
 /// person's others the host opens, by its host action.
 const WORKSPACE_KEY: &str = "workspace:";
-/// The host action that lists the workspaces this computer may join.
-pub const JOIN_WORKSPACE: &str = "join-workspace";
-/// The host action that leaves the workspace the person is in.
-pub const LEAVE_WORKSPACE: &str = "leave-workspace";
-/// The host action that makes a new workspace.
-pub const NEW_WORKSPACE: &str = "new-workspace";
-/// The host action that opens the workspace's settings.
-pub const WORKSPACE_SETTINGS: &str = "workspace-settings";
-/// The host action that locks the screen.
-pub const SESSION_LOCK: &str = "session-lock";
-/// The host action that logs this person out.
-pub const SESSION_LOG_OUT: &str = "session-log-out";
-/// The host action that restarts the computer.
-pub const SESSION_RESTART: &str = "session-restart";
-/// The host action that shuts the computer down.
-pub const SESSION_SHUT_DOWN: &str = "session-shut-down";
 const HOST_KEY: &str = "host:";
 
-/// What the host answers about the person at this desktop and the workspace it
-/// shows.
-pub trait DesktopRules {
-    /// The tree as the chrome shows it: the surface's, with who is here as
-    /// the active workspace's collaborators.
-    fn tree(&self) -> DesktopTree;
-
-    /// Changes whenever who is here does, beyond the tree.
-    fn people_revision(&self) -> u64 {
-        0
-    }
-
-    /// The person this desktop acts for.
-    fn author(&self) -> String;
-
-    /// Whether the person may run `command` on the active workspace.
-    ///
-    /// # Errors
-    /// The refusal, in words for the person.
-    fn may(&self, command: &DesktopCommand) -> Result<(), String>;
-
-    /// Whether the person may add a workspace.
-    ///
-    /// # Errors
-    /// The refusal, in words for the person.
-    fn may_create_workspace(&self) -> Result<(), String>;
-
-    /// The person made `strip`: it is theirs from now on.
-    fn made_strip(&self, _strip: StripId) {}
-
-    /// Where the workspace shown is hosted (`example.org`), named beside the
-    /// workspace; `None` on the person's own desktop.
-    fn workspace_host(&self) -> Option<String> {
-        None
-    }
-}
-
-/// What the desktop asks of its host.
-#[derive(Clone, Debug, PartialEq)]
-pub enum DesktopAsk {
-    /// A request of the chrome the layers do not answer themselves: the
-    /// people and profile popovers, inviting, quick settings, the clock, and
-    /// the menu a secondary press on the desk asks for at that place.
-    Intent(ChromeIntent),
-    /// The person chose a host action (`id`) in the workspace menu.
-    HostAction(String),
-    /// The person left the workspace `name` here; the host says so.
-    LeftWorkspace(String),
-    /// The person asked to report a problem.
-    ReportProblem,
-    /// A desktop shortcut the layers have no part in (search, quick
-    /// settings, locking, the magnifier, …): the host's to carry out.
-    Shortcut(ShortcutAction),
-    /// A fixed shortcut the layers have no part in (a capture, the shortcut
-    /// guide, cutting a remote control): the host's to carry out.
-    FixedShortcut(FixedAction),
-    /// The person pressed one of the music widget's controls: the host
-    /// steers the player it shows.
-    Music(MusicAction),
-    /// The person chose Wait on a window that says it stopped responding:
-    /// its app gets another period to answer.
-    WaitWindow(TabId),
-    /// The person chose Force quit on such a window: the host ends its app.
-    ForceQuitApp(TabId),
-    /// The pointer on the switcher's panel: which card it stands over, and
-    /// whether it pressed it.
-    Switcher(SwitcherAsk),
-}
+pub use crate::host_contract::{
+    DELETE_WORKSPACE, DesktopAsk, DesktopRules, JOIN_WORKSPACE, LEAVE_WORKSPACE, NEW_WORKSPACE,
+    SESSION_LOCK, SESSION_LOG_OUT, SESSION_RESTART, SESSION_SHUT_DOWN, WORKSPACE_SETTINGS,
+};
 
 /// Whether the desk shown has no window. Every desk, not only a workspace's
 /// first: a new desk beside others with windows is as blank as a new
@@ -978,6 +898,13 @@ impl DesktopChrome {
     /// key, so the stack's answer — which of them holds the keyboard, what a
     /// press outside one closes — is what the chrome shows.
     fn publish_overlays(&mut self) {
+        // Where the chrome's own menus paint themselves, for the stack to
+        // judge a press that misses them: a press on the desk reaches the
+        // desk, not the chrome over it.
+        self.overlays
+            .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
+        self.overlays
+            .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
         for (slot, open) in [
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
@@ -986,6 +913,12 @@ impl DesktopChrome {
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
         ] {
+            // The stack took it down — a press outside it, another surface
+            // opening — and the widget has yet to follow: what it still shows
+            // is the state being left behind, not an opening to raise again.
+            if !self.overlays.is_open(slot) && self.overlays.awaiting_close(slot) {
+                continue;
+            }
             if open == self.overlays.is_open(slot) {
                 continue;
             }
@@ -1007,21 +940,31 @@ impl DesktopChrome {
     /// surface comes up — the person opened it, the session did, or Escape
     /// took one away — the slot closes there, and the widget that draws it
     /// closes here so the two never disagree about what the person sees.
+    ///
+    /// Each closing is reported back to the stack, which is how it hears the
+    /// widget followed ([`Overlays::close`]): what it still shows until then
+    /// is the state the stack left behind, and the widget opening again after
+    /// that is a new surface to publish, not that state coming back.
     fn follow_the_stack(&mut self) {
         if self.emoji.is_open() && !self.overlays.is_open(Slot::Emoji) {
             self.emoji.close();
+            self.overlays.close(Slot::Emoji);
         }
         if self.workspace_menu.is_open() && !self.overlays.is_open(Slot::WorkspaceMenu) {
             self.workspace_menu.close();
+            self.overlays.close(Slot::WorkspaceMenu);
         }
         if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
             self.tilo_menu.toggle(Rect::ZERO, self.rect);
+            self.overlays.close(Slot::TiloMenu);
         }
         if self.navigator.takes_keys() && !self.overlays.is_open(Slot::Strips) {
             self.navigator.close();
+            self.overlays.close(Slot::Strips);
         }
         if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
             self.search.close();
+            self.overlays.close(Slot::Search);
         }
     }
 
@@ -1267,6 +1210,13 @@ impl DesktopChrome {
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
             ChromeIntent::ToggleWorkspaceMenu { at } => {
+                // The press that took it down is still being delivered, and
+                // the bar answers it: the same press does not raise it again.
+                // A secondary press elsewhere asks for the menu there, which
+                // is the point it names, not this one.
+                if at.is_none() && self.overlays.dismissed_recently(Slot::WorkspaceMenu) {
+                    return;
+                }
                 if self.tilo_menu.is_menu_open() {
                     self.tilo_menu.toggle(Rect::ZERO, self.rect);
                 }
@@ -1293,7 +1243,22 @@ impl DesktopChrome {
                     self.handle.acknowledge(refusal);
                 }
             }
+            ChromeIntent::DeleteWorkspace => {
+                if let Err(refusal) = self.delete_workspace(None, None) {
+                    self.handle.acknowledge(refusal);
+                }
+            }
+            ChromeIntent::DeleteWorkspaceConfirmed => {
+                if let Err(refusal) = self.delete_workspace(None, Some(true)) {
+                    self.handle.acknowledge(refusal);
+                }
+            }
             ChromeIntent::ToggleTiloMenu => {
+                // As the workspace's: the press that closed it does not open
+                // it again on its way out.
+                if self.overlays.dismissed_recently(Slot::TiloMenu) {
+                    return;
+                }
                 self.workspace_menu.close();
                 self.tilo_menu.set_actions(self.tilo_menu_actions());
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
@@ -1387,6 +1352,11 @@ impl DesktopChrome {
                 }),
         );
         WorkspaceMenuModel {
+            place: if desk {
+                MenuPlace::Desk
+            } else {
+                MenuPlace::Bar
+            },
             desk: desk_actions,
             workspaces,
             host: self.rules.workspace_host(),
@@ -1402,6 +1372,10 @@ impl DesktopChrome {
                 .collect(),
             can_rename: self.may_add_or_rename(false),
             can_add_strip: self.may_add_or_rename(true),
+            can_delete: self
+                .handle
+                .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+                .is_some_and(|workspace| self.rules.may_delete_workspace(workspace).is_ok()),
         }
     }
 
@@ -1641,12 +1615,66 @@ impl DesktopChrome {
     /// struck from this device's desktop, the person going to the next one
     /// when it was the one they were in.
     fn leave_workspace(&self, id: Option<WorkspaceSlot>) -> Result<(), String> {
+        if self.handle.read(|tree| tree.workspaces.len()) <= 1 {
+            return Err(crate::i18n::t("desktop-only-workspace"));
+        }
+        let left = self.take_workspace_off(id)?;
+        self.asks.borrow_mut().push(DesktopAsk::LeftWorkspace(left));
+        Ok(())
+    }
+
+    /// Delete the workspace `id` (the one the person is in when absent).
+    ///
+    /// Deleting takes everything in it, so it is asked first: the person
+    /// answers in the host's own confirm ([`DesktopAsk::DeleteWorkspace`]),
+    /// and only an answer that says so deletes.
+    fn delete_workspace(
+        &self,
+        id: Option<WorkspaceSlot>,
+        confirmed: Option<bool>,
+    ) -> Result<(), String> {
+        let here = id.or_else(|| {
+            self.handle
+                .read(|tree| tree.active_workspace().map(|workspace| workspace.slot))
+        });
+        let id = here.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-delete"))?;
+        self.rules.may_delete_workspace(id)?;
+        let named = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|workspace| workspace.slot == id)
+                    .map(|workspace| (workspace.id(), workspace.name.clone()))
+            })
+            .ok_or_else(|| crate::i18n::t("desktop-workspace-gone"))?;
+        let (workspace, name) = named;
+        if confirmed != Some(true) {
+            // The person answers first: nothing of it goes until they do.
+            self.asks
+                .borrow_mut()
+                .push(DesktopAsk::DeleteWorkspace { slot: id, name });
+            return Ok(());
+        }
+        let name = self.take_workspace_off(Some(id))?;
+        if self.handle.read(|tree| tree.workspaces.is_empty()) {
+            self.fresh_workspace();
+        }
+        // Whoever asked for it — the menu, the settings, an agent — the host
+        // hears of the deletion the same way, from the desk that made it.
+        self.asks
+            .borrow_mut()
+            .push(DesktopAsk::DeletedWorkspace { workspace, name });
+        Ok(())
+    }
+
+    /// Take the workspace `id` (the one the person is in when absent) off
+    /// this desk, the person going to the next one along when it was the one
+    /// they were in. Answers what it was called.
+    fn take_workspace_off(&self, id: Option<WorkspaceSlot>) -> Result<String, String> {
         let mut tree = self.handle.read(Clone::clone);
         let id = id.or_else(|| tree.active_workspace().map(|workspace| workspace.slot));
         let id = id.ok_or_else(|| crate::i18n::t("desktop-no-workspace-to-leave"))?;
-        if tree.workspaces.len() <= 1 {
-            return Err(crate::i18n::t("desktop-only-workspace"));
-        }
         let at = tree
             .workspaces
             .iter()
@@ -1670,10 +1698,35 @@ impl DesktopChrome {
             .collect();
         tree.active_group.retain(|strip, _| strips.contains(strip));
         self.handle.replace_tree(tree);
-        self.asks
-            .borrow_mut()
-            .push(DesktopAsk::LeftWorkspace(left.name));
-        Ok(())
+        Ok(left.name)
+    }
+
+    /// A new empty workspace after the others, with the strip its first
+    /// window goes in: what stands on the desk when the last one is deleted.
+    fn fresh_workspace(&self) {
+        let tree = self.handle.read(Clone::clone);
+        let workspace = Workspace::new(
+            WorkspaceSlot(self.handle.mint_id()),
+            crate::workspace_names::made(None, &tree.workspaces),
+        );
+        self.open_workspace(tree, workspace, true);
+    }
+
+    /// Put `workspace` after the others and go there, with a strip of its
+    /// own made here when `fresh_strip` — a workspace a site lets this
+    /// computer into comes with the strips its site holds, and a strip made
+    /// here would stand on this desk only.
+    fn open_workspace(&self, mut tree: DesktopTree, mut workspace: Workspace, fresh_strip: bool) {
+        let id = workspace.slot;
+        if fresh_strip {
+            let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
+            let strip_id = strip.id;
+            workspace.strips.push(strip);
+            tree.active_strip.insert(id, strip_id);
+        }
+        tree.workspaces.push(workspace);
+        tree.active = id;
+        self.handle.replace_tree(tree);
     }
 
     /// Make a workspace after the others and go there; with `join`, the
@@ -1683,7 +1736,7 @@ impl DesktopChrome {
     fn new_workspace(&self, join: Option<&str>, name: Option<&str>) {
         let mut tree = self.handle.read(Clone::clone);
         let joining = join.is_some();
-        let mut workspace = if let Some(id) = join {
+        let workspace = if let Some(id) = join {
             let Some(joined) = WorkspaceId::parse(id) else {
                 self.handle.acknowledge(tilo_desktop_surface::i18n::t(
                     "desktop-joined-workspace-unknown",
@@ -1711,20 +1764,7 @@ impl DesktopChrome {
             let name = crate::workspace_names::made(name, &tree.workspaces);
             Workspace::new(WorkspaceSlot(self.handle.mint_id()), name)
         };
-        // A workspace a site lets this computer into comes with the strips
-        // its site holds: a strip made here would stand beside them on this
-        // desk only, and in no other copy of the workspace. The first window
-        // opened there makes the strip it goes in.
-        let id = workspace.slot;
-        if !joining {
-            let strip = Strip::new(StripId(self.handle.mint_id()), "Main");
-            let strip_id = strip.id;
-            workspace.strips.push(strip);
-            tree.active_strip.insert(id, strip_id);
-        }
-        tree.workspaces.push(workspace);
-        tree.active = id;
-        self.handle.replace_tree(tree);
+        self.open_workspace(tree, workspace, !joining);
     }
 
     /// The window `step` places from the focused one in the shown strip, or
@@ -2397,6 +2437,17 @@ impl DesktopChrome {
                     .map_or(Ok(None), |id| self.workspace_named(id).map(Some))
                     .and_then(|id| self.leave_workspace(id));
                 self.report(left);
+                Some(true)
+            }
+            ChromeEffect::DeleteWorkspace {
+                workspace,
+                confirmed,
+            } => {
+                let deleted = workspace
+                    .as_deref()
+                    .map_or(Ok(None), |id| self.workspace_named(id).map(Some))
+                    .and_then(|id| self.delete_workspace(id, *confirmed));
+                self.report(deleted);
                 Some(true)
             }
             ChromeEffect::WorkspaceSettings => {

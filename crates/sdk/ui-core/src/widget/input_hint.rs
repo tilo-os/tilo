@@ -70,6 +70,8 @@ pub struct InputHint {
     environment: InteractionEnvironment,
     rect: Rect,
     layout_theme: Theme,
+    /// The chord changed since the last frame drew it.
+    dirty: bool,
 }
 
 /// Shared vector controller/Joy-Con silhouette used in device pickers and
@@ -222,7 +224,18 @@ impl InputHint {
             environment: InteractionEnvironment::default(),
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
+            dirty: true,
         }
+    }
+
+    /// Another chord shows where the hint stands: the keycaps it draws, measured again for
+    /// the room they take.
+    pub fn set_binding(&mut self, binding: InputBinding) {
+        if self.binding == binding {
+            return;
+        }
+        self.binding = binding;
+        self.dirty = true;
     }
 
     pub fn keyboard(binding: KeyboardBinding) -> Self {
@@ -551,6 +564,8 @@ fn token_text_style(theme: &Theme) -> TextStyle {
 }
 
 impl Widget for InputHint {
+    crate::described!();
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.environment.keyboard_family =
@@ -658,6 +673,13 @@ impl Widget for InputHint {
             &self.binding,
             self.conventions(),
         );
+    }
+
+    crate::redraw_flag!();
+
+    /// Another chord takes other keycaps, and other room.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO || self.dirty
     }
 
     fn name(&self) -> &'static str {

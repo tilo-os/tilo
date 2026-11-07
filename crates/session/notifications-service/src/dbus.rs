@@ -514,6 +514,7 @@ fn notification(id: u32, request: Request, caller: Option<Caller>, foreign: bool
         suppress_sound: hints::parse_suppress_sound(&hints),
         incoming_call: hints::parse_incoming_call(&hints),
         machine_wide: false,
+        system: false,
         priority_contact: false,
         scheduled: None,
         transient: false,

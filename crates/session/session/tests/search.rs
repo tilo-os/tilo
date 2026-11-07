@@ -459,6 +459,34 @@ fn the_empty_search_offers_making_what_is_useful_and_never_a_way_out() {
     );
 }
 
+/// The desk publishes its own actions on a resource named after the person
+/// and the desktop. That name says whose desk it is, never what an action
+/// does, so searching for the person finds none of the desk's actions.
+#[test]
+fn searching_for_the_person_lists_no_action_of_the_desks_own() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session(Rc::new(Host::default()));
+    session.step(Duration::from_millis(1)).expect("step");
+    search_for(&mut session, "person");
+    let titles: Vec<String> = rows(&session)
+        .into_iter()
+        .filter(|row| row.kind == SEARCH_ROW_KIND)
+        .map(|row| row.label)
+        .collect();
+    for own in [
+        "Clear the notification centre",
+        "Leave workspace",
+        "Start a call",
+        "Invite people",
+        "Catch up",
+    ] {
+        assert!(
+            !titles.iter().any(|title| title.starts_with(own)),
+            "the person's name is no action's name ({own} is listed): {titles:?}"
+        );
+    }
+}
+
 /// The empty desk's welcome verbs are declared actions, so search offers
 /// the ones that bring people in or catch them up before anything is typed,
 /// and typing finds all six by the name on their cards. The cards that open
@@ -1206,6 +1234,7 @@ fn published(index: &AppContentIndex, workspace: &str, title: &str) {
             fields: Vec::new(),
             secret: false,
             references: Vec::new(),
+            ..IndexEntry::default()
         }],
         ..IndexDelta::default()
     };

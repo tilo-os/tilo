@@ -96,6 +96,10 @@ impl HostIdentity {
     }
 }
 
+/// Env var naming the font index directory, for a process the launcher puts
+/// in a sandbox ([`HostPaths::font_index`]).
+pub const FONT_INDEX_ENV: &str = "TILO_FONT_INDEX";
+
 /// Where this process's user files live.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HostPaths {
@@ -112,9 +116,9 @@ pub struct HostPaths {
     /// The session's read-only pipeline cache directory
     /// (`TILO_PIPELINE_SEED_DIR`), bound in by the launcher.
     pub pipeline_seed: Option<PathBuf>,
-    /// Where this process reads and records its font index
-    /// (`TILO_FONT_INDEX`), when the host names one; else it is kept in
-    /// [`Self::cache_dir`].
+    /// The directory this process reads and records its font index in
+    /// (`TILO_FONT_INDEX`), when the host names one; else it is
+    /// `tilo/font-index` under [`Self::cache_dir`].
     pub font_index: Option<PathBuf>,
     /// The font catalog to read instead of the one compiled in
     /// (`TILO_FONT_CATALOG`). A build materializes the pinned catalog on the

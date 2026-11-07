@@ -193,6 +193,25 @@ still decided per record: a Read Deny on a record, on its app or on a pattern
 over it narrows that unit's readers, and the unit is then carried by a group
 of its own whose key no denied device ever gets.
 
+**One genesis per channel, created once.** A group starts from one genesis,
+and whoever holds its state and sees none creates it; everyone else waits,
+asks, and joins by the Welcome that admits it — a page included, which never
+creates a group it was not admitted to. The page learns which group carries a
+unit from its replica of the workspace's governance, the same decision a
+device makes: the workspace's scope, read by the workspace's participants, or
+the unit's own group when a Read Deny narrows it. A scope's request names no
+record — every participant may read it — while a narrowed unit's request names
+the record, so its participants can decide Read on it. Two geneses made at
+once reconcile like two commits: every device keeps the group whose genesis
+has the lower digest, and a device in the other starts over and joins the
+winner by Welcome, whose bundle brings the keys its writes were sealed under.
+Learning it needs the scope's frame only: a page that held a per-record group
+for the unit leaves it unused, for no participant seals under it any more, and
+the scope's Welcome carries that group's older content keys along. A record's
+cleartext writes stay the base its sealed writes are changes over: a device
+joining after the seal takes that base in from the host's replay, while a live
+cleartext write is refused.
+
 What a scope buys is that membership costs what the *reader set* costs, not
 what the workspace holds: one admission, one removal and one commit per scope,
 however many units it carries. Before scopes, every record had a group, so a

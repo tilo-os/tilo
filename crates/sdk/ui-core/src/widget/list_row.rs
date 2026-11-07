@@ -54,8 +54,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
-    ActionEmitter, ChipStyle, ControlBindingMetadata, Element, MediaArt, MediaAspect, MediaSource,
-    TaffyTreeExt, Tone, Widget,
+    ActionEmitter, ChipStyle, Element, MediaArt, MediaAspect, MediaSource, TaffyTreeExt, Tone,
+    Widget,
 };
 
 /// What sits in a row's leading column.
@@ -151,50 +151,6 @@ impl RowStatus<'_> {
             Self::Presence(_) => None,
         }
     }
-}
-
-/// How strongly the colour of whoever made an unseen change washes the row: a hint, quieter
-/// than a selection.
-const CHANGE_WASH: f32 = 0.07;
-
-/// A change someone else made to what the row shows and the person has not seen yet
-/// (task-legibility §3): their face on the row's trailing edge, their colour faintly under it,
-/// at the row's own height.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RowChange<'a> {
-    /// Their presence identity, which picks their colour.
-    pub identity: &'a str,
-    /// What the room calls them: their face's initials.
-    pub name: &'a str,
-    /// What assistive technology says of it: who, and in which run.
-    pub spoken: &'a str,
-}
-
-impl RowChange<'_> {
-    fn colour(self, theme: &Theme) -> Color {
-        theme
-            .tokens
-            .colors
-            .presence
-            .hue(PresenceHue::of_identity(self.identity))
-    }
-}
-
-/// One of a row's hover actions: an icon button that names what it does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RowAction<'a> {
-    pub icon: Icon,
-    pub label: &'a str,
-}
-
-/// The action a swipe reveals under the row's trailing edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SwipeAction<'a> {
-    pub icon: Icon,
-    pub label: &'a str,
-    /// Deleting, archiving away, revoking: the revealed area is the danger
-    /// status colour, because the completed swipe is the confirmation.
-    pub destructive: bool,
 }
 
 /// How prominent a row's trailing value is.
@@ -416,6 +372,9 @@ enum RowMark {
 #[derive(Clone, Debug)]
 pub struct ListRowFace<'a> {
     title: &'a str,
+    /// The item of its app's collection the row shows
+    /// ([`ListRow::item`](crate::widget::ListRow::item)).
+    item: Option<&'a str>,
     /// A quiet word before the title, on its line.
     prefix: Option<&'a str>,
     title_lines: u8,
@@ -492,10 +451,19 @@ pub struct ListRowFace<'a> {
 }
 
 impl<'a> ListRowFace<'a> {
+    /// Say which item of its collection the row shows
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
+    #[must_use]
+    pub fn item(mut self, item: Option<&'a str>) -> Self {
+        self.item = item;
+        self
+    }
+
     #[must_use]
     pub fn new(title: &'a str) -> Self {
         Self {
             title,
+            item: None,
             prefix: None,
             title_lines: 1,
             title_family: None,
@@ -1026,6 +994,9 @@ impl<'a> ListRowFace<'a> {
             .with_action_target(target.clone())
             .with_bounds(rect)
             .with_state(state);
+        if let Some(item) = self.item {
+            node = node.with_item(item);
+        }
         if !value.is_empty() {
             node = node.with_value(value.join(", "));
         }
@@ -1058,6 +1029,9 @@ enum Leading {
         image: Option<ImageData>,
         square: bool,
         glyph: Option<Icon>,
+        /// The colour it is drawn in where it has one of its own (an agent's
+        /// chosen colour), instead of the one its identity derives.
+        colour: Option<Color>,
     },
     /// The room an avatar takes, left empty ([`RowLeading::AvatarSpace`]).
     AvatarSpace,
@@ -1190,39 +1164,32 @@ struct Changed {
     identity: String,
     name: String,
     spoken: String,
+    said: String,
     show: Option<Box<dyn FnMut()>>,
 }
 
-/// One of a row's own pressable controls.
+/// The change a retained row shows, as [`ListRow::shown_change`] reads it: who made it, what
+/// they are called, what they did (the sentence under the title), and what assistive
+/// technology hears of it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowPart {
-    /// The hover action at this index.
-    Action(usize),
-    /// The leading checkbox.
-    Check,
-    /// The face of an unseen change: shows what was done.
-    Change,
-}
-
-impl RowPart {
-    /// What names the control across a rebuild: the row's id and which
-    /// control of the row it is.
-    fn key(self, row: &str) -> String {
-        if row.is_empty() {
-            return String::new();
-        }
-        match self {
-            Self::Action(index) => format!("{row}/action/{index}"),
-            Self::Check => format!("{row}/check"),
-            Self::Change => format!("{row}/change"),
-        }
-    }
+pub struct ShownChange<'a> {
+    /// Who made the change.
+    pub identity: &'a str,
+    /// What they are called.
+    pub name: &'a str,
+    /// What they did, in words.
+    pub said: &'a str,
+    /// Who changed it and in which run, as the row's tooltip and assistive technology say it.
+    pub spoken: &'a str,
 }
 
 /// A retained list row. Construct with a stable id and a title; press
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// The item of its app's collection the row shows, when it shows one: the
+    /// identity an action naming the item is found by, unlike its title.
+    item: Option<String>,
     /// A quiet word before the title, on its line: where an item came from.
     prefix: Option<String>,
     /// Whether a layout pass has built the row.
@@ -1303,6 +1270,10 @@ pub struct ListRow {
     /// The value a described row's leading checkbox is bound to, followed so
     /// a check made elsewhere shows in the row.
     check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    /// The action a described row's `check` runs when it is an action the
+    /// app publishes: a press on the box is the action's own route, which an
+    /// agent's invocation of it lands on too.
+    check_action: Option<crate::widget::ActionEmitter<()>>,
     environment: crate::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
@@ -1350,6 +1321,7 @@ impl ListRow {
     fn new_owned(id: String, title: String) -> Self {
         Self {
             title,
+            item: None,
             prefix: None,
             laid_out: false,
             title_elided: false,
@@ -1401,6 +1373,7 @@ impl ListRow {
             activation: Activation::new(id),
             check_verb: None,
             check_binding: None,
+            check_action: None,
             environment: crate::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
@@ -1557,6 +1530,16 @@ impl ListRow {
         self
     }
 
+    /// Say which item of its collection the row shows
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)): a task's issue,
+    /// a note's block. An action naming that item is drawn on this row.
+    #[must_use]
+    pub fn item(mut self, item: impl Into<String>) -> Self {
+        self.item = Some(item.into()).filter(|item| !item.is_empty());
+        self.dirty = true;
+        self
+    }
+
     /// See [`ListRowFace::value`].
     #[must_use]
     pub fn value(mut self, text: impl Into<String>) -> Self {
@@ -1628,6 +1611,7 @@ impl ListRow {
             image: None,
             square: false,
             glyph: None,
+            colour: None,
         });
         self
     }
@@ -1805,14 +1789,15 @@ impl ListRow {
 
     /// A change `identity` (called `name`) made to what the row shows and the person has not
     /// seen: their face on the trailing edge and their colour faintly under the row, at its own
-    /// height; `spoken` (who, in which run) on hover and to assistive technology; pressing the
-    /// face runs `show`.
+    /// height, and `said` as a line under the row's title; `spoken` (who, in which run) on hover
+    /// and to assistive technology; pressing the face runs `show`.
     #[must_use]
     pub fn change(
         mut self,
         identity: impl Into<String>,
         name: impl Into<String>,
         spoken: impl Into<String>,
+        said: impl Into<String>,
         show: Option<Box<dyn FnMut()>>,
     ) -> Self {
         let spoken = spoken.into();
@@ -1823,9 +1808,23 @@ impl ListRow {
             identity: identity.into(),
             name: name.into(),
             spoken,
+            said: said.into(),
             show,
         });
         self
+    }
+
+    /// The change the row shows, while the person has not seen it: who made it, what they are
+    /// called and what they did, as the row draws them.
+    #[must_use]
+    pub fn shown_change(&self) -> Option<ShownChange<'_>> {
+        let change = self.change.as_ref()?;
+        Some(ShownChange {
+            identity: &change.identity,
+            name: &change.name,
+            said: &change.said,
+            spoken: &change.spoken,
+        })
     }
 
     /// Hide this row's tooltip while something the host paints covers the list it stands in:
@@ -2271,6 +2270,7 @@ impl ListRow {
         // acts answers hover.
         interaction.hovered &= self.environment.supports_hover() && self.answers_pointer();
         let mut face = ListRowFace::new(&self.title)
+            .item(self.item.as_deref())
             .emphasized(self.emphasized)
             .selected(self.selected)
             .joined(self.join)
@@ -2351,8 +2351,10 @@ impl ListRow {
                     image,
                     square,
                     glyph,
+                    colour,
                 } => {
                     let avatar = AvatarFace::new(name, identity).image(image.as_ref());
+                    let avatar = colour.map_or(avatar, |colour| avatar.presence(colour));
                     let avatar = if *square { avatar.square() } else { avatar };
                     RowLeading::Avatar(match glyph {
                         Some(glyph) => avatar.glyph(*glyph),
@@ -2399,6 +2401,7 @@ impl ListRow {
                 identity: &change.identity,
                 name: &change.name,
                 spoken: &change.spoken,
+                said: &change.said,
             });
         }
         if let Some((kind, id)) = &self.status {
@@ -2536,6 +2539,12 @@ impl ListRow {
             self.dirty = true;
             if let Some(verb) = &mut self.check_verb {
                 verb.emit(now);
+                return true;
+            }
+            if let Some(action) = &mut self.check_action {
+                if let Err(error) = action.emit(()) {
+                    tracing::warn!(%error, "a row's check refused the action's arguments");
+                }
                 return true;
             }
             on_toggle(now);
@@ -3280,6 +3289,23 @@ impl Widget for ListRow {
             child.action_target = Some(format!("{id}/action/{index}"));
             child.bounds = Some(rect.into());
         }
+        // The check box is a control of its own at `<row>/check`: a reader, a
+        // script and an agent reach it there, and an action on this item rests
+        // its mark on the box rather than on the row's middle.
+        if let Some(Leading::Checkbox { checked, .. }) = &self.leading
+            && let Some(rect) = self.leading_hit()
+        {
+            node.children.push(
+                AccessNode::new(Role::Checkbox)
+                    .with_action_target(format!("{id}/check"))
+                    .with_bounds(rect.into())
+                    .with_state(
+                        AccessState::new()
+                            .checked(*checked)
+                            .disabled(self.activation.state.disabled),
+                    ),
+            );
+        }
         Some(node)
     }
 
@@ -3294,6 +3320,9 @@ impl Widget for ListRow {
         let id = self.activation.id().to_owned();
         if target == id {
             return self.perform_action(action, &[], state, path);
+        }
+        if target.strip_prefix(id.as_str()) == Some("/check") {
+            return matches!(action, crate::a11y::Action::Activate) && self.toggle_checkbox();
         }
         let Some(index) = target
             .strip_prefix(id.as_str())
@@ -3372,95 +3401,6 @@ impl crate::resources::PublishesResources for ListRow {
     }
 }
 
-impl crate::widget::controls::ActionControls for ListRow {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.activation.install_custody(domain, attachment);
-        if let Some(verb) = &mut self.check_verb {
-            verb.install_custody(domain, attachment);
-        }
-        for action in &mut self.actions {
-            if let ActionHandler::Bound(emitter) = &mut action.handler {
-                let _ = emitter.install_custody(domain, attachment);
-            }
-        }
-        for child in Widget::children_mut(self) {
-            crate::widget::controls::install_control_custody(child, domain, attachment);
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        if let Some(invocation) = self.activation.take_invocation() {
-            return Some(invocation);
-        }
-        if let Some(invocation) = self
-            .check_verb
-            .as_mut()
-            .and_then(super::control_verb::ControlVerb::take)
-        {
-            return Some(invocation);
-        }
-        for action in &mut self.actions {
-            if let ActionHandler::Bound(emitter) = &mut action.handler
-                && let Some(invocation) = emitter.take()
-            {
-                return Some(invocation);
-            }
-        }
-        Widget::children_mut(self)
-            .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = self.activation.bindings();
-        let id = self.activation.id();
-        if let Some(verb) = &self.check_verb {
-            bindings.push(verb.metadata(id));
-        }
-        for (index, action) in self.actions.iter().enumerate() {
-            match &action.handler {
-                ActionHandler::Bound(emitter) => {
-                    bindings.push(emitter.metadata(format!("{id}/action/{index}")));
-                }
-                // A callback-only action reaches no door, so it is no
-                // binding: the inventory names what an agent can invoke.
-                ActionHandler::Callback(_) => {}
-            }
-        }
-        for child in Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        let mut changed = self.activation.refresh_availability(allowed);
-        if let Some(verb) = &mut self.check_verb {
-            verb.refresh_availability(allowed);
-        }
-        for action in &mut self.actions {
-            if let ActionHandler::Bound(emitter) = &mut action.handler {
-                let before = emitter.is_available();
-                emitter.refresh_availability(allowed);
-                changed |= before != emitter.is_available();
-            }
-        }
-        if changed {
-            self.dirty = true;
-        }
-        for child in Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
-        }
-    }
-}
-
 #[path = "list_row_keys.rs"]
 mod keys;
 
@@ -3475,6 +3415,14 @@ mod geometry;
 
 mod leading;
 
+mod part;
+use part::RowPart;
+
+mod edge;
+pub use edge::{RowAction, RowChange, SwipeAction};
+
+mod colour;
+
 mod paint;
 pub(crate) use paint::paint_code_badge;
 
@@ -3486,6 +3434,8 @@ use spans::found_spans;
 mod tests;
 
 mod component;
+#[path = "list_row_controls.rs"]
+mod controls;
 pub use component::{ListRowProps, SwipeActionProps};
 
 mod control_row;

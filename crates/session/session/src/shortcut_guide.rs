@@ -103,14 +103,10 @@ impl ShortcutGuide {
     }
 
     /// Take the guide down: it is asked for no longer, and waits for no
-    /// chord.
-    ///
-    /// Closing alone would leave the last frame of the guide on screen, drawn
-    /// until the app is told it is gone.
+    /// chord. It draws its own leave until nothing of it is left.
     fn close(&self) {
         if let Some(seat) = &self.seat {
             seat.presentation().close();
-            seat.presentation().gone();
         }
         self.keys.set_up(false);
         self.message.replace(None);

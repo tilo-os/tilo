@@ -8,6 +8,7 @@
 //! screen, and the host queues what changed for the list to take. Rows given as components are
 //! held whole.
 
+use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -582,6 +583,9 @@ pub struct DescribedList {
     body: ListBody,
     /// What the list was made with, but its items: the same again is taken in place.
     face: Face,
+    /// The items the list's events read, as its model holds them now: a list given its items
+    /// again answers with the items it has, not the ones it was built with.
+    reading: Rc<RefCell<DescribedRows>>,
 }
 
 /// The props of a described list that decide the widget, its items aside.
@@ -591,6 +595,8 @@ struct Face {
     selection_follows_focus: bool,
     in_column: bool,
     transcript: bool,
+    /// The rows stand in a tree: each under the row of the item it names.
+    tree: bool,
     /// The rows the host renders as they are shown, by identity: they then change through
     /// the host, never through the props. `None` for items given whole.
     rendered: Option<usize>,
@@ -682,6 +688,29 @@ pub(crate) fn by_hand() -> bool {
 fn item_of(rows: &DescribedRows, key: &str) -> Option<Value> {
     rows.with_item(key, |item| item.item.map(|id| Value::Resource(id.0)))
         .flatten()
+}
+
+/// The rows a host chose for its person ([`VirtualListProps::chosen`]), from the items it
+/// names: none when it names none, so a choice the list made itself stands. A choice of several
+/// rows is the host's while it holds: what the host kept of it gone, an action over the rows ran
+/// and put it away, the list puts its own away with it. A single row chosen by the keyboard is
+/// the list's own, kept while no record names it.
+fn picked_rows(
+    chosen: Option<Vec<ResourceId>>,
+    reading: &DescribedRows,
+    selected: usize,
+) -> Option<KeySelection<String>> {
+    let items = chosen?;
+    if items.is_empty() {
+        return (selected > 1).then(KeySelection::new);
+    }
+    let mut picked = KeySelection::new();
+    for item in &items {
+        if let Some(key) = reading.key_presenting(&item.0) {
+            picked.toggle(key);
+        }
+    }
+    Some(picked)
 }
 
 /// The commands of a row's menus that declare a shortcut (`key: "Ctrl+Enter"`), each with the
@@ -821,7 +850,7 @@ fn bare_row(
                     row = row.struck();
                 }
                 if let Some(mark) = change.and_then(ChangeMarkProps::row) {
-                    row = row.change(mark.identity, mark.name, mark.spoken, mark.show);
+                    row = row.change(mark.identity, mark.name, mark.spoken, mark.said, mark.show);
                 }
                 row = row.shortcuts(shortcuts);
                 // A tree indents the row's content one disclosure gutter per depth, its lift
@@ -1101,6 +1130,7 @@ impl Described for DescribedList {
             selection_follows_focus,
             in_column,
             transcript,
+            tree,
             rendered: rendered(&rows),
             removed: removed.keys(),
             ungrouped: ungrouped_title.clone(),
@@ -1108,6 +1138,8 @@ impl Described for DescribedList {
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        // The items the list's events read, kept as the list holds them.
+        let reading = Rc::new(RefCell::new(rows.reader()));
         if transcript {
             // The divider stands over the row that shows the item: a row says which item it
             // shows, so the list finds it as the rows arrive.
@@ -1130,9 +1162,9 @@ impl Described for DescribedList {
             return Self {
                 body: ListBody::Menus(Box::new(area)),
                 face,
+                reading,
             };
         }
-        let reader = rows.reader();
         // What the rows of a tree are: the list fills it as it mounts them, and reads it as it
         // builds each one.
         let marks = tree.then(|| Rc::new(TreeMarks::<String>::default()));
@@ -1171,25 +1203,19 @@ impl Described for DescribedList {
             list = list.with_selection(chosen);
         }
         // The items a host chose for its person: their rows are the selection.
-        if let Some(items) = chosen {
-            let mut picked = KeySelection::new();
-            for item in &items {
-                if let Some(key) = reader.key_presenting(&item.0) {
-                    picked.toggle(key);
-                }
-            }
+        if let Some(picked) = picked_rows(chosen, &reading.borrow(), 0) {
             list = list.with_selection(picked);
         }
         // Each event carries the item its row shows, read from the list's items.
         if !select.is_none() || !activate.is_none() {
             let (on_select, on_pick) = (select.clone(), activate.clone());
-            let (selecting, picking) = (reader.reader(), reader.reader());
+            let (selecting, picking) = (Rc::clone(&reading), Rc::clone(&reading));
             list = list
                 .on_select(move |key, selected| {
                     if !selected {
                         return;
                     }
-                    let item = item_of(&selecting, &key);
+                    let item = item_of(&selecting.borrow(), &key);
                     if selection_follows_focus && by_hand() {
                         on_pick.fire(item);
                     } else {
@@ -1198,8 +1224,8 @@ impl Described for DescribedList {
                 })
                 .on_activate(move |key| {
                     // A removed item's row opens nothing: its mark shows what removed it.
-                    if !picking.is_removed(&key) {
-                        activate.fire(item_of(&picking, &key));
+                    if !picking.borrow().is_removed(&key) {
+                        activate.fire(item_of(&picking.borrow(), &key));
                     }
                 });
         }
@@ -1209,12 +1235,14 @@ impl Described for DescribedList {
         // none), so whatever arrives here is worth keeping.
         if !selected_changed.is_none() {
             let fired = selected_changed.clone();
-            let selecting = reader.reader();
+            let selecting = Rc::clone(&reading);
             list = list.on_selected(move |keys| {
-                let items: Vec<Value> = keys
-                    .iter()
-                    .filter_map(|key| item_of(&selecting, key))
-                    .collect();
+                let items: Vec<Value> = {
+                    let selecting = selecting.borrow();
+                    keys.iter()
+                        .filter_map(|key| item_of(&selecting, key))
+                        .collect()
+                };
                 fired.fire(Some(Value::List(items)));
             });
         }
@@ -1227,42 +1255,107 @@ impl Described for DescribedList {
         Self {
             body: ListBody::Menus(Box::new(area)),
             face,
+            reading,
         }
     }
 
-    /// The same list over items its host renders: it stays, and its items change through
-    /// the host. Anything else builds it again.
+    /// The same list over the same rows: what the props say around the items is taken where
+    /// the list stands, and items given whole are replaced where they stand. The person's
+    /// scroll, the row their keyboard holds and what they opened stay. Rows a host renders
+    /// change through the host; anything that makes the list another list builds it again.
     fn set_props(&mut self, props: VirtualListProps) -> bool {
+        let VirtualListProps {
+            name,
+            selection_follows_focus,
+            in_column,
+            transcript,
+            tail_title,
+            tree,
+            ungrouped_title,
+            multi_select,
+            unread,
+            mut rows,
+            removed,
+            selection: _,
+            chosen,
+            scroll: _,
+            motion,
+            select,
+            activate,
+            selected: selected_changed,
+        } = props;
         let face = Face {
-            name: props.name.clone(),
-            selection_follows_focus: props.selection_follows_focus,
-            in_column: props.in_column,
-            transcript: props.transcript,
-            rendered: rendered(&props.rows),
-            removed: props.removed.keys(),
-            ungrouped: props.ungrouped_title.clone(),
+            name,
+            selection_follows_focus,
+            in_column,
+            transcript,
+            tree,
+            rendered: rendered(&rows),
+            removed: removed.keys(),
+            ungrouped: ungrouped_title.clone(),
         };
-        if face.rendered.is_some() && face == self.face {
-            // The unread row moved without the list's items changing: the list takes it, and
-            // the rows it left and arrived at build again.
-            if let Some(list) = self.list_mut() {
-                list.set_unread(props.unread.as_ref().map(|item| item.0.clone()));
-                list.set_multi_select(props.multi_select);
-                list.set_tail_title(props.tail_title.clone());
-                list.set_feel(props.motion.unwrap_or(crate::motion::Feel::Standard));
-                // A choice of several rows is the host's while it holds: what the host kept of
-                // it gone, an action over the rows ran and put it away, the list puts its own
-                // away with it. A single row chosen by the keyboard is the list's own, kept
-                // while no record names it.
-                if props.chosen.as_ref().is_some_and(Vec::is_empty)
-                    && list.selection().len(list.model().len()) > 1
-                {
-                    list.selection_mut().clear();
-                }
-            }
-            return true;
+        if face != self.face {
+            return false;
         }
-        false
+        let feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        rows.removed = removed.0;
+        rows.ungrouped = ungrouped_title;
+        let replaced = rendered(&rows).is_none();
+        let unread = unread.as_ref().map(|item| item.0.clone());
+        // The items given again, as the list's events read them.
+        let reading = rows.reader();
+        let picked = picked_rows(chosen, &reading, self.chosen_rows());
+        *self.reading.borrow_mut() = reading;
+        let reading = Rc::clone(&self.reading);
+        let Some(list) = self.list_mut() else {
+            return false;
+        };
+        list.set_multi_select(multi_select);
+        list.set_tail_title(tail_title);
+        list.set_feel(feel);
+        if replaced {
+            // The rows build anew where they stand: the list's scroll, its keyboard row and
+            // the menus its rows open are the list's own and stay.
+            list.update_model(move |model| *model = rows);
+        }
+        // The unread row moved without the list's items changing: the list takes it, and the
+        // rows it left and arrived at build again.
+        list.set_unread(unread);
+        if let Some(picked) = picked {
+            list.set_selection(picked);
+        }
+        // Each event carries the item its row shows, read from the items the list holds now.
+        let selecting = Rc::clone(&reading);
+        let picking = Rc::clone(&reading);
+        let (on_select, on_pick) = (select, activate.clone());
+        list.set_on_select(move |key, selected| {
+            if !selected {
+                return;
+            }
+            let item = item_of(&selecting.borrow(), &key);
+            if selection_follows_focus && by_hand() {
+                on_pick.fire(item);
+            } else {
+                on_select.fire(item);
+            }
+        });
+        list.set_on_activate(move |key| {
+            // A removed item's row opens nothing: its mark shows what removed it.
+            if !picking.borrow().is_removed(&key) {
+                activate.fire(item_of(&picking.borrow(), &key));
+            }
+        });
+        let fired = selected_changed;
+        list.set_on_selected(move |keys| {
+            let items: Vec<Value> = {
+                let selecting = reading.borrow();
+                keys.iter()
+                    .filter_map(|key| item_of(&selecting, key))
+                    .collect()
+            };
+            fired.fire(Some(Value::List(items)));
+        });
+        true
     }
 }
 
@@ -1297,6 +1390,83 @@ mod tests {
     use super::*;
     use crate::component::{Event, Fired, Intent};
     use crate::widget::MenuItemProps;
+
+    /// The rows of a list given its items whole: a row a title each.
+    fn given_rows(count: usize) -> DescribedRows {
+        let items = (0..count)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// The props of a list of `rows` that is a column's whole body.
+    fn column_of(rows: DescribedRows) -> VirtualListProps {
+        VirtualListProps {
+            in_column: true,
+            rows,
+            ..VirtualListProps::default()
+        }
+    }
+
+    /// Lay the list out in a column of `height`, as the window does.
+    fn lay_out(list: &mut VirtualList<DescribedRows>, height: f32) {
+        list.set_viewport_height(height);
+        let doc = automerge::AutoCommit::new();
+        Widget::sync(list, &doc, &automerge::ROOT);
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(list, &mut taffy, &crate::theme::Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .unwrap();
+        Widget::apply_layout(list, &taffy, node, Point::ZERO);
+    }
+
+    /// A list given its items again keeps where the person scrolled: the items are replaced
+    /// where the list stands, not the list built again around them.
+    #[test]
+    fn a_list_given_its_items_again_keeps_where_the_person_scrolled() {
+        let mut list = DescribedList::from_props("list", column_of(given_rows(200)));
+        {
+            let inner = list.list_mut().expect("the list stands");
+            lay_out(inner, 200.0);
+            lay_out(inner, 200.0);
+            inner.set_scroll_offset(600.0);
+            assert!(inner.scroll_offset() > 0.0, "the list scrolled");
+        }
+        let scrolled = list.list().expect("the list stands").scroll_offset();
+        let props = VirtualListProps {
+            tail_title: Some("Done".into()),
+            ..column_of(given_rows(200))
+        };
+        assert!(
+            list.set_props(props),
+            "the list takes its items where it stands"
+        );
+        let inner = list.list().expect("the list stands");
+        assert!(
+            (inner.scroll_offset() - scrolled).abs() < 0.01,
+            "the rows stayed where the person scrolled them: {} then {}",
+            scrolled,
+            inner.scroll_offset()
+        );
+    }
 
     /// A menu command that reports its choose to `queue` when run.
     fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {

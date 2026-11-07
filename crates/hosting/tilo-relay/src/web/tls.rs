@@ -2,9 +2,9 @@
 //! served.
 //!
 //! - **Development**: a generated self-signed ECDSA certificate valid 13
-//!   days, kept under the host's state root and reused across restarts. A
-//!   browser trusts it once (or loads the page from the same origin after
-//!   accepting it).
+//!   days, kept under the host's state root and reused across restarts while
+//!   it still names every host that needs it. A browser trusts it once (or
+//!   loads the page from the same origin after accepting it).
 //! - **Files**: a PEM chain and key on disk, renewed by whatever manages them
 //!   — an ACME client (certbot, lego, Caddy) on a home host, or the Cloud
 //!   machine's managed certificate. The listener reads the pair again when
@@ -59,6 +59,9 @@ pub(crate) struct Identity {
     pub(crate) key: PrivateKeyDer<'static>,
     /// SHA-256 (lowercase hex) of the certificate.
     pub(crate) fingerprint: Option<String>,
+    /// The names the certificate is for, when this host generated it; `None`
+    /// for a certificate from files, whose names this host does not read.
+    pub(crate) hosts: Option<Vec<String>>,
     /// The PEM pair to follow for renewals, for certificates from files.
     pub(crate) files: Option<(PathBuf, PathBuf)>,
 }
@@ -67,7 +70,7 @@ impl Identity {
     pub(crate) fn load(source: &TlsSource) -> Result<Self, String> {
         match source {
             TlsSource::Development { hosts, store } => {
-                if let Some(stored) = store.as_deref().and_then(load_stored) {
+                if let Some(stored) = store.as_deref().and_then(|path| load_stored(path, hosts)) {
                     return Ok(stored);
                 }
                 let identity = dev_identity(hosts.clone())?;
@@ -75,6 +78,7 @@ impl Identity {
                     chain: identity.chain,
                     key: identity.key,
                     fingerprint: Some(identity.fingerprint),
+                    hosts: Some(hosts.clone()),
                     files: None,
                 };
                 if let Some(store) = store {
@@ -92,6 +96,7 @@ impl Identity {
                     chain,
                     key,
                     fingerprint: None,
+                    hosts: None,
                     files: Some((certificate_chain.clone(), private_key.clone())),
                 })
             }
@@ -310,18 +315,30 @@ const DEV_REUSE: std::time::Duration = std::time::Duration::from_secs(12 * 24 * 
 #[derive(serde::Serialize, serde::Deserialize)]
 struct StoredDev {
     created_unix: u64,
+    /// The names the certificate carries, so a host that starts serving a new
+    /// name replaces it instead of presenting one that cannot cover it.
+    hosts: Vec<String>,
     certificate: Vec<u8>,
     pkcs8_key: Vec<u8>,
     sha256: String,
 }
 
-fn load_stored(path: &std::path::Path) -> Option<Identity> {
+/// A stored development identity, while it is young enough and names every
+/// host it is now needed for.
+fn load_stored(path: &std::path::Path, hosts: &[String]) -> Option<Identity> {
     let stored: StoredDev = postcard::from_bytes(&std::fs::read(path).ok()?).ok()?;
     let age = tilo_clock::unix_now().checked_sub(stored.created_unix)?;
-    (age < DEV_REUSE.as_secs()).then(|| Identity {
+    let covers = hosts.iter().all(|host| {
+        stored
+            .hosts
+            .iter()
+            .any(|named| named.eq_ignore_ascii_case(host))
+    });
+    (age < DEV_REUSE.as_secs() && covers).then(|| Identity {
         chain: vec![CertificateDer::from(stored.certificate)],
         key: PrivateKeyDer::Pkcs8(stored.pkcs8_key.into()),
         fingerprint: Some(stored.sha256),
+        hosts: Some(stored.hosts),
         files: None,
     })
 }
@@ -332,6 +349,7 @@ fn save_stored(path: &std::path::Path, identity: &Identity) -> Result<(), String
     };
     let stored = StoredDev {
         created_unix: tilo_clock::unix_now(),
+        hosts: identity.hosts.clone().unwrap_or_default(),
         certificate: identity
             .chain
             .first()
@@ -411,5 +429,34 @@ mod tests {
         let renewed = write("live.example", 3);
         assert_ne!(renewed, first);
         assert_eq!(files.current().cert[0], renewed);
+    }
+
+    /// A stored development certificate is reused while it names every host
+    /// this start needs, and replaced when a host starts serving a new name:
+    /// pages pin the certificate for the origin they dial.
+    #[test]
+    fn a_stored_development_certificate_is_replaced_when_a_start_needs_a_new_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Some(dir.path().join("web-dev-identity"));
+        let source = |hosts: &[&str]| TlsSource::Development {
+            hosts: hosts.iter().map(|host| (*host).to_string()).collect(),
+            store: store.clone(),
+        };
+        let first = Identity::load(&source(&["localhost", "127.0.0.1"])).unwrap();
+        assert_eq!(
+            first.hosts.as_deref(),
+            Some(&["localhost".to_string(), "127.0.0.1".to_string()][..])
+        );
+        let again = Identity::load(&source(&["127.0.0.1"])).unwrap();
+        assert_eq!(again.chain, first.chain, "names it covers are reused");
+        let wider = Identity::load(&source(&["127.0.0.1", "live.example"])).unwrap();
+        assert_ne!(
+            wider.chain, first.chain,
+            "a start that needs a new name replaces the certificate"
+        );
+        assert_eq!(
+            wider.hosts.unwrap(),
+            vec!["127.0.0.1".to_string(), "live.example".to_string()]
+        );
     }
 }

@@ -1,10 +1,10 @@
 //! The window's slots in its bar ([`ui::window_toolbar`]): the shell's own
-//! sidebar toggle and Back, the four places as the bar's views, and the open
+//! sidebar toggle and Back, the three places as the bar's views, and the open
 //! issue — or the place — as its location ([`ui::framework::WindowBar`]).
 //!
 //! The window draws no header row and no Back of its own: opening an issue
 //! is a place the bar's Back returns from, and the views switch between the
-//! list, the board and the runs. Search is the bar's own.
+//! list, the board and the threads. Search is the bar's own.
 
 use ui::framework::{Choice, Dispatcher, WindowBar};
 use ui::prelude::*;
@@ -18,7 +18,6 @@ fn show(place: Place) -> TasksEffect {
     match place {
         Place::List => TasksEffect::ShowList,
         Place::Board => TasksEffect::ShowBoard,
-        Place::Tasks => TasksEffect::ShowTasks,
         Place::Thread => TasksEffect::ShowThread,
     }
 }

@@ -120,6 +120,7 @@ lounge \
   TILO_ROOMS_LAYOUT=personal \
   TILO_ROOMS_INACTIVE_AFTER_DAYS=7 \
   TILO_ROOMS_FETCH_PROXY=0 \
+  TILO_ROOMS_WEB=127.0.0.1:0 \
   TILO_ROOMS_RELAY_PLAIN=0.0.0.0:9880 \
   TILO_ROOMS_LIVE=0.0.0.0:9881 \
   TILO_ROOMS_LIVE_ORIGIN=https://live.eu1.tilo.coffee/ \
@@ -141,6 +142,7 @@ pair() {
     { previous = $0 }
     END { exit !found }' "$work/args"
 }
+pair --web 127.0.0.1:0 || fail "the HTTPS listener setting did not reach the host"
 pair --web-plain 0.0.0.0:9880 || fail "the plain listener setting did not reach the host"
 pair --public-origin https://eu1.tilo.coffee || fail "the public origin did not reach the host"
 pair --web-live 0.0.0.0:9881 || fail "the live plane's bind address did not reach the host"
@@ -166,6 +168,7 @@ pair --inactive-after-days 7 || fail "the inactivity setting did not reach the h
 grep -Fqx -- --fetch-proxy "$work/args" && fail "fetch proxy 0 still asked for the proxy"
 grep -Fqx -- shared "$work/args" && fail "the shared layout default was not replaced"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
+grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
 
 # eu1's own environment, unchanged but for the image: it takes people by
 # invitation, and names no description. The workspace stays listed, its door

@@ -48,4 +48,10 @@ impl Described for Facts {
     fn from_props(_key: &str, props: FactsProps) -> Self {
         Self::new(props.facts.into_iter().map(Fact::from).collect())
     }
+
+    /// What the facts say changes where the row stands.
+    fn set_props(&mut self, props: FactsProps) -> bool {
+        self.set_facts(props.facts.into_iter().map(Fact::from).collect());
+        true
+    }
 }

@@ -37,6 +37,9 @@ qcms.workspace = true
 tracing.workspace = true
 # Percentiles of the frame pacing it logs.
 tilo-frame-metrics = { path = "../frame-metrics" }
+# When a launched app's window mapped and its first frame reached a display:
+# the compositor's share of opening an app, logged with the launch's others.
+tilo-startup-metrics = { version = "0.1.0", path = "../../system/tilo-startup-metrics" }
 # Where the session says which GPU it renders on: the record
 # `tilo system health --gpu` reads.
 serde.workspace = true

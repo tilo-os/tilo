@@ -1208,6 +1208,88 @@ mod tests {
         }
     }
 
+    /// A block of text as wide as the column it stands in, that wraps into more lines the
+    /// narrower it is measured: its height under a min-content constraint is not the height it
+    /// takes at the same width laid out.
+    #[test]
+    fn a_measure_under_a_min_content_constraint_leaves_no_height_for_a_width_asked_after() {
+        use taffy::geometry::Size;
+        use taffy::style::AvailableSpace;
+        use taffy::style_helpers::length;
+        let mut tree: TaffyTree<()> = TaffyTree::new();
+        let block = tree
+            .new_leaf(taffy::Style {
+                flex_grow: 1.0,
+                flex_basis: length(0.0_f32),
+                min_size: Size {
+                    width: length(0.0_f32),
+                    height: taffy::Dimension::auto(),
+                },
+                ..taffy::Style::default()
+            })
+            .expect("a leaf");
+        let chip = tree
+            .new_leaf(taffy::Style {
+                size: Size {
+                    width: length(28.0_f32),
+                    height: length(28.0_f32),
+                },
+                ..taffy::Style::default()
+            })
+            .expect("a leaf");
+        let row = tree
+            .new_with_children(
+                taffy::Style {
+                    size: Size {
+                        width: taffy::style_helpers::percent(1.0_f32),
+                        height: taffy::Dimension::auto(),
+                    },
+                    gap: Size {
+                        width: length(8.0_f32),
+                        height: length(0.0_f32),
+                    },
+                    align_items: Some(taffy::AlignItems::Center),
+                    ..taffy::Style::default()
+                },
+                &[block, chip],
+            )
+            .expect("the row");
+        let mut measure = |known: Size<Option<f32>>,
+                           available: Size<AvailableSpace>,
+                           _: taffy::NodeId,
+                           _: Option<&mut ()>,
+                           _: &taffy::Style| {
+            let narrow = available.width == AvailableSpace::MinContent;
+            Size {
+                width: known.width.unwrap_or(400.0),
+                height: if narrow { 300.0 } else { 20.0 },
+            }
+        };
+        // Measured to see how narrow its content goes, then laid out at the width it stands in.
+        for available in [
+            Size {
+                width: AvailableSpace::MinContent,
+                height: AvailableSpace::MaxContent,
+            },
+            Size {
+                width: AvailableSpace::Definite(436.0),
+                height: AvailableSpace::MaxContent,
+            },
+        ] {
+            tree.compute_layout_with_measure(row, available, &mut measure)
+                .expect("solves");
+        }
+        let laid_out = tree.layout(block).expect("laid out").size;
+        assert_eq!(
+            laid_out,
+            Size {
+                width: 400.0,
+                height: 20.0
+            },
+            "the block stands at the width it was given, at the height its text wraps to there"
+        );
+    }
+
     #[test]
     fn focus_captured_across_a_rebuild_builds_only_the_focused_accessibility_node() {
         use crate::widget::Column;

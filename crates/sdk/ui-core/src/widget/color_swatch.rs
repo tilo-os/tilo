@@ -624,6 +624,8 @@ impl crate::widget::controls::ActionControls for ColorSwatchPicker {
 }
 
 impl Widget for ColorSwatchPicker {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

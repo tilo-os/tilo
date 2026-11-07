@@ -85,9 +85,9 @@ Markdown); the document's own view places the editor for it, `ui.BlockEditor(bin
 ## Effects
 
 An effect is something a replay cannot compute again: a draw, the time, a service outside
-Tilo. The action that uses one declares it (`uses random`, `uses time`, `uses web`) and
-the compiler refuses it anywhere else (E121); a view never reads one, since it is drawn again
-from what it is shown.
+Tilo, a person told something. The action that uses one declares it (`uses random`,
+`uses time`, `uses web`, `uses notify`) and the compiler refuses it anywhere else (E121); a
+view never reads one, since it is drawn again from what it is shown.
 
 ```
 action roll(die: Die) uses random {
@@ -103,6 +103,29 @@ The draw is made on the device that invokes the action, from the system's
 cryptographic random source, and the numbers it drew are kept in the invocation's journal: a
 run resumed after waiting for a person, and any run replayed, reads the numbers it drew the
 first time.
+
+`notify(to: who, title: text, body: text, opens: r)` tells the person `who` something. A notice
+is a record the action writes in its own change: the workspace keeps it like any other resource,
+so every device of that person reads it and no one else's does, and what one of them does with
+it — dismiss it, or choose it and open the resource `r` — is a change of the record too, which
+takes it down on all of theirs. A device tells only what reaches it as news: a notice the record
+held when it first looked, or one it told before, stays quiet, so a replay and a device joining
+late tell nothing again. The journal records that the notice was written, so a run resumed or
+replayed writes no second one.
+
+What a notice says is words a person reads: its `title` and `body` are messages of the action,
+translated in the package's catalogues like the text of a view (`d-<action>.w-<word>`).
+
+```
+action remind(t: Task) uses notify {
+    notify(
+        to: t.assignee,
+        title: t.title,
+        body: if let d = t.due { "Due {d}" } else if let p = t.project { p.name } else { "" },
+        opens: t,
+    )
+}
+```
 
 ## Triggers
 
@@ -128,8 +151,12 @@ there. The action takes the record (`ring(r)`) or a root (`root Board`) as its a
 The host that runs a trigger is the workspace's origin, the device that governs the workspace,
 and it records in the same change what the trigger last did for the record: the period it ran
 in, or the instant it fired at. A second run of the same period or instant is refused there, so
-a trigger runs once across the workspace's devices however they sync. Nothing polls: the host
-wakes at the next instant a trigger is due, and only while the app is open.
+a trigger runs once across the workspace's devices however they sync. A trigger needs no window
+of its app open: the workspace's record service runs it, as it runs the app's root, whether or
+not anything of the app is on screen. Nothing polls: the service wakes at the next instant a
+trigger is due. The field an `at` trigger reads is kept as one of the type's columns, so finding
+the next instant costs the pages up to it, not the type's records: a reminder among ten
+thousand tasks wakes at its own time and reads none of the others.
 
 ## Packages and libraries
 

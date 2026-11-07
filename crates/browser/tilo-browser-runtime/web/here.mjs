@@ -60,7 +60,7 @@ export function liveMembers(layer, seen) {
  * @param options.active       whether the mount is still shown
  * @param options.layer        the workspace's live layer, or undefined
  * @param options.peer         the certified peer: `here(window, actions)`, `participant`,
- *                             `liveNote()`, the reason this page joins no live plane at all
+ *                             `liveNote()`, why this page shows no live presence
  * @param options.presenceUrl  the workspace service's watching count, if any
  * @param options.photos       follows people's profile pictures (`profile-photos.mjs` `followPhotos`), if any
  */
@@ -79,6 +79,7 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
   let lines = [];
   let again = false; // asked to check while busy: check once it is done
   const arrivedAt = new Map(); // publisher -> when it joined, while unpaired
+  let saidNote = null; // the live note last logged, so a change is said once
 
   function pushPeople() {
     if (stopped || !active()) return;
@@ -88,9 +89,16 @@ export function createHere({runtime, mountId, active, layer, peer, presenceUrl, 
     const own = peer?.participant
       ? {publisher: live?.publisherId ?? '', kind: 'person', label: peer.participant.label, ...(peer.userPublicKey ? {user: peer.userPublicKey} : {})}
       : null;
-    // Why this page joins no live plane at all: a browser without
-    // WebTransport says so in the members' place, and there is no fallback.
+    // Why this page shows no live presence: a browser without WebTransport,
+    // or a plane that could not be opened. It is said on the page, in the
+    // members' place, and said once here as it changes — a page that retries
+    // quietly reads as an empty workspace.
     const unavailable = peer?.liveNote?.() ?? null;
+    if (unavailable !== saidNote) {
+      if (unavailable) console.warn(`live: ${unavailable}`);
+      else if (saidNote) console.info('live: presence joined');
+      saidNote = unavailable;
+    }
     const json = JSON.stringify({own, members: liveMembers(live, seen), unavailable});
     if (json === peopleKey) return;
     peopleKey = json;

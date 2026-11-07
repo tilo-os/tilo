@@ -248,6 +248,53 @@ fn choosing_a_workspace_from_the_bars_menu_brings_it_to_the_front() {
     assert_eq!(desk(&session).workspace, first.workspace);
 }
 
+/// A menu the person opened stands while the desk changes under it: a workspace made while they
+/// are choosing one lists itself there, instead of the menu vanishing under the pointer.
+#[test]
+fn the_workspaces_menu_stands_while_the_desk_changes_under_it() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| {
+        says(session, &desk(session).workspace)
+    });
+    let first = desk(&session).workspace;
+    press(&mut session, &first);
+    until(&mut session, |session| {
+        session.shell_control("Workspace settings").is_some()
+    });
+    // The desk changes under the menu: another workspace, in front.
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "new-workspace",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    common::wait_for(
+        &mut session,
+        "the workspace made under the menu",
+        |session| {
+            let desk = desk(session);
+            (desk.workspaces.len() == 2 && desk.workspace != first).then(|| desk.workspace.clone())
+        },
+    );
+    session.step(Duration::from_millis(16)).unwrap();
+    assert!(
+        session
+            .shell_control("Workspace settings")
+            .is_some_and(|(_, _, w, h)| w > 0.0 && h > 0.0),
+        "the menu stands while the desk changes under it: {:?}",
+        session.accessible_labels()
+    );
+    // And still chooses: the workspace in front is the one the person presses there.
+    press(&mut session, &first);
+    common::until(
+        &mut session,
+        "the workspace chosen under the menu in front",
+        |session| desk(session).workspace == first,
+    );
+}
+
 #[test]
 fn with_nothing_changing_the_bar_does_no_work() {
     let _settled = ui::motion::testing::settled();

@@ -193,6 +193,12 @@ impl SectionHeader {
         self
     }
 
+    /// How many it says the section holds ([`Self::count`]).
+    #[must_use]
+    pub fn stated_count(&self) -> Option<usize> {
+        self.count
+    }
+
     /// One trailing text action that acts on the whole section. Its label
     /// ends on the trailing edge.
     #[must_use]
@@ -1230,10 +1236,16 @@ impl Section {
     }
 
     fn collapsible_with(mut self, expanded: bool, on_toggle: Option<Box<dyn FnMut(bool)>>) -> Self {
+        self.make_collapsible(expanded, on_toggle);
+        self
+    }
+
+    /// [`Self::collapsible_with`] on a section already built.
+    fn make_collapsible(&mut self, expanded: bool, on_toggle: Option<Box<dyn FnMut(bool)>>) {
         let state = Rc::new(Cell::new(expanded));
         self.expanded = Some(Rc::clone(&state));
         let Some(title) = self.header.clone() else {
-            return self;
+            return;
         };
         // Rebuild the header around the disclosure, keeping its count and
         // action.
@@ -1268,7 +1280,6 @@ impl Section {
             }
             row.title = title;
         }
-        self
     }
 
     /// Address a collapsible section's header by `id` rather than by its
@@ -1813,6 +1824,28 @@ impl StatusLine {
         self.text = text.into();
     }
 
+    /// Replace what it says and the status it says it in, where the line stands: a count that
+    /// moved, a connection that went from healthy to failing.
+    pub fn set_status(&mut self, status: RowStatus<'_>, text: impl Into<String>) {
+        self.set_owned_status(
+            match status {
+                RowStatus::Presence(identity) => OwnedStatus::Presence(identity.to_owned()),
+                RowStatus::Warning => OwnedStatus::Warning,
+                RowStatus::Error => OwnedStatus::Error,
+                RowStatus::Idle => OwnedStatus::Idle,
+                RowStatus::Active => OwnedStatus::Active,
+            },
+            text,
+        );
+    }
+
+    /// Replace what it says with a status the line already holds.
+    fn set_owned_status(&mut self, status: OwnedStatus, text: impl Into<String>) {
+        self.dirty = true;
+        self.status = status;
+        self.set_text(text);
+    }
+
     fn status(&self) -> RowStatus<'_> {
         match &self.status {
             OwnedStatus::Active => RowStatus::Active,
@@ -1825,6 +1858,8 @@ impl StatusLine {
 }
 
 impl Widget for StatusLine {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1916,6 +1951,11 @@ impl Widget for StatusLine {
         crate::widget::Widget::mark_children_drawn(self);
     }
 
+    /// What it says decides the room it takes.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
+    }
+
     fn name(&self) -> &'static str {
         "StatusLine"
     }
@@ -1942,6 +1982,8 @@ pub struct ObjectHeader {
     lead: Option<ObjectLead>,
     rect: Rect,
     metrics: Option<ObjectMetrics>,
+    /// What it says changed since the last frame drew it.
+    dirty: bool,
 }
 
 enum ObjectLead {
@@ -1983,7 +2025,16 @@ impl ObjectHeader {
             lead: None,
             rect: Rect::ZERO,
             metrics: None,
+            dirty: true,
         }
+    }
+
+    /// Another name, line under it and kind of thing before them, where the header stands.
+    fn set_object(&mut self, title: String, caption: Option<String>, lead: Option<ObjectLead>) {
+        self.dirty = true;
+        self.title = title;
+        self.caption = caption;
+        self.lead = lead;
     }
 
     /// One line under the name: an address, a URL, a kind.
@@ -2048,6 +2099,8 @@ impl ObjectHeader {
 }
 
 impl Widget for ObjectHeader {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2157,6 +2210,13 @@ impl Widget for ObjectHeader {
                 Some(room),
             );
         }
+    }
+
+    crate::redraw_flag!();
+
+    /// What it says decides the room it takes.
+    fn is_layout_dirty(&self) -> bool {
+        self.dirty
     }
 
     fn name(&self) -> &'static str {

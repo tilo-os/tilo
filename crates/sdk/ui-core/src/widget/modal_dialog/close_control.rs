@@ -46,12 +46,15 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// scripts close the dialog as a person does.
     #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        self.dismiss = Some(crate::widget::dismissal::Dismissal::published(
-            self.surface_id(),
-            Box::new(f),
-        ));
-        self.laid_out_for = None;
+        self.set_on_dismiss(Some(Box::new(f)));
         self
+    }
+
+    /// [`Self::on_dismiss`] after construction; `None` takes the close control away.
+    pub fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
+        self.dismiss =
+            f.map(|f| crate::widget::dismissal::Dismissal::published(self.surface_id(), f));
+        self.laid_out_for = None;
     }
 
     /// What the dialog's close control is named after: its test id, else
@@ -85,7 +88,7 @@ impl ModalDialog<dyn Widget> {
         &self,
     ) -> impl Iterator<Item = (Slot, &'static str, tilo_actions::OperationKind)> + '_ {
         FOOTER.into_iter().filter(|(slot, _, _)| {
-            self.open && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
+            self.up() && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
         })
     }
 
@@ -95,7 +98,7 @@ impl ModalDialog<dyn Widget> {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if self.open
+        if self.up()
             && let Some(dismiss) = self.dismiss.as_mut()
             && let Some(started) = dismiss.start(op)?
         {
@@ -121,7 +124,7 @@ impl ModalDialog<dyn Widget> {
         let close = self
             .dismiss
             .as_ref()
-            .filter(|_| self.open)
+            .filter(|_| self.up())
             .and_then(crate::widget::dismissal::Dismissal::resource);
         let footer = self.published_footer().filter_map(|(slot, name, kind)| {
             let action = self.slot_action(slot)?;
@@ -179,7 +182,7 @@ impl ModalDialog<dyn Widget> {
         }
         // The close control stands where the dialog shows it: with no way
         // out of its own, Escape and the scrim keep their meaning.
-        if self.open
+        if self.up()
             && self.closable()
             && let Some(dismiss) = &self.dismiss
         {

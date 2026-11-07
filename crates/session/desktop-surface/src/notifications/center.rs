@@ -22,7 +22,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::NotificationHost;
 use super::history::{
-    HistoryActivation, HistoryRow, RowIdentity, accessible_description, relative_time, source_label,
+    HistoryActivation, HistoryRow, RowIdentity, accessible_description, relative_time,
 };
 use super::model::Notification;
 use super::reader::NotificationReader;
@@ -151,6 +151,9 @@ pub struct RowShape {
     /// Whether the row leads with its source line. Rows inside a group do
     /// not: their header already names the app.
     source: bool,
+    /// Whether the row is a member under a group header, which sits one
+    /// mark column in from the header's own mark.
+    grouped: bool,
 }
 
 impl Default for RowShape {
@@ -161,6 +164,7 @@ impl Default for RowShape {
             choices: 0,
             widths: (f64::INFINITY, f64::INFINITY),
             source: true,
+            grouped: false,
         }
     }
 }
@@ -183,6 +187,18 @@ impl RowShape {
     /// Whether the row shows its source line.
     pub fn has_source(&self) -> bool {
         self.source
+    }
+    /// The same row as a member under a group header: no source line (the
+    /// header names the app) and one mark column further in.
+    #[must_use]
+    pub fn grouped(mut self) -> Self {
+        self.source = false;
+        self.grouped = true;
+        self
+    }
+    /// Whether the row sits under a group header.
+    pub fn is_grouped(&self) -> bool {
+        self.grouped
     }
     /// The same row carrying choices of these widths, secondary first.
     #[must_use]
@@ -526,11 +542,53 @@ impl CenterLayout {
                 0.0
             }
     }
-    /// The width a row's text wraps to; a grouped row sits one glyph in.
+    /// The width a row's text wraps to: the panel less the padding, the
+    /// sender's mark before it (one column further in for a group's member
+    /// rows), and the controls it keeps clear of.
     fn text_width(&self, grouped: bool) -> f64 {
         self.panel.width()
             - 2.0 * (qs::PANEL_PAD + qs::CONTROL_INSET)
-            - if grouped { qs::GLYPH } else { 0.0 }
+            - Self::mark_column()
+            - if grouped { Self::mark_column() } else { 0.0 }
+    }
+    /// The width a sender's mark takes before a row's text: one glyph and
+    /// the related gap after it.
+    fn mark_column() -> f64 {
+        qs::GLYPH + qs::RELATED_GAP
+    }
+    /// The box a row's sender mark fills: a glyph in from the row's leading
+    /// edge on the title's line, a group's member rows one mark column
+    /// further in so they sit under their header's mark. Every row has one,
+    /// including one from no app (the system's bell).
+    pub fn row_mark(&self, row: Rect, shape: &RowShape) -> Rect {
+        let first_y = row.y0 + qs::CONTROL_PAD;
+        let title_y = if shape.has_source() {
+            first_y + self.caption_lh
+        } else {
+            first_y
+        };
+        let x0 = row.x0
+            + qs::CONTROL_INSET
+            + if shape.is_grouped() {
+                Self::mark_column()
+            } else {
+                0.0
+            };
+        Rect::from_center_size(
+            Point::new(x0 + qs::GLYPH / 2.0, title_y + self.label_lh / 2.0),
+            (qs::GLYPH, qs::GLYPH),
+        )
+    }
+    /// The box a group header's sender mark fills: after the fold chevron
+    /// that opens the header.
+    pub fn group_mark(&self, row: Rect, shape: &RowShape) -> Rect {
+        let mark = self.row_mark(row, shape);
+        Rect::new(
+            mark.x0 + Self::mark_column(),
+            mark.y0,
+            mark.x1 + Self::mark_column(),
+            mark.y1,
+        )
     }
     /// Measure with the theme the rows are laid out in, when there is one.
     fn measure<R>(&self, f: impl FnOnce(&Theme, &mut TextRenderer) -> R) -> Option<R> {
@@ -687,16 +745,10 @@ impl CenterLayout {
         )
     }
 
-    /// A row's icon buttons: dismiss in the trailing corner, centred on the
-    /// first line it takes the place of while shown (the source/time line,
-    /// or the title of a row without one), and hand-to-agent one related
-    /// step inboard of it.
-    pub fn row_controls(
-        &self,
-        row: Rect,
-        shape: &RowShape,
-        with_agent: bool,
-    ) -> (Rect, Option<Rect>) {
+    /// A row's dismiss button, in the trailing corner, centred on the first
+    /// line it takes the place of (the source/time line, or the title of a
+    /// row without one).
+    pub fn row_controls(&self, row: Rect, shape: &RowShape) -> Rect {
         let size = self.actions.height.min(row.height());
         let line = if shape.has_source() {
             self.caption_lh
@@ -706,12 +758,7 @@ impl CenterLayout {
         let middle = row.y0 + qs::CONTROL_PAD + line / 2.0;
         let y0 = (middle - size / 2.0).max(row.y0);
         let x1 = row.x1 - qs::RELATED_GAP;
-        let dismiss = Rect::new(x1 - size, y0, x1, y0 + size);
-        let agent = with_agent.then(|| {
-            let x1 = dismiss.x0 - qs::RELATED_GAP;
-            Rect::new(x1 - size, y0, x1, y0 + size)
-        });
-        (dismiss, agent)
+        Rect::new(x1 - size, y0, x1, y0 + size)
     }
 
     /// The notification's own choices under a row's text, laid out as on
@@ -767,7 +814,6 @@ fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::wid
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowControl {
     Dismiss,
-    HandToAgent,
     Action(usize),
 }
 
@@ -920,15 +966,14 @@ impl NotificationCenter {
                                     &layout.choice_widths(&row_actions_of(host, notification)),
                                 );
                             // Inside a group the header names the app; the
-                            // rows beneath it are their own title and body.
-                            if *grouped {
-                                shape.without_source()
-                            } else {
-                                shape
-                            }
+                            // rows beneath it are their own title and body,
+                            // one mark column in from the header.
+                            if *grouped { shape.grouped() } else { shape }
                         })
                 }
-                HistoryRow::Group { expanded, .. } => RowShape::new(usize::from(!*expanded)),
+                HistoryRow::Group { expanded, .. } => {
+                    RowShape::new(usize::from(!*expanded)).without_source()
+                }
             })
             .collect()
     }
@@ -1129,14 +1174,6 @@ impl NotificationCenter {
         self.select_row(host, layout, next);
     }
 
-    /// The agent the notification behind `row` may be handed to.
-    fn row_agent(host: &dyn NotificationHost, row: &HistoryRow) -> Option<String> {
-        match row {
-            HistoryRow::Item { index, .. } => host.agent_for(host.log().history().get(*index)?),
-            HistoryRow::Group { .. } => None,
-        }
-    }
-
     fn row_actions(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<(String, String)> {
         match row {
             HistoryRow::Item { index, .. } => {
@@ -1195,19 +1232,16 @@ impl NotificationCenter {
     ) -> Option<(usize, Option<RowControl>)> {
         let (rows, shapes, start, shown) = self.window(host, layout);
         let bands = shapes.get(start..).unwrap_or_default();
-        for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
+        for offset in (start..rows.len()).take(shown) {
             let position = offset.saturating_sub(start);
             let rect = layout.row_in(position, bands);
             if !rect.contains(p) {
                 continue;
             }
-            let with_agent = Self::row_agent(host, row).is_some();
             let shape = bands.get(position).copied().unwrap_or_default();
-            let (dismiss, agent) = layout.row_controls(rect, &shape, with_agent);
+            let dismiss = layout.row_controls(rect, &shape);
             let control = if dismiss.contains(p) {
                 Some(RowControl::Dismiss)
-            } else if agent.is_some_and(|agent| agent.contains(p)) {
-                Some(RowControl::HandToAgent)
             } else {
                 layout
                     .row_actions(rect, &shape)
@@ -1251,14 +1285,6 @@ impl NotificationCenter {
                 {
                     host.invoke_action(notification.id, key);
                     self.reselect_after_removal(host, layout, index);
-                }
-            }
-            (HistoryRow::Item { index: at, .. }, Some(RowControl::HandToAgent)) => {
-                let notification = host.log().history().get(at).cloned();
-                if let Some(notification) = notification
-                    && host.agent_for(&notification).is_some()
-                {
-                    host.hand_to_agent(&notification);
                 }
             }
             (HistoryRow::Item { index: at, .. }, None) => {
@@ -1417,9 +1443,6 @@ impl NotificationCenter {
     /// the row's accessibility children.
     fn row_focus_order(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<Option<RowControl>> {
         let mut order = vec![None, Some(RowControl::Dismiss)];
-        if Self::row_agent(host, row).is_some() {
-            order.push(Some(RowControl::HandToAgent));
-        }
         let actions = Self::row_actions(host, row).len();
         order.extend((0..actions).map(|at| Some(RowControl::Action(at))));
         order
@@ -1598,17 +1621,13 @@ impl NotificationCenter {
         if !host.log().history().is_empty() {
             out.push((format!("{prefix}notifications_clear"), layout.clear()));
         }
-        for (offset, row) in rows.iter().enumerate().skip(start).take(shown) {
+        for offset in (start..rows.len()).take(shown) {
             let position = offset.saturating_sub(start);
             let rect = layout.row_in(position, bands);
-            let agent = Self::row_agent(host, row);
             let shape = bands.get(position).copied().unwrap_or_default();
-            let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
+            let dismiss = layout.row_controls(rect, &shape);
             out.push((format!("{prefix}notification_row[{offset}]"), rect));
             out.push((format!("{prefix}notification_dismiss[{offset}]"), dismiss));
-            if let Some(agent_rect) = agent_rect {
-                out.push((format!("{prefix}notification_agent[{offset}]"), agent_rect));
-            }
             for (at, action) in layout.row_actions(rect, &shape).iter().enumerate() {
                 out.push((
                     format!("{prefix}notification_action[{offset}][{at}]"),
@@ -1857,7 +1876,8 @@ impl NotificationCenter {
                         expanded,
                         ..
                     } => {
-                        let (dismiss, _) = layout.row_controls(rect, &RowShape::default(), false);
+                        let dismiss = layout
+                            .row_controls(rect, &bands.get(position).copied().unwrap_or_default());
                         AccessNode::new(Role::ListItem)
                             .with_semantic_key(format!("notification-group:{key}"))
                             .with_name(label.clone())
@@ -1919,8 +1939,7 @@ impl NotificationCenter {
         now: Instant,
     ) -> AccessNode {
         let row_focused = is_selected && self.row_control.is_none();
-        let agent = host.agent_for(notification);
-        let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
+        let dismiss = layout.row_controls(rect, &shape);
         let control_focused = |control| is_selected && self.row_control == Some(control);
         let mut controls = vec![
             AccessNode::new(Role::Button)
@@ -1932,22 +1951,6 @@ impl NotificationCenter {
                         .focused(control_focused(RowControl::Dismiss)),
                 ),
         ];
-        if let (Some(agent), Some(agent_rect)) = (agent, agent_rect) {
-            controls.push(
-                AccessNode::new(Role::Button)
-                    .with_name(t_args(
-                        "notification-center-hand-to",
-                        &[("agent", agent.as_str().into())],
-                    ))
-                    .with_description(t("notification-center-hand-to-description"))
-                    .with_bounds(agent_rect)
-                    .with_state(
-                        AccessState::new()
-                            .focusable(true)
-                            .focused(control_focused(RowControl::HandToAgent)),
-                    ),
-            );
-        }
         let actions = row_actions_of(host, notification);
         for (at, ((_, label), bounds)) in actions
             .iter()
@@ -2133,13 +2136,14 @@ impl NotificationCenter {
                 .get(offset.saturating_sub(start))
                 .copied()
                 .unwrap_or_default();
-            let row = layout.row_in(offset.saturating_sub(start), bands);
+            let position = offset.saturating_sub(start);
+            let row = layout.row_in(position, bands);
             let row_selected = selected == Some(offset);
             let focused_control = self.row_control.filter(|_| row_selected);
             // At rest a row is only its content; its icon buttons show,
             // over its time, while it is pointed at or keyboard-focused.
             let reveal = hovered(row) || row_selected;
-            let (notification, grouped) = match history_row {
+            let notification = match history_row {
                 HistoryRow::Group {
                     label,
                     count,
@@ -2150,20 +2154,35 @@ impl NotificationCenter {
                     let Some(newest) = history.get(*newest) else {
                         continue;
                     };
+                    // A group is one card around its header and the members
+                    // it shows: the members are its children, not rows of
+                    // their own.
+                    let members = if *expanded { *count } else { 0 };
+                    let last = position
+                        .saturating_add(members)
+                        .min(shown.saturating_sub(1));
+                    let container = if last > position {
+                        row.union(layout.row_in(last, bands))
+                    } else {
+                        row
+                    };
                     ui::widget::paint_control_row(
                         scene,
                         transform,
                         theme,
-                        row,
-                        hovered(row),
+                        container,
+                        hovered(container),
                         false,
                     );
+                    if hovered(row) {
+                        ui::widget::paint_control_row(scene, transform, theme, row, true, false);
+                    }
                     Self::draw_group_row(
                         scene,
                         transform,
                         text_renderer,
                         theme,
-                        (layout, row, reveal),
+                        (layout, row, reveal, &shape),
                         (label, *count, *expanded, newest),
                         now,
                     );
@@ -2173,7 +2192,7 @@ impl NotificationCenter {
                             transform,
                             text_renderer,
                             theme,
-                            layout.row_controls(row, &RowShape::default(), false),
+                            layout.row_controls(row, &shape),
                             (focused_control, cursor),
                         );
                     }
@@ -2182,19 +2201,27 @@ impl NotificationCenter {
                     }
                     continue;
                 }
-                HistoryRow::Item { index, grouped } => {
+                HistoryRow::Item { index, .. } => {
                     let Some(notification) = history.get(*index) else {
                         continue;
                     };
-                    (notification, *grouped)
+                    notification
                 }
             };
-            let agent = host.agent_for(notification);
-            let controls = layout.row_controls(row, &shape, agent.is_some());
-            let leading_control = controls.1.unwrap_or(controls.0);
+            let controls = layout.row_controls(row, &shape);
+            let leading_control = controls;
             // A row is a resting Control surface (HIG §9.5): the lift floor
-            // with its derived edge, never a ramp-slot wash.
-            ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
+            // with its derived edge, never a ramp-slot wash. A group's
+            // member has no surface of its own: it sits in its header's
+            // card, and only lifts inside it while pointed at or selected.
+            if !shape.is_grouped() {
+                ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
+            } else if hovered(row) || position == 0 {
+                // Inside its group's card, a member lights only while
+                // pointed at. A member whose header scrolled out of the
+                // window keeps a surface of its own.
+                ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
+            }
             // A warning or failure keeps a rail beside its text, scannable
             // without taking another line; plain information carries no
             // colour, so the rail means something wherever it appears. The
@@ -2212,12 +2239,16 @@ impl NotificationCenter {
                     qs::CONTROL_PAD,
                 );
             }
-            // Source/time, title, body: measured lines on the control
-            // padding, inset `s3` like every row glyph in the panel. A
-            // grouped notification sits one glyph in, under its header's
-            // label, so the fold reads as a hierarchy, and drops the
-            // source line: its header already names the app.
-            let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
+            // Who sent it, the source/time, title and body: measured lines on
+            // the control padding, the sender's mark a glyph in like every
+            // row glyph in the panel, its text after it. A grouped
+            // notification sits one mark column further in, under its
+            // header, and drops the source line: the header names the app.
+            let mark = layout.row_mark(row, &shape);
+            notification
+                .mark()
+                .paint(scene, transform, mark, colors.text_primary);
+            let x = mark.x1 + qs::RELATED_GAP;
             let text_right = row.x1 - qs::CONTROL_INSET;
             let first_y = row.y0 + qs::CONTROL_PAD;
             let source_y = shape.has_source().then_some(first_y);
@@ -2252,18 +2283,17 @@ impl NotificationCenter {
             } else {
                 layout.label_lh
             };
-            if let Some(source_y) = source_y
-                && let Some(source) = source_label(notification)
-            {
+            if let Some(source_y) = source_y {
+                let sender = notification.sender_name();
                 let source_width = (source_right - x).max(0.0);
                 let source = preview_line(
                     text_renderer,
-                    &source,
+                    &sender,
                     f32_of_f64(source_width),
                     &caption_style,
                 );
                 // The source line is one shared caption, starting at the
-                // row's inset and elided to the room beside the controls.
+                // row's mark and elided to the room beside the controls.
                 ui::widget::TextLineFace::styled(&source, &caption_style, TextRole::Caption)
                     .start()
                     .paint(
@@ -2431,25 +2461,26 @@ impl NotificationCenter {
         );
     }
 
-    /// One group header row: fold chevron, app label, count, the newest
-    /// member's age and (while folded) its title.
+    /// One group header row: fold chevron, the sender's mark and name, the
+    /// count as a badge after the name, the newest member's age and (while
+    /// folded) its title.
     fn draw_group_row(
         scene: &mut Scene,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        (layout, row, reveal): (&CenterLayout, Rect, bool),
+        (layout, row, reveal, shape): (&CenterLayout, Rect, bool, &RowShape),
         (label, count, expanded, newest): (&str, usize, bool, &Notification),
         now: Instant,
     ) {
         let colors = &theme.tokens.colors;
         let caption_style = theme.text(TextRole::Caption);
         let label_style = theme.text(TextRole::Label);
-        let glyph = qs::leading_glyph(row, qs::CONTROL_INSET, qs::GLYPH);
+        let disclosure = qs::leading_glyph(row, qs::CONTROL_INSET, qs::GLYPH);
         ui::icons::draw_icon(
             scene,
             transform,
-            glyph,
+            disclosure,
             if expanded {
                 ui::icons::Icon::ChevronDown
             } else {
@@ -2458,23 +2489,50 @@ impl NotificationCenter {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let (dismiss, _) = layout.row_controls(row, &RowShape::default(), false);
-        let x = glyph.x1 + qs::RELATED_GAP;
+        // The header leads with the same mark as the banners from this app.
+        let mark = layout.group_mark(row, shape);
+        newest
+            .mark()
+            .paint(scene, transform, mark, colors.text_primary);
+        let dismiss = layout.row_controls(row, shape);
+        let x = mark.x1 + qs::RELATED_GAP;
+        let title_y = row.y0 + qs::CONTROL_PAD;
         let age = relative_time(newest, now);
         let (time_width, _) = text_renderer.measure_style(&age, None, &caption_style);
-        let source_y = row.y0 + qs::CONTROL_PAD;
-        let count_label = t_args(
-            "notification-center-group-count",
-            &[("count", count.into())],
-        );
-        let count_right = row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP;
-        ui::widget::TextLineFace::styled(&count_label, &caption_style, TextRole::Caption)
+        let title_style = label_style.with_weight(TextWeight::Semibold);
+        let count = count.to_string();
+        let badge_width = ui::widget::BadgeFace::intrinsic_width(&count, text_renderer, theme);
+        // The name stops short of the count badge and whatever holds the
+        // trailing corner: the dismiss-all button while it shows, else the
+        // newest member's age.
+        let right = if reveal {
+            dismiss.x0 - qs::RELATED_GAP
+        } else {
+            row.x1 - qs::CONTROL_INSET - f64::from(time_width) - qs::RELATED_GAP
+        };
+        let label_room = (right - badge_width - qs::RELATED_GAP - x).max(0.0);
+        let label = preview_line(text_renderer, label, f32_of_f64(label_room), &title_style);
+        let (label_width, _) =
+            ui::widget::TextLineFace::styled(&label, &title_style, TextRole::Label)
+                .measure(text_renderer);
+        ui::widget::TextLineFace::styled(&label, &title_style, TextRole::Label)
             .start()
             .paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                Rect::new(x, source_y, count_right, source_y + layout.caption_lh),
-                colors.text_dim,
+                Rect::new(x, title_y, x + label_width, title_y + layout.label_lh),
+                colors.text_primary,
             );
+        let badge_x = x + label_width + qs::RELATED_GAP;
+        ui::widget::BadgeFace::new(
+            Rect::new(
+                badge_x,
+                title_y,
+                badge_x + badge_width,
+                title_y + layout.label_lh,
+            ),
+            &count,
+        )
+        .paint(scene, transform, text_renderer, theme);
         // Dismiss-all stands where the time is while it is shown.
         if !reveal {
             ui::widget::TextLineFace::styled(&age, &caption_style, TextRole::Caption)
@@ -2483,33 +2541,22 @@ impl NotificationCenter {
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     Rect::new(
                         row.x1 - qs::CONTROL_INSET - f64::from(time_width),
-                        source_y,
+                        title_y,
                         row.x1 - qs::CONTROL_INSET,
-                        source_y + layout.caption_lh,
+                        title_y + layout.label_lh,
                     ),
                     colors.text_dim,
                 );
         }
-        let text_w = f32_of_f64(dismiss.x0 - qs::RELATED_GAP - x);
-        let title_y = source_y + layout.caption_lh;
-        let title_style = label_style.with_weight(TextWeight::Semibold);
-        let label = preview_line(text_renderer, label, text_w, &title_style);
-        let label_right = x + f64::from(text_w);
-        ui::widget::TextLineFace::styled(&label, &title_style, TextRole::Label)
-            .start()
-            .paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                Rect::new(x, title_y, label_right, title_y + layout.label_lh),
-                colors.text_primary,
-            );
         if !expanded {
+            let text_w = f32_of_f64((dismiss.x0 - qs::RELATED_GAP - x).max(0.0));
             let title = preview_line(text_renderer, &newest.title, text_w, &caption_style);
             let top = title_y + layout.label_lh;
             ui::widget::TextLineFace::styled(&title, &caption_style, TextRole::Caption)
                 .start()
                 .paint(
                     &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                    Rect::new(x, top, label_right, top + layout.caption_lh),
+                    Rect::new(x, top, x + f64::from(text_w), top + layout.caption_lh),
                     colors.text_dim,
                 );
         }
@@ -2522,7 +2569,7 @@ impl NotificationCenter {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        (dismiss, agent): (Rect, Option<Rect>),
+        dismiss: Rect,
         (focused, cursor): (Option<RowControl>, Option<Point>),
     ) {
         let mut paint = |rect: Rect, icon: ui::icons::Icon, control, name: &str| {
@@ -2544,14 +2591,6 @@ impl NotificationCenter {
             RowControl::Dismiss,
             &t("notification-center-dismiss"),
         );
-        if let Some(agent) = agent {
-            paint(
-                agent,
-                ui::icons::Icon::Send,
-                RowControl::HandToAgent,
-                &t("notification-center-hand-to-description"),
-            );
-        }
     }
 
     /// A row's icon button, shown while its row is pointed at or focused:
@@ -2709,7 +2748,9 @@ mod tests {
         assert_eq!(center.action_focus, Some(ActionFocus::Clear));
         // Fold the group with the pointer after focusing Clear all. Enter
         // must not invoke that old header focus and erase the history.
-        center.click(&host, &layout, layout.row(0).center());
+        let rows = center.rows(&host);
+        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+        center.click(&host, &layout, layout.row_in(0, &shapes).center());
         assert_eq!(center.action_focus, None);
         assert_eq!(center.rows(&host).len(), 1);
         assert_eq!(
@@ -2809,10 +2850,13 @@ mod tests {
     }
 
     #[test]
-    fn a_grouped_row_drops_the_source_line_its_header_already_carries() {
+    fn a_group_header_and_its_rows_never_repeat_the_source() {
         let host = TestHost::default();
         host.log.borrow_mut().retain(from_app("mail", "one"));
         host.log.borrow_mut().retain(from_app("mail", "two"));
+        host.log
+            .borrow_mut()
+            .retain(Notification::new("Build finished", ""));
         let layout = layout();
         let rows = NotificationCenter::new().rows(&host);
         let shapes = NotificationCenter::shapes(&host, &layout, &rows);
@@ -2823,14 +2867,29 @@ mod tests {
             .count();
         assert!(grouped > 0, "the app's members sit under its header");
         for (row, shape) in rows.iter().zip(&shapes) {
+            // Only a standalone row names its sender above the title: a
+            // header names it once, and its members sit under that name.
             assert_eq!(
                 shape.has_source(),
-                !matches!(row, HistoryRow::Item { grouped: true, .. }),
+                !matches!(
+                    row,
+                    HistoryRow::Group { .. } | HistoryRow::Item { grouped: true, .. }
+                ),
+            );
+            assert_eq!(
+                shape.is_grouped(),
+                matches!(row, HistoryRow::Item { grouped: true, .. })
             );
         }
         let ungrouped = layout.row_extent(&RowShape::default());
-        let member = layout.row_extent(&RowShape::default().without_source());
+        let member = layout.row_extent(&RowShape::default().grouped());
         assert_eq!(member, ungrouped - layout.caption_lh, "one line less");
+        let header = layout.row_extent(&RowShape::new(1).without_source());
+        assert_eq!(
+            header,
+            ungrouped - 2.0 * layout.caption_lh,
+            "the header trades its source line for one fold preview line"
+        );
     }
 
     #[test]
@@ -3045,6 +3104,157 @@ mod tests {
         assert_eq!(center.selected, selected);
         center.key(&host, &layout, &Key::Named(NamedKey::Enter));
         assert!(center.is_reading());
+    }
+
+    /// Every row and group header leads with a mark for whoever sent it: an
+    /// app's own glyph or artwork, and the system's bell for a notification
+    /// from no app at all. The mark gets its own box inside the row and the
+    /// text starts after it, so no row has an empty gutter.
+    #[test]
+    fn every_row_and_group_header_leads_with_its_senders_mark() {
+        let host = TestHost::default();
+        for n in [
+            from_app("mail", "one"),
+            from_app("mail", "two"),
+            from_app("chat", "hello"),
+            Notification::new("Battery low", "20% left"),
+        ] {
+            host.log.borrow_mut().retain(n);
+        }
+        let layout = layout();
+        let center = NotificationCenter::new();
+        let rows = center.rows(&host);
+        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+        assert!(
+            rows.iter()
+                .any(|row| matches!(row, HistoryRow::Group { .. })),
+            "the fixture has a group to check its header"
+        );
+        let mut system = None;
+        for (at, (row, shape)) in rows.iter().zip(&shapes).enumerate() {
+            let rect = layout.row_in(at, &shapes);
+            let (mark, grouped) = match row {
+                HistoryRow::Group { .. } => (layout.group_mark(rect, shape), false),
+                HistoryRow::Item { index, grouped } => {
+                    system = system.or_else(|| {
+                        let history = host.log();
+                        let notification = history.history().get(*index)?;
+                        (!grouped && notification.app_id.is_none()).then(|| notification.clone())
+                    });
+                    (layout.row_mark(rect, shape), *grouped)
+                }
+            };
+            assert!(
+                mark.width() >= qs::GLYPH - 1e-6 && mark.height() >= qs::GLYPH - 1e-6,
+                "{row:?} leads with no mark"
+            );
+            assert!(
+                mark.x0 >= rect.x0 + qs::CONTROL_INSET - 1e-6
+                    && mark.x1 <= rect.x1 - qs::CONTROL_INSET + 1e-6
+                    && mark.y0 >= rect.y0
+                    && mark.y1 <= rect.y1,
+                "{row:?}'s mark at {mark:?} leaves its row {rect:?}"
+            );
+            let text_x = mark.x1 + qs::RELATED_GAP;
+            match row {
+                HistoryRow::Group { .. } => {
+                    let disclosure = qs::leading_glyph(rect, qs::CONTROL_INSET, qs::GLYPH);
+                    assert!(
+                        disclosure.x1 + qs::RELATED_GAP <= mark.x0,
+                        "{row:?}'s mark sits on its fold chevron"
+                    );
+                    assert!(text_x < rect.x1 - qs::CONTROL_INSET);
+                }
+                HistoryRow::Item { .. } => assert!(
+                    (text_x + layout.text_width(grouped) - (rect.x1 - qs::CONTROL_INSET)).abs()
+                        < 1e-6,
+                    "{row:?}'s text runs under its mark or controls"
+                ),
+            }
+        }
+        let notification = system.expect("the fixture has a notification from no app");
+        assert_eq!(
+            notification.sender_name(),
+            t("notification-group-system"),
+            "a notification from no app is still attributed"
+        );
+        assert_eq!(
+            notification.mark().icon,
+            Some(ui::icons::Icon::Bell),
+            "a notification from no app leads with the system's bell"
+        );
+        let mark_of = |app: &str| {
+            host.log()
+                .history()
+                .iter()
+                .find(|n| n.app_id.as_deref() == Some(app))
+                .and_then(|n| n.mark().icon)
+        };
+        assert_eq!(mark_of("mail"), Some(ui::icons::Icon::Mail));
+        assert_eq!(mark_of("chat"), Some(ui::icons::Icon::MessageSquare));
+        assert_ne!(
+            mark_of("mail"),
+            mark_of("chat"),
+            "two apps never share one mark"
+        );
+    }
+
+    #[test]
+    fn each_sender_known_only_by_its_executable_gets_its_own_mark() {
+        let posting = |app: &str| {
+            let mut notification = Notification::new("posted", "");
+            notification.app_id = Some("/usr/bin/notify-send".to_string());
+            notification.app_name = Some(app.to_string());
+            notification
+        };
+        let marks: Vec<_> = ["Notes", "Chat", "Terminal"]
+            .into_iter()
+            .map(|app| (app, posting(app).mark().icon))
+            .collect();
+        assert_eq!(
+            marks,
+            vec![
+                ("Notes", Some(ui::icons::Icon::FileText)),
+                ("Chat", Some(ui::icons::Icon::MessageSquare)),
+                ("Terminal", Some(ui::icons::Icon::SquareTerminal)),
+            ],
+            "a tool posting for an app is drawn as that app"
+        );
+        // The launcher-verified app keeps its own glyph whichever name the
+        // sender used.
+        let mut chat = from_app("chat", "hello");
+        chat.app_name = Some("Something else".to_string());
+        assert_eq!(chat.mark().icon, Some(ui::icons::Icon::MessageSquare));
+    }
+
+    /// The mark is painted from the notification: two rows that differ only
+    /// in who sent them draw different glyphs.
+    #[test]
+    fn a_rows_mark_is_painted_from_its_sender() {
+        let paint = |notification: Notification| {
+            let host = TestHost::default();
+            host.log.borrow_mut().retain(notification);
+            let layout = layout();
+            let mut center = NotificationCenter::new();
+            let mut scene = Scene::new();
+            center.draw(
+                &host,
+                &layout,
+                &mut scene,
+                Affine::IDENTITY,
+                &mut TextRenderer::new(),
+                &Theme::dark(),
+                None,
+            );
+            scene.encoding().path_data.clone()
+        };
+        let system = paint(Notification::new("Battery low", "20% left"));
+        let app = paint(from_app("mail", "Battery low"));
+        assert!(!system.is_empty() && !app.is_empty());
+        assert_ne!(
+            system, app,
+            "an app's row and the system's draw their own marks"
+        );
     }
 }
 

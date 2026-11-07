@@ -1,5 +1,5 @@
 //! An issue's page: its title, status and assignee, its description in the
-//! block editor, its sub-issues, its agent's run and its thread.
+//! block editor, its sub-issues, what it links to and its thread.
 //!
 //! Each part that shows the issue's state is built again only when that
 //! part changes, so typing in the title or the description never rebuilds
@@ -8,15 +8,14 @@
 //! location names it.
 
 use crate::model::{
-    Issue, Message, MessageKind, ModelChoice, Run, RunPhase, Status, Tracker, agent_assignee,
-    issue_resource, money, person_assignee, tracker,
+    Issue, Message, MessageKind, Status, Tracker, agent_assignee, issue_resource, person_assignee,
+    tracker,
 };
-use tilo_agent_models::OfferedModels;
 use tilo_rich_text::RichTextFieldViews;
 use ui::prelude::*;
 use ui::presence::ParticipantKind;
 use ui::tilo_resource::NonBlank;
-use ui::widget::{Badge, ChipStyle, Dropdown, Fact, Facts, Tone};
+use ui::widget::{Avatar, AvatarSize, Badge, ButtonRole, ChipStyle, Fact, Facts, Stack, Tone};
 
 use crate::{Nav, reference, tr, tr_with};
 
@@ -93,16 +92,11 @@ fn content(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
                             .with_intrinsic_height()
                             .with_rhythm(ui::tokens::Rhythm::Group)
                             .push(Box::new(header))
-                            .push(facts(cx, id))
-                            .push(labels(cx, id))
-                            .push(Box::new(
-                                Text::new("tasks-issue-description").with_role(TextRole::Heading),
-                            ))
+                            .push(properties(cx, id))
+                            .push(plan(cx, id))
                             .push(body)
-                            .push(about(cx, id))
                             .push(sub_issues(cx, id, nav))
                             .push(links(cx, id))
-                            .push(run(cx, id))
                             .push(thread(cx, id)),
                     )),
             )),
@@ -122,86 +116,89 @@ fn body_edit(
         .expect("the tracker offers field edits")
 }
 
-/// The status and the assignee, each a control on the issue's own action.
-fn facts(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let labels: Vec<String> = Status::ALL
-        .iter()
-        .map(|status| tr(status.label_key()))
-        .collect();
-    let choices = labels.clone();
-    let place_id = id.clone();
+/// Where the issue stands, whom it is for and what it is filed under: one
+/// row of properties under its title, each a chip that opens what it can be
+/// set to — no field labels above them.
+fn properties(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    Box::new(
+        Row::new()
+            .with_rhythm(ui::tokens::Rhythm::Related)
+            .push(status_picker(cx, id))
+            .push(assignee_picker(cx, id))
+            .push(labels(cx, id)),
+    )
+}
+
+/// The issue's status, as the chip that opens every status it can take.
+fn status_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let read_id = id.clone();
-    let status = cx.control_with(
-        |state| {
-            Dropdown::from_state(labels, state)
-                .with_id("tasks-issue-status")
-                .with_accessible_name(tr("tasks-field-status"))
-        },
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&read_id)
-                .map(|issue| tr(issue.status.label_key()))
-                .unwrap_or_default()
-        },
-        Tracker::PLACE.map(move |label: String| tracker::Place {
-            issue: place_id.clone(),
-            status: choices
-                .iter()
-                .position(|choice| *choice == label)
-                .and_then(|at| Status::ALL.get(at).copied())
-                .unwrap_or_default(),
-            before: None,
-        }),
-    );
+    let status = cx.value(move |tracker: &Tracker| {
+        tracker
+            .issues
+            .get(&read_id)
+            .map(|issue| issue.status)
+            .unwrap_or_default()
+    });
+    let id = id.clone();
+    cx.switch(&status, move |cx, status| {
+        let mut choices = Stack::new();
+        for choice in Status::ALL {
+            let place_id = id.clone();
+            let place = Tracker::PLACE.map(move |()| tracker::Place {
+                issue: place_id.clone(),
+                status: choice,
+                before: None,
+            });
+            let label = tr(choice.label_key());
+            let button = Button::new(
+                &format!("tasks-issue-status-{}", choice.label_key()),
+                &label,
+            )
+            .role(ButtonRole::Plain);
+            choices = choices.push(Box::new(match cx.actions().binding(place) {
+                Some(binding) => button.on_action(binding),
+                None => button.with_enabled(false),
+            }));
+        }
+        let label = tr(status.label_key());
+        let mut chip = Button::new("tasks-issue-status", &label)
+            .showing_choice()
+            .with_accessible_name(&format!("{}: {label}", tr("tasks-field-status")));
+        if let Some(tone) = status_tone(*status) {
+            chip = chip.tone(tone);
+        }
+        Box::new(chip.with_popover(choices)) as Element
+    })
+}
+
+/// The issue's assignee, as the chip of the person or agent it is for.
+fn assignee_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let read_id = id.clone();
     let assign_id = id.clone();
-    let read_id = id.clone();
-    let assignee = cx.member_picker(
-        vec![(String::new(), tr("tasks-assignee-nobody"))],
+    cx.person_picker(
+        "tasks-issue-assignee",
+        tr("tasks-field-assignee"),
+        tr("tasks-assignee-nobody"),
         |member| match member.kind {
             ParticipantKind::Person => Some(person_assignee(&member.id).0),
             ParticipantKind::Agent => Some(agent_assignee(&member.id).0),
             _ => None,
-        },
-        |picker| {
-            Box::new(labeled_field(
-                "tasks-field-assignee",
-                picker
-                    .with_id("tasks-issue-assignee")
-                    .with_accessible_name(tr("tasks-field-assignee")),
-            ))
         },
         move |tracker: &Tracker| {
             tracker
                 .issues
                 .get(&read_id)
                 .and_then(|issue| issue.assignee.as_ref().map(|assignee| assignee.0.clone()))
-                .unwrap_or_default()
         },
-        Tracker::ASSIGN.map(move |assignee: String| tracker::Assign {
+        Tracker::ASSIGN.map(move |assignee: Option<String>| tracker::Assign {
             issue: assign_id.clone(),
-            assignee: Some(assignee),
+            assignee,
         }),
-    );
-    let model = model_picker(cx, id);
-    Box::new(
-        Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                Row::new()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(labeled_field("tasks-field-status", status)))
-                    .push(assignee)
-                    .push(model),
-            ))
-            .push(plan(cx, id)),
     )
 }
 
-/// What the issue works towards, how urgent it is, when it is wanted and
-/// what it may cost and has: each a fact a person reads, never a control.
+/// What the issue works towards, how urgent it is and when it is wanted:
+/// each a fact a person reads, never a control.
 fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let planned = cx.value({
         let id = id.clone();
@@ -221,15 +218,6 @@ fn plan(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         if let Some(due) = &planned.due {
             facts.push(Fact::text(tr_with("tasks-fact-due", &[("date", due)])));
         }
-        if let Some(budget) = planned.cost_budget {
-            facts.push(Fact::text(tr_with(
-                "tasks-fact-cost",
-                &[
-                    ("spent", &money(planned.spend.unwrap_or_default())),
-                    ("budget", &money(budget)),
-                ],
-            )));
-        }
         if facts.is_empty() {
             return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
         }
@@ -245,8 +233,6 @@ struct Plan {
     priority: Option<u8>,
     /// When it is wanted, as a person reads a date.
     due: Option<String>,
-    cost_budget: Option<u64>,
-    spend: Option<u64>,
 }
 
 impl Plan {
@@ -257,124 +243,119 @@ impl Plan {
             due: issue
                 .due_ms
                 .map(|due_ms| ui::format::date_of(&ui::format::UnixSecs(due_ms / 1_000))),
-            cost_budget: issue.cost_budget,
-            spend: issue.spend,
         }
     }
 }
 
-/// The model the issue's runs plan with, picked among those the person's
-/// provider settings offer (their record of them, the same on each of their
-/// devices); the agent's own when none is picked.
-fn model_picker(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let offered = cx.shared_person::<OfferedModels>().map_or_else(
-        || ui::LocalState::new(std::rc::Rc::default()),
-        |record| record.state(),
-    );
+/// The issue's labels, as the chips it carries, and the chip that opens the
+/// ones the workspace already uses and the field that makes a new one.
+fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
+    let read_id = id.clone();
+    let shown = cx.value(move |tracker: &Tracker| Labels::of(tracker, &read_id));
     let id = id.clone();
-    cx.switch(&offered, move |cx, offered| {
-        let choices: Vec<(String, Option<ModelChoice>)> =
-            std::iter::once((tr("tasks-model-own"), None))
-                .chain(offered.models.iter().map(|offered| {
-                    let choice = ModelChoice {
-                        profile: offered.profile.clone(),
-                        model: offered.model.clone(),
-                    };
-                    (model_label(&offered.label, &offered.provider), Some(choice))
-                }))
-                .collect();
-        let labels = choices.iter().map(|(label, _)| label.clone()).collect();
-        let (read_id, chosen_id) = (id.clone(), id.clone());
-        let shown = choices.clone();
-        let picker = cx.control_with(
-            |state| {
-                Dropdown::from_state(labels, state)
-                    .with_id("tasks-issue-model")
-                    .with_accessible_name(tr("tasks-field-model"))
-            },
-            move |tracker: &Tracker| {
-                let model = tracker
-                    .issues
-                    .get(&read_id)
-                    .and_then(|issue| issue.model.clone());
-                shown
-                    .iter()
-                    .find(|(_, choice)| *choice == model)
-                    .map(|(label, _)| label.clone())
-                    // A model no provider here offers reads as what it is.
-                    .or_else(|| model.map(|model| model_label(&model.model, &model.profile)))
-                    .unwrap_or_default()
-            },
-            Tracker::CHOOSE_MODEL.map(move |label: String| tracker::ChooseModel {
-                issue: chosen_id.clone(),
-                model: choices
-                    .iter()
-                    .find(|(shown, _)| *shown == label)
-                    .and_then(|(_, choice)| choice.clone()),
-            }),
-        );
-        Box::new(labeled_field("tasks-field-model", picker))
+    cx.switch(&shown, move |cx, shown| {
+        let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
+        for label in &shown.mine {
+            row = row.push(Box::new(Badge::text(label.clone())));
+        }
+        row = row.push(add_label(cx, &id, &shown.others));
+        Box::new(row) as Element
     })
 }
 
-/// A model as pickers name it: its label and its provider's.
-fn model_label(model: &str, provider: &str) -> String {
-    ui::i18n::I18nManager::format(
-        "tasks-model-of",
-        &[
-            ("model", model.to_owned().into()),
-            ("provider", provider.to_owned().into()),
-        ],
-    )
+/// The issue's labels, and the ones the rest of the workspace carries.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Labels {
+    /// The issue's own, in the order it holds them.
+    mine: Vec<String>,
+    /// Every label another issue carries, sorted: what the picker offers
+    /// that this issue does not have yet.
+    others: Vec<String>,
 }
 
-/// The issue's labels, and a field to add one.
-fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let current = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&id)
-                .map(|issue| issue.labels.iter().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
-        }
-    });
-    let shown = cx.switch(&current, |_, labels| {
-        let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
-        for label in labels {
-            row = row.push(Box::new(Badge::text(label.clone())));
-        }
-        Box::new(row) as Element
-    });
+impl Labels {
+    fn of(tracker: &Tracker, id: &Id) -> Self {
+        let mine: Vec<String> = tracker
+            .issues
+            .get(id)
+            .map(|issue| issue.labels.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut others: Vec<String> = tracker
+            .issues
+            .iter()
+            .flat_map(|(_, issue)| issue.labels.iter().cloned())
+            .filter(|label| !mine.contains(label))
+            .collect();
+        others.sort();
+        others.dedup();
+        Self { mine, others }
+    }
+}
+
+/// The `+` after the labels: it opens the labels the workspace already uses,
+/// each one adding it to the issue, and a field whose text makes a new one.
+fn add_label(cx: &ViewCx<Tracker>, id: &Id, others: &[String]) -> Element {
     let draft = cx.local(String::new());
     let label_id = id.clone();
-    let label = Tracker::ADD_LABEL.try_map(move |label: String| {
+    let add = Tracker::ADD_LABEL.try_map(move |label: String| {
         Some(tracker::AddLabel {
             issue: label_id.clone(),
             label: NonBlank::parse(&label)?,
         })
     });
+    let mut content = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(ui::tokens::Rhythm::Tight);
+    for label in others {
+        let issue = id.clone();
+        let name = label.clone();
+        let add_one = Tracker::ADD_LABEL.try_map(move |()| {
+            Some(tracker::AddLabel {
+                issue: issue.clone(),
+                label: NonBlank::parse(&name)?,
+            })
+        });
+        let button =
+            Button::new(&format!("tasks-issue-label-{label}"), label).role(ButtonRole::Plain);
+        content = content.push(Box::new(match cx.actions().binding(add_one) {
+            Some(binding) => button.on_action(binding),
+            None => button.with_enabled(false),
+        }));
+    }
     let input = cx.actions().submit_draft(
         TextInput::from_state(&draft)
-            .with_id("tasks-issue-label")
-            .with_accessible_name(tr("tasks-issue-add-label"))
+            .with_id("tasks-issue-label-new")
+            .with_accessible_name(tr("tasks-issue-new-label"))
             .with_placeholder("tasks-issue-label-placeholder"),
         &draft,
-        label.clone(),
+        add.clone(),
     );
-    let add = cx.actions().bind_draft(
-        Button::new("tasks-issue-add-label", "tasks-issue-add-label"),
+    let create = cx.actions().bind_draft(
+        Button::new("tasks-issue-label-create", "tasks-create-button"),
         &draft,
-        label,
+        add,
     );
-    Box::new(
+    content = content.push(Box::new(
         Row::new()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(shown)
-            .push(Box::new(input))
-            .push(Box::new(add)),
+            .with_rhythm(ui::tokens::Rhythm::Tight)
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_width(160.0)
+                    .with_child(Box::new(input)),
+            ))
+            .push(Box::new(create)),
+    ));
+    let chip = Button::icon_only(
+        "tasks-issue-add-label",
+        ui::icons::Icon::Plus,
+        &tr("tasks-issue-add-label"),
     )
+    // The chip's face, as the fields before it wear: a bare glyph would read
+    // as a mark on the row, not a control of it.
+    .role(ButtonRole::Secondary);
+    Box::new(chip.with_popover(content))
 }
 
 /// The issue's sub-issues, each opening its own page, and a field to add
@@ -440,60 +421,6 @@ fn sub_issues(cx: &ViewCx<Tracker>, id: &Id, nav: &Nav) -> Element {
 /// that keeps it; the way to write a note for it in Notes, which links the
 /// note here; and the way to link a note already written, picked by its
 /// title in the system palette.
-/// What the issue is about, when it was asked about something: the resource
-/// the request named and the app it is in, as the desktop carried them
-/// ([`tilo_actions::SelectionSubject`]). It is what the agent starts from,
-/// so a person reading the task sees the same context their agent was given,
-/// whether the request was about a selection or about the view of an app
-/// they asked from.
-fn about(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let subject = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&id)
-                .and_then(|issue| issue.subject.clone())
-                .and_then(|subject| {
-                    serde_json::from_value::<tilo_actions::SelectionSubject>(subject).ok()
-                })
-        }
-    });
-    cx.switch(&subject, |cx, subject| {
-        let Some(subject) = subject else {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
-        };
-        let resource = &subject.resource;
-        let reference = ui::tilo_reference::ResourceRef::whole(
-            resource.kind.clone(),
-            resource.id.clone(),
-            resource.label.clone(),
-        );
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                Text::new("tasks-about").with_role(TextRole::Heading),
-            ))
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_rhythm(ui::tokens::Rhythm::Tight)
-                    .push(Box::new(Text::new(&subject.app_label).dimmed()))
-                    .push(Box::new(cx.reference(&subject.app_id, None, &reference))),
-            ));
-        if let Some(excerpt) = subject.anchor.excerpt.as_deref()
-            && !excerpt.trim().is_empty()
-        {
-            column = column.push(Box::new(
-                Text::new(excerpt.trim()).with_role(TextRole::Caption),
-            ));
-        }
-        Box::new(column) as Element
-    })
-}
-
 fn links(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let links = cx.value({
         let id = id.clone();
@@ -565,215 +492,23 @@ fn link_note_button(id: &Id) -> Button {
         .on_action(ui::search::open_search_binding(&request))
 }
 
+/// What a status says about the issue, as the tone a chip states it in.
+fn status_tone(status: Status) -> Option<Tone> {
+    match status {
+        Status::Done => Some(Tone::Success),
+        Status::InProgress | Status::InReview => Some(Tone::Info),
+        Status::Backlog | Status::Todo | Status::Cancelled => None,
+    }
+}
+
 fn status_badge(status: Status) -> Badge {
-    let style = match status {
-        Status::Done => ChipStyle::Tinted(Tone::Success),
-        Status::InProgress | Status::InReview => ChipStyle::Tinted(Tone::Info),
-        Status::Backlog | Status::Todo | Status::Cancelled => ChipStyle::Neutral,
-    };
-    Badge::text(tr(status.label_key())).style(style)
+    Badge::text(tr(status.label_key()))
+        .style(status_tone(status).map_or(ChipStyle::Neutral, ChipStyle::Tinted))
 }
 
-/// What the run reads as now: its phase, the question it asks, the agent.
-#[derive(Clone, Debug, Default, PartialEq)]
-struct RunView {
-    agent: Option<String>,
-    phase: Option<RunPhase>,
-    /// Whether a person paused the run: it takes no new step until they let
-    /// it go on.
-    paused: bool,
-    /// Why it stopped, when the pause named a reason: the limit it reached.
-    reason: Option<String>,
-    /// What the run spent, as one line a person reads.
-    spend: Option<String>,
-    question: Option<String>,
-}
-
-fn run_view(issue: &Issue) -> RunView {
-    RunView {
-        agent: issue.assigned_agent().map(str::to_owned),
-        phase: issue.run.as_ref().map(Run::shown_phase),
-        paused: issue.run.as_ref().is_some_and(|run| run.paused.is_some()),
-        reason: issue
-            .run
-            .as_ref()
-            .and_then(|run| run.paused.as_ref())
-            .map(|paused| paused.reason.clone())
-            .filter(|reason| !reason.is_empty()),
-        spend: issue.run.as_ref().and_then(spend_line),
-        question: issue
-            .run
-            .as_ref()
-            .filter(|run| run.asks_its_person())
-            .and_then(|run| run.confirmation.as_ref())
-            .map(|question| {
-                question
-                    .draft
-                    .get("action_label")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or(&question.action)
-                    .to_owned()
-            }),
-    }
-}
-
-/// What a run spent, on which model and on which device, as one line a
-/// person reads. A run that priced nothing — one on a local model — says
-/// what it used and that it cost no money rather than showing `0.00`.
-fn spend_line(run: &Run) -> Option<String> {
-    let spend = run.spend.as_ref()?;
-    if spend.steps_taken == 0 {
-        return None;
-    }
-    let mut parts = Vec::new();
-    parts.push(if spend.currency.is_empty() {
-        tr("tasks-run-spent-nothing")
-    } else {
-        tr_with(
-            "tasks-run-spent",
-            &[
-                ("cost", &money(spend.cost())),
-                ("currency", &spend.currency),
-            ],
-        )
-    });
-    parts.push(tr_with(
-        "tasks-run-used",
-        &[("tokens", &ui::format::count(spend.tokens()))],
-    ));
-    let step = spend.steps.last()?;
-    if !step.model.is_empty() {
-        parts.push(tr_with("tasks-run-model", &[("model", &step.model)]));
-    }
-    if !step.device.is_empty() {
-        parts.push(tr_with("tasks-run-device", &[("device", &step.device)]));
-    }
-    Some(parts.join(". "))
-}
-
-/// The agent's run: start it, stop it, answer what it asks.
-fn run(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let state = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| tracker.issues.get(&id).map(run_view).unwrap_or_default()
-    });
-    let id = id.clone();
-    cx.switch(&state, move |cx, view| {
-        let Some(agent) = &view.agent else {
-            return Box::new(Column::new().with_no_padding().with_intrinsic_height()) as Element;
-        };
-        // The same issue as a conversation, in a window of its own: the
-        // app's published effect, which the shell and an agent open it by.
-        let open_chat = cx
-            .effect_button(
-                "tasks-open-chat",
-                &crate::TasksEffect::OpenChat { issue: id.clone() },
-            )
-            .with_icon(ui::icons::Icon::MessageCircle);
-        let mut column = Column::new()
-            .with_no_padding()
-            .with_intrinsic_height()
-            .with_rhythm(ui::tokens::Rhythm::Related)
-            .push(Box::new(
-                Row::new()
-                    .no_wrap()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(
-                        Container::new()
-                            .with_flex_grow()
-                            .with_no_padding()
-                            .with_child(Box::new(
-                                Text::new("tasks-run").with_role(TextRole::Heading),
-                            )),
-                    ))
-                    .push(Box::new(open_chat)),
-            ));
-        let phase = if view.paused {
-            tr("tasks-run-paused")
-        } else {
-            view.phase.map_or_else(
-                || tr("tasks-run-not-started"),
-                |phase| tr(phase.label_key()),
-            )
-        };
-        column = column.push(Box::new(Text::new(&ui::i18n::I18nManager::format(
-            "tasks-run-agent",
-            &[
-                (
-                    "agent",
-                    agent.trim_start_matches("agent:").to_owned().into(),
-                ),
-                ("phase", phase.into()),
-            ],
-        ))));
-        if let Some(reason) = &view.reason {
-            column = column.push(Box::new(
-                Banner::warning(reason.clone()).with_id("tasks-run-stopped-at-budget"),
-            ));
-        }
-        if let Some(spend) = &view.spend {
-            column = column.push(Box::new(
-                Text::new(spend)
-                    .with_id("tasks-run-spend")
-                    .with_role(TextRole::Caption),
-            ));
-        }
-        if let Some(action) = &view.question {
-            column = column.push(Box::new(
-                Banner::warning(ui::i18n::I18nManager::format(
-                    "tasks-run-asks",
-                    &[("action", action.clone().into())],
-                ))
-                .with_id("tasks-run-question"),
-            ));
-            column = column.push(Box::new(answer_button(cx, &id)));
-        }
-        let going = view.phase.is_some_and(RunPhase::active);
-        let control = if view.paused {
-            Box::new(cx.button(
-                "tasks-run-resume",
-                Tracker::RESUME_RUN.with(tracker::ResumeRun { issue: id.clone() }),
-            )) as Element
-        } else if going {
-            let mut row = Row::new()
-                .with_rhythm(ui::tokens::Rhythm::Related)
-                .push(Box::new(cx.button(
-                    "tasks-run-pause",
-                    Tracker::PAUSE_RUN.with(tracker::PauseRun { issue: id.clone() }),
-                )));
-            row = row.push(Box::new(cx.button(
-                "tasks-run-stop",
-                Tracker::STOP_RUN.with(tracker::StopRun { issue: id.clone() }),
-            )));
-            Box::new(row) as Element
-        } else {
-            Box::new(cx.button(
-                "tasks-run-approve",
-                Tracker::APPROVE_RUN.with(tracker::ApproveRun { issue: id.clone() }),
-            )) as Element
-        };
-        Box::new(column.push(control)) as Element
-    })
-}
-
-/// The button that has the run's question put to the person on the host's
-/// own sheet, where they allow it once, allow it for this issue, or deny
-/// it: the answer goes through the host, which gives it as the person chose
-/// there. This app never answers for them.
-pub(crate) fn answer_button(cx: &ViewCx<Tracker>, id: &Id) -> Button {
-    let dispatcher = cx.dispatcher();
-    let invoke = Tracker::ANSWER_CONFIRMATION.with(tracker::AnswerConfirmation {
-        issue: id.clone(),
-        confirm: true,
-        edits: None,
-        reason: None,
-    });
-    Button::new("tasks-run-answer", "tasks-run-answer")
-        .on_view(move || dispatcher.through_host(&invoke))
-}
-
-/// The thread: every message, oldest first, and the composer. While a run
-/// is going, a message can go to the run instead of only the thread.
+/// The thread: every message, oldest first, and the composer. A message is
+/// the issue's own comment, written by whoever asks — a person here, or the
+/// agent it is assigned to, through the same action.
 fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
     let messages = cx.value({
         let id = id.clone();
@@ -783,15 +518,6 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
                 .get(&id)
                 .map(|issue| issue.comments.values().cloned().collect::<Vec<Message>>())
                 .unwrap_or_default()
-        }
-    });
-    let running = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&id)
-                .is_some_and(|issue| issue.active_run().is_some())
         }
     });
     let people = cx.people();
@@ -811,27 +537,17 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
         .with_id("tasks-thread-draft")
         .with_accessible_name(tr("tasks-thread-draft"))
         .with_placeholder("tasks-thread-placeholder");
-    // One message, sent with one button: to the run while one reads it, and
-    // into the thread otherwise, so a task nobody is running still carries
-    // the conversation its collaborators have about it.
-    let send_id = id.clone();
+    let comment_id = id.clone();
     let send = cx.actions().bind_draft(
         Button::new("tasks-thread-send", "tasks-thread-send"),
         &draft,
-        Tracker::SEND_MESSAGE.try_map(move |text: String| {
-            Some(tracker::SendMessage {
-                issue: send_id.clone(),
+        Tracker::COMMENT.try_map(move |text: String| {
+            Some(tracker::Comment {
+                issue: comment_id.clone(),
                 text: NonBlank::parse(&text)?,
             })
         }),
     );
-    let label = cx.switch(&running, move |_, running| {
-        Box::new(Text::new(if *running {
-            "tasks-thread-send-to-agent"
-        } else {
-            "tasks-thread-send"
-        })) as Element
-    });
     Box::new(
         Column::new()
             .with_no_padding()
@@ -842,24 +558,18 @@ fn thread(cx: &ViewCx<Tracker>, id: &Id) -> Element {
             ))
             .push(list)
             .push(Box::new(input))
-            .push(Box::new(
-                Row::new()
-                    .with_rhythm(ui::tokens::Rhythm::Related)
-                    .push(Box::new(send))
-                    .push(label),
-            )),
+            .push(Box::new(send)),
     )
 }
 
 fn message_row(cx: &ViewCx<Tracker>, people: &ui::framework::People, message: &Message) -> Element {
-    let author = if message.by_agent {
-        message.author.trim_start_matches("agent:").to_owned()
-    } else {
-        people.name(&message.author)
-    };
+    let author = people.actor(&message.author);
     let mut heading = Row::new()
         .with_rhythm(ui::tokens::Rhythm::Tight)
-        .push(Box::new(Text::new(&author).strong()));
+        .push(Box::new(
+            Avatar::person(&author.name, &author.id).size(AvatarSize::Small),
+        ))
+        .push(Box::new(Text::new(&author.name).strong()));
     match message.kind {
         MessageKind::Comment => {}
         MessageKind::ToRun => {

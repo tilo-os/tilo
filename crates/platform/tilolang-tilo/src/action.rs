@@ -18,6 +18,7 @@ use tilo_resource::{ActionCx, Edit, Fields, Model, ModelError, Segment, Slot};
 
 use std::collections::BTreeMap;
 
+use crate::chunk::{ChunkNo, Chunks, FIRST};
 use crate::record::DynRecord;
 use tilolang_runtime::place::{AT_KEY, ITEMS_KEY, Placement};
 use tilolang_runtime::store::VersionKind;
@@ -158,6 +159,20 @@ pub enum DynEdit {
     },
     /// Remove the resource.
     Remove { id: String },
+    /// Remove the item `item` from the items of the resource `id`, keeping its id: the copy the
+    /// chunk this edit is addressed to held, when the item's move makes its copy in another.
+    RemoveItem { id: String, item: String },
+    /// Write that the collection `field` of `holder` has a run in `chunk` whose last order key
+    /// is `last` and which holds `len` items: what the action that appended to it counted.
+    RunChunk {
+        holder: String,
+        field: String,
+        chunk: ChunkNo,
+        last: String,
+        len: u64,
+    },
+    /// An edit of the chunk `chunk` of the record: the items of a collection that run holds.
+    Chunk { chunk: ChunkNo, edit: Box<DynEdit> },
     /// Queue an outside effect on the resource `id`. The entry waits in the record, under the
     /// key `entry`, for the device `owner` to carry it out. Queued again under the same key it is
     /// the same entry, so what is approved twice (on two devices, or twice on one) is queued once.
@@ -215,6 +230,51 @@ impl DynEdit {
         }
     }
 
+    /// `edit` addressed to `chunk`, unless that is where the record's manifest already places
+    /// the edit's resource: a write that would go there anyway names no chunk.
+    #[must_use]
+    pub fn routed_at(chunks: &crate::chunk::Chunks, edit: Self, chunk: ChunkNo) -> Self {
+        if chunk == chunks.chunk(edit.resource()) {
+            edit
+        } else {
+            edit.in_chunk(chunk)
+        }
+    }
+
+    /// The same edit, addressed to the chunk `chunk` of the record.
+    #[must_use]
+    pub fn in_chunk(self, chunk: ChunkNo) -> Self {
+        Self::Chunk {
+            chunk,
+            edit: Box::new(self),
+        }
+    }
+
+    /// The chunk this edit is addressed to, when it names one: the manifest of a run is written
+    /// in the record itself ([`FIRST`]), and an edit that names no chunk is written where the
+    /// record's manifest places its resource.
+    #[must_use]
+    pub fn chunk(&self) -> Option<ChunkNo> {
+        match self {
+            Self::Chunk { chunk, .. } => Some(*chunk),
+            Self::RunChunk { .. } => Some(FIRST),
+            Self::In { edit, .. } => edit.chunk(),
+            _ => None,
+        }
+    }
+
+    /// This edit without the chunk it is addressed to, or the app it is of.
+    #[must_use]
+    pub fn bare(&self) -> &Self {
+        let mut edit = self;
+        loop {
+            match edit {
+                Self::In { edit: inner, .. } | Self::Chunk { edit: inner, .. } => edit = inner,
+                other => return other,
+            }
+        }
+    }
+
     /// Whether `next`, made by the same person straight after this edit, continues the same
     /// gesture: an edit of the same field of the same resource that the field's kind says goes
     /// on from this one (typing on in a word, erasing backwards, setting one value again).
@@ -235,6 +295,13 @@ impl DynEdit {
                     edit: next_edit,
                 },
             ) => app == next_app && edit.continues(next_edit),
+            (
+                Self::Chunk { chunk, edit },
+                Self::Chunk {
+                    chunk: next_chunk,
+                    edit: next_edit,
+                },
+            ) => chunk == next_chunk && edit.continues(next_edit),
             _ => false,
         }
     }
@@ -244,12 +311,14 @@ impl DynEdit {
     pub fn reaches_outside(&self) -> bool {
         match self {
             Self::OutboxPush { .. } => true,
-            Self::In { edit, .. } => edit.reaches_outside(),
+            Self::In { edit, .. } | Self::Chunk { edit, .. } => edit.reaches_outside(),
             Self::Create { .. }
             | Self::Edit { .. }
             | Self::Insert { .. }
             | Self::Place { .. }
             | Self::Remove { .. }
+            | Self::RemoveItem { .. }
+            | Self::RunChunk { .. }
             | Self::OutboxSettle { .. }
             | Self::OutboxMark { .. }
             | Self::Migrated { .. }
@@ -270,8 +339,10 @@ impl DynEdit {
             | Self::OutboxSettle { id, .. }
             | Self::OutboxMark { id, .. }
             | Self::Migrated { id, .. }
-            | Self::TriggerRan { id, .. } => id,
-            Self::In { edit, .. } => edit.resource(),
+            | Self::TriggerRan { id, .. }
+            | Self::RemoveItem { id, .. } => id,
+            Self::RunChunk { holder, .. } => holder,
+            Self::In { edit, .. } | Self::Chunk { edit, .. } => edit.resource(),
         }
     }
 }
@@ -376,10 +447,7 @@ impl DynAction {
             }
         };
         for edit in &self.edits {
-            let mut edit = edit;
-            while let DynEdit::In { edit: inner, .. } = edit {
-                edit = inner;
-            }
+            let edit = edit.bare();
             match edit {
                 DynEdit::Create { id, .. } => add(id.clone()),
                 DynEdit::Edit { id, edit } => {
@@ -411,12 +479,15 @@ impl DynAction {
                     add(format!("{id}/{item}"));
                 }
                 DynEdit::Remove { .. }
+                | DynEdit::RemoveItem { .. }
+                | DynEdit::RunChunk { .. }
                 | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
                 | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
                 | DynEdit::TriggerRan { .. }
-                | DynEdit::In { .. } => {}
+                | DynEdit::In { .. }
+                | DynEdit::Chunk { .. } => {}
             }
         }
         out
@@ -429,10 +500,7 @@ impl DynAction {
     pub fn placed(&self) -> Vec<(String, String, String, Option<String>)> {
         let mut out = Vec::new();
         for edit in &self.edits {
-            let mut edit = edit;
-            while let DynEdit::In { edit: inner, .. } = edit {
-                edit = inner;
-            }
+            let edit = edit.bare();
             let (id, item, at, ty) = match edit {
                 DynEdit::Insert {
                     id,
@@ -494,10 +562,7 @@ impl DynAction {
             }
         };
         for edit in &self.edits {
-            let mut edit = edit;
-            while let DynEdit::In { edit: inner, .. } = edit {
-                edit = inner;
-            }
+            let edit = edit.bare();
             match edit {
                 DynEdit::Create { id, .. } => add(id.clone(), VersionKind::Created, None),
                 DynEdit::Edit { id, edit } => {
@@ -555,7 +620,10 @@ impl DynAction {
                     add(format!("{id}/{item}"), kind, None);
                 }
                 DynEdit::Remove { id } => add(id.clone(), VersionKind::Removed, None),
-                DynEdit::OutboxPush { .. }
+                DynEdit::RemoveItem { .. }
+                | DynEdit::RunChunk { .. }
+                | DynEdit::Chunk { .. }
+                | DynEdit::OutboxPush { .. }
                 | DynEdit::OutboxSettle { .. }
                 | DynEdit::OutboxMark { .. }
                 | DynEdit::Migrated { .. }
@@ -577,10 +645,7 @@ impl DynAction {
     pub fn resources(&self) -> Vec<&str> {
         let mut ids: Vec<&str> = Vec::new();
         for edit in &self.edits {
-            let mut edit = edit;
-            while let DynEdit::In { edit: inner, .. } = edit {
-                edit = inner;
-            }
+            let edit = edit.bare();
             let (DynEdit::Create { id, .. }
             | DynEdit::Edit { id, .. }
             | DynEdit::Insert { id, .. }
@@ -635,11 +700,13 @@ fn target_map(
     edit: &DynEdit,
 ) -> Result<automerge::ObjId, ActionError> {
     let held = match edit {
-        DynEdit::Create { .. } | DynEdit::In { .. } => None,
+        DynEdit::Create { .. } | DynEdit::RunChunk { .. } | DynEdit::In { .. } => None,
+        DynEdit::Chunk { edit, .. } => return target_map(doc, records, app, edit),
         DynEdit::Edit { id, .. }
         | DynEdit::Insert { id, .. }
         | DynEdit::Place { id, .. }
         | DynEdit::Remove { id }
+        | DynEdit::RemoveItem { id, .. }
         | DynEdit::OutboxPush { id, .. }
         | DynEdit::OutboxSettle { id, .. }
         | DynEdit::OutboxMark { id, .. }
@@ -661,6 +728,20 @@ fn apply_one(
 ) -> Result<(), ActionError> {
     if let DynEdit::In { app, edit } = edit {
         return apply_one(doc, records, app, edit, cx);
+    }
+    if let DynEdit::Chunk { edit, .. } = edit {
+        return apply_one(doc, records, app, edit, cx);
+    }
+    // The manifest of a run is written in the record itself, where the chunk it names is held.
+    if let DynEdit::RunChunk {
+        holder,
+        field,
+        chunk,
+        last,
+        len,
+    } = edit
+    {
+        return crate::chunk::run(doc, holder, field, *chunk, last, *len);
     }
     let app = target_map(doc, records, app, edit)?;
     match edit {
@@ -685,21 +766,7 @@ fn apply_one(
             item,
             record,
             at,
-        } => {
-            let Some((AmValue::Object(ObjType::Map), obj)) = doc.get(&app, id.as_str())? else {
-                return Err(ActionError::Refused(format!("there is no resource `{id}`")));
-            };
-            let items = ensure_map(doc, &obj, ITEMS_KEY)?;
-            let mut taken = Taken::new();
-            let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
-            let record = take_items(record, Some(item.as_str()), &mut taken);
-            record
-                .store(doc, Slot::Key(&items, item))
-                .map_err(|error| refused(&error))?;
-            let held = flat_item(doc, &obj, item)?;
-            doc.put(&held, AT_KEY, at.as_str())?;
-            store_taken(doc, &obj, taken)?;
-        }
+        } => insert_item(doc, &app, id, item, record, at)?,
         DynEdit::Place {
             id,
             item,
@@ -723,6 +790,7 @@ fn apply_one(
                 doc.delete(&app, id.as_str())?;
             }
         }
+        DynEdit::RemoveItem { id, item } => remove_item(doc, &app, id, item)?,
         DynEdit::OutboxPush {
             id,
             entry,
@@ -751,7 +819,52 @@ fn apply_one(
         }
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::TriggerRan { id, key, value } => mark_trigger(doc, &app, id, key, value)?,
-        DynEdit::In { .. } => {}
+        DynEdit::In { .. } | DynEdit::Chunk { .. } | DynEdit::RunChunk { .. } => {}
+    }
+    Ok(())
+}
+
+/// Insert the item `item` of the resource `id`, holding `record`, placed at `at`: the map of the
+/// record and of the item is made in the chunk the edit is applied to, which holds the run the
+/// item joins.
+fn insert_item(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    item: &str,
+    record: &Json,
+    at: &str,
+) -> Result<(), ActionError> {
+    let obj = ensure_map(doc, app, id)?;
+    let items = ensure_map(doc, &obj, ITEMS_KEY)?;
+    let mut taken = Taken::new();
+    let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+    let record = take_items(record, Some(item), &mut taken);
+    record
+        .store(doc, Slot::Key(&items, item))
+        .map_err(|error| refused(&error))?;
+    let held = flat_item(doc, &obj, item)?;
+    doc.put(&held, AT_KEY, at)?;
+    store_taken(doc, &obj, taken)
+}
+
+/// Take the item `item` out of the resource `id`, with everything it holds: the other chunk of
+/// the record holds the copy it replaces, when it moved there.
+fn remove_item(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    item: &str,
+) -> Result<(), ActionError> {
+    let items = doc
+        .get(app, id)?
+        .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj))
+        .and_then(|obj| doc.get(&obj, ITEMS_KEY).ok().flatten())
+        .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj));
+    if let Some(items) = items
+        && doc.get(&items, item)?.is_some()
+    {
+        doc.delete(&items, item)?;
     }
     Ok(())
 }
@@ -1206,10 +1319,12 @@ impl DynAction {
         &self,
         doc: &Doc,
     ) -> Option<(String, &'static crate::schema::TypeSchema, Option<String>)> {
-        let mut edit = self.edits.first()?;
-        while let DynEdit::In { edit: inner, .. } = edit {
-            edit = inner;
-        }
+        // What it describes is what it wrote of a resource, not the run entry it records first.
+        let edit = self
+            .edits
+            .iter()
+            .map(DynEdit::bare)
+            .find(|edit| !matches!(edit, DynEdit::RunChunk { .. }))?;
         let (id, path) = match edit {
             DynEdit::Create { id, record } => {
                 let schema = record
@@ -1245,12 +1360,13 @@ impl DynAction {
             }
             DynEdit::Place { id, item, .. } => (id, Some(item.clone())),
             DynEdit::Remove { id }
+            | DynEdit::RemoveItem { id, .. }
             | DynEdit::OutboxPush { id, .. }
             | DynEdit::OutboxSettle { id, .. }
             | DynEdit::OutboxMark { id, .. }
             | DynEdit::Migrated { id, .. }
             | DynEdit::TriggerRan { id, .. } => (id, None),
-            DynEdit::In { .. } => return None,
+            DynEdit::In { .. } | DynEdit::Chunk { .. } | DynEdit::RunChunk { .. } => return None,
         };
         let root = crate::reads::resource_obj(doc, &self.app, id)?;
         let root_ty = crate::reads::type_at(doc, &root)?;
@@ -1261,6 +1377,7 @@ impl DynAction {
         };
         let located = crate::reads::locate_ref(
             doc,
+            None,
             (&self.app, &root_ty),
             &at,
             &crate::items::Nested::default(),
@@ -1281,7 +1398,7 @@ impl DynAction {
     /// item is stored empty and its fields are written after it.
     fn written_text(&self, id: &str, item: Option<&str>, field: &str) -> Option<String> {
         self.edits.iter().rev().find_map(|edit| {
-            let DynEdit::Edit { id: edited, edit } = edit else {
+            let DynEdit::Edit { id: edited, edit } = edit.bare() else {
                 return None;
             };
             if edited != id {
@@ -1367,17 +1484,13 @@ fn stored_map(
         .find(|map| doc.get(map, id).ok().flatten().is_some())
 }
 
-/// Read the resource `id` of `app` from `doc`.
+/// Read the resource `id` of `app` from the store's `chunks`: its fields in the chunk the
+/// record's manifest places it in, and its items in the chunks their runs are in.
 ///
 /// # Errors
 /// The resource is absent, or its type is not registered.
-pub fn read_resource(doc: &Doc, app: &str, id: &str) -> Result<DynRecord, ModelError> {
-    match crate::reads::resource_obj(doc, app, id) {
-        Some(obj) => DynRecord::read_whole(doc, &obj),
-        None => Err(ModelError::Missing {
-            path: id.to_owned(),
-        }),
-    }
+pub fn read_resource(chunks: &Chunks, app: &str, id: &str) -> Result<DynRecord, ModelError> {
+    DynRecord::read_whole(chunks, app, id)
 }
 
 /// The ids of every resource of `app` in `doc`, those under its earlier ids included, in key

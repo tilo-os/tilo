@@ -145,6 +145,8 @@ impl SignalMeterFace {
 pub struct SignalMeter {
     level: SignalLevel,
     rect: Rect,
+    /// Its level changed since the last frame drew it.
+    dirty: bool,
 }
 
 impl SignalMeter {
@@ -153,6 +155,7 @@ impl SignalMeter {
         Self {
             level,
             rect: Rect::ZERO,
+            dirty: true,
         }
     }
 
@@ -161,9 +164,20 @@ impl SignalMeter {
     pub const fn level(&self) -> SignalLevel {
         self.level
     }
+
+    /// Show `level` from now on.
+    pub fn set_level(&mut self, level: SignalLevel) {
+        if self.level == level {
+            return;
+        }
+        self.level = level;
+        self.dirty = true;
+    }
 }
 
 impl Widget for SignalMeter {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -191,6 +205,8 @@ impl Widget for SignalMeter {
     ) {
         SignalMeterFace::new(self.level).paint(scene, transform, theme, self.rect);
     }
+
+    crate::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "SignalMeter"

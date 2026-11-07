@@ -1400,6 +1400,7 @@ mod tests {
                 [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
             )
             .expect("this computer's engine opens");
+            the_fixture_governs(&engine, workspace_id);
             let governor = TestGovernor::empty_interactive(
                 cert.clone(),
                 key.clone(),
@@ -1564,6 +1565,14 @@ mod tests {
             .expect("a workspace on the desk")
     }
 
+    /// Let go of the workspace the desk founded here, so a fixture host can be
+    /// the one that governs it: the fixture's own genesis is the workspace's
+    /// then, and the devices it admits are the workspace's.
+    fn the_fixture_governs(mine: &Engine, workspace_id: WorkspaceId) {
+        mine.delete(workspace_id)
+            .expect("this device lets go of the workspace it founded");
+    }
+
     /// Another person the workspace admits, on a device of her own: her
     /// engine on `her_state`, her certificate and key, and the id the
     /// workspace knows her by.
@@ -1590,6 +1599,9 @@ mod tests {
             [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
         )
         .expect("this computer's engine opens");
+        // The workspace the desk made is this computer's own already: a
+        // fixture host governs it from here, and admits her device into it.
+        the_fixture_governs(&mine, workspace_id);
         let governor =
             TestGovernor::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
                 .expect("this computer's device governs the workspace");
@@ -1615,39 +1627,6 @@ mod tests {
             }
         }
         (hers, her, her_key, person)
-    }
-
-    /// This computer's device as the workspace's governor, as a session of
-    /// its own took it: what the workspace this desk keeps has of its own.
-    fn this_computer_governs(
-        state: &std::path::Path,
-        workspace_id: WorkspaceId,
-        cert: &tilo_user_identity::DeviceCert,
-        key: &SigningKey,
-        now: std::time::SystemTime,
-    ) {
-        let mine = Engine::open(
-            identity(cert, key),
-            Some(state),
-            [(WorkspaceSlot::of_workspace(workspace_id), workspace_id)],
-        )
-        .expect("this computer's engine opens");
-        let governor =
-            TestGovernor::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
-                .expect("this computer's device governs the workspace");
-        let governor = testing::enroll_into(governor, mine.owner(), key, cert)
-            .expect("the workspace is this computer's");
-        for (bytes, _) in governor.outgoing() {
-            mine.owner()
-                .receive(
-                    workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
-                    postcard::from_bytes(bytes).expect("a workspace change"),
-                    None,
-                    now,
-                )
-                .expect("the workspace's change is taken");
-        }
     }
 
     /// This session's broker writes `command` into the workspace's people as
@@ -1924,11 +1903,9 @@ mod tests {
     #[test]
     fn an_agent_cannot_change_a_workspaces_people() {
         let mut home = tilo_test_env::TestHome::new().expect("a home for this computer");
-        let (_identity, cert, key) = provisioned_identity(&mut home);
+        let (_identity, cert, _key) = provisioned_identity(&mut home);
         let state = tempfile::tempdir().expect("a state directory");
         let workspace_id = a_workspace_on_the_desk(state.path());
-        let now = std::time::SystemTime::now();
-        this_computer_governs(state.path(), workspace_id, &cert, &key, now);
         let stranger = SigningKey::from_bytes(&[0x73; 32])
             .verifying_key()
             .to_bytes();
@@ -1982,23 +1959,6 @@ mod tests {
         )
         .expect("this computer's engine opens");
         let now = std::time::SystemTime::now();
-        let governor =
-            TestGovernor::empty_interactive(cert.clone(), key.clone(), &workspace_id.to_string())
-                .expect("this computer's device governs the workspace");
-        let governor = testing::enroll_into(governor, engine.owner(), key, cert)
-            .expect("the workspace is this computer's");
-        for (bytes, _) in governor.outgoing() {
-            engine
-                .owner()
-                .receive(
-                    workspace_id,
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(cert.device_public_key),
-                    postcard::from_bytes(bytes).expect("a workspace change"),
-                    None,
-                    now,
-                )
-                .expect("this device takes the workspace's change");
-        }
         engine
             .owner()
             .issue_invitation(

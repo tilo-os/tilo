@@ -13,9 +13,10 @@ pub(super) struct Retained {
     /// Debug builds compare a frame repainted in part with a full render.
     #[cfg(debug_assertions)]
     check: Option<ui::retained_raster::RasterCheck>,
-    /// Debug builds: what the frame the target shows was repainted with.
+    /// Debug builds: what the frame the check started on was repainted
+    /// with, and what the renderer had lost or grown at the time.
     #[cfg(debug_assertions)]
-    pub(super) repainted: Option<String>,
+    check_note: Option<String>,
 }
 
 impl Retained {
@@ -29,7 +30,7 @@ impl Retained {
             #[cfg(debug_assertions)]
             check: None,
             #[cfg(debug_assertions)]
-            repainted: None,
+            check_note: None,
         }
     }
 
@@ -53,9 +54,19 @@ impl Retained {
         #[cfg(debug_assertions)]
         {
             self.check = None;
-            self.repainted = None;
+            self.check_note = None;
         }
     }
+}
+
+/// How the frame the target now holds was drawn: what the check reports in
+/// its place when the frame it compares differs from a full render.
+#[cfg(debug_assertions)]
+pub(super) struct Drawn {
+    /// The renderer's scratch now.
+    pub(super) scratch: ui::render_bump_recovery::Scratch,
+    /// The frame's repaint, and the state the renderer drew it in.
+    pub(super) note: String,
 }
 
 /// Compare the last frame repainted in part, once read back, with a full
@@ -70,20 +81,23 @@ pub(super) fn check_retained(
     physical: &vello::Scene,
     key: ui::retained_raster::TargetKey,
     full_redraw: bool,
+    drawn: Drawn,
 ) {
     // The check renders a full frame on the GPU to compare with: a target
     // rasterized on the CPU, or one whose renderer has not compiled yet, has
     // nothing to compare with.
     if retained.raster.on_cpu() {
         retained.check = None;
+        retained.check_note = None;
         return;
     }
     let Some(renderer) = renderer else {
         retained.check = None;
+        retained.check_note = None;
         return;
     };
     if let Some(check) = &retained.check {
-        let Some(readback) = check.differences() else {
+        let Some(readback) = check.differences(drawn.scratch) else {
             return;
         };
         match readback {
@@ -93,21 +107,43 @@ pub(super) fn check_retained(
                     .map_or_else(String::new, |(x0, y0, x1, y1)| {
                         format!(", at {x0},{y0} to {x1},{y1}")
                     });
+                let runs = differences
+                    .rows
+                    .iter()
+                    .map(|(y, runs)| {
+                        let runs: Vec<String> = runs
+                            .iter()
+                            .map(|(from, to)| format!("{from}..{to}"))
+                            .collect();
+                        format!("{y}: {}", runs.join(","))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
                 web_sys::console::error_1(&JsValue::from_str(&format!(
-                    "retained frame differs from a full render in {} pixels{where_}, after repainting {:?}: at {:?} it shows the repainted frame's colour, then the full render's",
-                    differences.count, retained.repainted, differences.first
+                    "retained frame differs from a full render in {} pixels{where_}, {} of them inside the bounds, {} at the base colour in the target and {} in the full render, after {}: at {:?} it shows the repainted frame's colour, then the full render's; rows {runs}",
+                    differences.count,
+                    differences.inside,
+                    differences.kept_base,
+                    differences.render_base,
+                    retained
+                        .check_note
+                        .as_deref()
+                        .unwrap_or("a frame the check did not start on"),
+                    differences.first,
                 )));
             }
             // A check that could not read the frames back proves nothing:
             // it says so, rather than that the frame is stale.
             ui::retained_raster::Readback::Unreadable(why) => {
                 web_sys::console::warn_1(&JsValue::from_str(&format!(
-                    "the retained check could not read a frame back: {why}"
+                    "the retained check proves nothing for {}: {why}",
+                    retained.check_note.as_deref().unwrap_or("an earlier frame")
                 )));
             }
             ui::retained_raster::Readback::Differing(_) => {}
         }
         retained.check = None;
+        retained.check_note = None;
     }
     if full_redraw {
         return;
@@ -123,8 +159,12 @@ pub(super) fn check_retained(
         physical,
         (key.width, key.height),
         key.base_color,
+        drawn.scratch,
     ) {
-        Ok(check) => retained.check = Some(check),
+        Ok(check) => {
+            retained.check = Some(check);
+            retained.check_note = Some(drawn.note);
+        }
         Err(error) => web_sys::console::error_1(&JsValue::from_str(&error)),
     }
 }

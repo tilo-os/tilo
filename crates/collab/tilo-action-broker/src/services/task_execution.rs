@@ -467,6 +467,22 @@ impl TrackerRun {
     }
 }
 
+/// The agents a workspace keeps, as its own record of them names them
+/// (`chat.agent`): an agent works here because the record names a keeper for
+/// it, and that keeper is the person whose session its device joins on.
+pub trait AgentRoster: Send + Sync {
+    /// The person who keeps `agent` in `workspace`, while the workspace's
+    /// record names it active there; `None` for an agent it does not name.
+    fn keeper(&self, workspace: &str, agent: &str) -> Option<String>;
+    /// What `agent` may spend on the day its keeper counts: the limit its
+    /// keeper set and what it spent of it. `None` where this host reads no
+    /// such record, and then the agent works unmetered.
+    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::TaskRunSpend> {
+        let _ = (workspace, agent);
+        None
+    }
+}
+
 /// The Tasks app's tracker, read for the runs it holds. Runs are written
 /// only through the tracker's own actions, invoked by the broker as the
 /// run's agent.

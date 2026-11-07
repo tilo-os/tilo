@@ -1048,6 +1048,8 @@ fn button_size(button: &mut Button, text: &mut TextRenderer) -> (f64, f64) {
 }
 
 impl Widget for Banner {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::ResourceOperations);
     fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
         let before = self.visible();

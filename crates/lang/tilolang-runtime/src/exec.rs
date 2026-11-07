@@ -171,11 +171,19 @@ impl Core {
         want == r.target.ty || crate::foreign::foreign_type(&r.target.ty).as_ref() == Some(key)
     }
 
-    fn check_param(&self, ty: &Ty, v: &Value) -> Result<(), String> {
+    fn check_param(&self, ty: &Ty, v: &Value, into_action: bool) -> Result<(), String> {
         let ok = match (ty, v) {
             // A program's `host.Resource` is any resource.
             (Ty::Record(key), Value::Ref(_)) if *key == tilolang::resource_key() => true,
             (Ty::Record(key), Value::Ref(r)) => self.ref_fits(key, r),
+            // A record built in a view (`DockItem(...)`) is a value of its type where it is read:
+            // a view's or a function's parameter, as the shell's dock hands its running items to
+            // its tiles. It names no resource, so it never reaches an action: what an action
+            // changes in its record parameter must land in a resource, not in a copy that is
+            // dropped (`marshal` refuses it there).
+            (Ty::Record(key), Value::Rec(rec)) if !into_action => {
+                self.registry.borrow().type_for(key).as_deref() == Some(rec.ty.as_str())
+            }
             (Ty::Union(keys), Value::Ref(r)) => keys.iter().any(|key| self.ref_fits(key, r)),
             // A host value (an action, a lens, a type's metadata) is held as its fields, and so
             // is a filter, held as the `host.Filter` its catalogue entry is.
@@ -205,13 +213,17 @@ impl Core {
         }
     }
 
-    /// Turn arguments into wasm values in the current frame.
+    /// Turn arguments into wasm values in the current frame. An action's export (`a_<id>`, the
+    /// ABI's name for an action) takes resources for its record parameters, never a record a
+    /// view built.
     fn marshal(
         &self,
         pkg: &Package,
+        export: &str,
         params: &[ParamMeta],
         args: &[Value],
     ) -> Result<Vec<Wasm>, String> {
+        let into_action = export.starts_with("a_");
         if params.len() != args.len() {
             return Err(format!(
                 "expected {} arguments, got {}",
@@ -243,7 +255,7 @@ impl Core {
                         .map(|i| Wasm::I32(i32::from(i != 0)))
                         .ok_or_else(mismatch),
                     Repr::Handle => {
-                        self.check_param(&ty, v)
+                        self.check_param(&ty, v, into_action)
                             .map_err(|e| format!("argument `{}`: {e}", p.name))?;
                         self.frames.borrow_mut().alloc(v.clone()).map(Wasm::I32)
                     }
@@ -279,7 +291,7 @@ impl Core {
         result: Option<&str>,
     ) -> Result<Value, RuntimeError> {
         let wasm_args = self
-            .marshal(pkg, params, args)
+            .marshal(pkg, export, params, args)
             .map_err(RuntimeError::BadArgs)?;
         let host: std::rc::Rc<dyn Host> = self.rc().map_err(RuntimeError::Package)?;
         // What the call costs is charged to the unit that makes it, from here to its end: a
@@ -2398,6 +2410,122 @@ impl Core {
         crate::run::WebResponse::of(reply)
     }
 
+    /// `notify(to, title, body, opens)`: tell the person `to` something, once. The notice is a
+    /// record written in this action's own change ([`crate::notify`]), so every device of theirs
+    /// reads it. The run's journal answers a run that replays, so it tells them no more than the
+    /// first run did.
+    fn notify_import(&self, to: i32, title: i32, body: i32, opens: i32) -> HResult<Option<Wasm>> {
+        let to = self.principal_arg(to)?;
+        let title = self.text(title)?;
+        let body = self.text(body)?;
+        let opens = match self.val(opens)? {
+            Value::Ref(r) => ResourceRef::clone(&r.target),
+            other => {
+                return trap(format!(
+                    "notify: expected the resource it opens, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let notice = crate::notify::Notice {
+            to,
+            title,
+            body,
+            opens,
+        };
+        let mut txn = None;
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                return trap("a notification is only sent in an action");
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                if !matches!(entry, crate::run::JournalEntry::Notified) {
+                    return trap(
+                        "the run diverged from its journal: expected a notification's entry",
+                    );
+                }
+                run.cursor = run.cursor.saturating_add(1);
+                return ret_void();
+            }
+        }
+        if let Ok(frame) = self.frames.borrow().top()
+            && let FrameKind::Action(state) = &frame.kind
+        {
+            txn = Some(state.txn);
+        }
+        let Some(txn) = txn else {
+            return trap("a notification is only sent in an action");
+        };
+        self.write_notice(txn, &notice)?;
+        self.journal_push(crate::run::JournalEntry::Notified)?;
+        ret_void()
+    }
+
+    /// Write the notice `notice` as a record of this action's change, in the transaction
+    /// `txn`: creating a resource writes nothing of the app's own, so the change takes its app
+    /// and kind from what else the action wrote.
+    fn write_notice(&self, txn: crate::store::Txn, notice: &crate::notify::Notice) -> HResult<()> {
+        use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
+
+        let record = self
+            .registry
+            .borrow()
+            .new_record(NOTICE_TYPE)
+            .ok_or_else(|| HostFail::Trap("the host keeps no notice type".into()))?;
+        let mut store = self.store.borrow_mut();
+        let id = store.fresh_id("notice");
+        let at = store
+            .create_in(txn, &record, &id)
+            .map_err(|error| HostFail::Trap(error.to_string()))?;
+        let scalar = |value: &Value, ty: &crate::meta::Ty| {
+            crate::host_res::to_scalar(value, ty)
+                .map_err(|error| HostFail::Trap(format!("notify: {error}")))
+        };
+        let writes = [
+            (
+                NOTICE_TO.to_owned(),
+                crate::store::Mutation::SetRegister {
+                    field: NOTICE_TO.to_owned(),
+                    value: scalar(
+                        &Value::Principal(notice.to.clone()),
+                        &crate::meta::Ty::Principal,
+                    )?,
+                },
+            ),
+            (
+                NOTICE_TITLE.to_owned(),
+                crate::store::Mutation::SetText {
+                    field: NOTICE_TITLE.to_owned(),
+                    text: notice.title.clone(),
+                },
+            ),
+            (
+                NOTICE_BODY.to_owned(),
+                crate::store::Mutation::SetText {
+                    field: NOTICE_BODY.to_owned(),
+                    text: notice.body.clone(),
+                },
+            ),
+            (
+                NOTICE_OPENS.to_owned(),
+                crate::store::Mutation::SetRegister {
+                    field: NOTICE_OPENS.to_owned(),
+                    value: scalar(
+                        &Value::resource(&notice.opens),
+                        &crate::meta::Ty::Record(tilolang::resource_key()),
+                    )?,
+                },
+            ),
+        ];
+        for (field, write) in writes {
+            store
+                .apply(txn, &at, &write)
+                .map_err(|error| HostFail::Trap(format!("notify: {field}: {error}")))?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -2417,6 +2545,7 @@ impl Core {
             Imp::OutsideAt => self.outside_at(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
+            Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
                 let who = match &frames.top()?.kind {
@@ -2535,8 +2664,9 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
             Value::Unit
         }
-        // A write is answered where it is made, and a run that waited answers it there.
-        JournalEntry::Wrote { .. } => Value::Unit,
+        // A write is answered where it is made, and a run that waited answers it there; a
+        // notification is no step's value either.
+        JournalEntry::Wrote { .. } | JournalEntry::Notified => Value::Unit,
     }
 }
 

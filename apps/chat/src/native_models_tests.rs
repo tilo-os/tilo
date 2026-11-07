@@ -74,6 +74,7 @@ fn answer(peer: &mut UnixStream, text: &str) {
         message: Message::text(Role::Assistant, text),
         stop_reason: StopReason::EndTurn,
         usage: Usage::default(),
+        cost_micros: 0,
     };
     write_frame(
         peer,

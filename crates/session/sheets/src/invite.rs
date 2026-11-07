@@ -15,14 +15,28 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Banner, Button, ButtonRole, Column, ControlSize, Divider, Element, ListRow, ModalDialog,
-    QrWidget, Row, Section, Segment, Text, TextInput, ToggleGroup,
+    Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, QrWidget, Row,
+    Section, Segment, Spacer, Text, TextInput, ToggleGroup,
 };
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
+
+/// The widest the code is drawn, quiet zone and all: room enough for squares
+/// a phone reads across a desk, and no wider than the sheet gives it.
+pub const CODE_MAX_PX: usize = 245;
+
+/// The narrowest each module is drawn: an invitation's own bytes make a code
+/// so dense that its squares are counted rather than guessed at, and below
+/// this they turn to speckle. Two pixels a module make that whole code
+/// shorter than the sheet, so a scanner can take it in at once.
+pub const CODE_MODULE_PX: u32 = 2;
+
+/// The widest each module is drawn: a link is a few dozen modules, and squares
+/// this wide make it conspicuous rather than a stamp.
+pub const CODE_MODULE_MAX_PX: u32 = 5;
 
 /// The sheet's resource: the door its actions are published on. It holds
 /// nothing; the invitations are the workspace's.
@@ -96,6 +110,9 @@ pub struct Created {
     pub invite: String,
     /// The invitation's text, as another device joins with it.
     pub link: String,
+    /// The signed invitation itself, which the text spells out in base64:
+    /// what the code carries, since the text alone is too long to scan.
+    pub code: Vec<u8>,
     /// What the link is called, who it brings in and how long it works, and
     /// the button that copies it.
     pub link_label: String,
@@ -240,6 +257,7 @@ pub fn sheet(
     choosing: &LocalState<Choosing>,
     link: &LocalState<String>,
     ask: &Ask,
+    presentation: Option<&Presentation>,
 ) -> Element {
     let mut body = Column::new()
         .with_intrinsic_height()
@@ -248,22 +266,28 @@ pub fn sheet(
     if let Some(note) = &invite.note {
         body = body.push(notice(note, ask));
     }
-    body = body.push(composing(invite, choosing, link, ask));
+    // The link last made stands first: it is what the person hands over, and
+    // the form that makes another one falls under it. The code is taller than
+    // a field, so anywhere but the top of the sheet it would open clipped.
+    if let Some(created) = &invite.created {
+        body = body.push(handover(created, link, ask));
+    }
+    body = body.push(composing(invite, choosing, ask));
     if invite.may_invite {
         body = body.push(pending(invite, ask));
     }
     let dismissed = ask.clone();
     let escaped = ask.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(invite.title.clone(), body)
             .with_test_id("invite")
             .with_icon(Icon::UserPlus)
             .with_description(invite.description.clone())
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .secondary_action(invite.close.clone(), move || dismissed(InviteEffect::Done))
             .on_dismiss(move || escaped(InviteEffect::Done)),
-    )
+    ))
 }
 
 /// What the person asked for last went wrong, or went as asked: said in a
@@ -285,12 +309,7 @@ fn notice(note: &Note, ask: &Ask) -> Element {
 
 /// Making a link: the part it brings someone in at, who it is for, and the
 /// button that makes it. Without the grant, why there is nothing to make.
-fn composing(
-    invite: &Invite,
-    choosing: &LocalState<Choosing>,
-    link: &LocalState<String>,
-    ask: &Ask,
-) -> Element {
+fn composing(invite: &Invite, choosing: &LocalState<Choosing>, ask: &Ask) -> Element {
     let mut items: Vec<Element> = Vec::new();
     if !invite.may_invite {
         items.push(caption(&invite.refusal));
@@ -343,11 +362,12 @@ fn composing(
                 }),
         )),
     ));
-    if let Some(created) = &invite.created {
-        items.push(Box::new(Divider::horizontal()));
-        items.extend(made(created, link, ask));
-    }
     Box::new(Section::new(items))
+}
+
+/// The link last made, standing on its own: the thing the person hands over.
+fn handover(created: &Created, link: &LocalState<String>, ask: &Ask) -> Element {
+    Box::new(Section::new(made(created, link, ask)))
 }
 
 /// The parts on offer, the one the person may bring someone in at chosen.
@@ -413,48 +433,60 @@ fn made(created: &Created, link: &LocalState<String>, ask: &Ask) -> Vec<Element>
         .with_id("invite-link")
         .with_read_only(true)
         .with_accessible_name(&created.link_label);
-    let code = QrWidget::new(created.link.clone())
-        .with_id("invite-code")
-        .with_alt(created.alt.clone());
+    let drawn = QrWidget::new(created.code.clone()).with_id("invite-code");
+    let px = module_px(drawn.total_modules());
+    let code = drawn.with_module_px(px).with_alt(created.alt.clone());
+    // The code stands on a line of its own, centred: the room its modules
+    // need is wider than what is left beside a field.
     vec![
         caption(&created.link_label),
         Box::new(
             Row::new()
-                .with_rhythm(Rhythm::Section)
+                .with_rhythm(Rhythm::Tight)
+                .push(Box::new(Spacer::new()))
                 .push(Box::new(code))
+                .push(Box::new(Spacer::new())),
+        ),
+        Box::new(
+            Column::new()
+                .with_intrinsic_height()
+                .with_no_padding()
+                .with_rhythm(Rhythm::Related)
+                .push(Box::new(text))
+                .push(caption(&created.brings))
+                .push(caption(&created.lasts))
                 .push(Box::new(
-                    Column::new()
-                        .with_intrinsic_height()
-                        .with_no_padding()
-                        .with_rhythm(Rhythm::Related)
-                        .push(Box::new(text))
-                        .push(caption(&created.brings))
-                        .push(caption(&created.lasts))
+                    Row::new()
+                        .with_rhythm(Rhythm::Tight)
                         .push(Box::new(
-                            Row::new()
-                                .with_rhythm(Rhythm::Tight)
-                                .push(Box::new(
-                                    Button::new("invite-copy-link", &created.copy).on_view(
-                                        move || {
-                                            copying(InviteEffect::Copy {
-                                                link: copied.clone(),
-                                            });
-                                        },
-                                    ),
-                                ))
-                                .push(Box::new(
-                                    Button::new("invite-revoke-made", &created.revoke).on_view(
-                                        move || {
-                                            revoking(InviteEffect::Revoke {
-                                                invite: invite_id.clone(),
-                                            });
-                                        },
-                                    ),
-                                )),
+                            Button::new("invite-copy-link", &created.copy).on_view(move || {
+                                copying(InviteEffect::Copy {
+                                    link: copied.clone(),
+                                });
+                            }),
+                        ))
+                        .push(Box::new(
+                            Button::new("invite-revoke-made", &created.revoke).on_view(move || {
+                                revoking(InviteEffect::Revoke {
+                                    invite: invite_id.clone(),
+                                });
+                            }),
                         )),
                 )),
         ),
     ]
+}
+
+/// How wide each module of a code `modules` across is drawn: as wide as
+/// [`CODE_MAX_PX`] allows, between the narrowest and the widest a module
+/// gets. A link's few dozen modules fill the room and read at a glance; an
+/// invitation's own bytes are drawn narrow enough that the whole code still
+/// fits the sheet.
+#[must_use]
+pub fn module_px(modules: usize) -> u32 {
+    u32::try_from(CODE_MAX_PX.checked_div(modules).unwrap_or(CODE_MAX_PX))
+        .unwrap_or(CODE_MODULE_MAX_PX)
+        .clamp(CODE_MODULE_PX, CODE_MODULE_MAX_PX)
 }
 
 /// The links that still work, each with the button that takes it back.
@@ -529,11 +561,14 @@ impl ResourceApp for InviteApp {
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
         }
-        let asking = seat;
+        let asking = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: InviteEffect, _cx| match &asking {
             Some(seat) => {
                 if effect == InviteEffect::Done {
-                    seat.presentation.gone();
+                    // Its own close: the card leaves the screen, and the shell tells it gone
+                    // once nothing of it is drawn.
+                    seat.presentation.close();
                 }
                 seat.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
@@ -548,8 +583,9 @@ impl ResourceApp for InviteApp {
             let choosing = choosing.clone();
             let link = link.clone();
             let ask = ask.clone();
+            let presentation = presentation.clone();
             cx.switch(&picked, move |_cx, _picked| {
-                sheet(&invite, &choosing, &link, &ask)
+                sheet(&invite, &choosing, &link, &ask, presentation.as_ref())
             })
         })
     }
@@ -570,9 +606,12 @@ impl ResourceApp for InviteApp {
             },
             Some("made") => {
                 let mut invite = sample_invite();
+                let link = "https://tilo.coffee/i/abcdefghijklmnop#AAABBBCCCDDDEEEFFFGGG\
+                            HHHIIIJJJKKKLLLMMMNNNO";
                 invite.created = Some(Created {
                     invite: "8f2c".to_owned(),
-                    link: "tilo://join?invite=8f2c…".to_owned(),
+                    link: link.to_owned(),
+                    code: link.as_bytes().to_vec(),
                     link_label: "The link".to_owned(),
                     brings: "Ada Lovelace-Byron joins as an editor.".to_owned(),
                     lasts: "The link works for the next 60 minutes.".to_owned(),

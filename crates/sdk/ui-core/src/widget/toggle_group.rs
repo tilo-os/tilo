@@ -2236,6 +2236,8 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
+    crate::described!();
+
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,

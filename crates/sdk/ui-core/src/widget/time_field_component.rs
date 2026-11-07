@@ -1,6 +1,8 @@
 //! [`TimeField`] as a described component.
 
 use crate::component::{Bound, Component, Described, Event};
+use crate::widget::binding::derived;
+use crate::widget::date_field::time_in;
 
 use super::TimeField;
 
@@ -35,13 +37,50 @@ fn moment(time: Option<chrono::NaiveTime>) -> String {
     time.map_or_else(String::new, |time| time.format("%H:%M").to_string())
 }
 
+/// What a picked time does: writes it into the bound moment, and reports it as the field's
+/// `change` event.
+fn reports(
+    value: &Bound<String>,
+    change: &Event,
+) -> impl FnMut(Option<chrono::NaiveTime>) + 'static {
+    let bound = value.clone();
+    let change = change.clone();
+    let mut run = matches!(&change, Event::Action(_))
+        .then(|| change.clone().handler())
+        .flatten();
+    move |time| {
+        let said = crate::component::Value::Text(moment(time));
+        bound.edited(said.clone());
+        change.fire(Some(said));
+        if let Some(run) = run.as_mut() {
+            run();
+        }
+    }
+}
+
 impl Described for TimeField {
     type Props = TimeFieldProps;
 
     fn from_props(key: &str, props: TimeFieldProps) -> Self {
-        let TimeFieldProps { value, .. } = props;
-        let shown = value.clone();
-        Self::from_state(key, &value.state)
-            .on_change(move |time| shown.edited(crate::component::Value::Text(moment(time))))
+        let TimeFieldProps { value, change } = props;
+        Self::from_state(key, &value.state).on_change(reports(&value, &change))
+    }
+
+    /// The moment it shows, and what a picked one does, change where the field stands: the row
+    /// it shows the time in stays the row it was.
+    fn set_props(&mut self, props: TimeFieldProps) -> bool {
+        let TimeFieldProps { value, change } = props;
+        let follows = self
+            .source
+            .as_ref()
+            .is_some_and(|state| state.same_state(&value.state));
+        if !follows {
+            let (shown, binding) = derived(&value.state, |text: &String| time_in(Some(text)));
+            self.source = Some(value.state.clone());
+            self.bound = Some(binding);
+            self.set_value(shown);
+        }
+        self.on_change = Some(Box::new(reports(&value, &change)));
+        true
     }
 }

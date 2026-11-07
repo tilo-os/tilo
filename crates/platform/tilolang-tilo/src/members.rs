@@ -179,17 +179,19 @@ fn reads_node(standing: &Standing, people: &People, who: &Principal, node: &Tree
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::roles::AgentPreset;
     use tilo_action_policy::{Grant, KindSet, Role, WorkspacePolicy};
 
     fn standing() -> Standing {
         let mut policy = WorkspacePolicy::new("workspace", "ada");
         policy.members.insert("bo".to_owned(), Role::Editor);
         policy.members.insert("cy".to_owned(), Role::Viewer);
-        policy.grants.extend(AgentPreset::Contributor.grants(
-            "workspace",
-            "planner",
-            &Subject::person("ada"),
+        policy.grants.push(Grant::new(
+            "agent-member:planner",
+            Subject::agent("planner"),
+            TreePath::workspace("workspace"),
+            KindSet::READ_UNDOABLE,
+            Answer::Allow,
+            Subject::person("ada"),
         ));
         // Cy may not read the secret note.
         policy.grants.push(Grant::new(

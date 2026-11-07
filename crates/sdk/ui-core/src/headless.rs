@@ -6208,6 +6208,10 @@ impl FrameHarness {
     /// Deliver one event through the production dispatch path.
     pub fn send(&mut self, event: &WindowEvent) {
         crate::motion::note_input(event);
+        // A host that runs a widget tree of its own (the desktop) sends its
+        // input here: what its controls name of themselves is revealed on the
+        // same dwell a window's own controls are.
+        self.track_tooltip(event);
         crate::focus_visible::note(event);
         // Whether the event can have changed what a frame reads is judged
         // once it is dispatched, as the live window judges it.
@@ -13400,6 +13404,18 @@ mod ordinary_confirmation_owner_tests {
     }
 }
 
+/// Where a test writes the captures a reviewer reads: the build's target
+/// directory, so a remote build can hand them back (`--fetch`), or the
+/// default target beside the source tree.
+#[cfg(test)]
+pub(crate) fn agent_marker_shots() -> std::path::PathBuf {
+    match crate::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => std::path::PathBuf::from(dir).join("agent-marker"),
+        None => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/agent-marker"),
+    }
+}
+
 #[cfg(test)]
 mod portable_host_tests;
 
@@ -13445,3 +13461,6 @@ mod owner_mount_service_custody;
 #[cfg(test)]
 #[path = "headless/activation_scene_consistency_tests.rs"]
 mod activation_scene_consistency_tests;
+#[cfg(test)]
+#[path = "headless/tooltip_tests.rs"]
+mod tooltip_tests;

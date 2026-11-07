@@ -271,6 +271,18 @@ impl AppHost {
         self.app.surface_input(&self.surface, event, false);
         self.wants = true;
     }
+
+    /// Perform `action` on the app's node `target`. A node the app does not
+    /// handle itself is pressed where it is drawn, as the app's own window
+    /// does for its assistive technology.
+    fn act(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) {
+        if let Some((x, y)) = self.app.dispatch_a11y_action(target, action) {
+            self.input(ui::synthetic_input::cursor_moved(x, y));
+            self.input(ui::synthetic_input::mouse_press());
+            self.input(ui::synthetic_input::mouse_release());
+        }
+        self.wants = true;
+    }
 }
 
 impl Published for AppHost {
@@ -305,14 +317,7 @@ impl Published for AppHost {
     }
 
     fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
-        // A node the app does not handle itself is pressed where it is
-        // drawn, as the app's own window does for its assistive technology.
-        if let Some((x, y)) = self.app.dispatch_a11y_action(target, action) {
-            self.input(ui::synthetic_input::cursor_moved(x, y));
-            self.input(ui::synthetic_input::mouse_press());
-            self.input(ui::synthetic_input::mouse_release());
-        }
-        self.wants = true;
+        self.act(target, action);
         true
     }
 
@@ -327,6 +332,57 @@ impl Published for AppHost {
             .iter()
             .filter_map(|node| node.name.clone())
             .collect()
+    }
+
+    /// The controls the app's window shows by name, each where it stands on
+    /// the desktop: what its accessibility tree exports, read with the same
+    /// rule the app's own window hands the desktop ([`ui::App::window_controls`]),
+    /// moved from the window's content to where the window is placed.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        let (ox, oy) = self.placement.origin;
+        let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
+            std::collections::BTreeMap::new();
+        for (name, (x, y, width, height)) in self.app.window_controls() {
+            // Two controls of one name: the first in reading order is the one
+            // the name means, as the window itself finds it.
+            shown
+                .entry(name)
+                .or_insert_with(|| (f64::from(ox) + x, f64::from(oy) + y, width, height));
+        }
+        shown.into_iter().collect()
+    }
+
+    /// Press the control `name` the app's window shows: the activation an
+    /// assistive technology performs on it.
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    /// Act on the control `name` the app's window shows, through the same
+    /// path a screen reader's activation takes in the app's own window.
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        let verb = match action {
+            ui::window_targets::TargetAction::Activate => ui::a11y::Action::Activate,
+            ui::window_targets::TargetAction::ShowContextMenu => ui::a11y::Action::ShowContextMenu,
+        };
+        let node = self
+            .app
+            .build_a11y_tree_update(self.placement.scale)
+            .nodes
+            .into_iter()
+            .find(|(_, described)| {
+                !described.is_hidden()
+                    && described.label().map(str::trim) == Some(name)
+                    && described.supports_action(action.accesskit())
+            })
+            .map(|(node, _)| node)
+            .ok_or_else(|| format!("no control named {name} answers {action:?}"))?;
+        self.act(node, &verb);
+        Ok(())
     }
 }
 

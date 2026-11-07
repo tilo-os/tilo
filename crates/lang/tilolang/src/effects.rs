@@ -24,17 +24,21 @@ pub enum Effect {
     Random,
     /// The clock and the person's zone: `now`, a day of a moment, a wall time of day.
     Time,
+    /// A person told something: `notify(to: ..., title: ..., body: ..., opens: ...)` reaches
+    /// their device, which a replay cannot take back.
+    Notify,
 }
 
 impl Effect {
     /// Every effect, in the order a message lists them.
-    pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time];
+    pub const ALL: &'static [Self] = &[Self::Web, Self::Random, Self::Time, Self::Notify];
 
     pub const fn word(self) -> &'static str {
         match self {
             Self::Web => "web",
             Self::Random => "random",
             Self::Time => "time",
+            Self::Notify => "notify",
         }
     }
 
@@ -44,6 +48,7 @@ impl Effect {
             Self::Web => "a service outside Tilo",
             Self::Random => "a draw",
             Self::Time => "the clock and the person's zone",
+            Self::Notify => "telling a person something",
         }
     }
 

@@ -14,7 +14,10 @@
     reason = "layer geometry: logical coordinates of an output and the surfaces on it, far from i32 limits"
 )]
 
-use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
+use smithay::backend::renderer::element::surface::{
+    WaylandSurfaceRenderElement, render_elements_from_surface_tree,
+};
+use smithay::backend::renderer::element::utils::RescaleRenderElement;
 use smithay::backend::renderer::element::{Kind, RenderElementStates};
 use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
 use smithay::desktop::WindowSurfaceType;
@@ -28,7 +31,7 @@ use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
-use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
+use smithay::utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::wayland::compositor::{get_parent, with_states};
 use smithay::wayland::shell::wlr_layer::{
@@ -48,6 +51,49 @@ pub(crate) struct Layers {
     /// them: one whose app the session keeps running between openings is
     /// hidden here instead. A name the session never named is shown.
     visibility: std::collections::BTreeMap<String, bool>,
+    /// How the session draws a surface it is moving, by the same name: one
+    /// coming or going is posed here frame by frame until it rests. A name
+    /// the session never posed is drawn as it stands.
+    poses: std::collections::BTreeMap<String, LayerPose>,
+}
+
+/// How a layer surface is drawn this frame instead of as it stands: the
+/// panel of another process coming and going, which only the session, who
+/// places it, can pose.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LayerPose {
+    /// Scaled by this much about its [`Self::anchor`] (1: as it is).
+    pub scale: f64,
+    /// Its opacity, 0 (invisible) to 1.
+    pub opacity: f32,
+    /// The point it grows from and shrinks back into, as a fraction of its
+    /// own rectangle: `(0.0, 0.0)` its top-left corner, `(1.0, 0.0)` its
+    /// top-right, `(0.5, 0.5)` its middle. The corner its slot anchors it by.
+    pub anchor: (f64, f64),
+    /// Where it is drawn instead of where it stands, in logical pixels: how
+    /// far it is still toward the anchor it comes from or goes back to.
+    pub offset: (f64, f64),
+}
+
+impl LayerPose {
+    /// Drawn as it stands.
+    pub const SETTLED: Self = Self {
+        scale: 1.0,
+        opacity: 1.0,
+        anchor: (0.0, 0.0),
+        offset: (0.0, 0.0),
+    };
+
+    /// Whether it is drawn as it stands: nothing of a pose is applied.
+    fn settled(&self) -> bool {
+        self.scale >= 1.0 && self.opacity >= 1.0 && self.offset == (0.0, 0.0)
+    }
+}
+
+impl Default for LayerPose {
+    fn default() -> Self {
+        Self::SETTLED
+    }
 }
 
 /// One layer surface and where it is on its output.
@@ -95,6 +141,7 @@ impl Layers {
             shell,
             surfaces: Vec::new(),
             visibility: std::collections::BTreeMap::new(),
+            poses: std::collections::BTreeMap::new(),
         }
     }
 
@@ -133,6 +180,20 @@ impl Layers {
     /// it never said, which is shown.
     fn shown(&self, namespace: &str) -> Option<bool> {
         self.visibility.get(namespace).copied()
+    }
+
+    /// Whether the client of `namespace` has drawn it: a surface shows
+    /// nothing before its first buffer, so a motion about it has nothing to
+    /// move until then.
+    fn drawn(&self, namespace: &str) -> bool {
+        self.surfaces
+            .iter()
+            .any(|placed| placed.namespace == namespace && placed.has_buffer())
+    }
+
+    /// How `namespace` is posed this frame, or [`LayerPose::SETTLED`].
+    fn pose(&self, namespace: &str) -> LayerPose {
+        self.poses.get(namespace).copied().unwrap_or_default()
     }
 
     /// Whether `surface` is (part of) a layer surface's tree.
@@ -298,6 +359,30 @@ impl State {
         self.layers.shown(namespace)
     }
 
+    /// Whether the client of the layer surface `namespace` has drawn it yet.
+    pub(crate) fn layer_drawn(&self, namespace: &str) -> bool {
+        self.layers.drawn(namespace)
+    }
+
+    /// Draw the layer surface `namespace` as `pose` says from the next frame
+    /// on, or as it stands again for `None`: a panel the session moves is
+    /// redrawn every frame it moves, and a settled one costs none.
+    pub(crate) fn set_layer_pose(&mut self, namespace: &str, pose: Option<LayerPose>) {
+        let settle = pose.is_none_or(|pose| pose.settled());
+        if settle {
+            if self.layers.poses.remove(namespace).is_none() {
+                return;
+            }
+        } else {
+            let pose = pose.unwrap_or_default();
+            if self.layers.poses.get(namespace) == Some(&pose) {
+                return;
+            }
+            self.layers.poses.insert(namespace.to_owned(), pose);
+        }
+        self.mark_redraw_all();
+    }
+
     /// Place every layer surface again: an output came, went or changed.
     pub(crate) fn place_layers(&mut self) {
         for index in 0..self.layers.surfaces.len() {
@@ -446,15 +531,45 @@ impl State {
             if !self.layers.visible(placed) {
                 continue;
             }
-            let location = (placed.rect.loc - geometry.loc).to_f64();
-            elements.extend(render_elements_from_surface_tree::<R, _>(
-                renderer,
-                placed.surface.wl_surface(),
-                location.to_physical_precise_round(scale),
-                Scale::from(scale),
-                1.0,
-                Kind::Unspecified,
-            ));
+            let pose = self.layers.pose(&placed.namespace);
+            let placed_at = (placed.rect.loc - geometry.loc).to_f64();
+            let location = placed_at + Point::from(pose.offset);
+            if pose.opacity <= 0.0 || pose.scale <= 0.0 {
+                continue;
+            }
+            let drawn: Vec<WaylandSurfaceRenderElement<R>> =
+                render_elements_from_surface_tree::<R, _>(
+                    renderer,
+                    placed.surface.wl_surface(),
+                    location.to_physical_precise_round(scale),
+                    Scale::from(scale),
+                    pose.opacity.min(1.0),
+                    Kind::Unspecified,
+                );
+            if (pose.scale - 1.0).abs() < f64::EPSILON {
+                elements.extend(drawn.into_iter().map(OutputRenderElement::Surface));
+            } else {
+                // Its anchor stays where the session placed it, and the rest
+                // of it grows from or shrinks back into there.
+                let placed_from: Point<i32, Physical> = location.to_physical_precise_round(scale);
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a share of one output's surface, far inside i32"
+                )]
+                let across = (f64::from(placed.rect.size.w) * scale * pose.anchor.0).round() as i32;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a share of one output's surface, far inside i32"
+                )]
+                let down = (f64::from(placed.rect.size.h) * scale * pose.anchor.1).round() as i32;
+                let pivot =
+                    Point::<i32, Physical>::new(placed_from.x + across, placed_from.y + down);
+                elements.extend(drawn.into_iter().map(|element| {
+                    OutputRenderElement::ScaledSurface(RescaleRenderElement::from_element(
+                        element, pivot, pose.scale,
+                    ))
+                }));
+            }
         }
         elements
     }

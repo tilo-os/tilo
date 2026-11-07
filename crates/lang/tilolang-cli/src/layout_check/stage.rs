@@ -240,31 +240,7 @@ impl Staged {
             }
         }
         instance.set_origin(true);
-        // The capture has no door over the workspace, so it stands where the door stands: it
-        // takes each step the instance hands over, writes it down and answers it, as a
-        // session's door does. The store reads the record's changes back, so what it tells of a
-        // change — the versions of a resource, and the marks and history drawn from them — is a
-        // session's, never a workspace staged but never written down.
-        let settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
-            instance.sync(Some(record));
-            instance.commit_planned();
-            let Some(host) = instance.host() else {
-                return Ok::<(), String>(());
-            };
-            while let Some((invocation, _)) = instance.take_invocation() {
-                let address = invocation.address.clone();
-                if address.resource == HOST_RESOURCE && address.action == COMMIT {
-                    let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
-                    if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
-                        commit(&host, &me, record, &action)?;
-                    }
-                }
-                instance.answered(&address, None);
-            }
-            instance.sync(Some(record));
-            Ok::<(), String>(())
-        };
-        settle(&mut instance, &mut record)?;
+        settle(&mut instance, &mut record, &me, None)?;
         if let Some(host) = instance.host() {
             for state in &staging.states {
                 let (name, text) = state.split_once('=').ok_or_else(|| {
@@ -276,7 +252,10 @@ impl Staged {
             }
         }
         instance.stage(staging.scenario.as_deref());
-        settle(&mut instance, &mut record)?;
+        // A scenario's sample data is what it writes without a time of its own; what it dates
+        // is the story it tells.
+        let now = packages.now();
+        settle(&mut instance, &mut record, &me, Some(&now))?;
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
@@ -568,6 +547,74 @@ impl Staged {
     }
 }
 
+/// The moment a second before `at` (an RFC 3339 time), written as the record writes one.
+fn second_before(at: &str) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(at) else {
+        return at.to_owned();
+    };
+    let Some(earlier) = parsed.checked_sub_signed(chrono::Duration::seconds(1)) else {
+        return at.to_owned();
+    };
+    earlier
+        .to_utc()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// The capture has no door over the workspace, so it stands where the door stands: it takes
+/// each step the instance hands over, writes it down and answers it, as a session's door does.
+/// The store reads the record's changes back, so what it tells of a change — the versions of a
+/// resource, and the marks and history drawn from them — is a session's, never a workspace
+/// staged but never written down.
+///
+/// `sample_at` is the moment a scenario's undated steps carry (the capture's clock), where one
+/// ran: the steps are all read before any is written, so each undated one lands a second before
+/// the first dated one. A change made on top of another is never dated before it, and the marks
+/// and the history drawn from the record stay in the order the scenario wrote it.
+fn settle(
+    instance: &mut Instance,
+    record: &mut ui::automerge::AutoCommit,
+    person: &str,
+    sample_at: Option<&str>,
+) -> Result<(), String> {
+    instance.sync(Some(record));
+    instance.commit_planned();
+    let Some(host) = instance.host() else {
+        return Ok(());
+    };
+    let mut steps = Vec::new();
+    while let Some((invocation, _)) = instance.take_invocation() {
+        let address = invocation.address.clone();
+        if address.resource == HOST_RESOURCE && address.action == COMMIT {
+            let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
+            if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
+                steps.push((address, action));
+                continue;
+            }
+        }
+        instance.answered(&address, None);
+    }
+    let earliest = sample_at.and_then(|sample_at| {
+        steps
+            .iter()
+            .filter_map(|(_, action)| action.authorship.at.as_deref())
+            .filter(|at| *at < sample_at)
+            .min()
+            .map(second_before)
+    });
+    for (address, mut action) in steps {
+        if let Some(sample_at) = sample_at
+            && action.authorship.at.as_deref() == Some(sample_at)
+            && let Some(earliest) = earliest.as_deref()
+        {
+            action.authorship.at = Some(earliest.to_owned());
+        }
+        commit(&host, person, record, &action)?;
+        instance.answered(&address, None);
+    }
+    instance.sync(Some(record));
+    Ok(())
+}
+
 /// Apply `action` to `record` as the door applies one for a session: encoded, as the person's
 /// step, with the context a step on the record carries, so what the store tells of the change —
 /// who made it, when, and the version it is of each resource — reads as a session's.
@@ -644,7 +691,424 @@ fn resource_of(edit: &tilolang_tilo::action::DynEdit) -> &str {
         | DynEdit::OutboxSettle { id, .. }
         | DynEdit::OutboxMark { id, .. }
         | DynEdit::Migrated { id, .. }
-        | DynEdit::TriggerRan { id, .. } => id,
-        DynEdit::In { edit, .. } => resource_of(edit),
+        | DynEdit::TriggerRan { id, .. }
+        | DynEdit::RemoveItem { id, .. } => id,
+        // A run of a collection counts against the record it is a field of, which names no
+        // record of its own.
+        DynEdit::RunChunk { holder, .. } => holder,
+        DynEdit::In { edit, .. } | DynEdit::Chunk { edit, .. } => resource_of(edit),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tilo_render_protocol::patch::{ActionCatalogue, ToUi};
+
+    /// The packages of the app `name` of the apps the platform ships (`apps/tl/<name>`) and what
+    /// it uses.
+    fn app_packages(name: &str) -> Rc<Packages> {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apps/tl")
+            .join(name);
+        let search = vec![dir.parent().expect("apps/tl").to_path_buf()];
+        let (built, platform) =
+            crate::layout_check::build(&dir, &search).expect("the app compiles");
+        Rc::new(Packages(
+            Rc::new(built.into_iter().map(|b| b.compiled).collect()),
+            platform,
+        ))
+    }
+
+    /// The actions the app publishes at its window, offered the way its host offers them: the
+    /// window's palette, action directory and agents read them off it from then on.
+    fn publish_actions(staged: &mut Staged) -> Vec<tilo_actions::ActionDescriptor> {
+        let host = staged.instance.host().expect("a host");
+        let planner: Arc<dyn tilolang_tilo::publish::Planner> = Arc::new(host.handle());
+        let mut publications = tilolang_tilo::publish::Publications::new(&host);
+        // Records are published whole off the frame: a window with no frames waits for them.
+        publications.settle(&host, &planner);
+        let resources: Vec<tilo_actions::ResourceSpec> = publications
+            .trees()
+            .values()
+            .map(|tree| (**tree).clone())
+            .collect();
+        let descriptors = tilo_actions::door::survey(&resources);
+        let encoded = serde_json::to_vec(&descriptors).expect("the action directory encodes");
+        staged
+            .instance
+            .say(ToUi::Actions(ActionCatalogue::All(encoded)));
+        staged.instance.flush();
+        staged.exchange();
+        staged.harness.relayout();
+        descriptors
+    }
+
+    /// Where the captures of a frame go: the target directory's own, as the toolkit's marker
+    /// captures do.
+    fn marker_shots() -> std::path::PathBuf {
+        match std::env::var_os("CARGO_TARGET_DIR") {
+            Some(dir) => std::path::PathBuf::from(dir).join("tilolang-marker"),
+            None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../target/tilolang-marker"),
+        }
+    }
+
+    /// The check box the frame binds to a published action: the one control of `descriptor`'s
+    /// exactly, holding a check box where a person would press.
+    fn bound_check(
+        staged: &Staged,
+        descriptors: &[tilo_actions::ActionDescriptor],
+    ) -> Option<(
+        tilo_actions::ActionDescriptor,
+        String,
+        ui::kurbo::Rect,
+        ui::kurbo::Rect,
+    )> {
+        let controls = staged.harness().controls();
+        for descriptor in descriptors {
+            let routes = staged.harness().action_ui_routes(&descriptor.address);
+            let [route] = routes.as_slice() else {
+                continue;
+            };
+            let Some(control) = route.bounds else {
+                continue;
+            };
+            let Some(check) = controls
+                .iter()
+                .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+                .filter_map(|shown| shown.bounds)
+                .find(|bounds| control.contains(bounds.center()))
+            else {
+                continue;
+            };
+            return Some((descriptor.clone(), route.control_id.clone(), control, check));
+        }
+        None
+    }
+
+    /// The agent's interaction with `descriptor`, as an agent states it: one action, applying.
+    fn interaction(
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> tilo_actions::SemanticInteraction {
+        tilo_actions::SemanticInteraction {
+            version: tilo_actions::INTERACTION_VERSION,
+            invocation: tilo_actions::InvocationId::new(),
+            sequence: 1,
+            actor: tilo_actions::InteractionActor {
+                id: "scribe".into(),
+                kind: tilo_actions::ActorKind::Agent,
+                for_person: None,
+            },
+            phase: tilo_actions::InteractionPhase::Applying,
+            action: tilo_actions::InteractionAction {
+                id: descriptor.address.action.clone(),
+                label: descriptor.action_label.clone(),
+                app: None,
+            },
+            resource: tilo_actions::ActionResource {
+                id: descriptor.address.resource.clone(),
+                kind: descriptor.resource_kind.clone(),
+                label: descriptor.resource_label.clone(),
+            },
+            anchor: tilo_actions::InteractionAnchor::Resource,
+            group: None,
+        }
+    }
+
+    /// The agent's mark on the control it acts through, captured: `<name>-before.png` is the
+    /// frame before, `<name>-agent-marker.png` the one once the mark has come to rest, and the
+    /// pixels of both come back for the test to hold the drawing to.
+    fn capture_agent(
+        staged: &mut Staged,
+        event: &tilo_actions::SemanticInteraction,
+        name: &str,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let captures = marker_shots();
+        std::fs::create_dir_all(&captures).expect("the captures' directory");
+        let before = staged.harness().render_rgba();
+        staged
+            .harness()
+            .render_png(&captures.join(format!("{name}-before.png")));
+        let applied = staged.harness_mut().update_presence(|presence| {
+            presence
+                .names
+                .insert(ui::permissions::UserId("scribe".into()), "Ada".into());
+            presence
+                .apply_interaction(event.clone())
+                .expect("a well-formed interaction applies")
+        });
+        assert!(applied, "the agent's action shows");
+        // The frames the pointer glides in, run out: the capture shows it at rest on the
+        // control rather than mid-glide.
+        assert!(
+            staged
+                .harness_mut()
+                .settle_for_capture(ui::time::Duration::from_secs(2)),
+            "the marker comes to rest"
+        );
+        staged.harness_mut().poll_frame().expect("a frame is drawn");
+        staged.harness_mut().relayout();
+        staged
+            .harness()
+            .render_png(&captures.join(format!("{name}-agent-marker.png")));
+        (before, staged.harness().render_rgba())
+    }
+
+    /// The agent's mark on the control the tilolang Tasks app binds: an action the app
+    /// published lands on the control that runs it and nowhere else, and the frame draws the
+    /// agent there — the same pixels rule the app's own tests hold a marker to.
+    #[test]
+    fn an_agents_marker_rests_on_the_control_the_tasks_app_binds() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (1280, 800);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let descriptors = publish_actions(&mut staged);
+        assert!(
+            !descriptors.is_empty(),
+            "the app publishes the actions its views run"
+        );
+
+        let (descriptor, control_id, control, check) =
+            bound_check(&staged, &descriptors).expect("the app binds a check box to an action");
+        let event = interaction(&descriptor);
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the control the app binds the action to");
+        assert!(
+            locus.contains(check.center()),
+            "the locus is the check box the row offers: {locus:?} vs {check:?}"
+        );
+        assert!(
+            control.contains(locus.center()),
+            "the locus is the control bound to the action: {locus:?} vs {control:?}"
+        );
+
+        let (before, after) = capture_agent(&mut staged, &event, "tasks-tilolang");
+
+        marked_only(&staged, &before, &after, width, control, check);
+
+        // The press and the agent's action take the one path: the app is handed the action,
+        // not a view event.
+        staged
+            .press(&control_id, false)
+            .expect("the control presses");
+        let chosen: Vec<_> = staged
+            .instance
+            .take_chosen()
+            .into_iter()
+            .map(|(address, _)| (address.resource, address.action))
+            .collect();
+        assert_eq!(
+            chosen,
+            vec![(descriptor.address.resource, descriptor.address.action)],
+            "pressing the control runs the action the app published"
+        );
+    }
+
+    /// The agent's mark shows inside the check box the app binds, and on no other check box the
+    /// window shows: the agent is drawn where it acts, not where any control of the same kind
+    /// stands.
+    fn marked_only(
+        staged: &Staged,
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        control: ui::kurbo::Rect,
+        check: ui::kurbo::Rect,
+    ) {
+        changed_pixels(before, after, width, pixels(check))
+            .expect("the agent's marker rests on the check box the app binds");
+        let others: Vec<_> = staged
+            .harness()
+            .controls()
+            .iter()
+            .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+            .filter_map(|shown| shown.bounds)
+            .filter(|bounds| !control.contains(bounds.center()))
+            .collect();
+        assert!(!others.is_empty(), "the scenario shows more than one row");
+        for other in others {
+            assert!(
+                changed_pixels(before, after, width, pixels(other)).is_none(),
+                "no mark rests on {other:?}, which the action does not act on"
+            );
+        }
+    }
+
+    /// `rect` as the pixels a frame draws it in: the whole pixels its edges cut.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a laid out edge inside a viewport's pixels"
+    )]
+    fn pixels(rect: ui::kurbo::Rect) -> (u32, u32, u32, u32) {
+        (
+            rect.x0.floor().max(0.0) as u32,
+            rect.y0.floor().max(0.0) as u32,
+            rect.x1.ceil().max(0.0) as u32,
+            rect.y1.ceil().max(0.0) as u32,
+        )
+    }
+
+    /// The bounds of the pixels that changed between `before` and `after`, within `region`.
+    #[expect(
+        clippy::arithmetic_side_effects,
+        reason = "a pixel index and its neighbours inside a frame's own dimensions"
+    )]
+    fn changed_pixels(
+        before: &[u8],
+        after: &[u8],
+        width: u32,
+        region: (u32, u32, u32, u32),
+    ) -> Option<(u32, u32, u32, u32)> {
+        let mut bbox: Option<(u32, u32, u32, u32)> = None;
+        for (index, (a, b)) in before
+            .chunks_exact(4)
+            .zip(after.chunks_exact(4))
+            .enumerate()
+        {
+            if a == b {
+                continue;
+            }
+            let index = u32::try_from(index).expect("a pixel index fits u32");
+            let (x, y) = (index % width, index / width);
+            if x < region.0 || y < region.1 || x >= region.2 || y >= region.3 {
+                continue;
+            }
+            bbox = Some(match bbox {
+                None => (x, y, x + 1, y + 1),
+                Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x + 1), y1.max(y + 1)),
+            });
+        }
+        bbox
+    }
+
+    /// The control the window binds to a published action: its one route, the control the action
+    /// lands on, and the check box a person sees inside it.
+    fn bound_box(
+        staged: &Staged,
+        descriptor: &tilo_actions::ActionDescriptor,
+    ) -> Option<(String, ui::kurbo::Rect, ui::kurbo::Rect)> {
+        let routes = staged.harness().action_ui_routes(&descriptor.address);
+        let [route] = routes.as_slice() else {
+            return None;
+        };
+        let control = route.bounds?;
+        let check = staged
+            .harness()
+            .controls()
+            .iter()
+            .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+            .filter_map(|shown| shown.bounds)
+            .find(|bounds| control.contains(bounds.center()))?;
+        Some((route.control_id.clone(), control, check))
+    }
+
+    /// The button the counter's window binds to its action runs that action through the door,
+    /// once, as the person's own: the press is the action's route, not a view event the app runs
+    /// in the window instead.
+    #[test]
+    fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_door() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("counter");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (900, 600);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy morning",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let descriptors = publish_actions(&mut staged);
+        let increment = descriptors
+            .iter()
+            .find(|descriptor| descriptor.action_label == "Increment")
+            .expect("the counter publishes the action its button runs");
+        let routes = staged.harness().action_ui_routes(&increment.address);
+        let [route] = routes.as_slice() else {
+            panic!(
+                "the window binds one button to Increment, as it binds one to every action it \
+                 offers a control for: {routes:?}"
+            );
+        };
+        let control = route.bounds.expect("the button is laid out");
+        let event = interaction(increment);
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the button the app binds the action to");
+        assert!(
+            control.contains(locus.center()),
+            "the agent acts at the button: {locus:?} vs {control:?}"
+        );
+        let (before, after) = capture_agent(&mut staged, &event, "counter-tilolang");
+        assert!(
+            changed_pixels(&before, &after, width, pixels(control)).is_some(),
+            "the agent's marker rests on the button the app binds"
+        );
+
+        staged
+            .press(&route.control_id, false)
+            .expect("the button presses");
+        let chosen = staged.instance.take_chosen();
+        assert_eq!(
+            chosen.len(),
+            1,
+            "one press runs the action once: {chosen:?}"
+        );
+        assert_eq!(chosen[0].0, increment.address);
+    }
+
+    /// A row's check box runs the check action the app binds to it, once, through the same door
+    /// an agent's invocation of it takes — for a task the page around the list does not show, so
+    /// the press is the row's own.
+    #[test]
+    fn a_press_on_a_rows_check_box_runs_the_actions_the_app_binds_to_it() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (1280, 800),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged.harness.relayout();
+        let descriptors = publish_actions(&mut staged);
+        let row = descriptors
+            .iter()
+            .find_map(|descriptor| {
+                bound_box(&staged, descriptor)
+                    .map(|(control_id, _control, _check)| (descriptor.clone(), control_id))
+            })
+            .expect("a row's check box is bound to the check action it runs");
+
+        staged.press(&row.1, false).expect("the row's box presses");
+        let chosen = staged.instance.take_chosen();
+        assert_eq!(chosen.len(), 1, "one press runs one action: {chosen:?}");
+        assert_eq!(chosen[0].0, row.0.address);
     }
 }

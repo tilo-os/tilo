@@ -461,21 +461,13 @@ impl Core {
         // words for the action (`did:`) where it declares them, else what the change itself
         // says (`self.changes_value`), and for one that made or removed the resource, that.
         // Read through the catalogue, so a translation says it in the reader's language.
-        let declared_did = declared
-            .as_ref()
-            .map_or_else(String::new, |a| match (&a.did, &a.id) {
-                (Some(source), id) => {
-                    let key = format!("{}.did", tilolang::messages::key_of(id));
-                    self.words.borrow().word(&key, &[], source)
-                }
-                (None, _) => String::new(),
-            });
+        let declared_did = self.declared_did(&v);
         let did = match v.kind {
             crate::store::VersionKind::Created if declared_did.is_empty() => {
-                self.word("tilolang-did-created", "created this")
+                self.word("tilolang-did-created", "created it")
             }
             crate::store::VersionKind::Removed if declared_did.is_empty() => {
-                self.word("tilolang-did-removed", "removed this")
+                self.word("tilolang-did-removed", "removed it")
             }
             _ => declared_did,
         };
@@ -494,7 +486,7 @@ impl Core {
                 .map_or_else(|| who.0.clone(), |host| host.name(&who))
         });
         let changes = match &info {
-            Some(info) => self.changes_value(&v, of, info)?,
+            Some(info) => self.changes_value(&v, of, info, self.looking_now().as_deref())?,
             None => Vec::new(),
         };
         Ok(Value::Tuple(vec![
@@ -520,9 +512,92 @@ impl Core {
         ]))
     }
 
+    /// The words the action that made `v` declares it does (`did:`), read through the
+    /// catalogue, or empty where it declares none.
+    fn declared_did(&self, v: &crate::store::Version) -> String {
+        self.registry
+            .borrow()
+            .action_package(&v.action)
+            .and_then(|pkg| pkg.action(&v.action).cloned())
+            .map_or_else(String::new, |a| match (&a.did, &a.id) {
+                (Some(source), id) => {
+                    let key = format!("{}.did", tilolang::messages::key_of(id));
+                    self.words.borrow().word(&key, &[], source)
+                }
+                (None, _) => String::new(),
+            })
+    }
+
+    /// What a version of `of` did, as one line of text: the sentence history says of it
+    /// (`std.version_said`), its values as their types show them in a phrase. A row says it
+    /// under its title, and a step of a catch-up popover reads it, so what a person reads is
+    /// worded once wherever it stands.
+    pub(crate) fn version_line(
+        &self,
+        v: &crate::store::Version,
+        of: &ResourceRef,
+        viewer: &str,
+    ) -> String {
+        let info = self.type_of_ref(&of.ty).ok().map(|(_, info)| info);
+        if v.count > 1 {
+            let kind = info.as_ref().map_or_else(String::new, |info| {
+                tilolang::meta::plural(&tilolang::meta::in_words(&info.name))
+            });
+            return self.words.borrow().word(
+                "tilolang-did-many",
+                &[
+                    ("count".to_owned(), v.count.to_string()),
+                    ("kind".to_owned(), kind),
+                ],
+                "changed { $count }",
+            );
+        }
+        let declared = self.declared_did(v);
+        if !declared.is_empty() {
+            return declared;
+        }
+        match v.kind {
+            crate::store::VersionKind::Created => {
+                return self.word("tilolang-did-created", "created it");
+            }
+            crate::store::VersionKind::Removed => {
+                return self.word("tilolang-did-removed", "removed it");
+            }
+            crate::store::VersionKind::Changed => {}
+        }
+        let Some(info) = info else {
+            return self.action_label(&v.action);
+        };
+        let said: Vec<String> = self
+            .changes_value(v, of, &info, Some(viewer))
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|change| {
+                let Value::Tuple(parts) = change else {
+                    return None;
+                };
+                let words = parts.get(4).and_then(Value::as_text)?.to_owned();
+                let held = match parts.get(5).and_then(Value::as_text) {
+                    Some("after") => parts.get(3),
+                    Some("before") => parts.get(2),
+                    _ => None,
+                };
+                Some(held.map_or_else(
+                    || words.clone(),
+                    |held| format!("{words} {}", self.said(held)),
+                ))
+            })
+            .collect();
+        if said.is_empty() {
+            self.action_label(&v.action)
+        } else {
+            said.join(" ")
+        }
+    }
+
     /// What proposing `action` with `args` would change, in the words history says a change
     /// with ([`crate::did`]): one line per argument it names, over the field of its type
-    /// ("set the due date to Saturday", "assigned this to Bo"), holding the value the type
+    /// ("set the due date to Saturday", "assigned it to Bo"), holding the value the type
     /// shows it as when the words speak of one. A parameter that names no value says nothing.
     pub(crate) fn proposal_lines(&self, action: &str, args: &[Value]) -> Vec<Says> {
         let params = {
@@ -537,6 +612,7 @@ impl Core {
             }
         };
         let (app, params) = params;
+        let looking = self.looking_now();
         let mut out = Vec::new();
         for (param, arg) in params.iter().zip(args) {
             if matches!(arg, Value::Unit | Value::Opt(None)) {
@@ -560,7 +636,7 @@ impl Core {
             let named = field_of_sentence(&param.name);
             // A proposal is read against nothing: as a change that sets the value.
             let nothing = self
-                .change_shown(&ty, &Value::none())
+                .change_shown(&ty, &Value::none(), looking.as_deref())
                 .unwrap_or_else(|_| Value::none());
             let verbs = crate::did::said(&field, &named, &nothing, arg);
             let fills: Vec<(String, String)> = verbs
@@ -574,7 +650,7 @@ impl Core {
             };
             let voices = self.words.borrow().word(verbs.key, &fills, &source);
             let value = match verbs.shows {
-                crate::did::Shows::After => self.change_shown(&ty, arg).ok(),
+                crate::did::Shows::After => self.change_shown(&ty, arg, looking.as_deref()).ok(),
                 _ => None,
             };
             out.push(Says {
@@ -646,6 +722,7 @@ impl Core {
         v: &crate::store::Version,
         of: &ResourceRef,
         info: &crate::registry::TypeInfo,
+        viewer: Option<&str>,
     ) -> HResult<Vec<Value>> {
         if v.fields.is_empty() || v.change.is_empty() {
             return Ok(Vec::new());
@@ -679,7 +756,7 @@ impl Core {
                 let value = self
                     .field_value(of, field, held, None)
                     .map_err(crate::engine::HostFail::Trap)?;
-                self.change_shown(&field.ty, &value)
+                self.change_shown(&field.ty, &value, viewer)
             };
             held.push((field, side(before)?, side(after)?));
         }
@@ -719,7 +796,7 @@ impl Core {
 
     /// The platform's words for `key`, in the reader's language; `source` where no catalogue
     /// holds it.
-    fn word(&self, key: &str, source: &str) -> String {
+    pub(crate) fn word(&self, key: &str, source: &str) -> String {
         self.words.borrow().word(key, &[], source)
     }
 
@@ -738,7 +815,12 @@ impl Core {
     /// `value`, of the type `ty`, as `c.before` and `c.after` show it ([`Self::change_view`]):
     /// the kind of thing it is, what stands for it, and what goes with it (a case's icon, a
     /// person's name). A list of these for a set or a list.
-    fn change_shown(&self, ty: &tilolang::types::Ty, value: &Value) -> HResult<Value> {
+    fn change_shown(
+        &self,
+        ty: &tilolang::types::Ty,
+        value: &Value,
+        viewer: Option<&str>,
+    ) -> HResult<Value> {
         use tilolang::types::Ty;
         let one = |kind: &str, value: Value, icon: Option<String>| {
             Value::Tuple(vec![
@@ -749,15 +831,22 @@ impl Core {
         };
         Ok(match (ty, value) {
             (Ty::Option(_), Value::Opt(None)) => one("none", Value::Unit, None),
-            (Ty::Option(inner), Value::Opt(Some(held))) => return self.change_shown(inner, held),
+            (Ty::Option(inner), Value::Opt(Some(held))) => {
+                return self.change_shown(inner, held, viewer);
+            }
             (Ty::Date, Value::Text(day)) => one("date", Value::Text(day.clone()), None),
             (Ty::Time, Value::Text(at)) => one("time", Value::Text(at.clone()), None),
             (Ty::Principal, Value::Principal(who)) => {
-                let name = self
-                    .names
-                    .borrow()
-                    .as_ref()
-                    .map_or_else(|| who.0.clone(), |host| host.name(who));
+                // A person is named as a sentence names them: the person looking as the word
+                // for them ("assigned it to you"), anyone else by their name.
+                let name = if viewer == Some(who.0.as_str()) {
+                    self.word("tilolang-you-lower", "you")
+                } else {
+                    self.names
+                        .borrow()
+                        .as_ref()
+                        .map_or_else(|| who.0.clone(), |host| host.name(who))
+                };
                 one("principal", Value::Principal(who.clone()), Some(name))
             }
             (_, Value::Bool(flag)) => one("bool", Value::Bool(*flag), None),
@@ -787,7 +876,7 @@ impl Core {
             (Ty::Set(inner) | Ty::List(inner), Value::List(items)) => Value::List(
                 items
                     .iter()
-                    .map(|item| self.change_shown(inner, item))
+                    .map(|item| self.change_shown(inner, item, viewer))
                     .collect::<HResult<_>>()?,
             ),
             // A map: each entry as its key and what it holds, as people read it ("👍 Ada, Bo").
@@ -797,7 +886,7 @@ impl Core {
                     .map(|entry| match entry {
                         Value::Tuple(pair) => match pair.as_slice() {
                             [Value::Text(key), held] => {
-                                let shown = self.said(&self.change_shown(inner, held)?);
+                                let shown = self.said(&self.change_shown(inner, held, viewer)?);
                                 Ok(one("text", Value::Text(format!("{key} {shown}")), None))
                             }
                             _ => trap("a map entry is a key and its value"),
@@ -1064,6 +1153,21 @@ impl Core {
         Ok(crate::seen::unseen(&versions, person, mark.as_ref(), &runs))
     }
 
+    /// The newest version of `at` `person` has not seen, if any: what a row's mark says,
+    /// answered by the index's newest version of the resource without its log.
+    pub(crate) fn newest_unseen_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<Option<crate::store::Version>, crate::store::StoreError> {
+        let Some(newest) = self.store.borrow().newest(at)? else {
+            return Ok(None);
+        };
+        let mark = self.seen_mark_of_tree(person, at);
+        let runs = self.seen_runs(person);
+        Ok(crate::seen::unseen(std::slice::from_ref(&newest), person, mark.as_ref(), &runs).pop())
+    }
+
     /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
     /// conversation's first unread message), as a transcript shows it.
     ///
@@ -1308,9 +1412,83 @@ impl Core {
             .push(crate::seen::SeenWrite::Resource {
                 person: person.to_owned(),
                 resource,
-                mark,
+                mark: Some(mark),
             });
         Ok(true)
+    }
+
+    /// `person` marked everything they had not seen of `resources` seen, in one move: the
+    /// *Mark all seen* of a catch-up. What each mark was before is kept, so that the move can
+    /// be taken back ([`Self::undo_seen`]); hands the host one write for each mark it moved.
+    ///
+    /// # Errors
+    ///
+    /// The store could not read the versions of one of them.
+    pub(crate) fn mark_all_seen(
+        &self,
+        person: &str,
+        resources: &[String],
+    ) -> Result<usize, crate::store::StoreError> {
+        let mut before = Vec::with_capacity(resources.len());
+        let mut marked: usize = 0;
+        for resource in resources {
+            let Some(at) = ResourceRef::parse_id(resource, String::new()) else {
+                continue;
+            };
+            before.push((resource.clone(), self.seen_mark(person, resource)));
+            if self.mark_seen(person, &at)? {
+                marked = marked.saturating_add(1);
+            }
+        }
+        *self.seen_undo.borrow_mut() = Some(crate::seen::SeenUndo {
+            person: person.to_owned(),
+            before,
+        });
+        Ok(marked)
+    }
+
+    /// Give back what the last catch-up took away: every mark it moved, as it was. Whether
+    /// anything was given back; what the host is handed to keep says so too.
+    pub(crate) fn undo_seen(&self, person: &str) -> bool {
+        let Some(undo) = self.seen_undo.borrow_mut().take() else {
+            return false;
+        };
+        if undo.person != person {
+            return false;
+        }
+        for (resource, mark) in undo.before {
+            let key = crate::seen::seen_key(person, &resource);
+            let value = match &mark {
+                Some(mark) => Value::some(Value::Tuple(vec![
+                    Value::Text(mark.change.clone()),
+                    Value::Text(mark.at.clone()),
+                ])),
+                None => Value::none(),
+            };
+            self.view_states.borrow_mut().set(key, value);
+            self.seen_writes
+                .borrow_mut()
+                .push(crate::seen::SeenWrite::Resource {
+                    person: person.to_owned(),
+                    resource,
+                    mark,
+                });
+        }
+        true
+    }
+
+    /// The title `at` is called by, as a catch-up names the group it changes: its `title`,
+    /// `name` or `label` field, else its first text field, else what its newest change's
+    /// action is called.
+    pub(crate) fn item_title(
+        &self,
+        at: &ResourceRef,
+        version: Option<&crate::store::Version>,
+    ) -> String {
+        if let Some(title) = self.program_title(at) {
+            return title;
+        }
+        version.map_or_else(String::new, |v| self.action_label(&v.action))
     }
 
     /// The newest item's version among `at`'s collections, when it holds any: the time a read

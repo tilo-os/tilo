@@ -28,6 +28,7 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
         },
         stop_reason: StopReason::OutputLimit,
         usage: Usage::default(),
+        cost_micros: 0,
     };
     let mut f = fixture(
         "write hello",
@@ -357,6 +358,7 @@ fn anthropic_turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
 
 const PEER: u64 = 7;
 const CHAT_PEER: u64 = 8;
+const CHAT_RECORD_PEER: u64 = 29;
 const DESKTOP_PEER: u64 = 9;
 const SECOND_PEER: u64 = 10;
 const BROWSER_PEER: u64 = 11;
@@ -527,12 +529,15 @@ struct World {
     /// neither.
     browser: Option<String>,
     /// The workspace also runs tilolang Board and Views, whose hosts take programs,
-    /// and the Tasks tracker records the run's steps.
+    /// and the conversation's reply lists the run's steps.
     tilolang: bool,
     /// What each `run-block` answers, by a word its source holds.
     tl_blocks: Vec<(&'static str, Value)>,
     /// What the door answers each task program, by a word the program holds.
     tl_programs: Vec<(&'static str, Value)>,
+    /// A conversation whose message this is: its reply is where the run
+    /// records its turn, so `None` records nothing.
+    chat: Option<String>,
 }
 
 /// How the fixture host treats a re-ask that asks to be held.
@@ -737,6 +742,35 @@ impl World {
         if self.tilolang {
             surfaces.extend(programs::surfaces());
         }
+        if let Some(message) = &self.chat {
+            surfaces.push(BrokerActionSurface {
+                peer_id: CHAT_RECORD_PEER,
+                provider: None,
+                app_id: "so.tilo.chat".into(),
+                cluster_id: Uuid::from_u128(1).to_string(),
+                record_id: "chat-1".into(),
+                live: true,
+                actions: vec![ExportedAction {
+                    state: tilo_actions::ActionState::default(),
+                    semantic_identity: None,
+                    resource: format!("chat.messages/messages/{message}"),
+                    resource_kind: "chat.messages".into(),
+                    resource_label: "The conversation".into(),
+                    ..descriptor(
+                        "record-work",
+                        "Record work",
+                        tilo_actions::OperationKind::Document,
+                        vec![
+                            ActionParam::required("message", ParamType::Text, "The message"),
+                            ActionParam::required("work", ParamType::Object, "How the work goes"),
+                            ActionParam::optional("say", ParamType::Text, "The reply's words"),
+                        ],
+                        Availability::Available,
+                        vec![],
+                    )
+                }],
+            });
+        }
         if let Some(record) = self.second_window {
             surfaces.push(BrokerActionSurface {
                 peer_id: SECOND_PEER,
@@ -816,6 +850,11 @@ impl World {
         reason = "the fixture world answers every published operation in one place"
     )]
     fn apply(&mut self, action: &str, arguments: &serde_json::Map<String, Value>) -> (Value, bool) {
+        // The conversation's reply takes the record; it is no step of the
+        // document the run works in.
+        if action == "record-work" {
+            return (serde_json::json!({"succeeded": {}}), false);
+        }
         let nth = self.steps.iter().filter(|(seen, _)| seen == action).count();
         self.steps.push((action.into(), arguments.clone()));
         self.steps_at
@@ -959,7 +998,7 @@ impl World {
                 }}}),
                 false,
             ),
-            "record-step" | "record-answer" => (serde_json::json!({"succeeded": {}}), false),
+            "record-work" => (serde_json::json!({"succeeded": {}}), false),
             "type-text" => {
                 if self.blocks.is_empty() {
                     self.blocks.push(("p1".into(), String::new()));
@@ -1456,7 +1495,7 @@ fn execution_fixture(
         .native_control
         .get_or_insert_with(|| runtime_collab::TaskRunControl {
             version: 1,
-            task_id: "tasks.tracker/issues/loop".into(),
+            task_id: "chat.workspace/channels/loop/messages/asked".into(),
             run_epoch: 1,
             from_revision: 0,
             applied_revision: 0,
@@ -1486,7 +1525,7 @@ fn execution_fixture(
         paused: None,
         model: None,
         version: 1,
-        task_id: "tasks.tracker/issues/loop".into(),
+        task_id: "chat.workspace/channels/loop/messages/asked".into(),
         title: title.into(),
         instruction: None,
         subject: None,
@@ -1496,6 +1535,7 @@ fn execution_fixture(
         presentation_version: Some(1),
         execution_budget: budget,
         action_context: serde_json::Value::Null,
+        spend: None,
     };
     bind_context(&mut run);
     let surfaces = world.borrow().surfaces();
@@ -1503,8 +1543,6 @@ fn execution_fixture(
         cfg: Config {
             agent_id: "agent-1".into(),
             endpoint: None,
-            endpoint_identity: None,
-            task_agent: false,
             app_id: "so.tilo.agent".into(),
             cluster: Uuid::from_u128(1),
             record: None,
@@ -1532,12 +1570,12 @@ fn execution_fixture(
         broker_surfaces: surfaces,
         next_broker_request: 1,
         awaiting_companions: Vec::new(),
-        held_turn: None,
+        record: None,
         broker_revision: 0,
         catalogue_cache: None,
         turn: None,
         outstanding: crate::session::outstanding::Outstanding::default(),
-        spend: crate::session::planning::Spend::default(),
+        spending: None,
     };
     Fixture {
         session,
@@ -1556,7 +1594,7 @@ fn bind_context(run: &mut runtime_collab::TaskRunEnvelope) {
             .with_group(run.group(), run.title.as_str(), "task"),
     )
     .unwrap();
-    super::super::validate_task_run(run).unwrap();
+    super::super::conversation::validate(run).unwrap();
 }
 
 fn op(action: &str) -> String {
@@ -1589,13 +1627,15 @@ mod native_pipeline;
 mod pictures;
 #[path = "agent_loop/tests/programs.rs"]
 mod programs;
+#[path = "agent_loop/tests/spending.rs"]
+mod spending;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 
 fn native_fixture(latest: u64) -> Fixture {
     let control = runtime_collab::TaskRunControl {
         version: 1,
-        task_id: "tasks.tracker/issues/loop".into(),
+        task_id: "chat.workspace/channels/loop/messages/asked".into(),
         run_epoch: 1,
         from_revision: 0,
         applied_revision: 0,
@@ -1667,7 +1707,7 @@ fn one_issues_run_reaches_the_model_without_another_issues() {
     .into();
     fixture.session.run_task(&fixture.run).unwrap();
 
-    fixture.run.task_id = "tasks.tracker/issues/second-private-scope".into();
+    fixture.run.task_id = "chat.workspace/channels/second/messages/asked".into();
     fixture.run.run_id += 1;
     fixture.run.action_context = serde_json::to_value(
         tilo_actions::ActionContext::default()
@@ -1787,30 +1827,97 @@ fn a_run_with_no_model_says_so_and_never_blames_permissions() {
     );
 }
 
-/// A run a model answered reports what it cost on the run's own thread:
-/// the provider and model that spent it, and the tokens they counted.
+/// What the conversation was told, one entry per record, in order.
+fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String, Value>> {
+    sent.iter()
+        .filter_map(|request| match request {
+            CollabRequest::InvokeTaskAction {
+                action: invoked,
+                arguments,
+                ..
+            } if invoked == action => Some(arguments.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The turn a run answers is recorded in its conversation: the reply is
+/// told it was taken at once, of every step, and — once, at the end — what
+/// the run said.
 #[test]
-fn a_model_run_reports_what_it_spent_and_which_model_spent_it() {
+fn a_run_records_its_turn_in_the_conversation() {
     let mut f = fixture(
-        "make it bold",
-        World::default(),
-        vec![turn(&[finish("Done.", true)], 32)],
+        "write a paragraph",
+        World {
+            chat: Some("asked".into()),
+            ..World::default()
+        },
+        vec![turn(
+            &[
+                invoke("append-paragraph", &serde_json::json!({"text": "Rain"})),
+                finish("Wrote it.", true),
+            ],
+            24,
+        )],
     );
     f.session.run_task(&f.run).unwrap();
     let sent = f.sent.borrow();
-    let notes = notes(&sent);
+    let records = recorded(&sent, "record-work");
+    let first = records.first().expect("the reply was told the run started");
+    assert_eq!(first["message"], "asked", "on the reply to the message");
+    assert_eq!(first["work"]["state"], "taken");
+    assert_eq!(first["work"]["route"], "model");
     assert!(
-        notes
-            .iter()
-            .any(|note| note.starts_with("Planning with scripted from ")),
-        "the run names the model that plans it: {notes:?}"
+        first["work"]["why"]
+            .as_str()
+            .is_some_and(|why| !why.is_empty())
     );
+    let last = records.last().unwrap();
+    assert_eq!(last["work"]["state"], "provider_complete");
+    assert_eq!(last["say"], "Wrote it.", "the reply's words, once");
+    let steps = last["work"]["trace"].as_array().unwrap();
+    assert_eq!(steps.len(), 1, "one step: {steps:?}");
+    assert_eq!(steps[0]["label"], "Append paragraph");
+    assert_eq!(steps[0]["resource"], "word-processor.document");
+    assert_eq!(steps[0]["outcome"], "applied");
+}
+
+/// A run the person stops ends its turn: the reply says it was stopped, in
+/// the run's words, and the run tells the host it was cancelled.
+#[test]
+fn a_run_the_person_stops_ends_its_turn() {
+    let mut f = fixture(
+        "write a paragraph",
+        World {
+            chat: Some("asked".into()),
+            cancel_after_steps: Some(1),
+            cancel_delay: Duration::from_millis(100),
+            ..World::default()
+        },
+        vec![
+            turn(
+                &[invoke(
+                    "append-paragraph",
+                    &serde_json::json!({"text": "One"}),
+                )],
+                16,
+            ),
+            turn(&[finish("Done", true)], 16),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let sent = f.sent.borrow();
+    let records = recorded(&sent, "record-work");
+    let last = records.last().expect("the turn was recorded");
+    assert_eq!(last["work"]["state"], "provider_cancelled");
     assert!(
-        notes
-            .iter()
-            .any(|note| note.contains("answered 1 model turn")),
-        "the run leaves what it spent in its record: {notes:?}"
+        last["say"].as_str().is_some_and(|say| !say.is_empty()),
+        "the reply says why it stopped: {last:?}"
     );
+    assert!(matches!(
+        terminal(&sent),
+        runtime_collab::TaskRunUpdate::Cancelled { .. }
+    ));
 }
 
 /// The terminal task report.
@@ -2817,81 +2924,5 @@ fn asked_ids(body: &Value) -> Vec<String> {
         .map(|block| block["id"].as_str().unwrap().to_owned())
         .collect()
 }
-/// A run's issue lists what it looked up, and only that: a read of a
-/// resource the request did not name, listed once. Changing something is not
-/// a lookup, the resource the request is about was given rather than found,
-/// and reading again what is already listed adds nothing.
-#[test]
-fn only_a_first_read_of_a_resource_past_the_request_is_listed_as_a_lookup() {
-    let descriptor = |resource: &str| tilo_actions::ActionDescriptor {
-        state: tilo_actions::ActionState::default(),
-        semantic_identity: None,
-        address: tilo_actions::ActionAddress::new(resource, "read"),
-        resource_kind: "notes.page".into(),
-        resource_label: "Release notes".into(),
-        action_label: "Read".into(),
-        keywords: Vec::new(),
-        icon: None,
-        description: None,
-        locus: tilo_actions::ExecutionLocus::ClientLocal,
-        kind: tilo_actions::OperationKind::View,
-        contract: tilo_actions::ActionContract::default(),
-        params: Vec::new(),
-        input: tilo_actions::InputSpec::None,
-        view: None,
-    };
-    let mut run = runtime_collab::TaskRunEnvelope {
-        paused: None,
-        model: None,
-        version: 1,
-        task_id: "tasks.tracker/issues/loop".into(),
-        title: "Say what changed".into(),
-        instruction: None,
-        subject: Some(tilo_actions::SelectionSubject {
-            app_id: "so.tilo.notes".into(),
-            app_label: "Notes".into(),
-            resource: tilo_actions::ActionResource {
-                id: "notes.page:given".into(),
-                kind: "notes.page".into(),
-                label: "The page asked about".into(),
-            },
-            anchor: tilo_actions::selection::SelectionAnchor::default(),
-        }),
-        run_id: 7,
-        lease: "native:00000000000000000000000000000000:0".into(),
-        planning: runtime_collab::TaskRunPlanning::Model,
-        presentation_version: Some(1),
-        execution_budget: None,
-        action_context: serde_json::Value::Null,
-    };
-    let empty: Vec<String> = Vec::new();
-    assert!(
-        looked_up(&run, &descriptor("notes.page:release"), true, &empty),
-        "a first read past the request is a lookup"
-    );
-    assert!(
-        !looked_up(&run, &descriptor("notes.page:release"), false, &empty),
-        "an operation that is not a read looks nothing up"
-    );
-    assert!(
-        !looked_up(&run, &descriptor("notes.page:given"), true, &empty),
-        "what the person gave the run was not found"
-    );
-    let already = ["notes.page:release".to_owned()];
-    assert!(
-        !looked_up(&run, &descriptor("notes.page:release"), true, &already),
-        "a resource it already listed is not listed again"
-    );
-    // An empty subject (a task asked in words alone) leaves every read a
-    // lookup; there is no given resource to exclude.
-    run.subject = None;
-    assert!(looked_up(
-        &run,
-        &descriptor("notes.page:release"),
-        true,
-        &empty
-    ));
-}
-
 #[path = "agent_loop_run_tests.rs"]
 mod run;

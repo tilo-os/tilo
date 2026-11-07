@@ -47,9 +47,13 @@ const SETTING_PREFIX: &str = "setting:";
 /// on a resource of its own.
 const OPTION_SEPARATOR: char = '=';
 
-/// The index's copy, in the desktop's language: the settings' names.
+/// The index's copy, in the desktop's language: the settings' names. The same
+/// index serves every window, so it rides along in the window's language
+/// instead of deciding it.
 static NAMES: ui::i18n::EmbeddedCatalog = {
-    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES).with_system_locale();
+    let catalog = ui::i18n::EmbeddedCatalog::new("en-US", index::CATALOGUES)
+        .with_system_locale()
+        .as_shared();
     #[cfg(test)]
     let catalog = catalog.with_pinned_locale("en-US");
     catalog

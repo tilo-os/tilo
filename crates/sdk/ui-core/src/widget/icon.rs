@@ -28,7 +28,7 @@ mod component;
 pub use component::IconProps;
 
 /// Where the glyph colour comes from.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Tint {
     Primary,
     Dim,
@@ -73,6 +73,8 @@ pub struct IconWidget {
     tint: Tint,
     stroke_px: f64,
     rect: Rect,
+    /// What it shows changed since the last frame drew it.
+    dirty: bool,
 }
 
 impl IconWidget {
@@ -85,7 +87,20 @@ impl IconWidget {
             tint: Tint::Primary,
             stroke_px: LUCIDE_DEFAULT_STROKE_PX,
             rect: Rect::ZERO,
+            dirty: true,
         }
+    }
+
+    /// The glyph, the square it takes and how it is inked, changed where it stands: another
+    /// glyph, or one that takes another size, says so and keeps its place.
+    fn set_glyph(&mut self, icon: Icon, size: IconSize, tint: Tint) {
+        if self.icon == icon && self.size == size && self.tint == tint {
+            return;
+        }
+        self.icon = icon;
+        self.size = size;
+        self.tint = tint;
+        self.dirty = true;
     }
 
     /// Take one of the theme's icon sizes.
@@ -147,6 +162,8 @@ impl IconWidget {
 }
 
 impl Widget for IconWidget {
+    crate::described!();
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -198,8 +215,10 @@ impl Widget for IconWidget {
     /// A leaf sized by the theme: layout is settled once the first
     /// non-zero rect lands.
     fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+        self.rect == Rect::ZERO || self.dirty
     }
+
+    crate::redraw_flag!();
 }
 
 #[cfg(test)]

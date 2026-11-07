@@ -55,6 +55,7 @@ impl ModelBackend for Backend {
                 ),
                 stop_reason: self.stop.get(),
                 usage: Usage::default(),
+                cost_micros: 0,
             }))
         }))
     }

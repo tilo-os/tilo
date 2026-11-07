@@ -20,9 +20,9 @@ use ui::widget::Widget;
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::notifications::{
-    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, HistoryActivation,
-    NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog, NotificationSeverity,
-    NotificationStack,
+    BannerFeed, CenterLayout, CenterMetrics, CenterOutcome, CentreApi, ContinuityNotificationId,
+    HistoryActivation, NOTIFICATION_CENTRE, Notification, NotificationHost, NotificationLog,
+    NotificationSeverity, NotificationStack,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -78,12 +78,6 @@ struct NoticeState {
     /// own state: the shell knows when it closes, the desk's layer when its
     /// own does.
     shell_centre: Cell<bool>,
-    /// The agent a kept notification can be handed to, where one is live in
-    /// the workspace it came from: what the centre's rows offer.
-    taking: RefCell<Option<String>>,
-    /// The notifications the person handed to that agent, waiting for the
-    /// loop that asks them.
-    handed: RefCell<Vec<u64>>,
 }
 
 type OutcomeTap = Rc<dyn Fn(&NotificationOutcome)>;
@@ -180,12 +174,6 @@ impl NotificationHost for NoticeState {
         if self.log.borrow_mut().undo_clear() {
             self.touch();
         }
-    }
-    fn agent_for(&self, _notification: &Notification) -> Option<String> {
-        self.taking.borrow().clone()
-    }
-    fn hand_to_agent(&self, notification: &Notification) {
-        self.handed.borrow_mut().push(notification.id);
     }
     fn changed(&self) {
         self.touch();
@@ -298,6 +286,56 @@ impl DesktopNotifications {
         id
     }
 
+    /// Replace the banner or centre row the same origin as `notification`
+    /// showed before, keeping its local id so hit targets and centre
+    /// selection survive: what another device's notification update is.
+    /// Returns the id it shows under; `None` when the desk showed none from
+    /// that origin yet.
+    pub fn replace_remote(&self, notification: &Notification) -> Option<u64> {
+        let route = notification.remote_route.as_ref()?;
+        let existing = {
+            let log = self.log.log.borrow();
+            log.active()
+                .iter()
+                .chain(log.history().iter())
+                .find(|shown| shown.remote_route.as_ref() == Some(route))
+                .map(|shown| shown.id)?
+        };
+        self.log.log.borrow_mut().replace_remote(notification);
+        self.log.unread.borrow_mut().insert(existing);
+        self.log.touch();
+        Some(existing)
+    }
+
+    /// Take every copy of the notification `id` another device projected,
+    /// live or retained: its origin is done with it. Returns whether the desk
+    /// showed any.
+    pub fn retire_remote(&self, source_device: &str, id: ContinuityNotificationId) -> bool {
+        let gone: Vec<u64> = {
+            let log = self.log.log.borrow();
+            log.active()
+                .iter()
+                .chain(log.history().iter())
+                .filter(|shown| {
+                    shown.remote_route.as_ref().is_some_and(|route| {
+                        route.source_device == source_device && route.notification_id == id
+                    })
+                })
+                .map(|shown| shown.id)
+                .collect()
+        };
+        let retired = self.log.log.borrow_mut().retire_remote(source_device, id);
+        if retired {
+            let mut unread = self.log.unread.borrow_mut();
+            for id in gone {
+                unread.remove(&id);
+            }
+            drop(unread);
+            self.log.touch();
+        }
+        retired
+    }
+
     /// Why fresh banners are held now, for the bar's silenced bell and the
     /// centre's header; `None` while they show.
     pub fn set_quiet(&self, quiet: Option<String>) {
@@ -338,39 +376,6 @@ impl DesktopNotifications {
     #[must_use]
     pub fn centre_open(&self) -> bool {
         self.log.centre_open.get() || self.log.shell_centre.get()
-    }
-
-    /// Say which agent a kept notification can be handed to, where one is
-    /// live in the workspace it came from.
-    pub fn set_taking_agent(&self, agent: Option<String>) {
-        *self.log.taking.borrow_mut() = agent;
-    }
-
-    /// Hand notification `id` to the agent that takes one here: what the
-    /// centre's agent button does, and what the loop that asks it waits for.
-    pub fn hand_to_agent(&self, id: u64) {
-        self.log.handed.borrow_mut().push(id);
-    }
-
-    /// The notifications handed to that agent since the last look, as the
-    /// agent's name, the title it is told and the body it reads: one no
-    /// longer kept is not handed on.
-    pub fn take_handed(&self) -> Vec<(String, String, String)> {
-        let ids = std::mem::take(&mut *self.log.handed.borrow_mut());
-        let Some(agent) = self.log.taking.borrow().clone() else {
-            return Vec::new();
-        };
-        let log = self.log.log.borrow();
-        ids.into_iter()
-            .filter_map(|id| {
-                let notification = log.history_entry(id)?;
-                Some((
-                    agent.clone(),
-                    notification.title.clone(),
-                    notification.body.clone(),
-                ))
-            })
-            .collect()
     }
 
     /// Retire every banner still up into the centre: what a surface opening
@@ -803,6 +808,12 @@ pub(super) struct NotificationLayer {
     pub inbox: Option<AppInbox>,
     stack: NotificationStack,
     center: Option<Centre>,
+    /// The person asked for the centre: it takes input and its arrivals
+    /// join it. A centre that closes stays here until its leaving is drawn.
+    centre_open: bool,
+    /// The centre's coming and going, on the standard appear motion: from
+    /// the corner under the bar's bell and back to it.
+    appear: ui::motion::Appearing,
     /// An application a retained notification asked to open.
     pub open_app: Option<String>,
     rect: Rect,
@@ -823,6 +834,8 @@ impl NotificationLayer {
             inbox: None,
             stack: NotificationStack::new(),
             center: None,
+            centre_open: false,
+            appear: ui::motion::Appearing::closed(),
             open_app: None,
             rect: Rect::ZERO,
             cursor: None,
@@ -874,15 +887,21 @@ impl NotificationLayer {
     /// arrivals read its state: a centre that only appeared to close would
     /// keep every later banner off the desk.
     pub fn set_center_open(&mut self, open: bool) {
-        if open != self.center.is_some() {
-            self.notifications.mark_read();
-            self.notifications.set_centre_open(open);
-            self.center =
-                open.then(|| Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make()));
-            self.dirty = true;
-            self.notifications.set_centre_open(open);
-            self.feed_stack();
+        if open == self.centre_open {
+            return;
         }
+        self.centre_open = open;
+        self.notifications.mark_read();
+        self.notifications.set_centre_open(open);
+        if open {
+            self.center.get_or_insert_with(|| {
+                Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make())
+            });
+        }
+        // Closed, it is drawn until its leaving is over and dropped then.
+        self.appear.show(open);
+        self.dirty = true;
+        self.feed_stack();
     }
 
     /// Open the centre waiting on its code once the code is in. Whether it
@@ -905,8 +924,10 @@ impl NotificationLayer {
         Some(&mut **self.center.as_mut()?.ready_mut()?)
     }
 
+    /// Whether the centre is open, as opposed to leaving: it takes input and
+    /// what arrives joins it.
     pub fn center_open(&self) -> bool {
-        self.center.is_some()
+        self.centre_open
     }
 
     /// Retire what ran out; returns whether that changed what is shown.
@@ -967,7 +988,8 @@ impl NotificationLayer {
         }
         let notifications = self.notifications.clone();
         let host = notifications.host();
-        if self.center.is_none() {
+        // A centre that is leaving takes no press: it goes to what is under it.
+        if !self.centre_open {
             let mut handled = false;
             self.feed_stack();
             self.dirty |= self.stack.handle_pointer_event(event, scale, &mut handled);
@@ -1054,6 +1076,7 @@ impl NotificationLayer {
     /// Whether the layer shows anything at all.
     pub fn visible(&self) -> bool {
         self.center.is_some()
+            || self.appear.is_moving()
             || (!self.notifications.log.banners_elsewhere.get()
                 && !self.notifications.log().active().is_empty())
     }
@@ -1071,6 +1094,7 @@ impl Widget for NotificationLayer {
     }
     fn needs_animation_frame(&self) -> bool {
         self.stack.needs_animation_frame()
+            || self.appear.is_moving()
             || self.centre().is_some_and(CentreApi::reading_needs_frame)
     }
     /// The reading page glides on after a flick, repainted as a wheel's
@@ -1120,33 +1144,54 @@ impl Widget for NotificationLayer {
         self.feed_stack();
         self.stack.draw(scene, transform, text, theme);
         self.answer_stack();
+        // The centre arrives from the corner under the bar's bell and leaves
+        // back to it; one whose leaving is over is dropped here.
+        self.appear.follow(self.centre_open, theme.motion());
+        if !self.centre_open && !self.appear.is_drawn() {
+            self.center = None;
+        }
         let cursor = self.cursor;
-        if let Some(layout) = self.layout()
+        let posed = self.layout().map(|layout| {
+            let panel = layout.panel();
+            // Under the bell: the panel's own top-right corner.
+            let anchor = Point::new(panel.x1, panel.y0);
+            let pose = self.appear.pose(panel, anchor);
+            (layout, panel, pose)
+        });
+        if let Some((layout, panel, pose)) = posed
             && let Some(center) = self.center.as_mut()
         {
-            let panel = layout.panel();
-            ui::surface::panel(
+            let elevation = &theme.tokens.elevation.floating;
+            let reach = f64::from(elevation.blur) * 2.0 + f64::from(elevation.offset_y).abs() + 2.0;
+            pose.paint(
                 scene,
                 transform,
-                panel,
-                f64::from(theme.tokens.radii.control),
-                theme,
-            );
-            match center.ready_mut() {
-                Some(center) => {
-                    center.draw(host, &layout, scene, transform, text, theme, cursor);
-                }
-                None => {
-                    ui::lazy_code::draw_loading(
+                panel.inflate(reach, reach),
+                |scene, at| {
+                    ui::surface::panel(
                         scene,
-                        transform,
-                        text,
-                        theme,
+                        at,
                         panel,
-                        "lazy-loading",
+                        f64::from(theme.tokens.radii.control),
+                        theme,
                     );
-                }
-            }
+                    match center.ready_mut() {
+                        Some(center) => {
+                            center.draw(host, &layout, scene, at, text, theme, cursor);
+                        }
+                        None => {
+                            ui::lazy_code::draw_loading(
+                                scene,
+                                at,
+                                text,
+                                theme,
+                                panel,
+                                "lazy-loading",
+                            );
+                        }
+                    }
+                },
+            );
         }
         self.drawn_revision.set(Some(notifications.revision()));
         self.dirty = false;
@@ -1254,7 +1299,7 @@ fn overlay_style() -> ui::taffy::Style {
 mod tests {
     use super::*;
 
-    use crate::notifications::RowShape;
+    use crate::notifications::{RemoteNotificationRoute, RowShape};
 
     fn layer_with(count: usize) -> (NotificationLayer, DesktopNotifications) {
         let notifications = DesktopNotifications::default();
@@ -1288,6 +1333,16 @@ mod tests {
         layer.route(&ui::synthetic_input::mouse_press(), 1.0)
     }
 
+    fn paint(layer: &mut NotificationLayer, theme: &ui::Theme) {
+        layer.draw(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut ui::TextRenderer::new(),
+            theme,
+            &ui::presence::PresenceCtx::default(),
+        );
+    }
+
     /// The bell counts what arrived since the person last looked: opening
     /// the centre reads it all, and one taken back is no longer news.
     #[test]
@@ -1317,6 +1372,51 @@ mod tests {
         assert_eq!(notifications.unread(), 1, "a new one is unread");
         assert!(notifications.withdraw(fresh));
         assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
+    }
+
+    /// A notification another of the person's devices projected updates the
+    /// row it already shows, and its live and kept copies go together when
+    /// that device is done with it.
+    #[test]
+    fn another_devices_projection_updates_in_place_and_retires_together() {
+        let notifications = DesktopNotifications::default();
+        let id = ContinuityNotificationId {
+            epoch: [3; 16],
+            token: [4; 16],
+        };
+        let route = RemoteNotificationRoute {
+            source_device: "laptop".into(),
+            source_label: "Laptop".into(),
+            notification_id: id,
+        };
+        let mut first =
+            Notification::new("New mail", "From Ada").with_app_name("Mail · From Laptop");
+        first.remote_route = Some(route.clone());
+        let shown = notifications.post(first);
+        let mut update = Notification::new("Two new mails", "From Ada and Grace")
+            .with_app_name("Mail · From Laptop");
+        update.remote_route = Some(route);
+        assert_eq!(
+            notifications.replace_remote(&update),
+            Some(shown),
+            "the row it already shows takes the update"
+        );
+        assert_eq!(notifications.counts(), (1, 0), "one row, not two");
+        assert_eq!(notifications.log().active()[0].title, "Two new mails");
+
+        notifications.host().dismiss(shown);
+        assert_eq!(notifications.counts(), (0, 1));
+        assert!(notifications.retire_remote("laptop", id));
+        assert_eq!(notifications.counts(), (0, 0), "the kept copy goes too");
+        assert!(!notifications.is_unread(shown));
+        assert!(
+            !notifications.retire_remote("laptop", id),
+            "nothing left to take away"
+        );
+        assert!(
+            !notifications.retire_remote("desk", id),
+            "another device's id is not this one's"
+        );
     }
 
     /// Escape closes the centre the way a press outside does, and arrivals
@@ -1411,7 +1511,8 @@ mod tests {
     /// The person opened the centre to read what it holds: no banner stands
     /// over the rows it covers, wherever the host draws the banners, what
     /// arrives meanwhile goes into the centre, and the ones that came before
-    /// are back on the desk once it closes.
+    /// are rows of it too — a banner is gone from the desk once the centre
+    /// took it.
     #[test]
     fn a_banner_never_stands_over_the_open_centre() {
         let (mut layer, notifications) = layer_with(2);
@@ -1448,10 +1549,51 @@ mod tests {
         layer.feed_stack();
         assert_eq!(
             notifications.feed().banners.len(),
-            2,
-            "the desk's banners come back"
+            0,
+            "the banners the centre took stay rows of the centre"
         );
-        assert_eq!(layer.stack.feed().banners.len(), 2);
+        assert!(
+            notifications.log().history().len() >= 3,
+            "all three are rows the person reads there"
+        );
+        // What arrives once it is closed is a banner again.
+        notifications.post(Notification::new("Das Wasser kocht", ""));
+        assert_eq!(
+            notifications.feed().banners.len(),
+            1,
+            "a desk with no centre over it shows banners again"
+        );
+    }
+
+    /// The centre arrives and leaves on the standard motion: closed, it is
+    /// still drawn while it goes and takes no press meanwhile.
+    #[test]
+    fn the_centre_is_drawn_until_its_leaving_is_over() {
+        let (mut layer, _) = layer_with(2);
+        let theme = ui::Theme::dark();
+        // Opened and read at rest: from there the leaving has somewhere to
+        // start.
+        layer.set_center_open(true);
+        layer.appear.snap(true);
+        paint(&mut layer, &theme);
+        assert!(layer.center_open());
+        assert!(layer.visible());
+        let panel = layer.layout().expect("an open centre has a panel").panel();
+        // A press asked for it: the motion, not a key's landing at once.
+        ui::motion::note_source(ui::tokens::MotionSource::Pointer);
+        let frozen = ui::motion::testing::frozen();
+        layer.set_center_open(false);
+        paint(&mut layer, &theme);
+        assert!(layer.center.is_some(), "a leaving centre is still drawn");
+        assert!(!layer.center_open());
+        assert!(
+            !press(&mut layer, panel.center()),
+            "a leaving centre takes no press"
+        );
+        drop(frozen);
+        let _settled = ui::motion::testing::settled();
+        paint(&mut layer, &theme);
+        assert!(layer.center.is_none(), "gone once its leaving is over");
     }
 
     #[test]
@@ -1545,7 +1687,7 @@ mod tests {
             "the retired banner and the kept one"
         );
         let layout = layer.layout().unwrap();
-        let (dismiss, _) = layout.row_controls(layout.row(0), &RowShape::default(), false);
+        let dismiss = layout.row_controls(layout.row(0), &RowShape::default());
         assert!(press(&mut layer, dismiss.center()));
         assert_eq!(notifications.log().history().len(), 0);
         // Both rows the app's one row held go: the banner retirement put in

@@ -5,9 +5,9 @@
 //! A browser session creates a Sheets and a Slides record and closes them;
 //! no agent exists. The page then lists the workspace's catalogue, runs a record's
 //! action through the host, retries it under the same id, reuses the id for
-//! another request, is asked to confirm a destructive action, and cancels an
-//! invocation queued behind another. Every change the host makes arrives as
-//! an ordinary durable change authored by the host device.
+//! another request, is asked to confirm a destructive action, and is refused
+//! the cancel of one that has finished. Every change the host makes arrives
+//! as an ordinary durable change authored by the host device.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -882,197 +882,114 @@ fn request(provider: &str, address: ActionAddress, argument: InvokeArgument) -> 
     }
 }
 
-/// The record `create_before_publish` makes, with the host device's
-/// admission to its channel held: the host sees it sealed and cannot open it
-/// until the hold is dropped.
-async fn create_withheld(
-    browser: &mut Browser,
-    laptop: &participant::Participant,
-    host_key: [u8; 32],
-) -> (DocumentRoute, participant::HeldAdmission) {
-    let mut held = None;
-    let route = browser.create_before_publish(SHEETS, |route| {
-        held = Some(laptop.hold_admission(route, host_key));
-    });
-    let held = held.unwrap();
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    held.requested().await;
-    (route, held)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_record_whose_keys_are_withheld_holds_back_no_other() {
+async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
     let host = enrol(&root, "home-server", DeviceCapabilities::host());
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let laptop = participant::Participant::start(&hosted.relay, &root).await;
+    // Every record of the workspace is sealed under one key scope, and the
+    // page asks the laptop for it: the laptop holds that admission back, so
+    // the page holds no keys at all.
+    let held = laptop.hold_admission(browser_device.cert.device_public_key);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
-    let host_key = host.cert.device_public_key;
+    held.requested().await;
 
-    // A record the host holds keys for. The workspace's first listing joins it
-    // and waits, once, for every record's keys.
-    let open = browser.create(SHEETS);
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let open_provider = record_provider(&open);
+    // The host holds the workspace's keys, so nothing about the page waits on
+    // the ones it lacks: the host opens a record for the page, lists its
+    // actions, and the page's catalogue answers.
     let started = Instant::now();
-    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
-    let joined = started.elapsed();
-    assert!(
-        listing
-            .providers
-            .iter()
-            .any(|p| p.provider == open_provider),
-        "{:?}",
-        listing.providers
+    let opened = browser
+        .invoke(request(
+            &format!("workspace:{WORKSPACE}"),
+            ActionAddress::new(format!("app.{SHEETS}"), "open"),
+            InvokeArgument::None,
+        ))
+        .await;
+    eprintln!(
+        "workspace actions latency: an open answered while the page held no keys: {:?}",
+        started.elapsed()
     );
-    let by_name = CatalogueQuery {
-        provider: Some(open_provider.clone()),
-        max_results: 200,
-        ..CatalogueQuery::default()
+    let ReceiptStatus::Completed { output } = &opened.status else {
+        panic!("the host opens a record while the page holds no keys: {opened:?}");
     };
+    let record = output.value.as_ref().unwrap()["record"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let created = DocumentRoute {
+        app_id: SHEETS.into(),
+        cluster_id: WORKSPACE.into(),
+        record,
+    };
+    // The page opens the record the host made for it, as a person opening the
+    // record does: without keys it holds that open record sealed.
+    browser.peer.open_route(created.clone()).unwrap();
+    let provider = record_provider(&created);
     let new_sheet = browser
-        .catalogue(by_name.clone())
+        .catalogue(CatalogueQuery {
+            provider: Some(provider.clone()),
+            max_results: 200,
+            ..CatalogueQuery::default()
+        })
         .await
         .unwrap()
         .rows
         .iter()
         .filter_map(|row| row.action.as_ref())
         .find(|action| action.address.action == "new-sheet")
-        .expect("Sheets offers New sheet")
+        .expect("the host lists the record's actions while the page holds no keys")
         .address
         .clone();
-    let started = Instant::now();
-    let warm = browser
-        .invoke(request(
-            &open_provider,
-            new_sheet.clone(),
-            sheet_named("Keys held"),
-        ))
-        .await;
-    let acted_with_keys = started.elapsed();
-    eprintln!(
-        "workspace actions latency: join and first listing {joined:?}, invoke with keys {acted_with_keys:?}"
-    );
-    assert!(
-        matches!(warm.status, ReceiptStatus::Completed { .. }),
-        "{warm:?}"
-    );
 
-    // A second record arrives sealed, and the host's admission to it is held.
-    let (withheld, held) = create_withheld(&mut browser, &laptop, host_key).await;
-
-    // Nothing about the first record waits for the second's keys.
-    let started = Instant::now();
-    browser.catalogue(by_name).await.unwrap();
-    let named_while_held = started.elapsed();
-    let started = Instant::now();
-    let listing = browser.catalogue(CatalogueQuery::default()).await.unwrap();
-    let listed_while_held = started.elapsed();
-    let started = Instant::now();
+    // The host writes to the record, and the page reads none of it: it holds
+    // no keys, so the record it opened stands sealed to it.
     let acted = browser
         .invoke(request(
-            &open_provider,
+            &provider,
             new_sheet.clone(),
-            sheet_named("Keys withheld elsewhere"),
+            sheet_named("Before the keys"),
         ))
         .await;
-    let acted_while_held = started.elapsed();
-    eprintln!(
-        "workspace actions latency, another record's keys withheld: named catalogue \
-         {named_while_held:?}, listing {listed_while_held:?}, invoke {acted_while_held:?}"
-    );
     assert!(
         matches!(acted.status, ReceiptStatus::Completed { .. }),
         "{acted:?}"
     );
-    assert!(
-        !listing
-            .providers
-            .iter()
-            .any(|p| p.provider == record_provider(&withheld)),
-        "a record the host cannot open is not listed"
-    );
-
-    // An invoke on the withheld record waits for its keys, then runs as
-    // soon as they arrive: the key's arrival wakes the wait.
-    let pending = request(
-        &record_provider(&withheld),
-        new_sheet.clone(),
-        sheet_named("After the keys"),
-    );
-    browser.send(RemoteActionMessage::Invoke(pending.clone()));
-    tokio::time::sleep(Duration::from_millis(1_000)).await;
     browser.pump();
     assert!(
-        !browser.answers.iter().any(|answer| matches!(
-            answer,
-            RemoteActionMessage::Receipt(receipt) if receipt.invocation == pending.invocation
-        )),
-        "nothing runs on a record before its keys: {:?}",
-        browser.answers
-    );
-    let released = Instant::now();
-    drop(held);
-    let after_keys = browser.receipt(pending.invocation).await;
-    let ran_after_keys = released.elapsed();
-    eprintln!(
-        "workspace actions latency: the withheld record ran {ran_after_keys:?} after its keys"
-    );
-    assert!(
-        matches!(after_keys.status, ReceiptStatus::Completed { .. }),
-        "{after_keys:?}"
+        browser.documents.get(&created).is_none_or(Vec::is_empty),
+        "a page without its keys read the host's record: {:?}",
+        browser.documents.get(&created)
     );
 
-    // Keys that never arrive refuse the invocation clearly; nothing runs.
-    let (refused, held) = create_withheld(&mut browser, &laptop, host_key).await;
-    let started = Instant::now();
-    let never = browser
-        .invoke(request(
-            &record_provider(&refused),
-            new_sheet,
-            sheet_named("Never"),
-        ))
+    // The keys arrive: the page opens the record it could not before, and acts
+    // on it through the host.
+    drop(held);
+    let acted = browser
+        .invoke(request(&provider, new_sheet, sheet_named("After the keys")))
         .await;
-    let refused_after = started.elapsed();
-    eprintln!("workspace actions latency: a record without keys refused after {refused_after:?}");
-    match &never.status {
-        ReceiptStatus::Rejected {
-            error: ActionHostError::Unavailable { reason },
-        } => assert!(
-            reason.contains(&refused.record),
-            "the refusal names the record: {reason}"
-        ),
-        other => panic!("an invocation without keys is refused: {other:?}"),
+    assert!(
+        matches!(acted.status, ReceiptStatus::Completed { .. }),
+        "{acted:?}"
+    );
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        browser.pump();
+        if browser.peer.status().channels.contains(&created.record) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never opened the record its keys opened: {}",
+            browser.peer.status().channels
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    browser.pump();
-    assert!(
-        !browser
-            .documents
-            .get(&refused)
-            .is_some_and(|changes| changes.iter().any(|(author, _)| *author == host_key)),
-        "the host wrote nothing to a record it could not open"
-    );
-    // The laptop stops before the hold is released, so it never admits
-    // the host into a relay that is shutting down.
-    drop(laptop);
-    drop(held);
-
-    // A request held back by keys that do not come waits as long as the
-    // refused one did, on the same machine under the same load.
-    let prompt = refused_after;
-    assert!(
-        named_while_held < prompt && listed_while_held < prompt && acted_while_held < prompt,
-        "another record's missing keys held a request back: catalogue {named_while_held:?}, \
-         listing {listed_while_held:?}, invoke {acted_while_held:?}, against {prompt:?} refusing"
-    );
-    assert!(
-        ran_after_keys < prompt,
-        "the wait did not end when the keys arrived: {ran_after_keys:?}, against {prompt:?} refusing"
-    );
-    drop(hosted.web);
+    browser.peer.close();
     hosted.agents.shutdown();
+    drop(hosted.web);
     hosted.relay.shutdown().await;
 }
 
@@ -1175,7 +1092,7 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
     let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
-    let laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let host_key = host.cert.device_public_key;
 
@@ -1327,73 +1244,10 @@ async fn a_page_acts_on_records_nobody_has_open_through_the_host() {
         "a refused invocation is forgotten, so the confirmed retry under its id is admitted: {ran:?}"
     );
 
-    // 5. Cancel: an invocation queued behind another is cancelled before it
-    // starts and never runs; a finished one cannot be cancelled.
-    // Hold the first record's real host admission so its mount cannot finish
-    // before the queued invocation's cancel arrives. A cold mount alone is
-    // not a synchronization boundary on a fast or differently scheduled host.
-    let mut held = None;
-    let busy_route = browser.create_before_publish(SHEETS, |route| {
-        held = Some(laptop.hold_admission(route, host_key));
-    });
-    let held = held.unwrap();
-    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let slow = request(
-        &record_provider(&busy_route),
-        new_sheet.clone(),
-        sheet_named("Busy"),
-    );
-    let queued = request(&sheets_provider, new_sheet.clone(), sheet_named("Never"));
-    held.requested().await;
-    browser.send(RemoteActionMessage::Invoke(slow.clone()));
-    browser.send(RemoteActionMessage::Invoke(queued.clone()));
-    browser.send(RemoteActionMessage::Cancel {
-        invocation: queued.invocation,
-    });
-    let cancel = browser
-        .answer("cancel", |answer| match answer {
-            RemoteActionMessage::CancelResponse { invocation, result }
-                if *invocation == queued.invocation =>
-            {
-                Some(result.clone())
-            }
-            _ => None,
-        })
-        .await;
-    drop(held);
-    let queued_receipt = browser.receipt(queued.invocation).await;
-    let slow_receipt = browser.receipt(slow.invocation).await;
-    assert!(
-        matches!(slow_receipt.status, ReceiptStatus::Completed { .. }),
-        "{slow_receipt:?}"
-    );
-    match cancel {
-        Ok(()) => {
-            assert!(
-                matches!(queued_receipt.status, ReceiptStatus::Cancelled { .. }),
-                "{queued_receipt:?}"
-            );
-            browser.send(RemoteActionMessage::observe(queued.invocation));
-            let observed = browser
-                .answer("observe", |answer| match answer {
-                    RemoteActionMessage::Update { invocation, state }
-                        if *invocation == queued.invocation =>
-                    {
-                        Some(state.clone())
-                    }
-                    _ => None,
-                })
-                .await
-                .expect("the page owns its invocation");
-            assert!(matches!(
-                observed.receipt().status,
-                ReceiptStatus::Cancelled { .. }
-            ));
-            let names = after_a_marker(&mut browser, &sheets, &new_sheet, "After the cancel").await;
-            assert!(!names.contains(&"Never".to_owned()));
-        }
-        Err(error) => panic!("the queued invocation was not cancellable: {error:?}"),
-    }
+    // 5. Cancel: a finished invocation cannot be cancelled. An invocation
+    // waits in the host's queue only while the host waits for the keys of what
+    // it reads; a workspace hands its one key scope over before every invoke,
+    // so nothing here queues behind another.
     browser.send(RemoteActionMessage::Cancel {
         invocation: add.invocation,
     });

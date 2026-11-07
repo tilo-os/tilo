@@ -84,7 +84,7 @@ fn sheet_says(listings: Vec<Listing>, text: &str) -> bool {
     };
     let mut frame = FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
-        directory::sheet(&directory, &query, &ask),
+        directory::sheet(&directory, &query, &ask, None),
         VIEWPORT,
         inputs.theme,
         inputs.text_renderer,
@@ -166,7 +166,11 @@ fn escape_clears_the_search_first_then_closes() {
     app.harness().key("Escape");
     app.settle();
     assert_eq!(seat.take_asked(), [DirectoryEffect::Done]);
-    assert!(!seat.presentation().is_drawn());
+    assert_eq!(
+        seat.presentation().phase(),
+        tilo_sheets::Phase::Leaving,
+        "the card leaves the screen; the shell hears it is gone once it has"
+    );
 }
 
 #[test]
@@ -256,7 +260,7 @@ fn the_sheet_alone_lists_a_fixture_and_asks_through_the_door_it_was_given() {
     let inputs = ui::headless::fixture_runner_inputs();
     let mut frame = FrameHarness::new_with_controlled_inputs(
         ui::state::State::new(),
-        directory::sheet(&directory(), &query, &ask),
+        directory::sheet(&directory(), &query, &ask, None),
         VIEWPORT,
         inputs.theme,
         inputs.text_renderer,

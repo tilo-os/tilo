@@ -2917,7 +2917,7 @@
        "hover": "notes"
       },
       {
-       "wait": 0.5
+       "wait": 1.2
       }
      ],
      "capture": "the tab under the pointer",
@@ -3441,6 +3441,59 @@
      "measure": [
       "it is listed",
       "unread state"
+     ]
+    },
+    {
+     "id": "notify-centre-senders",
+     "story": "the centre after one app's two notifications and two other senders",
+     "steps": [
+      {
+       "notify": {
+        "summary": "Build finished",
+        "app": "Notes"
+       }
+      },
+      {
+       "wait": 0.6
+      },
+      {
+       "notify": {
+        "summary": "Draft saved",
+        "app": "Notes"
+       }
+      },
+      {
+       "wait": 0.6
+      },
+      {
+       "notify": {
+        "summary": "Lunch at one?",
+        "app": "Chat"
+       }
+      },
+      {
+       "wait": 0.6
+      },
+      {
+       "notify": {
+        "summary": "Process exited",
+        "app": "Terminal"
+       }
+      },
+      {
+       "wait": 1.0
+      },
+      {
+       "door": "desk.notifications"
+      },
+      {
+       "wait": 1.2
+      }
+     ],
+     "capture": "the centre's rows and group header, each with its sender's mark",
+     "measure": [
+      "every row has a mark",
+      "the group header carries its count"
      ]
     },
     {
@@ -4721,7 +4774,7 @@
        "wait": 1.0
       }
      ],
-     "capture": "the notifications section",
+     "capture": "the centre the notifications row opens",
      "measure": [
       "the one list it opens",
       "where it opens"

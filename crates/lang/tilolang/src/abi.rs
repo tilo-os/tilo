@@ -123,6 +123,7 @@ imports! {
     CollRemove = "coll_remove" ([H, H, H] -> []);
     CollMove = "coll_move" ([H, H, H, H, I32] -> []);
     CollWhere = "coll_where" ([H, H] -> [H]);
+    CollRelatives = "coll_relatives" ([H, H, H, H, I32] -> [H]);
     CollCount = "coll_count" ([H] -> [I64]);
     CollEmpty = "coll_empty" ([H] -> [I32]);
     SetAdd = "set_add" ([H, H, H] -> []);
@@ -190,6 +191,7 @@ imports! {
     OutsideAt = "outside_at" ([H, H, H] -> [H]);
     Withdraw = "withdraw" ([H, H] -> [H]);
     ModelCall = "model_call" ([H, H] -> [H]);
+    Notify = "notify" ([H, H, H, H] -> []);
     QueueBlock = "queue_block" ([H, H, H] -> []);
     Print = "print" ([H, H] -> []);
     Find = "find" ([H, H] -> [H]);

@@ -19,15 +19,22 @@
 //! Anything that does not match, or an index from another build, is
 //! ignored and the database is built as before; a process that may write
 //! the index then records the new one.
+//!
+//! Every app's home is its own, so without sharing each launch of each app
+//! builds a database of its own. The launcher binds one directory in the
+//! user's data home into every sandbox and names it in `TILO_FONT_INDEX`, so
+//! the first app opened on the device records the database and every launch
+//! after it — any app, any workspace — reads the record.
 
 use cosmic_text::fontdb;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tilo_files::native::checked::Identity;
 
 /// Bumped whenever what an index records, or how a database is made from
 /// it, changes.
-const VERSION: u32 = 2;
+const VERSION: u32 = 3;
 
 /// An index larger than this is not one this build wrote.
 const MAX_INDEX_BYTES: u64 = 64 << 20;
@@ -59,22 +66,19 @@ fn system_inputs() -> Vec<PathBuf> {
     inputs
 }
 
-/// Where this process keeps its index: `TILO_FONT_INDEX` when the host names
-/// one, else a file in the user's cache directory named for this build's
-/// catalog.
+/// Where this process keeps its index: the directory `TILO_FONT_INDEX` names
+/// — in a sandbox, one every app of the build shares, so the second app
+/// opened on the device reads the database the first one's launch recorded —
+/// else `tilo/font-index` under its cache directory. The file inside is named
+/// for this build's catalog.
 #[cfg(not(test))]
 pub(crate) fn location() -> Option<PathBuf> {
     let paths = &crate::host::environment().paths;
-    if let Some(path) = &paths.font_index {
-        return Some(path.clone());
-    }
-    Some(
-        paths
-            .cache_dir()?
-            .join("tilo")
-            .join("font-index")
-            .join(format!("{}.json", tilo_font_catalog::manifest_sha256())),
-    )
+    let dir = match &paths.font_index {
+        Some(dir) => dir.clone(),
+        None => paths.cache_dir()?.join("tilo").join("font-index"),
+    };
+    Some(dir.join(format!("{}.json", tilo_font_catalog::manifest_sha256())))
 }
 
 /// This platform cannot identify files: no index is recorded or trusted.
@@ -151,12 +155,18 @@ const GENERIC: [fontdb::Family<'static>; 5] = [
     fontdb::Family::Fantasy,
 ];
 
-/// The roots that exist, in order, up to and including `chosen`.
+/// The roots that exist, as the directories they are, in order, up to and
+/// including `chosen`: a catalog reached through a symlink or a different
+/// mount of the same directory is the same catalog, and the session and an
+/// app reach it by different spellings.
 fn existing_roots(roots: &[PathBuf], chosen: &Path) -> Vec<PathBuf> {
     let mut existing = Vec::new();
     for root in roots.iter().filter(|root| root.is_dir()) {
-        existing.push(root.clone());
-        let same = root.canonicalize().is_ok_and(|root| root == chosen);
+        let Ok(root) = root.canonicalize() else {
+            continue;
+        };
+        let same = root == chosen;
+        existing.push(root);
         if same {
             break;
         }
@@ -166,7 +176,10 @@ fn existing_roots(roots: &[PathBuf], chosen: &Path) -> Vec<PathBuf> {
 
 /// The database recorded at `path`, when it is this build's and everything
 /// it was built from is as it was: the catalog roots, every font file, every
-/// directory holding one and the system's font directories.
+/// directory holding one and the system's font directories. An input that
+/// did not exist when the index was recorded is not one it named and cannot
+/// invalidate it; one that exists now and was not recorded is a font (or a
+/// font directory) the recorded database lacks.
 pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
     let bytes = tilo_files::native::bounded::read(path, MAX_INDEX_BYTES).ok()??;
     let index: Index = serde_json::from_slice(&bytes).ok()?;
@@ -180,10 +193,15 @@ pub(crate) fn load(path: &Path, roots: &[PathBuf]) -> Option<fontdb::Database> {
     if !index.inputs.iter().chain(&index.files).all(Input::holds) {
         return None;
     }
-    let mut system_inputs = system_inputs();
-    system_inputs.retain(|input| !index.inputs.iter().any(|known| known.path == *input));
-    if !system_inputs.is_empty() {
-        // Inputs this environment reads that the build did not record.
+    let recorded: HashSet<&Path> = index
+        .inputs
+        .iter()
+        .map(|known| known.path.as_path())
+        .collect();
+    let unrecorded = system_inputs()
+        .into_iter()
+        .any(|input| input.exists() && !recorded.contains(input.as_path()));
+    if unrecorded {
         return None;
     }
     Some(database(&index))
@@ -251,8 +269,12 @@ pub(crate) fn store(path: &Path, roots: &[PathBuf], root: &Path, db: &fontdb::Da
     let Ok(bytes) = serde_json::to_vec(&index) else {
         return;
     };
+    let dir = path.parent().unwrap_or(Path::new("."));
     if let Err(error) = tilo_files::native::atomic::write_creating_parent(path, &bytes) {
-        tracing::debug!(%error, path = %path.display(), "font index not recorded");
+        // Where the index lives cannot be written: another launch of this
+        // device records it instead, and until one does every launch builds
+        // the database again.
+        tracing::debug!(%error, dir = %dir.display(), "font index not recorded");
     }
 }
 
@@ -293,14 +315,21 @@ fn index_of(roots: &[PathBuf], root: &Path, db: &fontdb::Database) -> Option<Ind
         .chain(system_inputs())
         .collect();
     for directory in directories {
-        if !inputs.iter().any(|known| known.path == directory) {
-            inputs.push(Input::now(directory).ok()?);
+        if inputs.iter().any(|known| known.path == directory) {
+            continue;
+        }
+        let input = Input::now(directory).ok()?;
+        // Only what the build read: a directory that is not there adds no
+        // font, and the load side rejects an input this did not name only
+        // when it exists.
+        if input.identity.is_some() {
+            inputs.push(input);
         }
     }
     Some(Index {
         version: VERSION,
         build: tilo_font_catalog::manifest_sha256(),
-        roots: existing_roots(roots, root),
+        roots: existing_roots(roots, &root.canonicalize().ok()?),
         files,
         inputs,
         faces,
@@ -433,5 +462,32 @@ mod tests {
         other.build = "another".into();
         std::fs::write(&index_path, serde_json::to_vec(&other).unwrap()).unwrap();
         assert!(load(&index_path, &roots).is_none(), "another build");
+    }
+
+    /// The session and an app reach one catalog by different spellings (a
+    /// symlink next to the shell's executable, the directory itself in an
+    /// app's namespace). The index names the directory, not the spelling, so
+    /// a launch still reads the database the session recorded.
+    #[test]
+    fn a_catalog_reached_through_another_spelling_is_the_same_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let fonts = dir.path().join("fonts");
+        std::fs::create_dir_all(&fonts).unwrap();
+        let mut db = fontdb::Database::new();
+        for (name, bytes) in fixture_files() {
+            let path = fonts.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            db.load_font_file(&path).unwrap();
+        }
+        let link = dir.path().join("fonts-link");
+        std::os::unix::fs::symlink(&fonts, &link).unwrap();
+        let index_path = dir.path().join("index.json");
+        store(&index_path, std::slice::from_ref(&link), &link, &db);
+        let recorded: Index = serde_json::from_slice(&std::fs::read(&index_path).unwrap()).unwrap();
+        assert_eq!(recorded.roots, vec![fonts.canonicalize().unwrap()]);
+        assert!(
+            load(&index_path, std::slice::from_ref(&fonts)).is_some(),
+            "the same directory by another spelling"
+        );
     }
 }

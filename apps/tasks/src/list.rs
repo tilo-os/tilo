@@ -8,7 +8,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::model::money;
 use crate::model::{Issue, Status, Tracker, tracker};
 use ui::prelude::*;
 use ui::reorder::{DropPlacement, ReorderDrop};
@@ -22,15 +21,14 @@ use crate::{Filter, Nav, reference, tr};
 struct Row {
     /// Its place in the list, which is what the rows are addressed by.
     key: u64,
+    /// The issue it shows, which is what actions naming the issue are drawn on.
+    issue: Id,
     label: String,
     /// The row it stands under, where it is a sub-issue.
     parent: Option<u64>,
     number: u64,
     status: crate::model::Status,
     progress: (usize, usize),
-    /// What the issue and its sub-issues spent, in millionths of their run
-    /// currency, and that currency: the task list's totals.
-    spend: Option<(u64, String)>,
 }
 
 pub(crate) fn view(cx: &ViewCx<Tracker>, nav: &Nav) -> Element {
@@ -80,21 +78,12 @@ fn collect(
         let key = u64::try_from(ids.len()).unwrap_or(u64::MAX);
         out.push(Row {
             key,
+            issue: id.clone(),
             label: label(issue),
             parent: parent_key,
             number: issue.number,
             status: issue.status,
             progress: tracker.progress(id),
-            spend: issue.spend.and_then(|spent| {
-                let currency = tracker
-                    .issues
-                    .get(id)
-                    .and_then(|issue| issue.run.as_ref())
-                    .and_then(|run| run.spend.as_ref())
-                    .map(|spend| spend.currency.clone())
-                    .unwrap_or_default();
-                (spent > 0).then_some((spent, currency))
-            }),
         });
         collect(tracker, Some(id), Some(key), ids, out, filter, me);
     }
@@ -245,6 +234,7 @@ fn row(
     let closed = row.status.closed();
     Box::new(
         ListRow::new(format!("key:{key}"), row.label.as_str())
+            .item(row.issue.as_str())
             .depth(depths.depth(&key))
             .checkbox(closed, toggle)
             .checked(closed)
@@ -256,16 +246,6 @@ fn row(
 /// A row's status beside its label, as a reader hears it too.
 fn status_text(row: &Row) -> String {
     let mut status = tr(row.status.label_key());
-    if let Some((spent, currency)) = &row.spend {
-        status = ui::i18n::I18nManager::format(
-            "tasks-list-spend",
-            &[
-                ("status", status.into()),
-                ("cost", money(*spent).into()),
-                ("currency", currency.clone().into()),
-            ],
-        );
-    }
     if row.progress.1 > 0 {
         status = ui::i18n::I18nManager::format(
             "tasks-status-with-progress",

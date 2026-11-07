@@ -74,6 +74,7 @@ impl Session {
         tracing::info!(action = %paused.action, "resuming a run at its paused step");
         let index = state.completed;
         let outcome = self.run_task_step(run, index, &action, &arguments)?;
+        self.record_action(run, &action.resource_kind, &action.label, outcome.as_ref())?;
         state.step_index += 1;
         let label = step_label(paused);
         let told = match outcome {

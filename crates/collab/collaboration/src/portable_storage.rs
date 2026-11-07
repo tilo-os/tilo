@@ -449,6 +449,11 @@ impl Entry {
             CurrentValue::Owned { value, .. } => value,
         }
     }
+    fn current_mut(&mut self) -> &mut CachedBytes {
+        match &mut self.value {
+            CurrentValue::Owned { value, .. } => value,
+        }
+    }
 }
 #[derive(Default)]
 struct Cache {
@@ -604,6 +609,29 @@ impl PortableStorage {
         );
         Ok(())
     }
+    /// Write `key`'s document under `actor` from now on, replacing the writer
+    /// its last save was made by.
+    ///
+    /// A writer identity belongs to one live writer: two pages that each
+    /// write a row saved by the other would write its sequences twice. The
+    /// page that opens a row writes it under an actor it minted itself, and
+    /// claims the row here, so a save, its acknowledgement and the next
+    /// hydration all see that actor.
+    ///
+    /// # Errors
+    ///
+    /// Refuses a key the cache does not hold.
+    pub fn claim(&self, key: &StorageKey, actor: Vec<u8>) -> Result<(), String> {
+        key.validate()?;
+        let mut cache = self.cache.borrow_mut();
+        let entry = cache
+            .entries
+            .get_mut(key)
+            .ok_or("claiming a row the cache does not hold")?;
+        entry.current_mut().actor = Some(actor);
+        Ok(())
+    }
+
     pub fn put(
         &self,
         key: StorageKey,

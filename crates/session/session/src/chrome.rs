@@ -398,6 +398,8 @@ pub(crate) struct ChromeWiring {
     /// chrome matches a press against and what it shows beside its rows.
     pub(crate) shortcuts: crate::mount::panels::Shortcuts,
     pub(crate) feeds: BarFeeds,
+    /// This device's workspaces, as their records hold them.
+    pub(crate) engine: Option<Arc<crate::engine::Engine>>,
 }
 
 /// What the snapshot revision was last bumped for: the tree's revision, who
@@ -725,6 +727,9 @@ fn app_tray_item(item: tilo_tray_host::TrayItem) -> AppTrayItem {
 pub(crate) struct SessionRules {
     pub(crate) handle: DesktopHandle,
     pub(crate) person: String,
+    /// This device's workspaces, as their records hold them: what says
+    /// whether a workspace may be deleted.
+    pub(crate) engine: Option<std::sync::Arc<crate::engine::Engine>>,
     /// Who made each strip and opened each window.
     pub(crate) authors: RefCell<Authors>,
 }
@@ -764,6 +769,31 @@ impl DesktopRules for SessionRules {
         may_create_workspace(&self.standing()).map_err(|refusal| refusal.to_string())
     }
 
+    fn may_delete_workspace(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceSlot,
+    ) -> Result<(), String> {
+        let Some(engine) = &self.engine else {
+            return Err(tilo_desktop_surface::i18n::t(
+                "desktop-cannot-delete-workspace",
+            ));
+        };
+        let id = self
+            .handle
+            .read(|tree| {
+                tree.workspaces
+                    .iter()
+                    .find(|held| held.slot == workspace)
+                    .map(tilo_desktop_model::Workspace::id)
+            })
+            .ok_or_else(|| tilo_desktop_surface::i18n::t("desktop-workspace-gone"))?;
+        if engine.may_delete(id) {
+            Ok(())
+        } else {
+            Err(tilo_desktop_surface::i18n::t("desktop-workspace-stays"))
+        }
+    }
+
     fn made_strip(&self, strip: tilo_desktop_model::StripId) {
         self.authors
             .borrow_mut()
@@ -773,22 +803,32 @@ impl DesktopRules for SessionRules {
 
 impl crate::Session {
     /// The rows of the window menu the session shows now, in order, as a
-    /// harness reads them: empty while it is closed.
+    /// harness reads them: a submenu's rows read after the row that opens it,
+    /// a rule between groups is no row at all, and the list is empty while the
+    /// menu is closed.
     #[must_use]
     pub fn window_menu_rows(&self) -> Vec<String> {
+        fn walked(rows: &[serde_json::Value], into: &mut Vec<String>) {
+            for row in rows {
+                if row.get("separator").and_then(serde_json::Value::as_bool) == Some(true) {
+                    continue;
+                }
+                if let Some(label) = row.get("label").and_then(serde_json::Value::as_str) {
+                    into.push(label.to_owned());
+                }
+                if let Some(children) = row.get("children").and_then(serde_json::Value::as_array) {
+                    walked(children, into);
+                }
+            }
+        }
         let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
             return Vec::new();
         };
-        reading
-            .get("rows")
-            .and_then(serde_json::Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("label").and_then(serde_json::Value::as_str))
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut rows = Vec::new();
+        if let Some(top) = reading.get("rows").and_then(serde_json::Value::as_array) {
+            walked(top, &mut rows);
+        }
+        rows
     }
 }
 
@@ -825,11 +865,13 @@ pub(crate) fn host(
         asks,
         shortcuts,
         feeds,
+        engine,
     } = wiring;
     let reveals = Rc::clone(&feeds.reveals);
     let rules = Rc::new(SessionRules {
         handle: handle.clone(),
         person: options.person.clone(),
+        engine,
         authors: RefCell::new(std::collections::BTreeMap::new()),
     });
     let tree = handle.read(Clone::clone);
@@ -882,28 +924,34 @@ pub(crate) fn host(
     // and the ones the switcher's panel shows in its cards.
     let pictures = overview.clone();
     let walking = switcher.clone();
-    host.with_window_pictures(Rc::new(move || {
-        let mut shown = pictures.pictures();
-        shown.extend(walking.pictures().into_iter().map(|picture| {
-            let (x, y, width, height) = (
-                picture.rect.x0,
-                picture.rect.y0,
-                picture.rect.width(),
-                picture.rect.height(),
-            );
-            tilo_compositor::WindowPicture {
-                window: picture.window,
-                rect: (x, y, width, height),
-                opacity: 1.0,
-                // A picture stays in its well: paging the cards never spills a
-                // window over the panel's edge.
-                clip: Some((x, y, width, height)),
-            }
-        }));
-        shown
-    }))
-    .covering_outputs()
-    .with_keyboard(keyboard)
+    let host = host
+        .with_window_pictures(Rc::new(move || {
+            let mut shown = pictures.pictures();
+            shown.extend(walking.pictures().into_iter().map(|picture| {
+                let (x, y, width, height) = (
+                    picture.rect.x0,
+                    picture.rect.y0,
+                    picture.rect.width(),
+                    picture.rect.height(),
+                );
+                tilo_compositor::WindowPicture {
+                    window: picture.window,
+                    rect: (x, y, width, height),
+                    opacity: 1.0,
+                    // A picture stays in its well: paging the cards never spills a
+                    // window over the panel's edge.
+                    clip: Some((x, y, width, height)),
+                }
+            }));
+            shown
+        }))
+        .covering_outputs()
+        .with_keyboard(keyboard);
+    // The stack takes a surface down — a press outside it, another one
+    // opening — and the widget drawing it has to take up a pass to close it:
+    // nothing else tells a host the chrome stands over.
+    overlays.wake_with(host.asking());
+    host
 }
 
 impl crate::Shared {

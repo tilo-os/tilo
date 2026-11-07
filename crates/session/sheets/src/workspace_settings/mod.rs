@@ -16,7 +16,7 @@ use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, presented};
 
 mod agents;
 mod apps;
@@ -87,6 +87,10 @@ pub enum WorkspaceSettingsEffect {
     /// people in it
     #[effect(destructive, attended)]
     Delete,
+    /// Delete this workspace, with everything in it: it is yours, on this
+    /// device only, with nobody else in it
+    #[effect(destructive, attended)]
+    DeleteWorkspace,
     /// Give a member of the workspace another role
     #[effect(attended)]
     SetRole {
@@ -109,6 +113,18 @@ pub enum WorkspaceSettingsEffect {
     AddAgent {
         #[param("The new agent's name, as people read it")]
         name: String,
+        #[param("The model it plans with; empty for the keeper's default")]
+        model: String,
+        #[param("Its colour: a presence colour; empty for one derived from its name")]
+        colour: String,
+    },
+    /// Draw an agent in the colour its keeper picked
+    #[effect(attended)]
+    SetAgentColour {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("Its colour: one of the presence colours")]
+        colour: String,
     },
     /// Show what an agent may do in the workspace, app by app
     #[effect(own_device, kind = "read")]
@@ -288,6 +304,8 @@ pub enum Confirm {
     RemoveMember { member: String, name: String },
     /// Revoke the permission `grant`, which `holder` holds.
     Revoke { grant: String, holder: String },
+    /// Delete the workspace, with everything in it.
+    DeleteWorkspace,
 }
 
 /// What the sheet keeps to itself while it is up: the question it is
@@ -297,6 +315,10 @@ struct Local {
     confirming: Option<Confirm>,
     /// What the permission composer has chosen.
     draft: permissions::Draft,
+    /// Whether a new agent's form is open.
+    creating: bool,
+    /// The agent whose colour palette is open, by its key.
+    palette: String,
 }
 
 /// What the shell lends the sheet: whether it is up, what it shows, and
@@ -395,7 +417,9 @@ impl WorkspaceSettingsSeat {
 
     fn ask(&self, effect: WorkspaceSettingsEffect) {
         if effect == WorkspaceSettingsEffect::Close {
-            self.presentation.gone();
+            // The sheet's own close: the card leaves the screen, and the
+            // shell tells it gone once nothing of it is drawn.
+            self.presentation.close();
         }
         self.asked.borrow_mut().push(effect);
     }
@@ -432,6 +456,8 @@ impl ResourceApp for WorkspaceSettingsApp {
         };
         let name = cx.local(initial.name.clone());
         let new_agent = cx.local(String::new());
+        let new_model = cx.local(String::new());
+        let new_colour = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -453,6 +479,8 @@ impl ResourceApp for WorkspaceSettingsApp {
             shown: shown.clone(),
             name,
             new_agent,
+            new_model,
+            new_colour,
             local: local.clone(),
             seat,
         };
@@ -471,6 +499,7 @@ impl ResourceApp for WorkspaceSettingsApp {
     fn scenarios() -> &'static [&'static str] {
         &[
             "general",
+            "general-deleting",
             "general-viewer",
             "people",
             "people-member",
@@ -496,6 +525,12 @@ impl ResourceApp for WorkspaceSettingsApp {
                     grant: "grant-2".to_owned(),
                     holder: "Ada Lovelace-Byron".to_owned(),
                 }),
+                ..Local::default()
+            });
+        }
+        if fixture.scenario() == Some("general-deleting") {
+            fixture.provide(Local {
+                confirming: Some(Confirm::DeleteWorkspace),
                 ..Local::default()
             });
         }
@@ -633,6 +668,10 @@ struct Parts {
     name: LocalState<String>,
     /// The name a new agent is given as typed.
     new_agent: LocalState<String>,
+    /// The model a new agent plans with as chosen.
+    new_model: LocalState<String>,
+    /// The colour a new agent is drawn in as chosen, a presence colour's id.
+    new_colour: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
@@ -643,13 +682,16 @@ impl Parts {
     /// decision, as a key is; anyone acting for them goes through the
     /// door, which asks first where the effect says so.
     fn ask(&self, effect: WorkspaceSettingsEffect) {
-        // A new agent is named by what the field held: the press takes it,
-        // and a press with no name asks nothing.
-        if let WorkspaceSettingsEffect::AddAgent { name } = &effect {
-            self.new_agent.set(String::new());
+        // A new agent is named by what the form held: the press takes it,
+        // and a press with no name asks nothing, leaving the form up.
+        if let WorkspaceSettingsEffect::AddAgent { name, .. } = &effect {
             if name.trim().is_empty() {
                 return;
             }
+            self.new_agent.set(String::new());
+            self.new_model.set(String::new());
+            self.new_colour.set(String::new());
+            self.local.update(|local| local.creating = false);
         }
         match &self.seat {
             Some(seat) if self.dispatch.is_own_gesture(&effect) => seat.ask(effect),
@@ -679,10 +721,50 @@ impl Parts {
         });
     }
 
-    /// Ask for an agent called what the name field says.
+    /// Open the form a new agent is named and dressed in.
+    fn start_agent(&self) {
+        self.local.update(|local| local.creating = true);
+    }
+
+    /// Put the new agent's form away, with what was typed in it.
+    fn cancel_agent(&self) {
+        self.new_agent.set(String::new());
+        self.new_model.set(String::new());
+        self.new_colour.set(String::new());
+        self.local.update(|local| local.creating = false);
+    }
+
+    /// Dress the new agent in `colour` as the form shows it.
+    fn pick_new_colour(&self, colour: &str) {
+        self.new_colour.set(colour.to_owned());
+    }
+
+    /// Ask for an agent as the form has it.
     fn add_agent(&self) {
         self.ask(WorkspaceSettingsEffect::AddAgent {
             name: self.new_agent.get(),
+            model: self.new_model.get(),
+            colour: self.new_colour.get(),
+        });
+    }
+
+    /// Open the colour palette under `agent`, or put it away again.
+    fn toggle_palette(&self, agent: &str) {
+        self.local.update(|local| {
+            if local.palette == agent {
+                local.palette.clear();
+            } else {
+                agent.clone_into(&mut local.palette);
+            }
+        });
+    }
+
+    /// Ask for `agent` to be drawn in `colour`, and put the palette away.
+    fn set_colour(&self, agent: &str, colour: &str) {
+        self.local.update(|local| local.palette.clear());
+        self.ask(WorkspaceSettingsEffect::SetAgentColour {
+            agent: agent.to_owned(),
+            colour: colour.to_owned(),
         });
     }
 
@@ -754,8 +836,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     let mut body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(ui::tokens::Spacing::BASE.s4)
-        .push(Box::new(strip));
+        .with_gap(ui::tokens::Spacing::BASE.s4);
     if let Some(notice) = &settings.notice {
         let dismiss = parts.clone();
         let mut banner = ui::widget::Banner::error(notice.title.clone())
@@ -769,15 +850,18 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     }
     let body = body.push(pane);
     let close = parts.clone();
-    Box::new(
+    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    Box::new(presented(
+        presentation,
         ModalDialog::new(settings.name.clone(), body)
             .with_test_id("ws-settings")
             .with_icon(ui::icons::Icon::LayoutGrid)
             .with_description(settings.role.clone())
             .with_max_width(WIDTH)
-            .open(true)
+            // The tabs stay in view: the body scrolls under them.
+            .with_header(strip)
             .secondary_action(settings.close.clone(), move || close.close()),
-    )
+    ))
 }
 
 impl Confirm {
@@ -790,6 +874,7 @@ impl Confirm {
             Self::Revoke { grant, .. } => WorkspaceSettingsEffect::Revoke {
                 grant: grant.clone(),
             },
+            Self::DeleteWorkspace => WorkspaceSettingsEffect::DeleteWorkspace,
         }
     }
 
@@ -798,6 +883,7 @@ impl Confirm {
         match self {
             Self::RemoveMember { name, .. } => (&settings.people.remove_decision, name.clone()),
             Self::Revoke { holder, .. } => (&settings.permissions.revoke_decision, holder.clone()),
+            Self::DeleteWorkspace => (&settings.general.delete_decision, settings.name.clone()),
         }
     }
 }
@@ -820,19 +906,27 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
         .with_no_padding()
         .with_intrinsic_height()
         .push(general::caption(&subject));
-    let (keep, review, go) = (parts.clone(), parts.clone(), parts.clone());
-    Box::new(
-        ModalDialog::new(question.title.clone(), body)
-            .with_test_id("ws-settings-decision")
-            .with_description(question.description.clone())
-            .open(true)
-            .primary_action(question.confirm.clone(), move || go.decide(Answer::Confirm))
-            .with_destructive(true)
-            .secondary_action(question.keep.clone(), move || keep.decide(Answer::Keep))
-            .tertiary_action(question.review.clone(), move || {
-                review.decide(Answer::Review);
-            }),
-    )
+    let (keep, going, dismissed) = (parts.clone(), parts.clone(), parts.clone());
+    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    let mut dialog = ModalDialog::new(question.title.clone(), body)
+        .with_test_id("ws-settings-decision")
+        .with_description(question.description.clone())
+        .primary_action(question.confirm.clone(), move || {
+            going.decide(Answer::Confirm);
+        })
+        .with_destructive(true)
+        .secondary_action(question.keep.clone(), move || keep.decide(Answer::Keep))
+        // Escape keeps things as they are and puts the question away.
+        .on_dismiss(move || dismissed.decide(Answer::Keep));
+    // A question that offers what the workspace did about it says so beside
+    // the two answers.
+    if !question.review.is_empty() {
+        let review = parts.clone();
+        dialog = dialog.tertiary_action(question.review.clone(), move || {
+            review.decide(Answer::Review);
+        });
+    }
+    Box::new(presented(presentation, dialog))
 }
 
 /// Escape takes back a name being typed, and leaves an agent's review,

@@ -210,7 +210,7 @@ export async function launch({args = []} = {}) {
         log.push(`EXC ${(details.exception?.description ?? details.text).slice(0, 600)}`);
       }
       if (message.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(message.params.type)) {
-        log.push(`${message.params.type.toUpperCase()} ${message.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 600)}`);
+        log.push(`${message.params.type.toUpperCase()} ${message.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 2000)}`);
       }
     };
     listeners.add(listener);

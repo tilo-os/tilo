@@ -7,9 +7,8 @@
 )]
 
 use serde_json::json;
-use tasks::model::{ModelChoice, Status, issue_resource};
+use tasks::model::{Status, issue_resource};
 use tasks::{App, Tracker};
-use tilo_agent_models::{OfferedModel, OfferedModels};
 use ui::prelude::*;
 
 fn open() -> TestApp<App> {
@@ -287,79 +286,9 @@ fn a_link_opens_in_the_record_it_names() {
     }
 }
 
-/// Settings, which keeps the models the person's providers offer for an
-/// agent's run: Tasks reads its record without being able to change it.
-struct SettingsOwner;
-
-impl ResourceApp for SettingsOwner {
-    type Resource = OfferedModels;
-    const ID: &'static str = "so.tilo.settings";
-    const TITLE: &'static str = "Settings fixture";
-
-    fn view(_: &mut ViewCx<OfferedModels>) -> Element {
-        Box::new(Text::new("Settings fixture"))
-    }
-}
-
-/// The issue's model is picked among those the person's providers offer,
-/// read from their record of them; picking the agent's own clears it.
-#[test]
-fn an_issues_model_is_picked_among_the_offered_ones() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Summarise the notes" }))
-        .expect("create");
-    let issue = only(&app);
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-
-    let mut settings = TestApp::<SettingsOwner>::for_person("ada").expect("settings");
-    let offered = settings.shared_person::<OfferedModels>().expect("kept");
-    offered
-        .invoke(&OfferedModels::OFFER.with(vec![OfferedModel {
-            profile: "local".into(),
-            provider: "Local".into(),
-            model: "fast-1".into(),
-            label: "Fast".into(),
-        }]))
-        .expect("offer");
-    let read = app.shared_person::<OfferedModels>().expect("read");
-    read.record()
-        .merge_peer_document(offered.record().document().expect("document"))
-        .expect("merge");
-    app.settle();
-
-    let model = |app: &TestApp<App>| {
-        app.state()
-            .issues
-            .get(&issue)
-            .and_then(|issue| issue.model.clone())
-    };
-    app.harness()
-        .perform_named(
-            "tasks-issue-model",
-            &ui::a11y::Action::SetValue("Fast (Local)".into()),
-        )
-        .expect("pick the offered model");
-    app.settle();
-    assert_eq!(
-        model(&app),
-        Some(ModelChoice {
-            profile: "local".into(),
-            model: "fast-1".into(),
-        })
-    );
-    app.harness()
-        .perform_named(
-            "tasks-issue-model",
-            &ui::a11y::Action::SetValue("The agent's own model".into()),
-        )
-        .expect("pick the agent's own");
-    app.settle();
-    assert_eq!(model(&app), None);
-}
-
 /// The assignee is picked among the workspace's people and agents by name,
-/// never typed as an id; Nobody clears it.
+/// never typed as an id, and reads back as the person's name and face; the
+/// "Nobody" choice clears it.
 #[test]
 fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
     let mut app = open();
@@ -386,98 +315,207 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
             .and_then(|issue| issue.assignee.clone())
             .map(|assignee| assignee.0)
     };
-    let pick = |app: &mut TestApp<App>, name: &str| {
+    let pick = |app: &mut TestApp<App>, entry: &str| {
         app.harness()
-            .perform_named(
-                "tasks-issue-assignee",
-                &ui::a11y::Action::SetValue(name.into()),
-            )
-            .unwrap_or_else(|error| panic!("pick {name}: {error:?}"));
+            .perform_named("tasks-issue-assignee", &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("open the assignee: {error:?}"));
+        app.settle();
+        app.harness()
+            .perform_named(entry, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
         app.settle();
     };
-    pick(&mut app, "Bob");
+    pick(&mut app, "tasks-issue-assignee-bob");
     assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
-    pick(&mut app, "Scribe");
-    assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
-    // Given to an agent, its run started at once; it is stopped before the
-    // issue goes to anyone else.
     assert!(
+        app.harness().a11y_node_named("Assignee: Bob").is_some(),
+        "the chip says the person's name, never the record's spelling"
+    );
+    pick(&mut app, "tasks-issue-assignee-agent:scribe");
+    assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
+    assert!(
+        app.harness()
+            .a11y_node_named("Assignee: Scribe · Agent")
+            .is_some(),
+        "an agent reads by name, and as an agent"
+    );
+    pick(&mut app, "tasks-issue-assignee-none");
+    assert_eq!(assignee(&app), None);
+    assert!(
+        app.harness().a11y_node_named("Assignee: Nobody").is_some(),
+        "clearing says nobody is doing it"
+    );
+}
+
+/// An issue's labels are the chips it carries and one `+` that opens the
+/// labels the workspace already uses and the field that makes a new one.
+#[test]
+fn an_issues_labels_are_added_from_one_chip() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Draft the agenda" }))
+        .expect("create");
+    let issue = only(&app);
+    // An issue already labelled makes that label one the picker offers.
+    app.call("create", json!({ "title": "Book the room" }))
+        .expect("create");
+    let other = app
+        .state()
+        .issues
+        .iter()
+        .find(|(_, shown)| shown.title == "Book the room")
+        .map(|(id, _)| id.clone())
+        .expect("the other issue");
+    app.call("add-label", json!({ "issue": other, "label": "launch" }))
+        .expect("label it");
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    app.settle();
+
+    // One control in the row, not three: the chips and the `+`; the field
+    // waits in what the `+` opens.
+    assert!(
+        app.harness()
+            .targets()
+            .contains_key("tasks-issue-add-label"),
+        "the labels end in one chip"
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("tasks-issue-label-new"),
+        "no field stands in the row"
+    );
+
+    let labels_of = |app: &TestApp<App>| -> Vec<String> {
         app.state()
             .issues
             .get(&issue)
-            .and_then(|issue| issue.active_run())
-            .is_some(),
-        "picking the agent started its run"
-    );
-    app.call("stop-run", json!({ "issue": issue.as_str() }))
-        .expect("stop the run");
+            .map(|shown| shown.labels.iter().cloned().collect())
+            .unwrap_or_default()
+    };
+
+    // The `+` offers the label the workspace already uses.
+    app.harness()
+        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+        .expect("open the labels");
     app.settle();
-    pick(&mut app, "Nobody");
-    assert_eq!(assignee(&app), None);
+    app.harness()
+        .perform_named("tasks-issue-label-launch", &ui::a11y::Action::Activate)
+        .expect("pick launch");
+    app.settle();
+    assert_eq!(labels_of(&app), ["launch"], "the label lands on the issue");
+
+    // Typing a new one in its field makes that one too.
+    app.harness()
+        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+        .expect("open the labels");
+    app.settle();
+    app.harness()
+        .click_named("tasks-issue-label-new")
+        .expect("the field takes the click");
+    app.harness().type_text("venue");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        labels_of(&app),
+        ["launch", "venue"],
+        "a typed label is made on the issue"
+    );
 }
 
-/// What a run asks is answered on the host's sheet: the issue's Answer
-/// button sends the tracker's answer through the session's door, and the
-/// app records no answer of its own.
+/// The fields stay one row at any width: they wrap rather than leave the
+/// window or cover each other, and what the `+` opens fits in the window
+/// too.
 #[test]
-fn a_runs_question_is_answered_through_the_host() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
-    let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-    let _served = ui::RemoteActions::enter(
-        door.clone(),
-        ui::tilo_actions::remote::Caller::local_person("ada"),
-    );
-    let mut app = open();
-    app.call(
-        "create",
-        json!({ "title": "Send the notes", "assignee": "agent:scribe" }),
-    )
-    .expect("create");
-    let issue = only(&app);
-    let agent = ActionInvoker::actor("agent:scribe")
-        .with_kind(ActorKind::Agent)
-        .acting_for("ada");
-    app.call_by(
-        agent,
-        "tasks.tracker",
-        "ask-confirmation",
-        json!({
-            "issue": issue.as_str(),
-            "question": {
-                "id": "q1", "app": "so.tilo.mail", "action": "send",
-                "resource": "mail.account", "arguments_digest": "digest",
-                "draft": { "action_label": "Send message", "resource_label": "Mail",
-                           "fields": [] },
-            },
-        }),
-    )
-    .expect("the run asks");
-    app.call_on(&issue_resource(&issue), "open", json!({}))
-        .expect("open the issue");
-    let answer = app
-        .harness()
-        .a11y_node_named("Answer")
-        .expect("the answer button");
-    app.harness()
-        .perform_a11y_action(answer, &ui::a11y::Action::Activate)
-        .unwrap();
-    app.settle();
-    let asked = door.take_asked().pop().expect("one answer");
-    assert_eq!(
-        asked.target.provider,
-        ui::tilo_actions::remote::OWN_PROVIDER
-    );
-    assert_eq!(asked.target.address.action, "answer-confirmation");
-    let ui::tilo_actions::remote::InvokeArgument::Json(arguments) = asked.argument else {
-        panic!("typed arguments");
-    };
-    assert_eq!(arguments["issue"], json!(issue.as_str()));
-    let run = app.state().issues.get(&issue).unwrap().run.clone().unwrap();
-    assert_eq!(
-        run.confirmation.unwrap().state,
-        tasks::model::ConfirmationState::Waiting,
-        "only the host answers"
-    );
+fn the_issue_fields_wrap_instead_of_leaving_the_window() {
+    for (width, height) in [(1240_u32, 780_u32), (520, 700)] {
+        let mut app =
+            TestApp::<App>::capture_at(Some("issue"), (width, height)).expect("the capture opens");
+        app.settle();
+        let fields = [
+            "tasks-issue-status",
+            "tasks-issue-assignee",
+            "tasks-issue-add-label",
+        ];
+        let targets = app.harness().targets();
+        let rects: Vec<(&str, ui::kurbo::Rect)> = fields
+            .iter()
+            .map(|id| {
+                let rect = targets
+                    .get(*id)
+                    .unwrap_or_else(|| panic!("{id} is laid out at {width}: {:?}", targets.keys()));
+                (*id, *rect)
+            })
+            .collect();
+        for (id, rect) in &rects {
+            assert!(
+                rect.x0 >= 0.0
+                    && rect.y0 >= 0.0
+                    && rect.x1 <= f64::from(width)
+                    && rect.y1 <= f64::from(height),
+                "{id} stays in the {width} wide window: {rect:?}"
+            );
+        }
+        for (at, (one, a)) in rects.iter().enumerate() {
+            for (other, b) in &rects[at + 1..] {
+                assert!(
+                    a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0,
+                    "{one} and {other} do not cover each other at {width}: {a:?} {b:?}"
+                );
+            }
+        }
+        app.harness()
+            .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+            .expect("open the labels");
+        app.settle();
+        let targets = app.harness().targets();
+        let mut opened = Vec::new();
+        for id in ["tasks-issue-label-new", "tasks-issue-label-create"] {
+            let rect = targets
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} is laid out at {width}: {:?}", targets.keys()));
+            assert!(
+                rect.x0 >= 0.0
+                    && rect.y0 >= 0.0
+                    && rect.x1 <= f64::from(width)
+                    && rect.y1 <= f64::from(height),
+                "{id} fits the {width} wide window: {rect:?}"
+            );
+            opened.push((id, *rect));
+        }
+        // Every field is drawn where it is laid out, and so is what the `+`
+        // opened: the frame's own pixels say so, on both grounds.
+        for theme in [ui::Theme::dark(), ui::Theme::light()] {
+            app.harness().set_theme(theme);
+            app.settle();
+            let pixels = app.harness().render_rgba();
+            let stride = usize::try_from(width).expect("a width that fits an index") * 4;
+            let pixel = |x: f64, y: f64| {
+                let column = ui::num::usize_of_f64(x);
+                let row = ui::num::usize_of_f64(y);
+                let offset = row * stride + column * 4;
+                [
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ]
+            };
+            let ground = pixel(f64::from(width) - 2.0, f64::from(height) - 2.0);
+            for (id, rect) in rects.iter().chain(opened.iter()) {
+                let centre = pixel(
+                    f64::midpoint(rect.x0, rect.x1),
+                    f64::midpoint(rect.y0, rect.y1),
+                );
+                assert!(
+                    centre != ground && centre[3] != 0,
+                    "{id} is drawn at {width} on the {} ground: {centre:?}",
+                    app.harness().theme().name
+                );
+            }
+        }
+    }
 }
 
 /// Each semantics node of an inspection, outer and nested, with the rect it
@@ -633,17 +671,10 @@ fn the_sidebar_narrows_the_list_and_the_board_to_a_filter() {
     assert_eq!(shown.len(), 1, "one issue is unassigned: {shown:?}");
     assert!(shown[0].contains("Record the demo"), "{shown:?}");
 
-    // Todos: the tasks nobody has started. The two people's are as they
-    // were made; the agent's run started as it was given the task.
+    // Todos: the tasks nobody has started — all of them, as they were made.
     choose(&mut app, "Todos");
     let shown = rows(&mut app);
-    assert_eq!(shown.len(), 2, "the agent's task is under way: {shown:?}");
-    assert!(
-        !shown
-            .iter()
-            .any(|row| row.contains("Tidy the onboarding docs")),
-        "{shown:?}"
-    );
+    assert_eq!(shown.len(), 3, "nothing is under way: {shown:?}");
 
     // An agent's: the one handed to the workspace's agent.
     choose(&mut app, "An agent's");
@@ -1016,83 +1047,6 @@ fn a_project_is_made_listed_and_opened_by_its_address() {
     );
 }
 
-/// The task list gathers what a person follows, and one chip says how a
-/// run is doing wherever the issue is read: on its page, on the board and in
-/// the list. Pressing the chip opens the issue through the app's own open
-/// effect, which is also what a script and an agent invoke, so following a
-/// task from the list lands in the one task view.
-#[test]
-fn a_running_task_reads_the_same_in_the_list_and_on_its_issue() {
-    let mut app = open();
-    app.call("create", json!({ "title": "Send the notes" }))
-        .expect("create");
-    let issue = only(&app);
-    let follow = |app: &TestApp<App>| {
-        app.state()
-            .issues
-            .get(&issue)
-            .expect("the issue")
-            .run
-            .clone()
-    };
-
-    // A task no run has taken up is not one the list follows.
-    assert!(follow(&app).is_none(), "no run was started yet");
-
-    // A person giving it to an agent starts its run at once.
-    app.call(
-        "assign",
-        json!({ "issue": issue.as_str(), "assignee": "agent:scribe" }),
-    )
-    .expect("assign");
-    assert!(follow(&app).is_some(), "the run is on the issue");
-
-    // The list is reached through the filter the sidebar publishes.
-    choose(&mut app, "Running tasks");
-
-    // The row carries the task's state as the chip the issue and the board
-    // show, and the chip says what the run is doing.
-    let chip = format!("tasks-run-chip-{issue}");
-    assert!(
-        app.harness().targets().contains_key(&chip),
-        "the list shows the task's state: {:?}",
-        app.harness().targets().keys().collect::<Vec<_>>()
-    );
-
-    // Pressing it opens the issue: the one task view, not a second one.
-    app.harness()
-        .click_named(&chip)
-        .expect("press the task's state");
-    let _ = app.harness().poll_frame();
-    assert!(
-        app.harness().targets().contains_key("tasks-issue-title"),
-        "the chip opens the issue"
-    );
-
-    // Its lifecycle actions are the issue's own, offered to a person and to
-    // a script alike, so the list needs no second copy of them.
-    let pause = app
-        .state()
-        .issues
-        .get(&issue)
-        .expect("the issue")
-        .run
-        .is_some();
-    assert!(pause);
-    app.call("pause-run", json!({ "issue": issue.as_str() }))
-        .expect("pause the run");
-    assert!(
-        app.state()
-            .issues
-            .get(&issue)
-            .expect("the issue")
-            .run
-            .as_ref()
-            .is_some_and(|run| run.paused.is_some()),
-        "a paused run stays the task, held"
-    );
-}
-
 /// Whether the list's New issue button can be pressed now.
 fn new_issue_enabled(app: &mut TestApp<App>) -> bool {
     let harness = app.harness();
@@ -1164,176 +1118,6 @@ fn a_blank_new_issue_cannot_be_invoked() {
         .map(|issue| issue.title.clone())
         .collect();
     assert_eq!(titles, ["Ship it", "Write the notes"]);
-}
-
-/// An issue opens as a chat in a window of its own: the published
-/// `open-chat` asks the desktop for another window of Tasks beside this one,
-/// launched on the issue's chat, and that window shows the conversation
-/// alone. The run's steps arrive in it, what the run asks is answered
-/// through the host, and a message after the run ended starts the next run
-/// with it.
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one story: the chat opened, the run's steps, its question, its end and what comes after"
-)]
-fn an_issue_opens_as_a_chat_of_its_own_where_the_agent_is_told_more() {
-    use ui::tilo_actions::{ActionInvoker, ActorKind};
-    let door = std::sync::Arc::new(ui::tilo_actions::remote::TestHost::new());
-    let _served = ui::RemoteActions::enter(
-        door.clone(),
-        ui::tilo_actions::remote::Caller::local_person("ada"),
-    );
-    let mut app = open();
-    app.call(
-        "create",
-        json!({ "title": "Review the applications", "assignee": "agent:scribe" }),
-    )
-    .expect("create");
-    let issue = only(&app);
-    app.call(
-        "tell-agent",
-        json!({ "issue": issue.as_str(), "text": "Start with the newest" }),
-    )
-    .expect("telling the agent starts its run");
-
-    let _ = ui::shell_tabs::take_requests();
-    app.effect(&tasks::TasksEffect::OpenChat {
-        issue: issue.clone(),
-    })
-    .expect("open the issue as a chat");
-    assert_eq!(
-        ui::shell_tabs::take_requests(),
-        [ui::shell_tabs::TabRequest::OpenBeside {
-            target: Some(tasks::chat_uri(&issue)),
-            background: false,
-        }],
-        "the chat is another window of Tasks, launched on the issue's chat"
-    );
-    assert!(
-        app.effect(&tasks::TasksEffect::OpenChat {
-            issue: Id::from_raw("gone"),
-        })
-        .is_err(),
-        "an issue that is not there opens no chat"
-    );
-
-    let mut chat = app
-        .relaunch(&[&tasks::chat_uri(&issue)])
-        .expect("the window launched on the chat");
-    chat.settle();
-    let targets = chat.harness().targets();
-    for shown in ["tasks-chat-draft", "tasks-chat-send", "stop-run"] {
-        assert!(
-            targets.contains_key(shown),
-            "{shown} is in the chat: {:?}",
-            targets.keys().collect::<Vec<_>>()
-        );
-    }
-    assert!(
-        !targets.contains_key("tasks-list") && !targets.contains_key("tasks.filters"),
-        "a chat window shows the conversation alone"
-    );
-
-    // The run's steps arrive as the agent posts them; it asks first.
-    let agent = || {
-        ActionInvoker::actor("agent:scribe")
-            .with_kind(ActorKind::Agent)
-            .acting_for("ada")
-    };
-    chat.call_by(
-        agent(),
-        "tasks.tracker",
-        "report-run",
-        json!({ "issue": issue.as_str(), "phase": "executing",
-                "text": "1 of 2: reviewed Jane Doe" }),
-    )
-    .expect("the run reports a step");
-    chat.call_by(
-        agent(),
-        "tasks.tracker",
-        "ask-confirmation",
-        json!({
-            "issue": issue.as_str(),
-            "question": {
-                "id": "q1", "app": "so.tilo.mail", "action": "send",
-                "resource": "mail.account", "arguments_digest": "digest",
-                "draft": { "action_label": "Send message", "resource_label": "Mail",
-                           "fields": [] },
-            },
-        }),
-    )
-    .expect("the run asks");
-    chat.settle();
-    assert!(chat.harness().targets().contains_key("tasks-chat-question"));
-    chat.harness()
-        .click_named("tasks-run-answer")
-        .expect("press Answer");
-    chat.settle();
-    let asked = door
-        .take_asked()
-        .pop()
-        .expect("the answer goes to the host");
-    assert_eq!(asked.target.address.action, "answer-confirmation");
-    assert_eq!(
-        chat.state()
-            .issues
-            .get(&issue)
-            .unwrap()
-            .run
-            .as_ref()
-            .unwrap()
-            .phase,
-        tasks::model::RunPhase::Waiting,
-        "only the host answers"
-    );
-
-    // The run ends; the conversation goes on: the next message starts the
-    // next run, which reads it as its direction.
-    chat.call_by(
-        agent(),
-        "tasks.tracker",
-        "answer-confirmation",
-        json!({ "issue": issue.as_str(), "confirm": false, "reason": "Not yet" }),
-    )
-    .expect_err("an agent never answers for its person");
-    chat.call(
-        "answer-confirmation",
-        json!({ "issue": issue.as_str(), "confirm": false, "reason": "Not yet" }),
-    )
-    .expect("the person declines");
-    chat.call_by(
-        agent(),
-        "tasks.tracker",
-        "finish-run",
-        json!({ "issue": issue.as_str(), "outcome": "done",
-                    "summary": "Reviewed both" }),
-    )
-    .expect("the run finishes");
-    chat.settle();
-    assert!(
-        !chat.harness().targets().contains_key("stop-run"),
-        "a run that ended offers no Stop: {:?}",
-        chat.harness().targets().keys().collect::<Vec<_>>()
-    );
-    chat.harness()
-        .click_named("tasks-chat-draft")
-        .expect("focus the field");
-    chat.harness().type_text("Now draft the replies");
-    chat.settle();
-    chat.harness()
-        .click_named("tasks-chat-send")
-        .expect("press Send");
-    chat.settle();
-    let state = chat.state();
-    let told = state.issues.get(&issue).unwrap();
-    let run = told.run.as_ref().unwrap();
-    assert_eq!((run.epoch, run.phase.active()), (2, true));
-    let directions: Vec<&str> = told
-        .messages_for_run(2)
-        .map(|(_, message)| message.text.as_str())
-        .collect();
-    assert_eq!(directions, ["Now draft the replies"]);
 }
 
 /// An issue is document state: an agent reads what it holds through the

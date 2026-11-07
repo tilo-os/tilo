@@ -37,6 +37,7 @@ mod live;
 mod marks;
 pub mod members;
 pub mod meta;
+pub mod notify;
 mod num;
 pub mod origin;
 pub mod place;
@@ -95,7 +96,7 @@ pub use store::{
     ANY_FIELD, ChangeNote, ChangeSummary, FieldKey, Listing, ListingChange, PagedItems, Splice,
     Store, StoreError,
 };
-pub use value::{ActionRef, CollRef, EnumValue, RefValue, ResourceRef, Value};
+pub use value::{ActionRef, CollRef, EnumValue, RecordInit, RefValue, ResourceRef, Value};
 pub use view::{BindTarget, Binding, Patch, UiNode};
 pub use view_instance::{EditOutcome, UndoAsk, ViewEvent, ViewInstance};
 pub use view_state::StateKey;

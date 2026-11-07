@@ -159,7 +159,7 @@ fn fixture_with(owner: Owner) -> Fixture {
     let mut workspace = crate::test_support::Workspace::new(WorkspaceSlot(71), "Record reads");
     workspace.set_owner(person.clone());
     let workspace_id = workspace.id().to_string();
-    let scribe = workspace.admit_agent("scribe", KindSet::READ);
+    let scribe = workspace.allow_agent("scribe", KindSet::READ);
     workspace.allow_app(Subject::agent("scribe"), NOTES, KindSet::ALL);
     // Mail's changes the workspace keeps from the agent.
     workspace.deny(

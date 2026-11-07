@@ -11,13 +11,12 @@
 //! take — so the tab, the apps and the person's other devices hold the one
 //! record, and the tab decides nothing of its own.
 //!
-//! What an admitted agent may do, app by app, is still the workspace's
-//! grants, and admission is still the workspace's governance path
-//! (`domain::admit_agent`): the tab reads both beside the record. An agent
-//! the workspace admitted before records were is made one of the record's
-//! when the tab opens it ([`Agents::settle`]), under the id its grants name
-//! and kept by whoever admitted it, so the roster, the name a person reads
-//! and the search find the agents that worked here.
+//! What an agent may do, app by app, is still the workspace's grants: the
+//! tab reads them beside the record. An agent the workspace admitted before
+//! records were is made one of the record's when the tab opens it
+//! ([`Agents::settle`]), under the id its grants name and kept by whoever
+//! admitted it, so the roster, the name a person reads and the search find
+//! the agents that worked here.
 //!
 //! The model an agent plans with is the keeper's to choose, alone: their
 //! devices run it and their credentials pay. This device applies the keeper's
@@ -91,7 +90,6 @@ struct Review<'a> {
     workspace: &'a Workspace,
     apps: &'a dyn domain::AppDirectory,
     names: &'a PeopleNames,
-    summaries: &'a [domain::AgentSummary],
     config: &'a agent_provider_config::ProviderConfig,
 }
 
@@ -146,7 +144,13 @@ impl Agents {
                 authority: t("workspace-settings-view-only"),
             },
             add: t("workspace-settings-add-agent"),
+            create: t("workspace-settings-create-agent"),
+            cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
+            colour: t("workspace-settings-agent-colour"),
+            colour_hint: t("workspace-settings-agent-colour-hint"),
+            model: t("workspace-settings-agent-model"),
+            model_default: t("workspace-settings-agent-model-default-choice"),
             manage: false,
             header: t("workspace-settings-agents-header"),
             empty: (
@@ -169,44 +173,21 @@ impl Agents {
         let state = record.get();
         let me = record.me();
         let manage = workspace.may_administer(person);
-        let summaries = domain::agent_summaries(workspace);
         let config = agent_provider_config::ProviderConfig::load();
-        let yours = t("workspace-settings-agent-yours");
-        let mut agents: Vec<sheet::Agent> = state
+        let agents: Vec<sheet::Agent> = state
             .active()
             .map(|agent| {
-                let summary = summaries.iter().find(|summary| summary.agent == agent.id.0);
+                let mine = same_person(&agent.keeper, me);
                 sheet::Agent {
                     key: agent.id.0.clone(),
                     name: agent.name.clone(),
-                    status: summary.map_or_else(
-                        || t("workspace-settings-agent-detail-none"),
-                        |summary| summary.detail.clone(),
-                    ),
-                    tag: same_person(&agent.keeper, me).then(|| yours.clone()),
+                    colour: agent.slot(),
+                    mine,
+                    status: keeper_line(names, workspace, record, &agent.keeper),
                     model: model_line(&config, &agent.id.0, agent.model.as_deref()),
                 }
             })
             .collect();
-        // Services are the workspace's own members, never agents; and an
-        // agent admitted on another device is listed from its grants until
-        // that device's record reaches this one.
-        for summary in &summaries {
-            if state.get(&Id::from_raw(summary.agent.clone())).is_some() {
-                continue;
-            }
-            agents.push(sheet::Agent {
-                key: summary.agent.clone(),
-                name: summary.name.clone(),
-                status: summary.detail.clone(),
-                tag: summary
-                    .service
-                    .then(|| t("workspace-settings-badge-service")),
-                // A service has no model; an agent admitted elsewhere has its
-                // keeper's, which this device does not hold yet.
-                model: String::new(),
-            });
-        }
         let count = agents.len();
         let review = review.and_then(|agent| {
             Self::reviewed(
@@ -215,7 +196,6 @@ impl Agents {
                     workspace,
                     apps,
                     names,
-                    summaries: &summaries,
                     config: &config,
                 },
                 agent,
@@ -236,7 +216,26 @@ impl Agents {
                 },
             },
             add: t("workspace-settings-add-agent"),
+            create: t("workspace-settings-create-agent"),
+            cancel: t("workspace-settings-cancel"),
             name: t("workspace-settings-agent-name"),
+            colour: t("workspace-settings-agent-colour"),
+            colour_hint: t("workspace-settings-agent-colour-hint"),
+            model: t("workspace-settings-agent-model"),
+            model_default: t("workspace-settings-agent-model-default-choice"),
+            models: agent_access::agent_models(&config, "")
+                .map(|models| {
+                    models
+                        .offered
+                        .into_iter()
+                        .map(|option| sheet::ModelChoice {
+                            key: option.key(),
+                            label: option.label,
+                            in_use: false,
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
             manage,
             header: t("workspace-settings-agents-header"),
             agents,
@@ -247,6 +246,7 @@ impl Agents {
                 t("workspace-settings-agents-empty-detail"),
             ),
             bots_header: t("workspace-settings-bots-header"),
+            bots_help: t("workspace-settings-bots-help"),
             add_bot: t("workspace-settings-add-bot"),
             bot_tag: t("workspace-settings-bot-tag"),
             remove_bot: t("workspace-settings-remove-bot"),
@@ -294,65 +294,59 @@ impl Agents {
     }
 
     /// One agent's review: what it may do in each app, the model it plans
-    /// with and the actions it may always take. `None` once it is neither one
-    /// of the record's nor admitted here.
+    /// with and the actions it may always take. `None` once the record no
+    /// longer names it.
     fn reviewed(review: &Review<'_>, agent: &str, editable: bool) -> Option<sheet::AgentReview> {
         let Review {
             record,
             workspace,
             apps,
             names,
-            summaries,
             config,
         } = *review;
         let state = record.get();
-        let kept = state.get(&Id::from_raw(agent.to_owned()));
-        let summary = summaries.iter().find(|summary| summary.agent == agent);
-        let name = kept
-            .map(|kept| kept.name.clone())
-            .or_else(|| summary.map(|summary| summary.name.clone()))?;
-        let status = summary.map_or_else(
-            || t("workspace-settings-agent-detail-none"),
-            |summary| summary.detail.clone(),
-        );
-        let tag = match (&kept, summary) {
-            (Some(kept), _) if same_person(&kept.keeper, record.me()) => {
-                Some(t("workspace-settings-agent-yours"))
-            }
-            (None, Some(summary)) if summary.service => Some(t("workspace-settings-badge-service")),
-            _ => None,
-        };
-        let rows = agent_access::agent_access_rows(workspace, agent, apps);
+        let kept = state.get(&Id::from_raw(agent.to_owned()))?;
+        let name = kept.name.clone();
+        let status = keeper_line(names, workspace, record, &kept.keeper);
+        let tag =
+            same_person(&kept.keeper, record.me()).then(|| t("workspace-settings-agent-yours"));
+        // What the turn admits it to, before the answers the person set for
+        // its apps: the cap's grants, narrowed by the bound its record keeps.
+        let admission = tilo_action_policy::roles::agent_turn(
+            &workspace.policy.workspace,
+            agent,
+            &kept.keeper,
+            &kept.bound_rules().unwrap_or_default(),
+        )
+        .grants;
+        let rows = agent_access::agent_access_rows(workspace, agent, &admission, apps);
         let exceptions = agent_access::agent_exceptions(workspace, agent, apps);
         // What an agent plans with is its keeper's to choose, alone, and the
-        // record holds the choice: an agent the record does not know yet — a
-        // service, or one admitted on another device — has no model here.
-        let models = kept.map(|kept| {
-            let offered = agent_access::agent_models(config, agent);
-            let keeps = same_person(&kept.keeper, record.me());
-            let note = if keeps {
-                t("workspace-settings-agent-model-keeper-you")
-            } else {
-                t_args(
-                    "workspace-settings-agent-model-keeper",
-                    &[(
-                        "name",
-                        domain::member_row_name(names, workspace, record.me(), &kept.keeper).into(),
-                    )],
-                )
-            };
-            let chosen = kept.model.as_deref();
-            sheet::Models {
-                title: t("workspace-settings-agent-model"),
-                summary: chosen.map_or_else(
-                    || model_summary(offered.as_ref()),
-                    |model| model_label(offered.as_ref(), model),
-                ),
-                choices: model_choices(offered.as_ref(), chosen),
-                can_choose: keeps,
-                note: Some(note),
-            }
-        });
+        // record holds the choice.
+        let offered = agent_access::agent_models(config, agent);
+        let keeps = same_person(&kept.keeper, record.me());
+        let note = if keeps {
+            t("workspace-settings-agent-model-keeper-you")
+        } else {
+            t_args(
+                "workspace-settings-agent-model-keeper",
+                &[(
+                    "name",
+                    domain::member_row_name(names, workspace, record.me(), &kept.keeper).into(),
+                )],
+            )
+        };
+        let chosen = kept.model.as_deref();
+        let models = sheet::Models {
+            title: t("workspace-settings-agent-model"),
+            summary: chosen.map_or_else(
+                || model_summary(offered.as_ref()),
+                |model| model_label(offered.as_ref(), model),
+            ),
+            choices: model_choices(offered.as_ref(), chosen),
+            can_choose: keeps,
+            note: Some(note),
+        };
         Some(sheet::AgentReview {
             agent: agent.to_owned(),
             name,
@@ -372,7 +366,7 @@ impl Agents {
             custom: t("workspace-settings-agent-access-set-here"),
             apps: Self::access_apps(&rows),
             empty: t("workspace-settings-agent-access-empty"),
-            models,
+            models: Some(models),
             use_model: t("workspace-settings-agent-model-use"),
             in_use: t("workspace-settings-agent-model-in-use"),
             exceptions_title: t_args(
@@ -551,6 +545,7 @@ impl Agents {
                 keeper: Some(keeper),
                 id: Some(agent.clone()),
                 model,
+                colour: None,
             }));
             if let Err(refusal) = made {
                 // ignored-failure: the tab still lists the agent from its
@@ -605,6 +600,8 @@ impl Agents {
         workspace: Option<&Workspace>,
         person: &UserId,
         name: &str,
+        model: &str,
+        colour: Option<u8>,
     ) -> Result<String, String> {
         let record = self
             .record(workspace, person)
@@ -617,7 +614,8 @@ impl Agents {
                 name,
                 keeper: None,
                 id: Some(id.clone()),
-                model: None,
+                model: (!model.is_empty()).then(|| model.to_owned()),
+                colour,
             }))
             .map_err(|error| error.to_string())?;
         Ok(id)
@@ -645,6 +643,29 @@ impl Agents {
             .map_err(|error| error.to_string())
     }
 
+    /// Choose the colour the agent `agent` is drawn in, as its keeper.
+    ///
+    /// # Errors
+    /// The workspace's agents could not be opened here, Chat's grants refuse
+    /// the change, or the person does not keep the agent.
+    pub(crate) fn set_colour(
+        &self,
+        workspace: Option<&Workspace>,
+        person: &UserId,
+        agent: &str,
+        colour: u8,
+    ) -> Result<(), String> {
+        let record = self
+            .record(workspace, person)
+            .ok_or_else(|| t("workspace-settings-agents-unavailable"))?;
+        record
+            .invoke(&Record::SET_AGENT_COLOUR.with(actions::SetAgentColour {
+                agent: Id::from_raw(agent.to_owned()),
+                colour,
+            }))
+            .map_err(|error| error.to_string())
+    }
+
     /// Choose the model the agent `agent` plans with, as its keeper.
     ///
     /// # Errors
@@ -667,6 +688,25 @@ impl Agents {
             }))
             .map_err(|error| error.to_string())
     }
+}
+
+/// Who keeps `agent`, as its row reads it: the person whose devices run it.
+fn keeper_line(
+    names: &PeopleNames,
+    workspace: &Workspace,
+    record: &WorkspaceRecord<Record>,
+    keeper: &str,
+) -> String {
+    if same_person(keeper, record.me()) {
+        return t("workspace-settings-agent-keeper-you");
+    }
+    t_args(
+        "workspace-settings-agent-keeper",
+        &[(
+            "name",
+            domain::member_row_name(names, workspace, record.me(), keeper).into(),
+        )],
+    )
 }
 
 /// The model `agent` plans with, as its row reads it: the one its keeper

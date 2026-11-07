@@ -1,8 +1,9 @@
 //! A native participant of the workspace's channels, as a user's laptop is: it
-//! announces itself, creates the note's channel and publishes its genesis,
-//! then admits every device of its user that asks for access to a channel.
-//! Browsers write no commits and never write in the clear, so every test
-//! that edits a document runs one.
+//! announces itself, creates the workspace's key scope and publishes its
+//! genesis, then admits every device of its user that asks for access to the
+//! scope, or to a narrowed record's own channel. Browsers write no commits
+//! and never write in the clear, so every test that edits a document runs
+//! one.
 
 #![allow(
     dead_code,
@@ -21,7 +22,7 @@ use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use tilo_relay::daemon::Relay;
 
-use crate::support::{Device, WORKSPACE, enrol, route, scratch_dir, workspace};
+use crate::support::{Device, WORKSPACE, enrol, scratch_dir, workspace};
 
 /// Publish `message` through the host the way a shell does.
 pub fn publish(session: &RelayCoeditSession, message: &NeighbourMsg) {
@@ -81,13 +82,15 @@ struct AdmissionGate {
 
 type AdmissionGates = Arc<Mutex<HashMap<(ChannelId, Ed25519PublicKey), Arc<AdmissionGate>>>>;
 
+/// One channel's admission of one device, held: the asking device keeps
+/// waiting for the channel's keys until the test drops what this returns.
 pub struct HeldAdmission(Arc<AdmissionGate>);
 
 impl HeldAdmission {
-    /// Prove the real member requested this channel before proceeding.
+    /// Prove the asking device asked for its keys before proceeding.
     pub async fn requested(&self) {
         tilo_test_env::within(
-            "the held member to request its channel",
+            "the held device to ask for the channel's keys",
             self.0.entered.notified(),
         )
         .await;
@@ -126,12 +129,10 @@ impl Participant {
                 revocations: Vec::new(),
             },
         );
-        let note = route();
-        let genesis = channels.lock().unwrap().take(document_channel_id(
-            &note.app_id,
-            &note.cluster_id,
-            &note.record,
-        ));
+        let genesis = channels
+            .lock()
+            .unwrap()
+            .take(collab_types::workspace_scope(WORKSPACE));
         for frame in genesis {
             publish(
                 &session,
@@ -167,23 +168,24 @@ impl Participant {
         ));
     }
 
-    /// Pause one device's signed request, leaving other admissions unchanged.
-    pub fn hold_admission(
-        &self,
-        route: &tilo_peer_state::document_frame::DocumentRoute,
-        device: [u8; 32],
-    ) -> HeldAdmission {
+    /// Hold `device`'s admission to the workspace's key scope until the gate
+    /// drops: every record of the workspace is sealed under that one scope,
+    /// so the device reads none of them and writes nothing the host reads
+    /// until the test releases the admission.
+    pub fn hold_admission(&self, device: [u8; 32]) -> HeldAdmission {
         let gate = Arc::new(AdmissionGate {
             entered: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
         });
-        let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
         assert!(
             self.admissions
                 .lock()
                 .unwrap()
                 .insert(
-                    (channel, Ed25519PublicKey::from_bytes(device)),
+                    (
+                        collab_types::workspace_scope(WORKSPACE),
+                        Ed25519PublicKey::from_bytes(device)
+                    ),
                     gate.clone()
                 )
                 .is_none()
@@ -191,6 +193,8 @@ impl Participant {
         HeldAdmission(gate)
     }
 
+    /// The keys `route`'s content is sealed under: the workspace's scope's,
+    /// named for the unit ([`ChannelContentKeys::for_unit`]).
     pub fn content_keys(
         &self,
         route: &tilo_peer_state::document_frame::DocumentRoute,
@@ -198,13 +202,14 @@ impl Participant {
         self.channels
             .lock()
             .unwrap()
-            .peer(document_channel_id(
+            .peer(collab_types::workspace_scope(WORKSPACE))
+            .content_keys()
+            .unwrap()
+            .for_unit(document_channel_id(
                 &route.app_id,
                 &route.cluster_id,
                 &route.record,
             ))
-            .content_keys()
-            .unwrap()
     }
 }
 
@@ -250,20 +255,30 @@ async fn admit(
             continue;
         };
         let message = postcard::from_bytes::<NeighbourMsg>(&data);
-        let Ok(NeighbourMsg::MlsRoutedAccessRequest { request, .. }) = message else {
+        let Ok(
+            NeighbourMsg::MlsAccessRequest { request, .. }
+            | NeighbourMsg::MlsRoutedAccessRequest { request, .. },
+        ) = message
+        else {
             continue;
         };
         if request.verify().is_err() {
             continue;
         }
+        // A held device waits here until the test releases it, then is
+        // admitted like every other asking device.
         let gate = admissions
             .lock()
             .unwrap()
-            .remove(&(request.channel, request.device));
+            .get(&(request.channel, request.device))
+            .cloned();
         if let Some(gate) = gate {
             gate.entered.notify_one();
-            let permit = gate.release.acquire().await.unwrap();
-            drop(permit);
+            gate.release.acquire().await.unwrap().forget();
+            admissions
+                .lock()
+                .unwrap()
+                .remove(&(request.channel, request.device));
         }
         // A host may disconnect while a request is in flight. Never publish
         // through that session while holding the persistent channel state:

@@ -112,6 +112,17 @@ struct Session {
 /// The desk and the chrome over it, with `host` answering for what lies
 /// beyond the desk, as the session's own search host does.
 fn session(tree: &DesktopTree, size: (u32, u32), host: Option<Rc<dyn SearchHost>>) -> Session {
+    session_parts(tree, size, host, false)
+}
+
+/// [`session`], with the chrome recording the damage parts a host that keeps
+/// its frame compares (the web page's shell tracks them).
+fn session_parts(
+    tree: &DesktopTree,
+    size: (u32, u32),
+    host: Option<Rc<dyn SearchHost>>,
+    track_parts: bool,
+) -> Session {
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
     let mut desk = FrameHarness::new(ui::state::State::new(), Box::new(surface), size);
     desk.relayout();
@@ -128,7 +139,14 @@ fn session(tree: &DesktopTree, size: (u32, u32), host: Option<Rc<dyn SearchHost>
         TiloMenu::new(AboutVariant::Native, &AboutLinks::default()),
         false,
     );
-    let chrome = FrameHarness::for_root(ui::state::State::new(), chrome, size, ui::Theme::dark());
+    let mut chrome =
+        FrameHarness::for_root(ui::state::State::new(), chrome, size, ui::Theme::dark());
+    chrome.track_scene_parts(track_parts);
+    if track_parts {
+        // The frame the target starts from is drawn here, so the first frame
+        // a test presents is compared with it.
+        chrome.relayout();
+    }
     Session {
         desk,
         chrome,
@@ -463,5 +481,73 @@ fn a_search_of_the_workspace_in_front_widens_to_every_workspace() {
             .any(|row| row.title == "Quarterly plan"
                 && row.subtitle.as_deref() == Some("in Planning")),
         "the row says which workspace it is in: {rows:?}"
+    );
+}
+
+/// The chrome draws what a retained target keeps, in the parts a host
+/// compares it by, and says what of it the next frame repaints.
+struct Presented {
+    frames: ui::retained_raster::RetainedFrames,
+    key: ui::retained_raster::TargetKey,
+}
+
+impl Presented {
+    fn new(session: &Session, (width, height): (u32, u32)) -> Self {
+        Self {
+            frames: ui::retained_raster::RetainedFrames::default(),
+            key: ui::retained_raster::TargetKey {
+                width,
+                height,
+                to_device: ui::kurbo::Affine::IDENTITY,
+                base_color: session.chrome.frame_render_input().background,
+                generation: 0,
+            },
+        }
+    }
+
+    fn next(&mut self, session: &mut Session) -> ui::retained_raster::Repaint {
+        session.frame();
+        let scene = session.chrome.frame_render_input().scene;
+        let parts = session.chrome.scene_parts();
+        let repaint = self.frames.repaint(scene, parts, self.key);
+        self.frames.presented(scene, parts, self.key);
+        repaint
+    }
+}
+
+/// The scrim search dims the desktop with covers every window, so a host
+/// that keeps its frame must repaint it when search closes as it did when
+/// search opened: a close that repaints nothing leaves the dim on screen.
+#[test]
+fn closing_search_repaints_the_whole_scrim() {
+    use ui::retained_raster::Repaint;
+    let tree = desk_tree();
+    let size = (1280, 800);
+    let mut session = session_parts(&tree, size, None, true);
+    let mut shown = Presented::new(&session, size);
+    assert_eq!(
+        shown.next(&mut session),
+        Repaint::Full(ui::retained_raster::Unknown::NoFrame),
+        "nothing was presented before"
+    );
+
+    session.handle.open_search(Scope::Workspace, None);
+    shown.next(&mut session);
+    for _ in 0..3 {
+        shown.next(&mut session);
+    }
+    // The chrome draws search over the whole area it stands on, so the dim
+    // covers the desktop.
+    let scrim = ui::kurbo::Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
+
+    session.handle.toggle_search();
+    let repaint = shown.next(&mut session);
+    let repainted: f64 = match repaint {
+        Repaint::Full(_) => scrim.area(),
+        Repaint::Regions(ref regions) => regions.iter().map(ui::kurbo::Rect::area).sum(),
+    };
+    assert!(
+        repainted >= scrim.area() * 0.99,
+        "closing search repainted {repainted} of the {scrim:?} it dimmed: {repaint:?}"
     );
 }

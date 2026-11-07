@@ -651,7 +651,7 @@ fn dial_refused(
                 ours = neighbour_wire::PEER_PROTOCOL_VERSION,
                 "the workspace's host speaks another peer protocol version"
             );
-            crate::services::peer_version(host.to_string(), String::new(), theirs);
+            crate::services::peer_version(host.to_string(), theirs);
             crate::workspace_sync::other_version(ws, theirs);
         }
         // The workspace removed this device's person: dialing again changes

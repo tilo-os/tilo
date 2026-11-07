@@ -370,6 +370,8 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
+    crate::described!();
+
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
         dyn crate::presence::capability::PublishesPresence

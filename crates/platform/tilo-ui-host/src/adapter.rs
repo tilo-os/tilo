@@ -86,9 +86,18 @@ pub struct Adapter {
     built: Rc<RefCell<HashMap<String, Built>>>,
     /// The resources components were given, by id: what an event that carries one reports.
     resources: Rc<RefCell<HashMap<String, ResourceRef>>>,
+    /// The actions the app publishes at the window, as the window offers them: what an event
+    /// that runs one of them is bound to.
+    published: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
 }
 
 impl Adapter {
+    /// Offer the actions the app publishes (`resources`): an event that runs one of them is
+    /// bound to the action itself, so pressing the control and anyone else running the action
+    /// take one path, and what the window publishes names the control that is bound to it.
+    pub fn published(&self, resources: Vec<tilo_actions::ResourceSpec>) {
+        *self.published.borrow_mut() = resources;
+    }
     /// What the components reported since the last call, as what the window applies.
     #[must_use]
     pub fn take_events(&self) -> Vec<UiEvent> {
@@ -427,6 +436,45 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
     })
 }
 
+impl NodeSource<'_> {
+    /// The action the event `name` of the node runs, when it runs one the app published and
+    /// that action takes nothing: the control is bound to it, so it offers the action the way
+    /// every control offers one. An event that runs no action, an action the app has not
+    /// published yet, and an event its control does not hold as its own
+    /// ([`ui::component::presses`]) are the view's own.
+    fn published(&self, name: &str) -> Option<tilo_actions::ActionBinding<()>> {
+        if !ui::component::presses(&self.description.name, name) {
+            return None;
+        }
+        let (resource, action) = self.node.events.get(name)?.invokes.as_ref()?;
+        bound_to(
+            &self.reconciler.adapter().published.borrow(),
+            resource,
+            action,
+        )
+    }
+}
+
+/// The binding of the action (`resource`, `action`) of the actions `published`: an event that
+/// runs it is bound to the action itself, so pressing the control and anyone else running the
+/// action take the one path. `None` when the app publishes no such resource, or none of the
+/// resource's actions is this one that takes no arguments.
+pub(crate) fn bound_to(
+    published: &[tilo_actions::ResourceSpec],
+    resource: &str,
+    action: &str,
+) -> Option<tilo_actions::ActionBinding<()>> {
+    // The app publishes the resource it names as its own id with the app's before it: the
+    // action the view attached names the resource the same way the app's surface does.
+    let held = published.iter().find(|held| {
+        held.id
+            .as_str()
+            .rsplit_once(':')
+            .is_some_and(|(_, id)| id == resource)
+    })?;
+    tilo_actions::ActionBinding::unit_for(held, action).ok()
+}
+
 impl Source for NodeSource<'_> {
     fn key(&self) -> &str {
         &self.node.key
@@ -447,6 +495,13 @@ impl Source for NodeSource<'_> {
         let opens = (name == "activate" && presented(self.node, self.description).is_some())
             || name == ui::widget::OPEN_REFERENCE;
         if given || opens {
+            // An event that runs an action the app publishes runs it the one way every action
+            // runs: the control is bound to it, and the host that owns the tree hands the
+            // invocation to the app. A view event, and an action the app has not published,
+            // stays the view's own.
+            if let Some(binding) = self.published(name) {
+                return Event::Action(binding);
+            }
             let intent = Intent::new(&self.reconciler.adapter().fired, &self.node.key, name);
             let runs = self
                 .node
@@ -595,15 +650,16 @@ impl Source for NodeSource<'_> {
 }
 
 /// Whether two nodes of a component give its widget the same data: the same props, binding
-/// and events (an event's action reference is made anew each run; the widget fires it by its
-/// key), and in the slots that accept components, the same components by the same rule.
+/// and events (an event name bound to another action is another event: the widget holds the
+/// action it was built with), and in the slots that accept components, the same components by
+/// the same rule.
 #[must_use]
 pub fn same_data(a: &UiNode, b: &UiNode, description: &Description) -> bool {
     // The rows of a virtual list change through the host's rows, never through the node.
     let virtual_rows = crate::is_virtual(&b.kind);
     a.props == b.props
         && a.binding == b.binding
-        && a.events.keys().eq(b.events.keys())
+        && a.events == b.events
         && description
             .slots
             .iter()
@@ -908,12 +964,24 @@ mod tests {
     }
 
     #[test]
-    fn same_data_compares_events_by_name_and_component_slots_by_value() {
+    fn same_data_compares_events_and_component_slots_by_value() {
         let description = catalogue().get("ListRow").expect("described");
         let mut a = node("ListRow", "r", &[("title", Value::text("x"))]);
         a.events.insert("activate".to_owned(), Event::default());
         let b = a.clone();
-        assert!(same_data(&a, &b, description), "the same events by name");
+        assert!(same_data(&a, &b, description), "the same events");
+        let mut bound = b.clone();
+        bound.events.insert(
+            "activate".to_owned(),
+            Event {
+                invokes: Some(("rows/r1".to_owned(), "open".to_owned())),
+                ..Event::default()
+            },
+        );
+        assert!(
+            !same_data(&a, &bound, description),
+            "an event bound to an action is not the event it was"
+        );
         let mut b = b;
         b.props.insert("title".to_owned(), Value::text("y"));
         assert!(!same_data(&a, &b, description));

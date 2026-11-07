@@ -1352,7 +1352,6 @@ impl LaunchObserver {
 #[cfg(target_os = "linux")]
 pub(crate) fn managed_service_argv(binding: &ManagedBinding) -> Vec<String> {
     vec![
-        "--task-runs".into(),
         "--workspace".into(),
         binding.workspace.clone(),
         "--app".into(),

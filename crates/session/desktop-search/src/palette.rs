@@ -6,10 +6,10 @@
 
 use std::sync::Arc;
 
-use tilo_actions::{FlatAction, ResourceSpec};
+use tilo_actions::ResourceSpec;
 use ui::{ActionPalette, CommandEntry};
 
-use crate::model::{Hit, SearchStream, Source, Target};
+use crate::model::{Hit, LaunchPlace, SearchStream, Source, Target};
 use crate::providers::{
     Actions, Answers, AppEntry, Applications, Captures, CommandSpec, Commands, Content, Published,
     PublishedActions, Recents, Switches, WebSearch, WindowEntry, Windows,
@@ -22,6 +22,12 @@ use ui::search::system::{KindGroup, ResourceKind};
 /// Row id prefix of the row that lists the rest of a group the palette's
 /// height cut short; `more:{i}` expands `more_rows[i]`.
 const MORE_PREFIX: &str = "more:";
+
+mod rows;
+
+use rows::{
+    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
+};
 
 /// The row `id` names when it is a group's "more" row: an id this palette
 /// wrote, so one that does not read as a number is no row here.
@@ -221,6 +227,9 @@ pub struct DesktopSearch {
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
+    /// The kind chips picked when the rows were built: another picked or
+    /// unpicked narrows them again.
+    shown_kinds: Vec<ui::search::FacetFilter>,
     /// Whether this search is the applications alone, each already listed:
     /// then no row offers to list them all again.
     catalogue: bool,
@@ -284,6 +293,7 @@ impl DesktopSearch {
             auto_selected: None,
             shown_query: None,
             shown_generation: 0,
+            shown_kinds: Vec::new(),
             catalogue: false,
             choice: None,
             stream: None,
@@ -338,6 +348,7 @@ impl DesktopSearch {
         self.sources = Some(Sources::new(data));
         self.choice = None;
         self.shown_query = None;
+        self.shown_kinds.clear();
         self.stream = None;
         self.expanded.clear();
         self.everything = false;
@@ -497,6 +508,12 @@ impl DesktopSearch {
             self.render(&query, generation);
             return true;
         }
+        // A kind chip picked or unpicked since the rows were built: the
+        // same search, the rows of the kinds left.
+        if self.palette.picked_filters() != self.shown_kinds.as_slice() {
+            self.render(&query, generation);
+            return true;
+        }
         false
     }
 
@@ -611,7 +628,14 @@ impl DesktopSearch {
         let Some(stream) = &self.stream else {
             return;
         };
-        let groups = self.arranged(query, stream.groups());
+        // The chips are the kinds this search found, so they stay offered
+        // while one is picked: narrowing the rows must never take away the
+        // chip that would widen them again.
+        let found = stream.groups();
+        self.palette.set_host_facets(kind_facets(&found));
+        let picked = self.palette.picked_filters().to_vec();
+        self.shown_kinds.clone_from(&picked);
+        let groups = narrowed(self.arranged(query, found), &picked);
         let pending = stream.pending();
         // The rows about to be drawn, not the ones the palette still holds:
         // a row with a line under its name is twice as tall, and a list
@@ -861,6 +885,17 @@ impl DesktopSearch {
         // reason it stood under goes with it.
         self.refusal = None;
         let mut target = hit.target;
+        // The place the person asked the window to go with the modifier
+        // they held as they chose: the row said what it would be.
+        if let (Target::Launch { place, .. }, Some(asked)) =
+            (&mut target, self.palette.held_modifier())
+        {
+            *place = match asked {
+                ui::search::ActivationModifier::Shift => LaunchPlace::TabHere,
+                ui::search::ActivationModifier::Ctrl => LaunchPlace::Beside,
+                ui::search::ActivationModifier::Alt => LaunchPlace::Focus,
+            };
+        }
         let mut toggles = false;
         match &mut target {
             Target::Invoke(invoke) => {
@@ -981,257 +1016,12 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
     Some(Switches::new(names, &sources.preferences))
 }
 
-/// Whether the row a hit becomes stands two lines tall: it says something
-/// under its name. Asked of the row the palette would build, so the height
-/// the capacity is counted in is the height the row is drawn at.
-fn stands_tall(hit: &Hit) -> bool {
-    entry_for(hit, String::new()).description.is_some()
-}
-
-/// The rows `groups` list, in order: every hit as its palette row, and
-/// under a group the budget cut short the row that offers the rest of it.
-/// `rows` collects the hits the `hit:{i}` ids name, `more` the kinds the
-/// `more:{i}` ids expand.
-fn entries_for(
-    groups: &[KindGroup<Hit>],
-    browsing: bool,
-    catalogue: bool,
-    refusal: Option<&(Target, String)>,
-    more: &mut Vec<ResourceKind>,
-    rows: &mut Vec<Hit>,
-) -> Vec<CommandEntry> {
-    more.clear();
-    rows.clear();
-    let mut entries = Vec::new();
-    for group in groups {
-        let label = group.kind.label().to_owned();
-        let capped = group.is_capped();
-        let applications = browsing && !catalogue && group.kind == ResourceKind::Application;
-        for hit in &group.results {
-            let mut entry = entry_for(hit, format!("hit:{}", rows.len()));
-            // The row the host could not carry out keeps the reason under its
-            // name, where the person chose it, instead of closing over it.
-            if let Some((target, why)) = refusal
-                && target == &hit.target
-            {
-                entry.description = Some(why.clone());
-            }
-            entries.push(entry.group(label.clone()).group_total(group.total));
-            rows.push(hit.clone());
-        }
-        if capped {
-            entries.push(ui::search::system::show_all_entry(
-                format!("{MORE_PREFIX}{}", more.len()),
-                &label,
-                group.total,
-            ));
-            more.push(group.kind.clone());
-        }
-        if applications {
-            // The rest of what the person has: every app, by its name,
-            // where the few they reach for most are listed.
-            entries.push(
-                CommandEntry::new(ALL_APPS_ID, crate::i18n::t("search-launcher-all-apps"))
-                    .icon(ui::icons::Icon::LayoutGrid)
-                    .group(label)
-                    .group_total(group.total),
-            );
-        }
-    }
-    entries
-}
-
-/// The row that lists every result the groups above had no room for.
-fn all_results_entry(rest: usize) -> CommandEntry {
-    CommandEntry::new(
-        ALL_RESULTS_ID,
-        crate::i18n::t_args(
-            "search-show-all-results",
-            &[("count", rest.to_string().into())],
-        ),
-    )
-    .icon(ui::icons::Icon::ChevronDown)
-}
-
-/// Kinds a crowded card never leaves out: the answer to the question, the
-/// way to the web, and where the person was just at — Continue is what an
-/// empty card is for, so no budget may take it away.
-fn always_shown(kind: &ResourceKind) -> bool {
-    [
-        crate::providers::answers_kind(),
-        crate::providers::web_kind(),
-        crate::providers::places::continue_kind(),
-    ]
-    .contains(kind)
-        || *kind == crate::providers::ask_kind()
-}
-
-/// One hit as a palette row: an application wears its own glyph, the one
-/// its windows wear, never the generic grid every app shared.
-fn entry_for(hit: &Hit, id: String) -> CommandEntry {
-    let (mut entry, icon) = match &hit.target {
-        Target::Action(action) => {
-            let flat = FlatAction {
-                key: id.clone(),
-                resource_id: action.resource.clone(),
-                resource_kind: action.resource_kind.clone(),
-                resource_label: action.resource_label.clone(),
-                resource_presentation: None,
-                action: &action.spec,
-                depth: 0,
-            };
-            let mut entry = CommandEntry::from_flat_action(&flat);
-            if action.preset.is_some() {
-                // The row is the hit (a video, a search of the service), not
-                // the generic `open` it runs through: only the hit's own
-                // subtitle describes it, and it runs at the hit the row
-                // already carries instead of asking for it.
-                entry = entry.with_preset();
-                entry.description = None;
-            }
-            entry.id = id;
-            entry.label.clone_from(&hit.title);
-            (
-                entry,
-                hit.icon
-                    .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
-            )
-        }
-        Target::Invoke(invoke) => (
-            match &invoke.descriptor {
-                Some(descriptor) => {
-                    let mut entry = CommandEntry::from_descriptor(id, descriptor);
-                    // A row whose one line is already decided — a capture,
-                    // typed as the search itself — runs on Enter instead of
-                    // asking for the line again.
-                    if descriptor
-                        .prompt_param()
-                        .is_some_and(|param| invoke.arguments.contains_key(param))
-                    {
-                        entry = entry.with_preset();
-                    }
-                    entry
-                }
-                None => CommandEntry::new(id, hit.title.clone()),
-            },
-            hit.icon
-                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
-        ),
-        // A source's switch wears what it is set to now, as a published
-        // switch does: `enabled` is what choosing it makes it, so the badge
-        // says the other.
-        Target::Prefer { enabled, .. } => (
-            CommandEntry::new(id, hit.title.clone()).badge(crate::i18n::t(if *enabled {
-                "search-source-badge-off"
-            } else {
-                "search-source-badge-on"
-            })),
-            hit.icon
-                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
-        ),
-        Target::Launch { app } | Target::Window { app: Some(app), .. } => (
-            CommandEntry::new(id, hit.title.clone()),
-            ui::icons::app_glyph(app, crate::availability::category_for(app)),
-        ),
-        _ => (
-            CommandEntry::new(id, hit.title.clone()),
-            hit.icon
-                .unwrap_or_else(|| ui::search::system::icon_for_kind(&hit.kind)),
-        ),
-    };
-    // What the row says under its title, never the title again: a source
-    // that names the row twice (a page whose subtitle is its own name, a
-    // window whose place is the tab's label) says nothing new.
-    let (subtitle, facts) = under_title(hit);
-    if let Some(subtitle) = subtitle {
-        entry.description = Some(subtitle);
-    }
-    if !facts.is_empty() {
-        entry = entry.facts(facts);
-    }
-    if !hit.faces.is_empty() {
-        entry = entry.faces(hit.faces.clone());
-    }
-    if let Some(outcome) = &hit.outcome {
-        entry = entry.outcome(outcome.clone());
-    }
-    if let Some(row) = &hit.row {
-        entry = entry.drawn(row.clone());
-    }
-    if let Some(preview) = &hit.preview {
-        entry = entry.previewed(preview.clone());
-    }
-    entry.icon(icon)
-}
-
-/// The sources a search over everything asks, in the order it asks them:
-/// the desktop's own, the ones the host adds, and the row that switches
-/// each of them off and on again.
-fn everywhere<'a>(
-    sources: &'a Sources,
-    recents: &'a Recents,
-) -> (Vec<&'a dyn Source>, Option<Switches>) {
-    // Each source is asked through the handle it is held by: `Arc<S>` is a
-    // `Source` that can move to a worker, where the bare `S` is not.
-    let mut all: Vec<&dyn Source> = vec![
-        recents as &dyn Source,
-        &sources.applications,
-        &sources.windows,
-        &sources.content,
-        &sources.actions,
-        &sources.captures,
-        &sources.published,
-        &sources.commands,
-    ];
-    if let Some((answers, web)) = &sources.answers {
-        all.extend([answers as &dyn Source, web]);
-    }
-    all.extend(sources.host.iter().map(|source| &**source as &dyn Source));
-    let switches = switches(sources, &all);
-    all.retain(|source| sources.preferences.enabled(source.id()));
-    (all, switches)
-}
-
-/// What a row says under its title: its subtitle and its facts, each
-/// dropped when it repeats the title or says what another already said.
-fn under_title(hit: &Hit) -> (Option<String>, Vec<String>) {
-    let title = ui::search::fold_search_text(hit.title.trim());
-    let mut said: Vec<String> = vec![title];
-    let subtitle = hit
-        .subtitle
-        .as_ref()
-        .map(|subtitle| subtitle.trim())
-        .filter(|subtitle| !subtitle.is_empty())
-        .filter(|subtitle| {
-            let folded = ui::search::fold_search_text(subtitle);
-            if said.contains(&folded) {
-                return false;
-            }
-            said.push(folded);
-            true
-        })
-        .map(str::to_owned);
-    let mut facts = Vec::new();
-    for fact in &hit.facts {
-        let fact = fact.trim();
-        if fact.is_empty() {
-            continue;
-        }
-        let folded = ui::search::fold_search_text(fact);
-        if said.contains(&folded) {
-            continue;
-        }
-        said.push(folded);
-        facts.push(fact.to_owned());
-    }
-    (subtitle, facts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ui::search::AppScope;
     use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
+    use ui::winit::keyboard::ModifiersState;
 
     fn data() -> SearchData {
         SearchData {
@@ -1728,10 +1518,133 @@ mod tests {
         assert_eq!(
             search.take_choice(),
             Some(Target::Launch {
-                app: "so.tilo.sheets".into()
+                app: "so.tilo.sheets".into(),
+                place: LaunchPlace::Focus,
             })
         );
         assert!(!search.is_open());
+    }
+
+    /// An application's row says what a modifier held over it does with the
+    /// window, and choosing it with that modifier held opens the app there:
+    /// a tab of the window in front, or a window beside it.
+    #[test]
+    fn a_modifier_held_over_a_row_places_the_window_it_names() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        settled(&mut search);
+        search.set_query("sheets");
+        settled(&mut search);
+        let hints: Vec<(ui::search::ActivationModifier, String)> = search
+            .palette()
+            .visible_entries()
+            .iter()
+            .find(|entry| entry.label == "Sheets")
+            .expect("the app's row")
+            .alternates
+            .iter()
+            .map(|alternate| (alternate.modifier, alternate.label.clone()))
+            .collect();
+        assert_eq!(
+            hints,
+            vec![
+                (
+                    ui::search::ActivationModifier::Shift,
+                    "Opens as a tab here".to_owned()
+                ),
+                (
+                    ui::search::ActivationModifier::Ctrl,
+                    "Opens a window beside".to_owned()
+                ),
+            ],
+            "the row says what each modifier does before one is held"
+        );
+        for (held, asked) in [
+            (ModifiersState::SHIFT, LaunchPlace::TabHere),
+            (ModifiersState::CONTROL, LaunchPlace::Beside),
+            (ModifiersState::empty(), LaunchPlace::Focus),
+        ] {
+            let mut search = DesktopSearch::new();
+            search.open(data());
+            settled(&mut search);
+            search.set_query("sheets");
+            settled(&mut search);
+            search.palette_mut().set_held_modifiers(held);
+            search.palette_mut().activate_selected();
+            assert!(search.observe(), "choosing a row closes search");
+            assert_eq!(
+                search.take_choice(),
+                Some(Target::Launch {
+                    app: "so.tilo.sheets".into(),
+                    place: asked,
+                }),
+                "the modifier held decides where the app opens"
+            );
+        }
+    }
+
+    /// The card offers a chip per kind it found, and picking one leaves the
+    /// rows of that kind: the window rows go while "Apps" is picked, and the
+    /// chip stays offered so the person can widen them again.
+    #[test]
+    fn the_kind_chips_narrow_the_rows_to_the_one_picked() {
+        let mut search = DesktopSearch::new();
+        search.open(data());
+        settled(&mut search);
+        let chips: Vec<(String, String)> = search
+            .palette()
+            .facets()
+            .iter()
+            .flat_map(|facet| {
+                facet
+                    .values
+                    .iter()
+                    .map(|value| (value.value.clone(), value.label.clone()))
+            })
+            .collect();
+        assert!(
+            chips.contains(&("Apps".to_owned(), "Apps".to_owned())),
+            "every app is under the Apps chip: {chips:?}"
+        );
+        assert!(
+            chips.contains(&("Windows".to_owned(), "Windows".to_owned())),
+            "the open window is under the Windows chip: {chips:?}"
+        );
+        let kinds = |search: &DesktopSearch| -> Vec<String> {
+            search
+                .palette()
+                .visible_entries()
+                .iter()
+                .filter_map(|entry| entry.group.clone())
+                .collect()
+        };
+        assert!(kinds(&search).iter().any(|group| group == "Windows"));
+        search
+            .palette_mut()
+            .toggle_facet(&ui::search::FacetFilter::new("kind", "Apps"));
+        settled(&mut search);
+        let shown = kinds(&search);
+        assert!(!shown.is_empty(), "the apps stay: {shown:?}");
+        assert!(
+            shown.iter().all(|group| group == "Apps"),
+            "picking Apps leaves only its rows: {shown:?}"
+        );
+        assert!(
+            search
+                .palette()
+                .facets()
+                .iter()
+                .any(|facet| facet.values.iter().any(|value| value.value == "Windows")),
+            "the chip that widens the rows again stays offered"
+        );
+        search
+            .palette_mut()
+            .toggle_facet(&ui::search::FacetFilter::new("kind", "Apps"));
+        settled(&mut search);
+        assert!(
+            kinds(&search).iter().any(|group| group == "Windows"),
+            "unpicking the chip brings every kind back"
+        );
     }
 
     /// The desktop keymap's binding of `action`: the chord a publisher
@@ -1816,7 +1729,8 @@ mod tests {
         assert_eq!(
             first.target,
             Target::Launch {
-                app: "so.tilo.notes".into()
+                app: "so.tilo.notes".into(),
+                place: LaunchPlace::Focus,
             }
         );
     }
@@ -2665,7 +2579,7 @@ mod tests {
                     );
                     continue;
                 }
-                if let Some(Target::Launch { app }) = search.hit(&id).map(|hit| hit.target) {
+                if let Some(Target::Launch { app, .. }) = search.hit(&id).map(|hit| hit.target) {
                     reached.insert(app);
                 }
             }
@@ -2785,7 +2699,7 @@ mod tests {
             .iter()
             .filter(|entry| entry.id.starts_with("hit:"))
             .filter_map(|entry| match search.hit(&entry.id)?.target {
-                Target::Launch { app } => Some((app, *entry)),
+                Target::Launch { app, .. } => Some((app, *entry)),
                 _ => None,
             })
             .collect();

@@ -450,6 +450,8 @@ impl EditableLabel {
 }
 
 impl Widget for EditableLabel {
+    crate::described!();
+
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
@@ -1045,5 +1047,27 @@ mod tests {
         bound.state.set("New".to_owned());
         label.sync(&(), &());
         assert_eq!(label.value(), "New", "a name set elsewhere shows in place");
+    }
+
+    #[test]
+    fn a_change_of_props_does_not_end_the_edit() {
+        let bound = crate::component::Bound::<String>::default();
+        let mut label = EditableLabel::new("Old").on_edit(bound.clone());
+        label.begin_edit();
+        let props = || crate::widget::EditableLabelProps {
+            value: bound.clone(),
+            ..Default::default()
+        };
+        bound.state.set("New".to_owned());
+        assert!(
+            <EditableLabel as crate::component::Described>::set_props(&mut label, props()),
+            "a name set elsewhere is taken where it stands"
+        );
+        assert!(
+            label.is_editing(),
+            "the edit goes on while the name changes"
+        );
+        assert_eq!(label.value(), "Old", "the typing is not stomped");
+        assert_eq!(label.current_text(), "Old");
     }
 }

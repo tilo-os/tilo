@@ -69,6 +69,10 @@ struct Drag {
 }
 
 /// See the [module docs](self).
+#[path = "board_component.rs"]
+mod component;
+pub use component::{BoardCardProps, BoardLaneProps, BoardProps};
+
 pub struct Board {
     row: Row,
     lanes: Vec<LaneKeys>,
@@ -80,6 +84,8 @@ pub struct Board {
     drops: Option<crate::widget::ActionEmitter<BoardDrop>>,
     /// What the board is, for assistive technology.
     pub(crate) name: Option<String>,
+    /// The key the board was built under.
+    id: String,
     /// The theme the lanes were last sized in: a lane's width follows the pane the board is
     /// given, which is known only once it is laid out (`Board::size_lanes`).
     theme: Option<Theme>,
@@ -115,6 +121,7 @@ impl Board {
             on_drop: None,
             drops: None,
             name: None,
+            id: String::new(),
             theme: None,
             sized: None,
             pane: None,
@@ -136,6 +143,18 @@ impl Board {
         cards: Vec<(String, Element)>,
         foot: Option<Element>,
     ) -> Self {
+        self.push_lane(key, header, cards, foot);
+        self
+    }
+
+    /// [`Self::lane`] on a board already built: the lane stands at the board's end.
+    pub(crate) fn push_lane(
+        &mut self,
+        key: impl Into<String>,
+        header: Option<Element>,
+        cards: Vec<(String, Element)>,
+        foot: Option<Element>,
+    ) {
         let mut cards_column = Column::new()
             .with_no_padding()
             .with_intrinsic_height()
@@ -178,7 +197,37 @@ impl Board {
             cards: keys,
             heading,
         });
-        self
+    }
+
+    /// The lanes the board shows now, where it stands: what the board is and what the person is
+    /// doing with it — a drag in flight — stay.
+    pub(crate) fn set_lanes(
+        &mut self,
+        lanes: Vec<(
+            String,
+            Option<Element>,
+            Vec<(String, Element)>,
+            Option<Element>,
+        )>,
+    ) {
+        let mut row = Row::new()
+            .no_wrap()
+            .with_align_items(taffy::AlignItems::Stretch)
+            .with_padding_rhythm(Some(Rhythm::Group), None);
+        if !self.id.is_empty() {
+            row = row.with_id(self.id.clone());
+        }
+        self.row = row;
+        self.lanes.clear();
+        for (key, header, cards, foot) in lanes {
+            self.push_lane(key, header, cards, foot);
+        }
+        self.dirty = true;
+    }
+
+    /// Answer a drop with `on_drop` where it stands.
+    pub(crate) fn set_on_drop(&mut self, on_drop: Box<dyn FnMut(BoardDrop)>) {
+        self.on_drop = Some(on_drop);
     }
 
     /// Called with each drop.
@@ -210,7 +259,9 @@ impl Board {
 
     #[must_use]
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.row = std::mem::take(&mut self.row).with_id(id);
+        let id = id.into();
+        self.row = std::mem::take(&mut self.row).with_id(id.clone());
+        self.id = id;
         self
     }
 

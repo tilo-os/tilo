@@ -31,6 +31,8 @@ enum Waiting {
 pub struct EnumField {
     inner: MenuButton,
     id: String,
+    /// The state the field follows, when a view binds it: another state, and it follows that.
+    source: Option<crate::LocalState<String>>,
     /// The cases the menu offers, in the enum's order.
     cases: Vec<EnumOptionProps>,
     /// What the field is for ("Priority"), when the app names it.
@@ -58,6 +60,7 @@ impl EnumField {
         Self {
             inner: field(id, chosen, &cases, label.as_deref(), &edits),
             id: id.to_owned(),
+            source: None,
             cases,
             label,
             value: chosen.to_owned(),
@@ -79,6 +82,7 @@ impl EnumField {
         let (chosen, binding) = derived(state, |name: &String| name.clone());
         let mut field = Self::new(id, &chosen, cases, label, edits);
         field.bound = Some(binding);
+        field.source = Some(state.clone());
         field
     }
 

@@ -58,9 +58,15 @@ fn a_clicked_menu_comes_from_the_pointer_and_fades_when_it_closes() {
         menu.open_at([40.0, 40.0]);
         let _ = paint(&mut menu, &mut text);
         assert!(menu.needs_animation_frame(), "it arrives");
-        // The pointer it opened at is the origin: that corner stays put.
+        // The pointer it opened at is the origin: the menu leans that way,
+        // up and to the left of its centre, by its whole reach.
         let corner = Point::new(40.0, 40.0);
-        assert!((menu.drawn.to_drawn(corner) - corner).hypot() < 1e-6);
+        let drawn = menu.drawn.to_drawn(corner);
+        assert!(
+            ((drawn - corner).hypot() - crate::motion::Appear::REACH).abs() < 1e-6,
+            "the corner comes toward the pointer by its reach: {drawn:?}"
+        );
+        assert!(drawn.x < corner.x && drawn.y < corner.y, "{drawn:?}");
     });
     with_monotonic_time(at(400), || {
         let _ = paint(&mut menu, &mut text);

@@ -39,7 +39,7 @@ use tilo_peer_state::owner::{
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
-use crate::channels::Channels;
+use crate::channels::{Channels, RecordPolicy};
 use crate::custody::PeerStore;
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -226,33 +226,53 @@ impl Replicas {
         .ok()
     }
 
-    /// The devices that may sign and be added to `route`'s channel: those
-    /// the workspace's governance lets read its record, the host the workspace
-    /// was joined through and this device. `None` while the workspace's
-    /// governance does not answer for the route.
-    pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
+    /// What the workspace's governance says now about `route`'s content: the
+    /// group whose keys carry it and the devices that group admits. The group
+    /// is the key scope the workspace's governance names for the route
+    /// ([`tilo_peer_state::PeerGovernance::unit_scope`]), the decision a
+    /// native device makes, and the devices are that group's readers, the host
+    /// the workspace was joined through and this device. `None` while the
+    /// workspace's governance does not answer for the route.
+    pub(crate) fn policy(&self, route: &DocumentRoute) -> Option<RecordPolicy> {
         let workspace_id = route.workspace_id().ok()?;
-        let channel = Channels::channel(route);
-        let record = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
+        let unit = Channels::channel(route);
+        let named = collab_types::ChannelRoute::new(route.app_id.as_str(), route.record.as_str());
         self.with_workspace(workspace_id, |view| {
             let peer = view.peer();
-            let readers = peer
-                .governance()
-                .channel_readers(SystemTime::now(), channel, Some(&record))
-                .ok()
-                .flatten()
-                .ok_or("the workspace does not answer for the route")?;
-            let mut participants: BTreeSet<Ed25519PublicKey> = readers
+            let now = SystemTime::now();
+            let governance = peer.governance();
+            let scope = governance.unit_scope(now, &named)?;
+            // A unit with readers of its own is carried by its own group,
+            // whose record this page decides Read on; the workspace's scope is
+            // read by the workspace's participants, and needs no record.
+            let readers = governance
+                .channel_readers(now, scope, (scope == unit).then_some(&named))?
+                .ok_or_else(|| {
+                    "the workspace's governance names no readers of the route".to_owned()
+                })?;
+            let mut allowed: BTreeSet<Ed25519PublicKey> = readers
                 .into_iter()
                 .map(Ed25519PublicKey::from_bytes)
                 .collect();
-            participants.insert(Ed25519PublicKey::from_bytes(
+            allowed.insert(Ed25519PublicKey::from_bytes(
                 view.workspace_host().device_public_key,
             ));
-            participants.insert(Ed25519PublicKey::from_bytes(self.device.device_public_key));
-            Ok(participants)
+            allowed.insert(Ed25519PublicKey::from_bytes(self.device.device_public_key));
+            Ok(Some(RecordPolicy {
+                unit,
+                scope,
+                allowed,
+            }))
         })?
         .ok()
+        .flatten()
+    }
+
+    /// The devices that may sign and be added to `route`'s group: those
+    /// [`Self::policy`] names. `None` while the workspace's governance does
+    /// not answer for the route.
+    pub(crate) fn participants(&self, route: &DocumentRoute) -> Option<BTreeSet<Ed25519PublicKey>> {
+        self.policy(route).map(|policy| policy.allowed)
     }
 
     /// One line per workspace for diagnostics: the host it was joined through.
@@ -280,30 +300,4 @@ fn origin(author: [u8; 32], retained: bool) -> TransportOrigin {
     } else {
         TransportOrigin::RelayDelta(author)
     }
-}
-
-/// Decide every workspace's members' writes against the app surfaces of the
-/// apps this page runs: set once, before the page restores its workspaces.
-#[cfg(feature = "toolkit")]
-pub(crate) fn decide_with_page_surfaces() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        tilo_peer_state::decide_with_surfaces(page_surfaces(), ui::app_surface::hash_of);
-    });
-}
-
-/// The app surfaces a page decides members' writes against: those of the
-/// apps it runs, by the hash a write names. A write naming another version's
-/// surface waits until the page runs that version, as it would on a native
-/// device that has not fetched it.
-#[cfg(feature = "toolkit")]
-fn page_surfaces() -> collab_types::Surfaces {
-    collab_types::Surfaces::from_source(std::sync::Arc::new(
-        collab_types::surface::ContentSurfaces::new(|record, hash| {
-            let running = ui::app_surface::hash_of(record.app)?;
-            (hex::encode(running) == hash)
-                .then(|| ui::app_surface::bytes_of(record.app).map(<[u8]>::to_vec))
-                .flatten()
-        }),
-    ))
 }

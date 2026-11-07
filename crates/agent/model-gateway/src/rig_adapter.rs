@@ -1169,6 +1169,7 @@ pub(super) fn neutral_response(
         return Err(ModelError::new(neutral::ErrorKind::InvalidResponse));
     }
     let response = neutral::ModelResponse {
+        cost_micros: 0,
         message: neutral::Message {
             role: neutral::Role::Assistant,
             content,
@@ -1241,8 +1242,11 @@ pub(super) async fn complete(
     .and_then(|response| {
         timing.status = Some(200);
         timing.observe_body(&response.raw.to_string());
-        let response = neutral_response(response)?;
-        serde_json::to_string(&response)
+        let mut answer = neutral_response(response)?;
+        // What this answer costs, priced here so every caller spends against
+        // one figure: the gateway's, at its price table's list prices.
+        answer.cost_micros = crate::pricing::cost_micros(call.model_id, &answer.usage);
+        serde_json::to_string(&answer)
             .map_err(|_| ModelError::new(neutral::ErrorKind::InvalidResponse))
     });
     secret.zeroize();
