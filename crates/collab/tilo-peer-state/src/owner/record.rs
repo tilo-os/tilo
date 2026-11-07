@@ -145,6 +145,20 @@ pub(crate) struct StoredWorkspace {
     pub join_admissions: BTreeMap<String, StoredJoinReceipt>,
 }
 
+impl StoredWorkspace {
+    /// Whether the record says where the workspace's host is reached: the
+    /// hint its enrollment carries, the one the host's answer named, or the
+    /// one its own host recorded as it founded the workspace.
+    pub(crate) fn names_host(&self) -> bool {
+        self.enrollment.is_some()
+            || self
+                .vouched
+                .as_ref()
+                .is_some_and(|vouched| vouched.hint.is_some())
+            || self.host_hint.is_some()
+    }
+}
+
 /// The receipt of one join admission this device committed, by the digest of
 /// its binding: what the workspace delta it published is admitted as.
 #[derive(Clone, Debug, Serialize, Deserialize)]

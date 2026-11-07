@@ -77,8 +77,15 @@ fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
         !owner.name_host(workspace, hint).unwrap(),
         "a workspace that says where its host is reached is not written again"
     );
-    // A hint of another workspace is refused: a record never names its host
-    // where another workspace's host is.
+    // A record founded before it said where its host is reached is written
+    // once, and only with this workspace's own host: a hint of another
+    // workspace is refused, so a record never names its host where another
+    // workspace's host is.
+    let mut view = owner
+        .with_current(workspace, |view| Ok(view.clone()))
+        .unwrap();
+    view.record.host_hint = None;
+    owner.publish_workspace(workspace, view, None).unwrap();
     let elsewhere = WorkspaceId::new();
     assert!(
         owner
@@ -88,6 +95,15 @@ fn a_workspace_names_its_own_host_after_it_was_founded_without_one() {
             )
             .is_err(),
         "a hint of another workspace is not this workspace's host"
+    );
+    assert!(
+        owner
+            .name_host(
+                workspace,
+                testing::own_host_hint_here(workspace, &device, &key)
+            )
+            .unwrap(),
+        "the workspace's own host is named once"
     );
 }
 
@@ -118,14 +134,14 @@ fn a_workspace_founded_before_its_record_named_its_host_is_named_once() {
     view.record.host_hint = None;
     owner.publish_workspace(workspace, view, None).unwrap();
     assert!(
-        !owner.names_host(workspace),
+        owner.hosts_unnamed().contains(&workspace),
         "a record that does not say where its own host is reached names none"
     );
 
     // The next session says where the workspace's own host is reached.
     let hint = testing::own_host_hint_here(workspace, &device, &key);
     assert!(owner.name_host(workspace, hint.clone()).unwrap());
-    assert!(owner.names_host(workspace));
+    assert!(!owner.hosts_unnamed().contains(&workspace));
     drop(owner);
     assert_eq!(
         open_file(&path)

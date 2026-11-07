@@ -138,9 +138,12 @@ impl NativeWorkspaceOwner {
     /// signed by this device, or the record cannot be published.
     pub fn name_host(&self, workspace: WorkspaceId, hint: TransportHint) -> Result<bool, String> {
         let _turn = self.0.mutation.lock();
-        if self.host_already_named(workspace, &hint)? {
+        if self.host_already_named(workspace)? {
             return Ok(false);
         }
+        // Only a record this device hosts and that says nothing yet is
+        // written here ([`Self::host_already_named`]), so what it names is its
+        // own host: the hint must be this workspace's, signed by this device.
         let mut candidate = self.with_current(workspace, |view| Ok(view.clone()))?;
         crate::owner::validate_host_hint(
             &hint,
@@ -154,15 +157,11 @@ impl NativeWorkspaceOwner {
     }
 
     /// Whether `workspace`'s record is left as it is by [`Self::name_host`]:
-    /// it already says where its host is reached, through `hint` or another
-    /// way, or this device is not the one that hosts it. What decides is read
-    /// first: most workspaces this device holds are another device's to host,
-    /// and their records are not copied to find that out.
-    fn host_already_named(
-        &self,
-        workspace: WorkspaceId,
-        hint: &TransportHint,
-    ) -> Result<bool, String> {
+    /// this device does not host it, or the record already says where its
+    /// host is reached. What decides is read first: most workspaces this
+    /// device holds are another device's to host, and their records are not
+    /// copied to find that out.
+    fn host_already_named(&self, workspace: WorkspaceId) -> Result<bool, String> {
         let current = self.0.current.read();
         if self.0.fenced(&current, workspace) {
             return Err("native owner continuity is fenced".into());
@@ -172,10 +171,7 @@ impl NativeWorkspaceOwner {
             .get(&workspace)
             .ok_or("workspace has no committed native enrollment")?
             .record;
-        let named = record.host_hint.as_ref() == Some(hint)
-            || record.device != record.workspace_host
-            || record.enrollment.is_some()
-            || record.vouched.is_some();
+        let named = record.device != record.workspace_host || record.names_host();
         drop(current);
         Ok(named)
     }

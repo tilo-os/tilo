@@ -467,25 +467,21 @@ impl NativeWorkspaceOwner {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
     }
 
-    /// Whether `workspace`'s record says where its host is reached: through
-    /// the enrollment or vouch this device entered it by, or, for a workspace
-    /// this device founded, through the hint it keeps of its own host.
+    /// The workspaces this device hosts whose record does not say where their
+    /// host is reached, in one read of the record: the ones founded here
+    /// before the record kept its own host's hint, which no device reaches a
+    /// host for until it does.
     #[must_use]
-    pub fn names_host(&self, workspace: WorkspaceId) -> bool {
-        self.0
-            .current
-            .read()
+    pub fn hosts_unnamed(&self) -> Vec<WorkspaceId> {
+        let current = self.0.current.read();
+        current
             .workspaces
-            .get(&workspace)
-            .is_some_and(|view| {
-                view.record.enrollment.is_some()
-                    || view
-                        .record
-                        .vouched
-                        .as_ref()
-                        .is_some_and(|vouched| vouched.hint.is_some())
-                    || view.record.host_hint.is_some()
+            .iter()
+            .filter(|(_, view)| {
+                view.record.device == view.record.workspace_host && !view.record.names_host()
             })
+            .map(|(workspace, _)| *workspace)
+            .collect()
     }
 
     /// Store availability only; workspace authority still requires `with_current`.

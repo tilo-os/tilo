@@ -161,6 +161,11 @@ pub struct Engine {
     unfounded: std::sync::Mutex<std::collections::BTreeSet<WorkspaceId>>,
 }
 
+/// A record's bytes, with the heads they were last saved at: what
+/// [`Engine::record_since`] answers when the record changed since the caller
+/// last read it.
+type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
+
 impl std::fmt::Debug for Engine {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Engine")
@@ -271,7 +276,7 @@ impl Engine {
         app: &str,
         record: &str,
         known: Option<[u8; 32]>,
-    ) -> Result<Option<(Vec<u8>, [u8; 32])>, String> {
+    ) -> Result<SavedRecord, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
             return Ok(None);
@@ -691,14 +696,14 @@ impl Engine {
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
-        endpoint: iroh::EndpointAddr,
+        endpoint: &iroh::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         let identity = self.identity();
         // What the joiner dials: this device's endpoint, signed by the device
         // the grant names, as a host of its own workspace.
-        let hint = self.own_host_hint(workspace, &endpoint)?;
+        let hint = self.own_host_hint(workspace, endpoint)?;
         let now_ns: u64 = now
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|error| error.to_string())?
@@ -975,10 +980,7 @@ impl Engine {
     /// workspace founded here is reached at its own host, and a record that
     /// does not say so leaves its records where no device reaches them.
     pub(crate) fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
-        for workspace in self.workspaces() {
-            if self.owner.names_host(workspace) {
-                continue;
-            }
+        for workspace in self.owner.hosts_unnamed() {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
                 Err(error) => {
@@ -1217,21 +1219,24 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_this_device_hosts_commits_here_without_a_host_address() {
+    fn a_workspace_this_device_hosts_names_its_own_host_and_commits_here() {
         use tilo_action_broker::owner_commits::OwnerCustody as _;
 
         let state = tempfile::tempdir().expect("a state directory");
         let (identity, _) = identity(DeviceCapabilities::member());
+        let at = endpoint(&identity);
+        let host = identity.device_cert.device_public_key;
         let engine = engine(state.path(), identity);
         let workspace = WorkspaceId::new();
-        engine.found(WorkspaceSlot(7), workspace, "Desk");
+        engine.found(WorkspaceSlot(7), workspace, "Desk", Some(&at));
 
-        assert!(
-            engine
-                .owner
-                .with_current(workspace, |view| Ok(view.transport_hint().is_err()))
-                .expect("the workspace is held here"),
-            "a workspace this device founded names no host to dial"
+        let hint = engine
+            .owner
+            .with_current(workspace, |view| view.transport_hint().cloned())
+            .expect("a workspace this device founded names where its host is reached");
+        assert_eq!(
+            hint.host.device_public_key, host,
+            "the host it names is this device, whose host is in this process"
         );
         engine
             .check_custody(&engine.owner, workspace)
