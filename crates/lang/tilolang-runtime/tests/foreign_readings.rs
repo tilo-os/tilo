@@ -263,6 +263,30 @@ view state(m: desktop.MenuState) {
         assert_eq!(rt.read(&anchor.target, "y").unwrap(), Value::Float(50.0));
     }
 
+    /// A row that chooses nothing — the rule between two groups of rows — gives its id as
+    /// empty: it has no name of its own, so it reads by where it stands, as a record the
+    /// reading names no id for does.
+    #[test]
+    fn a_row_whose_id_is_empty_reads_by_where_it_stands() {
+        let ruled = r#"{"tab": null, "anchor": null, "rows": [
+            { "id": "window-normal", "label": "Normal", "enabled": true },
+            { "id": "", "label": "", "enabled": false }
+        ]}"#;
+        let (rt, _view) = workspace(ruled);
+        let Value::List(rows) = rt.read(&menu(), "rows").unwrap() else {
+            panic!("the menu's rows are a list");
+        };
+        let Value::Ref(rule) = &rows[1] else {
+            panic!("a row is a record: {:?}", rows[1]);
+        };
+        assert_eq!(rule.target.ty, "desktop#WindowMenuRow");
+        assert_eq!(
+            rt.read(&rule.target, "enabled").unwrap(),
+            Value::Bool(false),
+            "the rule reads its own fields"
+        );
+    }
+
     #[test]
     fn a_row_of_the_wrong_shape_is_an_error_naming_the_field() {
         let wrong = r#"{"tab": null, "anchor": null, "rows": [

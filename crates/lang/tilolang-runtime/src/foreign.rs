@@ -555,8 +555,8 @@ impl WantedPackages {
 /// tilolang: it reads as a reference, and its fields are the record's own, checked against the
 /// types the app declares. A record the reading spells out as an object names itself by its
 /// `id` when it has one (a menu's rows), and by where it stands in the reading when it does not
-/// (a menu's corner); a reading that gives it as an id string or as that encoding is the same
-/// reference.
+/// (a menu's corner, or a row that chooses nothing and gives no id); a reading that gives it as
+/// an id string or as that encoding is the same reference.
 struct Decoder<'a> {
     author: Option<&'a ModuleHash>,
     registry: &'a Registry,
@@ -699,10 +699,12 @@ impl Decoder<'_> {
                 .map_err(|why| format!("`{}` of `{}`: {why}", field.name, info.name))?;
         }
         // A record names itself with its `id` when the reading gives one (a menu's row), and
-        // by where it stands in the reading when it does not (a menu's corner).
+        // by where it stands in the reading when it does not (a menu's corner). A row that
+        // chooses nothing gives its id as empty, which names nothing either.
         let id = json
             .get("id")
             .and_then(Json::as_str)
+            .filter(|id| !id.is_empty())
             .map_or_else(|| self.at(), ToOwned::to_owned);
         let value = referred(&id, key, self.author)?;
         if let Value::Ref(target) = &value {
