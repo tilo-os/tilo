@@ -1,0 +1,20 @@
+# The wasm-opt arguments for every web module this repository builds: the
+# page's start module and the modules split from it, the compute module, and
+# the bundles the app SDK writes. One list, so the module a size gate measures
+# is the module the site serves.
+#
+# Read by crates/browser/tilo-browser-runtime/scripts/build.sh,
+# crates/browser/tilo-browser-compute/scripts/build.sh and
+# crates/dev/tilo-app-cli (embedded when it compiles). A comment is a line
+# starting with `#`; every other word is an argument.
+-Oz
+--enable-bulk-memory
+--enable-nontrapping-float-to-int
+# The split modules keep the name section the splitter read until it is gone
+# with the rest of the debug information, and a producer section buys the page
+# nothing.
+--strip-debug
+--strip-producers
+# Sound for rustc's stack-first wasm32 layout: the first KiB is the bottom of
+# the stack, reached only by a stack about to overflow.
+--low-memory-unused

@@ -2,8 +2,9 @@
 
 `build.sh OUT --bundle desktop --profile release` compiles with Cargo's
 `wasm-release` profile (opt-level 3, fat LTO, one codegen unit, `panic =
-"abort"`, stripped, no debug info) and runs `wasm-opt -Os`. The development
-bundle is 325 MB.
+"abort"`, stripped, no debug info) and runs `wasm-opt` with the arguments in
+`tools/web/wasm-opt-flags`, the one list every web module of this repository
+is optimized with. The development bundle is 325 MB.
 
 ## Budget
 
