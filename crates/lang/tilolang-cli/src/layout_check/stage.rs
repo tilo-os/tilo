@@ -502,7 +502,14 @@ impl Staged {
     /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
     /// reaches a row a menu paints, which has no node of its own to name.
     pub fn press_at(&mut self, x: f64, y: f64) -> Result<(), String> {
-        self.harness.click_at(x, y);
+        // A row is pressed the way the window expects its person to: a finger taps it, where a
+        // mouse press on a menu a finger opened only dismisses the menu.
+        if self.harness.interaction_environment().modality == ui::interaction::InputModality::Touch
+        {
+            self.harness.tap_at(x, y);
+        } else {
+            self.harness.click_at(x, y);
+        }
         self.exchange();
         self.settle()
     }
@@ -1099,6 +1106,67 @@ mod tests {
         assert!(
             staged.instance.take_chosen().is_none(),
             "the press runs one action, not two"
+        );
+    }
+
+    /// The window says it stands on `label`, a form the press opened.
+    fn shows_dialog(node: &ui::headless::InspectionNode, label: &str) -> bool {
+        fn within(access: &ui::a11y::AccessNode, label: &str) -> bool {
+            if access.role == ui::a11y::Role::Dialog && access.name.as_deref() == Some(label) {
+                return true;
+            }
+            access.children.iter().any(|child| within(child, label))
+        }
+        node.semantics
+            .as_ref()
+            .is_some_and(|access| within(access, label))
+            || node.children.iter().any(|child| shows_dialog(child, label))
+    }
+
+    /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
+    /// only dismisses the menu the finger opened, and the row runs nothing.
+    #[test]
+    fn a_menu_row_of_a_touchscreen_window_is_pressed_by_a_tap() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let reminder = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
+        };
+        staged.press(&reminder, true).expect("its menu opens");
+        staged.freshen().expect("the menu comes to rest");
+        let row = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::painted_row_named(root, "Remind me…")
+                .expect("the menu offers its row")
+        };
+        let center = row.center();
+        staged
+            .press_at(center.x, center.y)
+            .expect("the row presses");
+        assert!(
+            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the row opens the reminder's form"
         );
     }
 
