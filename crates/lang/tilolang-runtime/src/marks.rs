@@ -42,6 +42,10 @@ const SLOT: &str = "slot";
 const VIRTUAL_LIST: &str = "ui.VirtualList";
 /// The node kind of a list row.
 const LIST_ROW: &str = "ui.ListRow";
+/// How many resources of a window's document a window's mark reads changes of: one page of
+/// them, so a window of a workspace of any size costs the same to open, and says when the
+/// document holds more.
+const WINDOW_PAGE: usize = 128;
 
 /// The pseudo-field a mark reads versions through: of a resource, every version of it, and of
 /// a document, every version of every resource in it. A mark reads what a step made, not only
@@ -69,9 +73,10 @@ impl Core {
                 None => Ok(()),
             },
             CHANGE_MARK => {
-                if let Some(Value::Ref(r)) = node.props.get("of").cloned() {
-                    let unseen = self.unseen_noted(viewer, &r.target, acc)?;
-                    self.fill_mark(node, &r.target, &unseen, acc);
+                if let Some(Value::Ref(r)) = node.props.get("of").cloned()
+                    && let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)?
+                {
+                    self.fill_mark(node, &r.target, std::slice::from_ref(&unseen), acc);
                 }
                 Ok(())
             }
@@ -79,10 +84,9 @@ impl Core {
                 let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
                     return Ok(());
                 };
-                let unseen = self.unseen_noted(viewer, &r.target, acc)?;
-                if unseen.is_empty() {
+                let Some(unseen) = self.newest_unseen_noted(viewer, &r.target, acc)? else {
                     return Ok(());
-                }
+                };
                 // The row does not hide in a list's folded tail while a change of it is
                 // unseen: it stands with the rows above, where its mark is read, and goes
                 // back under the tail once the person has seen it. A flag travels as the
@@ -99,7 +103,7 @@ impl Core {
                 let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
                 mark.props
                     .insert("of".to_owned(), Value::resource(&r.target));
-                self.fill_mark(&mut mark, &r.target, &unseen, acc);
+                self.fill_mark(&mut mark, &r.target, std::slice::from_ref(&unseen), acc);
                 node.children.push(slot("change", &node.key, mark));
                 Ok(())
             }
@@ -120,11 +124,14 @@ impl Core {
         coll: &CollRef,
         acc: &mut Acc,
     ) -> Result<(), RuntimeError> {
-        let holder = coll.target.id_string();
         acc.reads
             .push((coll.target.doc.clone(), DOC_VERSIONS.to_owned()));
-        let within = match self.store.borrow().versions_within(&coll.target.doc) {
-            Ok(within) => within,
+        let removed = match self
+            .store
+            .borrow()
+            .removed(&coll.target, &coll.field, &coll.item)
+        {
+            Ok(removed) => removed,
             Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
             Err(error) => return Err(error.into()),
         };
@@ -140,21 +147,15 @@ impl Core {
             })
         };
         let mut rows = Vec::new();
-        for (resource, versions) in within {
-            let Some(last) = versions.last() else {
-                continue;
-            };
-            let stood_here = last.left.as_ref().is_some_and(|left| {
-                left.holder == holder
-                    && left.field == coll.field
-                    && left.ty.as_ref().is_none_or(|ty| *ty == coll.item)
-            });
-            if last.kind != crate::store::VersionKind::Removed || !stood_here {
-                continue;
-            }
+        for (resource, removal) in removed {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
-            let unseen = crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs);
+            let unseen = crate::seen::unseen(
+                std::slice::from_ref(&removal),
+                &viewer.0,
+                mark.as_ref(),
+                &runs,
+            );
             if unseen.is_empty() {
                 continue;
             }
@@ -162,7 +163,11 @@ impl Core {
                 continue;
             };
             let said = match &title {
-                Some(spec) => text_of(&self.store.borrow().read_before(&at, spec, &last.change)?),
+                Some(spec) => text_of(&self.store.borrow().read_before(
+                    &at,
+                    spec,
+                    &removal.change,
+                )?),
                 None => None,
             };
             let key = format!("{}~removed~{resource}", node.key);
@@ -189,13 +194,9 @@ impl Core {
         Ok(())
     }
 
-    /// The versions of `at` `viewer` has not seen, read by the boundary being built.
-    fn unseen_noted(
-        &self,
-        viewer: &Principal,
-        at: &ResourceRef,
-        acc: &mut Acc,
-    ) -> Result<Vec<Version>, RuntimeError> {
+    /// The boundary reads every mark of `resource` makes: the person's seen mark of it and the
+    /// runs they reviewed, the record's versions of it, and each of its fields.
+    fn note_unseen_reads(&self, viewer: &Principal, at: &ResourceRef, acc: &mut Acc) {
         let id = at.id_string();
         self.note_seen_reads(viewer, &id, acc);
         // A step that makes a version of it reaches the mark even when the value it writes
@@ -208,7 +209,30 @@ impl Core {
                 acc.reads.push((id.clone(), field.id.clone()));
             }
         }
-        Ok(self.unseen_of(&viewer.0, at)?)
+    }
+
+    /// Whether `person` has seen `version` of `resource`: it is their own, or the one their seen
+    /// mark of the resource, or of what it was made from and what holds it, names. A mark of a
+    /// resource whose newest version is such a one has nothing unseen to show, and says so
+    /// without reading the resource's log.
+    fn seen_before(&self, person: &str, at: &ResourceRef, version: &Version) -> bool {
+        !crate::seen::is_marked(version, person)
+            || self
+                .seen_mark_of_tree(person, at)
+                .is_some_and(|mark| mark.change == version.change)
+    }
+
+    /// The newest version of `at` that `viewer` has not seen, if any, read by the boundary
+    /// being built: what a row's mark says, answered by the index's newest version of the
+    /// resource without its log.
+    fn newest_unseen_noted(
+        &self,
+        viewer: &Principal,
+        at: &ResourceRef,
+        acc: &mut Acc,
+    ) -> Result<Option<Version>, RuntimeError> {
+        self.note_unseen_reads(viewer, at, acc);
+        Ok(self.newest_unseen_of(&viewer.0, at)?)
     }
 
     /// The boundary read `viewer`'s seen mark of `resource` and the runs they reviewed.
@@ -311,7 +335,16 @@ impl Core {
         else {
             return Ok(());
         };
-        let unseen = self.unseen_noted(viewer, &target, acc)?;
+        self.note_unseen_reads(viewer, &target, acc);
+        // What last changed the field answers the mark when the person has seen it: nothing
+        // else can be unseen of the field, and the resource's log is not read.
+        let Some(last) = self.store.borrow().field_changed(&target, &field)? else {
+            return Ok(());
+        };
+        if self.seen_before(&viewer.0, &target, &last) {
+            return Ok(());
+        }
+        let unseen = self.unseen_of(&viewer.0, &target)?;
         let touching: Vec<&Version> = unseen
             .iter()
             .filter(|v| v.fields.contains(&field))
@@ -359,7 +392,17 @@ impl Core {
         let Some(Value::Ref(r)) = node.props.get("item").cloned() else {
             return Ok(());
         };
-        let unseen = self.unseen_noted(viewer, &r.target, acc)?;
+        self.note_unseen_reads(viewer, &r.target, acc);
+        // Its newest version answers the row when the person has seen it: nothing is unseen of
+        // it, and the resource's log is not read.
+        let newest = self.store.borrow().newest(&r.target)?;
+        if newest
+            .as_ref()
+            .is_none_or(|newest| self.seen_before(&viewer.0, &r.target, newest))
+        {
+            return Ok(());
+        }
+        let unseen = self.unseen_of(&viewer.0, &r.target)?;
         if unseen.is_empty() {
             return Ok(());
         }
@@ -389,8 +432,10 @@ impl Core {
             return Ok(());
         };
         acc.reads.push((at.doc.clone(), DOC_VERSIONS.to_owned()));
-        let within = match self.store.borrow().versions_within(&at.doc) {
-            Ok(within) => within,
+        // The newest version of a page of the document's resources: a window of a workspace of
+        // any size reads no more of it than the page, and says when it holds more.
+        let (within, more) = match self.store.borrow().newest_page(&at.doc, WINDOW_PAGE) {
+            Ok(page) => page,
             // A window named for no document (one a host opened by a name of its own) shows
             // no resource anyone changed.
             Err(crate::store::StoreError::NotFound(_)) => return Ok(()),
@@ -405,12 +450,17 @@ impl Core {
             None => resource != at.doc,
         };
         let mut unseen: Vec<Version> = Vec::new();
-        for (resource, versions) in within.into_iter().filter(|(r, _)| shown(r)) {
+        for (resource, newest) in within.into_iter().filter(|(r, _)| shown(r)) {
             self.note_seen_reads(viewer, &resource, acc);
             let mark = self.seen_mark(&viewer.0, &resource);
             // One per resource: its newest unseen change.
-            if let Some(newest) =
-                crate::seen::unseen(&versions, &viewer.0, mark.as_ref(), &runs).pop()
+            if let Some(newest) = crate::seen::unseen(
+                std::slice::from_ref(&newest),
+                &viewer.0,
+                mark.as_ref(),
+                &runs,
+            )
+            .pop()
             {
                 // A change a record made from `resource` stands under both, as that record's
                 // own change and as a change to what it was made from: the window counts it
@@ -434,6 +484,11 @@ impl Core {
         let mut mark = UiNode::empty(CHANGE_MARK, &format!("{}~change", node.key));
         mark.props.insert("of".to_owned(), Value::resource(&at));
         mark.props.insert("window".to_owned(), Value::Bool(true));
+        // The document holds more resources than the page read: what it counted of them is a
+        // lower bound, and the mark says so.
+        if more {
+            mark.props.insert("more".to_owned(), Value::Bool(true));
+        }
         self.fill_mark(&mut mark, &at, &unseen, acc);
         // First among the header's actions, beside the title.
         match node.children.iter_mut().find(|child| {

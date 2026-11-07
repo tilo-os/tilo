@@ -162,17 +162,19 @@ pub(super) fn build(
     // record's types resolve by the store's package versions, never by another store's.
     let _scope = schemas.enter();
     let mut ends = Ends::new();
+    // The items that left their collections, which a list shows struck: read off the whole log
+    // here, where the index is built off the frame, so a list answers them from the index.
+    let mut versions = super::versions::Versions::default();
+    let mut removed = crate::index::derive::Removed::new();
     for (_, doc) in chunks.docs() {
-        ends.extend(idx::reflect::ends_of(
-            &doc.committed_document().get_changes(&[]),
-            doc,
-            docs,
-        ));
+        let changes = doc.committed_document().get_changes(&[]);
+        ends.extend(idx::reflect::ends_of(&changes, doc, docs));
+        removed = super::versions::note_versions(&mut versions, &changes, doc, docs);
     }
     let nested = Nested::default();
     index.write(|writer| {
         let mut derive = Derive::new(chunks, docs, &nested);
-        derive.all_with_versions(writer, app, &ends)?;
+        derive.all_with_versions(writer, app, &ends, &removed)?;
         writer.set_heads(heads)?;
         Ok(derive.reads)
     })

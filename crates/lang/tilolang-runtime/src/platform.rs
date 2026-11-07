@@ -1134,6 +1134,21 @@ impl Core {
         Ok(crate::seen::unseen(&versions, person, mark.as_ref(), &runs))
     }
 
+    /// The newest version of `at` `person` has not seen, if any: what a row's mark says,
+    /// answered by the index's newest version of the resource without its log.
+    pub(crate) fn newest_unseen_of(
+        &self,
+        person: &str,
+        at: &ResourceRef,
+    ) -> Result<Option<crate::store::Version>, crate::store::StoreError> {
+        let Some(newest) = self.store.borrow().newest(at)? else {
+            return Ok(None);
+        };
+        let mark = self.seen_mark_of_tree(person, at);
+        let runs = self.seen_runs(person);
+        Ok(crate::seen::unseen(std::slice::from_ref(&newest), person, mark.as_ref(), &runs).pop())
+    }
+
     /// The first item of `at`'s collection `field` that `person` has not seen, oldest first (a
     /// conversation's first unread message), as a transcript shows it.
     ///

@@ -389,7 +389,7 @@ pub const EDIT_FLAG_ACTION: &str = "edit-flag";
 
 /// One version of a resource, as history keeps it: who made it, when, by which action, in
 /// which task run, and what it did to the resource.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Version {
     pub who: String,
     /// ISO-8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`.
@@ -428,7 +428,7 @@ pub struct Version {
 }
 
 /// Where a removed item stood ([`Version::left`]).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Left {
     /// The resource holding the collection, as [`ResourceRef::id_string`] writes it.
     pub holder: String,
@@ -459,7 +459,7 @@ impl TaskRun {
 }
 
 /// What a version did to its resource.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum VersionKind {
     Created,
     #[default]
@@ -1452,6 +1452,50 @@ pub trait Store {
         Ok(std::iter::once((doc.clone(), self.versions(&root)?)).collect())
     }
 
+    /// The newest version of the resource `at`, else `None`: what a mark of it says. A store
+    /// with an index keeps it per resource, so a row's mark reads one field, never the log.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions`].
+    fn newest(&self, at: &ResourceRef) -> Result<Option<Version>, StoreError> {
+        Ok(self.versions(at)?.pop())
+    }
+
+    /// The newest version of each resource of the document `doc` (it and its items), in path
+    /// order, of at most `page` of them, and whether it holds more: what a window's mark counts
+    /// the unseen changes of. A store with an index answers it a page at a time, so a window of
+    /// a workspace of any size reads no more than its page.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions_within`].
+    fn newest_page(
+        &self,
+        doc: &DocId,
+        page: usize,
+    ) -> Result<(Vec<(String, Version)>, bool), StoreError> {
+        newest_page_of_log(self, doc, page)
+    }
+
+    /// The items of the type `item` that left the collection `field` of `holder`, in the order
+    /// they left it, each with the version that removed it: what a list shows struck, until
+    /// the person has seen them go.
+    ///
+    /// A store that keeps only the log answers it from [`Self::versions_within`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::versions_within`].
+    fn removed(
+        &self,
+        holder: &ResourceRef,
+        field: &str,
+        item: &TypeId,
+    ) -> Result<Vec<(String, Version)>, StoreError> {
+        removed_of_log(self, holder, field, item)
+    }
+
     /// Every version the task run `run` (its group) made, of every resource, oldest first:
     /// what `changes(of: run)` reads.
     ///
@@ -1584,4 +1628,63 @@ pub trait Store {
     ///
     /// A [`StoreError`] when the journal cannot be read.
     fn load_journal(&mut self, run: &RunId) -> Result<Option<Journal>, StoreError>;
+}
+
+/// [`Store::newest_page`] as a store that keeps only the log answers it: the last version of
+/// each resource of the document `doc`, in path order, the first `page` of them, and whether
+/// there are more.
+///
+/// # Errors
+///
+/// As [`Store::versions_within`].
+pub fn newest_page_of_log(
+    store: &(impl Store + ?Sized),
+    doc: &DocId,
+    page: usize,
+) -> Result<(Vec<(String, Version)>, bool), StoreError> {
+    let mut more = false;
+    let out = store
+        .versions_within(doc)?
+        .into_iter()
+        .filter_map(|(resource, versions)| versions.last().map(|last| (resource, last.clone())))
+        .enumerate()
+        .filter_map(|(i, at)| {
+            if i < page {
+                Some(at)
+            } else {
+                more = true;
+                None
+            }
+        })
+        .collect();
+    Ok((out, more))
+}
+
+/// [`Store::removed`] as a store that keeps only the log answers it: the items of the type
+/// `item` that left the collection `field` of `holder`, each with the version that removed it.
+///
+/// # Errors
+///
+/// As [`Store::versions_within`].
+pub fn removed_of_log(
+    store: &(impl Store + ?Sized),
+    holder: &ResourceRef,
+    field: &str,
+    item: &TypeId,
+) -> Result<Vec<(String, Version)>, StoreError> {
+    let held = holder.id_string();
+    let within = store.versions_within(&holder.doc)?;
+    Ok(within
+        .into_iter()
+        .filter_map(|(resource, versions)| {
+            let last = versions.last()?;
+            let stood_here = last.left.as_ref().is_some_and(|left| {
+                last.kind == VersionKind::Removed
+                    && left.holder == held
+                    && left.field == field
+                    && left.ty.as_ref().is_none_or(|ty| ty == item)
+            });
+            stood_here.then(|| (resource, last.clone()))
+        })
+        .collect())
 }

@@ -31,8 +31,12 @@ pub enum ListState {
 pub struct Overlay {
     fields: HashMap<(String, String), FieldValue>,
     texts: HashMap<(String, String), String>,
+    /// Texts the writes dropped: what the index holds there is no more.
+    dropped: BTreeSet<(String, String)>,
     /// Resources removed, with everything inside them, unless written again.
     removed: BTreeSet<String>,
+    /// The newest version written of each resource, by resource ([`super::NEWEST`]).
+    newest: HashMap<String, super::reflect::Stamp>,
     lists: HashMap<String, ListState>,
 }
 
@@ -40,7 +44,9 @@ impl Overlay {
     pub fn is_empty(&self) -> bool {
         self.fields.is_empty()
             && self.texts.is_empty()
+            && self.dropped.is_empty()
             && self.removed.is_empty()
+            && self.newest.is_empty()
             && self.lists.is_empty()
     }
 
@@ -64,6 +70,7 @@ impl Overlay {
         self.removed(resource)
             || self.fields.keys().any(|(path, _)| path == resource)
             || self.texts.keys().any(|(path, _)| path == resource)
+            || self.dropped.iter().any(|(path, _)| path == resource)
     }
 
     /// The resources the writes gave a type: made, or made again.
@@ -82,9 +89,41 @@ impl Overlay {
         self.removed(resource).then_some(None)
     }
 
+    /// The newest version written of `resource`: `Some(None)` when it was removed.
+    pub fn newest(&self, resource: &str) -> Option<Option<&super::reflect::Stamp>> {
+        if let Some(stamp) = self.newest.get(resource) {
+            return Some(Some(stamp));
+        }
+        self.removed(resource).then_some(None)
+    }
+
+    /// The newest versions the writes gave the resources of `path` (it and the resources
+    /// inside it), by resource.
+    pub fn newest_within(
+        &self,
+        path: &str,
+    ) -> impl Iterator<Item = (&str, &super::reflect::Stamp)> {
+        self.newest
+            .iter()
+            .filter(move |(resource, _)| super::inside(path, resource))
+            .map(|(resource, stamp)| (resource.as_str(), stamp))
+    }
+
+    /// The values the writes gave `field`, by resource.
+    pub fn values_of(&self, field: &str) -> impl Iterator<Item = (&str, &FieldValue)> {
+        self.fields
+            .iter()
+            .filter(move |((_, key), _)| key == field)
+            .map(|((resource, _), value)| (resource.as_str(), value))
+    }
+
     /// The type or order key written of `resource`: `Some(None)` when it was removed.
     pub fn text(&self, resource: &str, key: &str) -> Option<Option<String>> {
-        if let Some(text) = self.texts.get(&(resource.to_owned(), key.to_owned())) {
+        let at = (resource.to_owned(), key.to_owned());
+        if self.dropped.contains(&at) {
+            return Some(None);
+        }
+        if let Some(text) = self.texts.get(&at) {
             return Some(Some(text.clone()));
         }
         self.removed(resource).then_some(None)
@@ -146,7 +185,9 @@ impl Overlay {
         let within = |path: &str| path == resource || path.starts_with(&inside);
         self.fields.retain(|(path, _), _| !within(path));
         self.texts.retain(|(path, _), _| !within(path));
+        self.dropped.retain(|(path, _)| !within(path));
         self.removed.retain(|path| !within(path));
+        self.newest.retain(|path, _| !within(path));
         let lists_inside = [
             format!("m\u{1}{resource}\u{1}"),
             format!("m\u{1}{resource}/"),
@@ -227,6 +268,24 @@ impl OverlaySink<'_> {
 }
 
 impl Sink for OverlaySink<'_> {
+    fn put_newest(
+        &mut self,
+        resource: &str,
+        stamp: &super::reflect::Stamp,
+    ) -> Result<(), IndexError> {
+        let newer = self
+            .overlay
+            .newest
+            .get(resource)
+            .is_none_or(|held| held.before(stamp));
+        if newer {
+            self.overlay
+                .newest
+                .insert(resource.to_owned(), stamp.clone());
+        }
+        Ok(())
+    }
+
     fn field(&mut self, resource: &str, field: &str) -> Result<Option<FieldValue>, IndexError> {
         if let Some(written) = self.overlay.field(resource, field) {
             return Ok(written);
@@ -260,9 +319,16 @@ impl Sink for OverlaySink<'_> {
     }
 
     fn put_text(&mut self, resource: &str, key: &str, text: &str) -> Result<(), IndexError> {
-        self.overlay
-            .texts
-            .insert((resource.to_owned(), key.to_owned()), text.to_owned());
+        let at = (resource.to_owned(), key.to_owned());
+        self.overlay.dropped.remove(&at);
+        self.overlay.texts.insert(at, text.to_owned());
+        Ok(())
+    }
+
+    fn drop_text(&mut self, resource: &str, key: &str) -> Result<(), IndexError> {
+        let at = (resource.to_owned(), key.to_owned());
+        self.overlay.texts.remove(&at);
+        self.overlay.dropped.insert(at);
         Ok(())
     }
 

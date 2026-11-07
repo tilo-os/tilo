@@ -957,6 +957,14 @@ change-mark-said-more = { $said } und { $count ->
     [one] eine weitere
    *[other] { $count } weitere
 }
+change-window-more = { $who } hat mindestens { $count ->
+    [one] eine Änderung geändert
+   *[other] { $count } Änderungen geändert
+}
+change-window-changed-more = { $who } hat mindestens { $count ->
+    [one] eine { $noun } geändert
+   *[other] { $count } { $noun } geändert
+}
 
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.

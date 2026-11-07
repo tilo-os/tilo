@@ -929,6 +929,8 @@ struct Phases {
     open_load: Vec<f64>,
     open_view: Vec<f64>,
     open_rows: Vec<f64>,
+    /// Copying the indexes the samples open from, outside what opening them costs.
+    fixture: Vec<f64>,
 }
 
 impl Phases {
@@ -974,6 +976,7 @@ impl Phases {
             "open_load_p50_ms": p50(&mut self.open_load),
             "open_view_p50_ms": p50(&mut self.open_view),
             "open_rows_p50_ms": p50(&mut self.open_rows),
+            "fixture_p50_ms": p50(&mut self.fixture),
         })
     }
 }
@@ -1022,6 +1025,12 @@ impl Workspace {
         // As a launcher does: from the modules built with Tilo, compiling no source.
         for compiled in packages {
             host.load_wasm(&compiled.wasm).map_err(|e| e.to_string())?;
+        }
+        // The shell shows its loading state until the package's index is ready, and renders the
+        // window over it: the bench waits for it too, so what it opens is the index an earlier
+        // session kept, never the record's log for what an index answers.
+        if index.is_some() {
+            host.wait_index();
         }
         let loaded = Instant::now();
         let mut list = host.open_main(app).map_err(|e| e.to_string())?;
@@ -1532,12 +1541,24 @@ impl Sized<'_> {
     }
 
     fn open(&self) -> Result<Workspace, String> {
+        let index = self.fixture()?;
+        self.opened(index)
+    }
+
+    /// A copy of the indexes as an earlier session left them: what opening a workspace of its own
+    /// from them changes, never the copy the other samples open from.
+    fn fixture(&self) -> Result<IndexDir, String> {
+        self.index.copy()
+    }
+
+    /// [`Self::open`] from the index `index`, which is the sample's to change.
+    fn opened(&self, index: IndexDir) -> Result<Workspace, String> {
         Workspace::open(
             self.base.clone(),
             self.packages,
             &self.meta.app,
             self.config.profile,
-            Some(self.index.copy()?),
+            Some(index),
         )
     }
 
@@ -1801,7 +1822,9 @@ fn measure_memory(workspace: &Path, package: &Path, index: Option<PathBuf>) -> R
 /// Opening the package's main view on a workspace of the size, through the first frame; and until
 /// search and publication, which read the workspace off the frame, have it all. Beside them, loading
 /// the workspace's record from its saved bytes, which opening a workspace from disk adds first: the one
-/// part of opening that reads the whole record, and grows with it.
+/// part of opening that reads the whole record, and grows with it. The indexes a sample opens from
+/// are copied first, outside the time it takes ([`Sized::fixture`]): a session opens the ones it
+/// keeps in place.
 fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut samples = Vec::new();
     let mut nodes = 0;
@@ -1810,10 +1833,16 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
     let mut live = tilolang_runtime::LiveStats::default();
     let mut work = None;
     for _ in 0..sized.config.open_samples() {
-        // Each sample opens a workspace of its own, from a store that read nothing yet.
+        // Each sample opens a workspace of its own, from a store that read nothing yet. The copy
+        // of the indexes that gives it is the fixture, made before the timer: a session opens
+        // the indexes it keeps in place, and copying them grows with the workspace, unlike
+        // opening it.
+        let copied = Instant::now();
+        let fixture = sized.fixture()?;
+        let copy = ms(copied.elapsed());
         let allocated = allocations();
         let start = Instant::now();
-        let mut workspace = sized.open()?;
+        let mut workspace = sized.opened(fixture)?;
         samples.push(ms(start.elapsed()));
         live = workspace.list.stats();
         let mut opened = Work::of(&workspace, &[]);
@@ -1830,6 +1859,7 @@ fn open(sized: &Sized<'_>) -> Result<Vec<Record>, String> {
         phases.open_load.append(&mut workspace.phases.open_load);
         phases.open_view.append(&mut workspace.phases.open_view);
         phases.open_rows.append(&mut workspace.phases.open_rows);
+        phases.fixture.push(copy);
     }
     let mut extra = with_work(phases.take(), work.unwrap_or_default());
     if let Json::Object(m) = &mut extra {
@@ -2710,5 +2740,38 @@ mod costs {
         tilolang_runtime::assert_costs("open", &costs, |c| {
             c.calls("Task.due_today requirement") <= shown
         });
+    }
+
+    /// The first render reads the same of the index at a hundred thousand tasks as at a
+    /// thousand: what a window shows is one page of them, and nothing it reads is worked out
+    /// per task in the workspace. Release only: a hundred thousand tasks are seeded and
+    /// indexed as the bench seeds them, which a debug build takes minutes to do.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_first_render_at_a_hundred_thousand_reads_the_index_as_at_a_thousand() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/tasks");
+        let packages = compile(&dir).expect("the tasks package compiles");
+        let app = packages.last().expect("a package").meta.app.clone();
+        let reads_at = |n: usize| {
+            let doc = seeded_record(&packages, n).expect("the workspace seeds");
+            // The index an earlier window kept, so the open reads it rather than building one.
+            let (index, _) = prepare_index(&doc, &packages).expect("the index builds");
+            let mut workspace =
+                Workspace::open_counting(doc, &packages, &app, false, Some(index), false)
+                    .expect("the workspace opens");
+            workspace.settle();
+            workspace.host.store().read_stats()
+        };
+        let small = reads_at(1_000);
+        let large = reads_at(100_000);
+        assert_eq!(
+            ((large.doc, large.index, large.evaluated), large.versions),
+            ((small.doc, small.index, small.evaluated), small.versions),
+            "the first render reads more at 100k than at 1k"
+        );
+        assert_eq!(
+            large.versions, 0,
+            "the first render derived the record's versions rather than reading the index"
+        );
     }
 }

@@ -27,7 +27,7 @@ use std::sync::LazyLock;
 use automerge::ReadDoc as _;
 use serde_json::{Value as Json, json};
 use tilolang::pred::Lit;
-use tilolang_runtime::store::{FieldValue, Reflected, Scalar, TaskRun, Version, VersionKind};
+use tilolang_runtime::store::{FieldValue, Left, Reflected, Scalar, TaskRun, Version, VersionKind};
 
 use tilo_resource::Doc;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
@@ -111,6 +111,7 @@ impl Stamp {
             "who": self.version.who,
             "at": self.version.at,
             "action": self.version.action,
+            "kind": self.version.kind.word(),
             "change": self.change,
             "op": self.op,
         });
@@ -176,6 +177,10 @@ impl Stamp {
                 change: change.clone(),
                 from,
                 suggested_by: text("suggested_by"),
+                // An index written before versions named what they did holds only changes.
+                kind: text("kind")
+                    .and_then(|word| VersionKind::of_word(&word))
+                    .unwrap_or_default(),
                 count: json
                     .get("count")
                     .and_then(Json::as_u64)
@@ -258,10 +263,36 @@ pub fn placed_of(change: &automerge::Change) -> Vec<(String, String, String, Opt
     read(change).map_or_else(Vec::new, |(_, action, _)| action.placed())
 }
 
+/// Where each item the `changes` placed is: the record holding its collection, the field and
+/// its type. What a removal in the same batch left, for an index that never held the item.
+pub type Placed = BTreeMap<String, Left>;
+
+/// Where the items `changes` placed are, as the changes that placed them recorded it
+/// ([`placed_of`]): the last place each was put in.
+pub fn placed_by<'c>(changes: impl IntoIterator<Item = &'c automerge::Change>) -> Placed {
+    let mut out = Placed::new();
+    for change in changes {
+        for (item, holder, field, ty) in placed_of(change) {
+            let ty = ty.or_else(|| out.get(&item).and_then(|left| left.ty.clone()));
+            out.insert(item, Left { holder, field, ty });
+        }
+    }
+    out
+}
+
 /// What a column of a version orders by: the time, as a column of times writes it.
 #[must_use]
 pub fn at_lit(value: &FieldValue) -> Lit {
     Stamp::of_value(value).map_or(Lit::Absent, |stamp| Lit::Time(stamp.version.at))
+}
+
+/// The version `change` made, whoever made it: a package action's, or a step on the record
+/// (an undo, a revert).
+#[must_use]
+pub fn change_stamp(change: &automerge::Change) -> Option<Stamp> {
+    stamp_of(change)
+        .map(|(stamp, _)| stamp)
+        .or_else(|| step_stamp(change))
 }
 
 /// The version `change` made, and the resources it changed (as the runtime writes them), when
@@ -328,26 +359,54 @@ pub struct Ends {
     pub first: Stamp,
     /// The version that last changed it.
     pub last: Stamp,
+    /// What that version did to it.
+    pub last_kind: VersionKind,
     /// The last version that changed each of its fields, by the field's id: a change of the
     /// record, never a step that takes one back (an undo), which leaves the field's last
     /// change the one still in effect. A field no version here names was last changed by the
     /// one that made the resource, which set it.
     pub fields: BTreeMap<String, Stamp>,
+    /// The version that last put it in a collection or took it out of one, and which: a
+    /// change of its fields after that leaves it where it is.
+    pub moved: Option<(Stamp, VersionKind)>,
     /// Whether these are the resource's whole log read anew because a step took a change to it
     /// back: the index takes them as they are, even where they stand before what it holds.
     pub restored: bool,
 }
 
 impl Ends {
-    /// Take in the version `stamp` made of the resource, changing `fields`: the first stays
-    /// unless `stamp` came before it, the last is replaced by a later one, and each field's
-    /// last change is the later of the two.
-    fn take(&mut self, stamp: &Stamp, fields: &[String]) {
+    /// The newest version of it, as a mark of the resource reads it: what it did to the
+    /// resource said of the version itself.
+    #[must_use]
+    pub fn newest(&self) -> Stamp {
+        Stamp {
+            version: Version {
+                kind: self.last_kind,
+                ..self.last.version.clone()
+            },
+            ..self.last.clone()
+        }
+    }
+
+    /// Take in the version `stamp` made of the resource, changing `fields` and, when `places`,
+    /// putting it in a collection or taking it out of one: the first stays unless `stamp` came
+    /// before it, the last is replaced by a later one, and each field's last change is the
+    /// later of the two.
+    fn take(&mut self, stamp: &Stamp, fields: &[String], kind: VersionKind, places: bool) {
         if stamp.before(&self.first) {
             self.first = stamp.clone();
         }
         if self.last.before(stamp) {
             self.last = stamp.clone();
+            self.last_kind = kind;
+        }
+        if places
+            && self
+                .moved
+                .as_ref()
+                .is_none_or(|(held, _)| held.before(stamp))
+        {
+            self.moved = Some((stamp.clone(), kind));
         }
         for field in fields {
             match self.fields.get_mut(field) {
@@ -381,7 +440,7 @@ fn versions_of_changes<'c>(
                 stamp,
                 versions_of(change)
                     .into_iter()
-                    .map(|version| (version.resource, version.fields))
+                    .map(|version| (version.resource, version.fields, version.kind))
                     .collect::<Vec<_>>(),
             )
         } else {
@@ -390,23 +449,30 @@ fn versions_of_changes<'c>(
             };
             let written = stepped(change, mirror, resources)
                 .into_iter()
-                .map(|version| (version.resource, Vec::new()))
+                .map(|version| (version.resource, Vec::new(), version.kind))
                 .collect();
             (stamp, written)
         };
-        for (resource, fields) in wrote {
+        let placed: BTreeSet<String> = placed_of(change)
+            .into_iter()
+            .map(|(item, _, _, _)| item)
+            .collect();
+        for (resource, fields, kind) in wrote {
+            let moved = kind == VersionKind::Removed || placed.contains(&resource);
             match out.get_mut(&resource) {
-                Some(end) => end.take(&stamp, &fields),
+                Some(end) => end.take(&stamp, &fields, kind, moved),
                 None => {
                     out.insert(
                         resource,
                         Ends {
                             first: stamp.clone(),
                             last: stamp.clone(),
+                            last_kind: kind,
                             fields: fields
                                 .iter()
                                 .map(|field| (field.clone(), stamp.clone()))
                                 .collect(),
+                            moved: moved.then(|| (stamp.clone(), kind)),
                             restored: false,
                         },
                     );
@@ -417,8 +483,10 @@ fn versions_of_changes<'c>(
     out
 }
 
-/// The changes the record marks undone (an undo, until a redo brings it back), by hash.
-fn undone_changes(mirror: &Doc) -> BTreeSet<String> {
+/// The changes the record marks undone (an undo, until a redo brings it back), by hash: a
+/// derivation of the whole log leaves them out.
+#[must_use]
+pub fn undone_changes(mirror: &Doc) -> BTreeSet<String> {
     let mut out = BTreeSet::new();
     let committed = mirror.committed_document();
     for key in committed.keys(automerge::ROOT) {

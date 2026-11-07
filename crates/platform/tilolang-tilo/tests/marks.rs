@@ -257,6 +257,26 @@ fn a_task_the_run_removed_stays_a_struck_row_until_its_removal_is_seen() {
     assert!(removed_rows(inbox.tree()).is_empty());
 }
 
+/// A list built over a record that already holds the removal shows the row struck too: the
+/// index knows what left each collection without reading the log.
+#[test]
+fn a_list_built_over_the_record_shows_what_left_it() {
+    let Tidied { ada, .. } = a_run_in_notes_and_tasks();
+    let fresh = crate::legibility::built_over(&ada);
+    assert!(
+        fresh.store().stats().builds > 0,
+        "the indexes are built whole"
+    );
+    let mut inbox = fresh.open_main(crate::legibility::TASKS_APP).unwrap();
+    inbox.poll_patches().unwrap();
+    let removed = removed_rows(inbox.tree());
+    assert_eq!(removed.len(), 1, "{removed:?}");
+    let (title, mark) = &removed[0];
+    assert_eq!(title, "Stale", "the row says what was removed");
+    assert_eq!(mark.props.get("kind"), Some(&Value::text("removed")));
+    assert_eq!(principal(mark, "by").as_deref(), Some(AGENT));
+}
+
 #[test]
 fn a_field_the_run_changed_takes_its_colour_and_says_what_it_held() {
     let Tidied { ada, groceries, .. } = a_run_in_notes_and_tasks();

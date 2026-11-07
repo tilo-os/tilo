@@ -36,6 +36,9 @@ pub struct ChangeMarkProps {
     pub count: i64,
     /// It marks a window, in its header: it says how many changes and by whom.
     pub window: bool,
+    /// The window's document holds more resources than the mark counted: what it says is a
+    /// lower bound, and says so.
+    pub more: bool,
     /// Activated: show what they did, at the run that did it.
     #[component(event)]
     pub activate: Event,
@@ -69,6 +72,7 @@ impl ChangeMarkProps {
             kind: self.kind.clone(),
             count: self.count,
             window: self.window,
+            more: self.more,
             activate: self.activate.clone(),
         }
     }
@@ -149,6 +153,7 @@ impl ChangeMarkProps {
             noun,
             count,
             window,
+            more,
             activate,
             ..
         } = self;
@@ -176,7 +181,11 @@ impl ChangeMarkProps {
             let names = names(&who);
             match noun.filter(|noun| !noun.is_empty()) {
                 Some(noun) => crate::i18n::widget_format(
-                    "change-window-changed",
+                    if more {
+                        "change-window-changed-more"
+                    } else {
+                        "change-window-changed"
+                    },
                     &[
                         ("who", names.into()),
                         ("count", count.into()),
@@ -184,7 +193,11 @@ impl ChangeMarkProps {
                     ],
                 ),
                 None => crate::i18n::widget_format(
-                    "change-window",
+                    if more {
+                        "change-window-more"
+                    } else {
+                        "change-window"
+                    },
                     &[("count", count.into()), ("who", names.into())],
                 ),
             }

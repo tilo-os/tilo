@@ -975,6 +975,16 @@ change-mark-said-more = { $said } and { $count ->
     [one] one more
    *[other] { $count } more
 }
+# A window's mark that counted a page of what it shows, with more than it says.
+change-window-more = { $who } changed at least { $count ->
+    [one] one change
+   *[other] { $count } changes
+}
+# The same, when the type names what an item of it is ($noun, plural).
+change-window-changed-more = { $who } changed at least { $count ->
+    [one] one { $noun }
+   *[other] { $count } { $noun }
+}
 
 # One step of an agent's task: the program it ran, what it answered, what it
 # changed and what it proposes.
