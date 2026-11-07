@@ -80,9 +80,10 @@ fn show(session: &mut Session, root: &std::path::Path, preset: &str) {
                 preset.to_lowercase()
             ),
         );
-        if failed && !answer.contains("shown that way already") {
-            panic!("the desk shows {preset}: {answer}");
-        }
+        assert!(
+            !failed || answer.contains("shown that way already"),
+            "the desk shows {preset}: {answer}"
+        );
     }
     match preset {
         "Frames" | "Spaces" => until(session, "the canvas", |session| {
@@ -154,7 +155,10 @@ fn frames(session: &Session) -> Vec<(i64, i64, i64, i64)> {
 
 /// Whether two canvas rectangles `(x, y, w, h)` share any area.
 fn overlap(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64)) -> bool {
-    a.0 < b.0 + b.2 && b.0 < a.0 + a.2 && a.1 < b.1 + b.3 && b.1 < a.1 + a.3
+    a.0 < b.0.saturating_add(b.2)
+        && b.0 < a.0.saturating_add(a.2)
+        && a.1 < b.1.saturating_add(b.3)
+        && b.1 < a.1.saturating_add(a.3)
 }
 
 /// In the desktop preset, every placed window shows a bar naming it: its title, and the shell's

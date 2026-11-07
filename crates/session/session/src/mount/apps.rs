@@ -1432,6 +1432,7 @@ fn unix_seconds() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_app_launch::output::OutputTail;
     use tilo_app_launch::{End, Event};
 
     const WORKSPACE: &str = "6f1c2a3b-4d5e-4f60-8a7b-9c0d1e2f3a4b";
@@ -1556,7 +1557,7 @@ mod tests {
             app: "so.tilo.agent".to_owned(),
             title: "Agent".to_owned(),
             end: End::exited(1),
-            said: Default::default(),
+            said: OutputTail::default(),
         });
         apps.follow();
         assert!(
@@ -1600,7 +1601,7 @@ mod tests {
             app: "example.Canvas".to_owned(),
             title: "Canvas".to_owned(),
             end,
-            said: Default::default(),
+            said: OutputTail::default(),
         });
         apps.follow();
         desktop.with_widgets(|widgets| {
