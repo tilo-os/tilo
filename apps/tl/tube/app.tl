@@ -690,22 +690,28 @@ view video_page(v: Video) {
     let yt = root YouTube
     let channel = yt.channels.find(c -> c.key == v.channel_key)
     let left = watched_before(yt, v)?.progress ?? 0.0
-    std.page(v, canvas: true, fill: true) {
+    std.page(v, canvas: true) {
         header: {
             button(like(v)) as like
             button(watch_later(v)) as later
         }
-        // The player is the picture: 16:9, as wide as the page gives it, so the video's own
-        // shape is what the page shows and what follows it scrolls under the box. Until the
-        // service answered with where the bytes play from, the poster and Play stand in the
-        // same box.
+        // The player is the picture: 16:9, as wide as the page's column gives it, and the page
+        // scrolls under it. The page is not a filling canvas (`fill: true`), which lays its own
+        // parts out from the page gutter and drops the side gutters the reading column has;
+        // the ratio gives the box its height, so the canvas height `fill` was there for is not
+        // needed. Until the service answered with where the bytes play from, the poster and
+        // Play stand in the same box.
         layers(fill, aspect: 16.0 / 9.0) {
             if v.stream == "" {
                 if v.thumbnail != "" {
                     ui.Image(v.thumbnail, alt: v.title, fit: .cover, fill)
                 }
-                ui.Button("Play", icon: .play, role: .primary) {
-                    on press: progress(v, left)
+                // Play stands centred over the poster, not stretched across the box: the layer
+                // that fills the cell is the picture, and a control keeps its own size.
+                row(fill, align: .center, distribute: .center) {
+                    ui.Button("Play", icon: .play, role: .primary) {
+                        on press: progress(v, left)
+                    }
                 }
             } else {
                 ui.VideoPlayer(
@@ -723,58 +729,58 @@ view video_page(v: Video) {
             }
         }
         // What the video is: its name, who made it and what people did with it, under the
-        // player, scrolling within the room it has left so the picture keeps its place.
-        scroll(fill) {
-            stack(gap: .related) {
-                text(v.title, role: .title)
-                row(gap: .related, align: .center, wrap: true) {
-                    if let c = channel {
-                        ui.Avatar(name: c.name)
-                        ui.Button(c.name, icon: .users) {
-                            on press: open(c)
-                        }
-                        ui.Button(
-                            if subscribed(yt, c) { "Unsubscribe" } else { "Subscribe" },
-                            icon: if subscribed(yt, c) { .check } else { .bell },
-                        ) {
-                            on press: toggle_subscription(c)
-                        }
-                    } else {
-                        ui.Avatar(name: v.channel_name)
-                        text(v.channel_name, role: .subheading)
-                    }
-                    spacer()
-                    ui.Button(
-                        if v.liked { "Liked" } else { "Like" },
-                        icon: .thumbs_up,
-                        toggled: v.liked,
-                        count: v.likes,
-                    ) {
-                        on press: like(v)
+        // player. The page scrolls as a whole (std.page's own scroll), so this is a plain
+        // column: a `scroll` of its own would have no height to fill in a page that grows with
+        // what it holds.
+        stack(gap: .related) {
+            text(v.title, role: .title)
+            row(gap: .related, align: .center, wrap: true) {
+                if let c = channel {
+                    ui.Avatar(name: c.name)
+                    ui.Button(c.name, icon: .users) {
+                        on press: open(c)
                     }
                     ui.Button(
-                        "Watch later",
-                        icon: .bookmark,
-                        toggled: v.watch_later,
-                        icon_only: false,
+                        if subscribed(yt, c) { "Unsubscribe" } else { "Subscribe" },
+                        icon: if subscribed(yt, c) { .check } else { .bell },
                     ) {
-                        on press: watch_later(v)
+                        on press: toggle_subscription(c)
                     }
+                } else {
+                    ui.Avatar(name: v.channel_name)
+                    text(v.channel_name, role: .subheading)
                 }
-                ui.Facts {
-                    ui.Fact(views_text(v.views), icon: .eye)
-                    ui.Fact(v.published, icon: .calendar)
-                    if v.live {
-                        ui.Fact("Live", icon: .rss)
-                    }
-                    ui.Fact(clock(v.duration), icon: .clock)
+                spacer()
+                ui.Button(
+                    if v.liked { "Liked" } else { "Like" },
+                    icon: .thumbs_up,
+                    toggled: v.liked,
+                    count: v.likes,
+                ) {
+                    on press: like(v)
                 }
-                ui.Section("Description") {
-                    text(v.description, role: .reading)
+                ui.Button(
+                    "Watch later",
+                    icon: .bookmark,
+                    toggled: v.watch_later,
+                    icon_only: false,
+                ) {
+                    on press: watch_later(v)
                 }
-                if v.found_for != "" {
-                    ui.Chip("Found for {v.found_for}", icon: .search)
+            }
+            ui.Facts {
+                ui.Fact(views_text(v.views), icon: .eye)
+                ui.Fact(v.published, icon: .calendar)
+                if v.live {
+                    ui.Fact("Live", icon: .rss)
                 }
+                ui.Fact(clock(v.duration), icon: .clock)
+            }
+            ui.Section("Description") {
+                text(v.description, role: .reading)
+            }
+            if v.found_for != "" {
+                ui.Chip("Found for {v.found_for}", icon: .search)
             }
         }
     }

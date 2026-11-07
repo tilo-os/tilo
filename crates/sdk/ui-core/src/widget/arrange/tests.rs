@@ -976,6 +976,114 @@ fn an_aspect_layer_in_a_filling_page_keeps_its_width_and_ratio() {
     );
 }
 
+/// The video page's own shape: a canvas page holding a column whose first child is the 16:9
+/// player box, and, in that box, the poster filling the cell and Play centred over it. The box
+/// takes the page content's width and its 16:9 height; Play keeps its own size in the middle
+/// rather than stretching across the box into a tall strip, and the picture takes the box.
+#[test]
+fn the_video_box_is_the_page_contents_width_at_sixteen_by_nine() {
+    use crate::widget::Button;
+    for (width, height) in [(1000.0_f32, 744.0_f32), (320.0, 512.0)] {
+        let theme = Theme::dark();
+        let play = Row::row()
+            .fill_width()
+            .fill_height()
+            .align(Align::Center)
+            .distribute(Distribute::Center)
+            .push(Box::new(Button::new("play", "Play")));
+        let player = Layers::layers()
+            .with_id("player")
+            .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0))
+            .push_fit(Box::new(play), Fit::fill(1.0));
+        let column = Stack::stack()
+            .fill_width()
+            .push(Box::new(player))
+            .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
+        let mut page = Page::full().push(Box::new(column));
+        solve_in(
+            &mut page,
+            &theme,
+            width,
+            taffy::AvailableSpace::Definite(height),
+        );
+        let box_rect = crate::widget::find_test_id(&page, "player")
+            .expect("the player box is laid out")
+            .get_rect();
+        let play = crate::widget::find_test_id(&page, "play")
+            .expect("the play button is laid out")
+            .get_rect();
+        let view = subject_rect(&page);
+        assert!(
+            (box_rect.width() / box_rect.height() - 16.0 / 9.0).abs() < 0.02,
+            "at {width} the player box is {}x{}, not 16:9",
+            box_rect.width(),
+            box_rect.height()
+        );
+        assert!(
+            (view.width() - box_rect.width()).abs() < 1.0,
+            "at {width} the picture is {} wide in a {} box",
+            view.width(),
+            box_rect.width()
+        );
+        assert!(
+            play.width() < box_rect.width() * 0.9 && play.height() < box_rect.height() * 0.9,
+            "at {width} Play is {}x{} in a {}x{} box: it stretches across the picture",
+            play.width(),
+            play.height(),
+            box_rect.width(),
+            box_rect.height()
+        );
+        assert!(
+            (play.center().x - box_rect.center().x).abs() < 1.0,
+            "at {width} Play stands at {} in a box centred at {}",
+            play.center().x,
+            box_rect.center().x
+        );
+    }
+}
+
+/// A canvas page that does not fill keeps its reading gutter beside its content; a filling one
+/// lays its own parts out from the page gutter and drops the side gutters. The video page is a
+/// canvas because its player is wide, not because it fills, so it must keep them.
+#[test]
+fn a_canvas_page_that_does_not_fill_keeps_its_side_gutter() {
+    let theme = Theme::dark();
+    for filling in [false, true] {
+        let player = Layers::layers()
+            .with_id("gutter-box")
+            .push_fit(filling_view(), Fit::fill(1.0).aspect(16.0 / 9.0));
+        let column = Stack::stack()
+            .fill_width()
+            .push(Box::new(player))
+            .push(Box::new(Stack::stack().fill_width().push(boxed(80.0))));
+        let page = Page::full();
+        let page = if filling { page.filling() } else { page };
+        let mut page = page.push(Box::new(column));
+        solve_in(
+            &mut page,
+            &theme,
+            1000.0,
+            taffy::AvailableSpace::Definite(744.0),
+        );
+        let page_rect = page.get_rect();
+        let box_rect = crate::widget::find_test_id(&page, "gutter-box")
+            .expect("the box is laid out")
+            .get_rect();
+        let inset = box_rect.x0 - page_rect.x0;
+        if filling {
+            assert!(
+                inset < 1.0,
+                "a filling page lays its parts from its own edge: inset {inset}"
+            );
+        } else {
+            assert!(
+                inset > 1.0,
+                "a canvas page keeps its reading gutter, but the box stands at inset {inset}"
+            );
+        }
+    }
+}
+
 /// A layer that fills the cell at an aspect takes the cell's width and the height the ratio
 /// gives, not the whole cell's height: `layers(fill, aspect: 16/9)` is the video box.
 #[test]
