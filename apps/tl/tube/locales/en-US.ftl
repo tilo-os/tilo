@@ -78,13 +78,10 @@ d-5o5fpqgh = Found for
     .doc = The search that found it, empty for a video a feed or a page brought in.
 
 d-albed4jx-filter-liked = Liked
-    .doc = The person liked it.
 
 d-albed4jx-filter-watch_later = Watch later
-    .doc = The person kept it to watch later.
 
 d-albed4jx-filter-trending = Trending
-    .doc = The trending feed listed it.
 
 d-mmzhfe3o = Playlist
     .doc = A playlist: videos in an order its maker chose.

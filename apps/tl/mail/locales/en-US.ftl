@@ -93,12 +93,10 @@ d-xnczt27x-filter-inbox = Inbox
 d-xnczt27x-filter-snoozed = Snoozed
 
 d-xnczt27x-filter-labels = Labels
-    .doc = The labels people gave it (Gmail's and Fastmail's): the person's own, never the server's.
 
 d-xnczt27x-filter-flagged = Flagged
 
 d-xnczt27x-filter-muted = Muted
-    .doc = Muted: the conversation stays out of the inbox while new messages keep coming, as a
 
 d-xnczt27x-filter-sent = Sent
 
@@ -214,7 +212,6 @@ d-4ow5ydy5 = Hold
     .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
 
 d-su4h67i5-filter-hold = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the
 
 d-ejo2352x = Signature
     .doc = Sets what the account signs its messages with, or clears it: the person's own, per account.

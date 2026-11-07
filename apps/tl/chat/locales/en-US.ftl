@@ -68,7 +68,6 @@ d-dh6346no = Sent view
     .doc = A view the message sends, as its sender had it among their views: its tilolang definition, which a reader adds to their own views (Views' `add`), its author whoever sent the message.
 
 d-hk2t6bvk-filter-pinned = Pinned
-    .doc = Whether it is pinned to its channel, which search finds.
 
 d-6qpql3pg = Thread
     .doc = A side conversation branched off one message.
@@ -102,7 +101,6 @@ d-y65whtrn = Messages
 d-3p73kpuw = Threads
 
 d-5nkbpj6q-filter-person = Person
-    .doc = The one person it is with, for a direct message.
 
 d-yx5sbebu = Part
     .doc = A piece of a message from before messages were rich text: its text, or a block's source.

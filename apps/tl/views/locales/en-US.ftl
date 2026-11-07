@@ -28,10 +28,8 @@ d-bckibjl6 = Shows
     .doc = The type of the one resource it takes (`so.tilo.lang.mail.Thread`), as the check found it: what it can be the default view of.
 
 d-bqgmjsyo-filter-kept = Kept
-    .doc = Whether the person kept it.
 
 d-bqgmjsyo-filter-author = Author
-    .doc = Who wrote it, as the host recorded them: the agent task that answered with it, the
 
 d-uibilwji = Default
     .doc = How the person shows a type on one kind of device: through one of their own views.
