@@ -355,6 +355,12 @@ impl WorkspaceMenu {
         self.menu.is_open()
     }
 
+    /// Where the panel stands while it is open: as big as its rows, which no
+    /// anchor says, so a press that misses it can close it.
+    pub fn panel_rect(&self) -> Option<Rect> {
+        self.menu.is_open().then(|| self.menu.get_rect())
+    }
+
     /// The labels of the rows shown, in order (separators as `None`).
     pub fn labels(&self) -> Vec<Option<String>> {
         self.menu

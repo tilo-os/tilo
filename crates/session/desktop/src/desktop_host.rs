@@ -979,6 +979,13 @@ impl DesktopChrome {
     /// key, so the stack's answer — which of them holds the keyboard, what a
     /// press outside one closes — is what the chrome shows.
     fn publish_overlays(&mut self) {
+        // Where the chrome's own menus paint themselves, for the stack to
+        // judge a press that misses them: a press on the desk reaches the
+        // desk, not the chrome over it.
+        self.overlays
+            .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
+        self.overlays
+            .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
         for (slot, open) in [
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
@@ -987,6 +994,12 @@ impl DesktopChrome {
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
         ] {
+            // A press outside took it down, and that press is still being
+            // delivered: the widget follows the stack down below, rather than
+            // the stack taking the widget's word for it and raising it again.
+            if !self.overlays.is_open(slot) && self.overlays.dismissed_recently(slot) {
+                continue;
+            }
             if open == self.overlays.is_open(slot) {
                 continue;
             }
