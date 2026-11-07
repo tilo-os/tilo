@@ -173,7 +173,7 @@ fn a_change_to_a_resource_in_a_chunk_reaches_only_that_chunk() {
 }
 
 /// A board with three collections of its own: a card may be in any of them.
-const BOARD: &str = r#"app so.tilo.board "Board"
+pub(crate) const BOARD: &str = r#"app so.tilo.board "Board"
 
 type Card {
   text: Text merge text
@@ -183,6 +183,7 @@ type Board {
   left: Collection<Card>
   right: Collection<Card>
   other: Collection<Card>
+  ticks: Int merge counter
 }
 
 action add(l: Board, text: Text) -> Card { l.left.insert(Card(text: text)) }
@@ -192,6 +193,11 @@ action retitle(c: Card, text: Text) { c.text = text }
 action move_right(l: Board, c: Card) { l.right.move(c, to: l.right.len()) }
 
 action move_other(l: Board, c: Card) { l.other.move(c, to: l.other.len()) }
+
+action boom(l: Board) {
+  l.left.insert(Card(text: "gone"))
+  l.ticks += 1 / (l.ticks - l.ticks)
+}
 
 root Board
 
@@ -206,25 +212,25 @@ view main(b: Board) {
 }
 "#;
 
-const BOARD_APP: &str = "so.tilo.board";
+pub(crate) const BOARD_APP: &str = "so.tilo.board";
 
 /// The documents of a workspace, one per chunk: a replica applies each edit of an action to the
 /// chunk it is addressed to, as the door does, and commits each document its own change.
 #[derive(Clone)]
-struct Docs(BTreeMap<ChunkNo, AutoCommit>);
+pub(crate) struct Docs(BTreeMap<ChunkNo, AutoCommit>);
 
 impl Docs {
-    fn of(record: AutoCommit) -> Self {
+    pub(crate) fn of(record: AutoCommit) -> Self {
         Self(BTreeMap::from([(chunk::FIRST, record)]))
     }
 
-    fn doc(&mut self, chunk: ChunkNo) -> &mut AutoCommit {
+    pub(crate) fn doc(&mut self, chunk: ChunkNo) -> &mut AutoCommit {
         self.0.entry(chunk).or_default()
     }
 
     /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
     /// the record's manifest places its resource.
-    fn apply(&mut self, action: &DynAction) {
+    pub(crate) fn apply(&mut self, action: &DynAction) {
         for edit in &action.edits {
             let chunk = edit.chunk().unwrap_or_else(|| {
                 chunk::Placement::read(&self.0[&chunk::FIRST]).chunk(edit.resource())
@@ -245,7 +251,7 @@ impl Docs {
     }
 
     /// Send every document to the store, the record first.
-    fn sync(&mut self, host: &Host) {
+    pub(crate) fn sync(&mut self, host: &Host) {
         host.sync_from(&self.0[&chunk::FIRST]);
         for (number, doc) in &mut self.0 {
             if *number != chunk::FIRST && !doc.get_changes(&[]).is_empty() {
@@ -265,7 +271,7 @@ impl Docs {
     }
 
     /// The documents as a set of chunks, to read a record's items across them.
-    fn chunks(&self) -> Chunks {
+    pub(crate) fn chunks(&self) -> Chunks {
         let mut chunks = Chunks::default();
         for (number, doc) in &self.0 {
             chunks.insert(*number, doc.clone());
@@ -291,7 +297,7 @@ fn merge(into: &mut Docs, other: &Docs) {
 }
 
 /// The board of [`BOARD`], its root made in the record's own chunk, and the store over it.
-fn board() -> (Host, Docs, Meta, String, String) {
+pub(crate) fn board() -> (Host, Docs, Meta, String, String) {
     // Compiled once for its ids and metadata; the workspace itself is built document by
     // document, so that a replica forking it starts from a root the record holds.
     let (replica, packages) = Replica::new("ada", AutoCommit::new(), &[(BOARD, "")]);
@@ -343,7 +349,13 @@ fn counts(host: &Host) -> BTreeMap<ChunkNo, (usize, usize)> {
 }
 
 /// The action `name` of the board, invoked on `subject` of the type `ty`, as the door plans it.
-fn act(host: &Host, meta: &Meta, (ty, subject): (&str, &str), name: &str, args: Json) -> DynAction {
+pub(crate) fn act(
+    host: &Host,
+    meta: &Meta,
+    (ty, subject): (&str, &str),
+    name: &str,
+    args: Json,
+) -> DynAction {
     let action = meta
         .actions
         .iter()
@@ -366,7 +378,7 @@ fn act(host: &Host, meta: &Meta, (ty, subject): (&str, &str), name: &str, args: 
 }
 
 /// The id of the item an action inserted.
-fn made(action: &DynAction) -> String {
+pub(crate) fn made(action: &DynAction) -> String {
     action
         .edits
         .iter()
@@ -378,7 +390,7 @@ fn made(action: &DynAction) -> String {
 }
 
 /// The ids the collection `field` of the board holds, in order, as the store reads it whole.
-fn left(host: &Host, root: &str, field: &str) -> Vec<String> {
+pub(crate) fn left(host: &Host, root: &str, field: &str) -> Vec<String> {
     match host.store().record(root).unwrap().get(field) {
         Some(DynValue::Collection(items)) => {
             items.iter().map(|(id, _)| id.as_str().to_owned()).collect()
@@ -388,7 +400,7 @@ fn left(host: &Host, root: &str, field: &str) -> Vec<String> {
 }
 
 /// How many items the chunk `number` holds of the record `root`.
-fn held_in(chunks: &Chunks, number: ChunkNo, root: &str, schema: &TypeSchema) -> usize {
+pub(crate) fn held_in(chunks: &Chunks, number: ChunkNo, root: &str, schema: &TypeSchema) -> usize {
     let Some(doc) = chunks.mirror(number) else {
         return 0;
     };
@@ -412,7 +424,7 @@ fn copy_in(
 }
 
 /// Fill the board's left collection with `n` cards, in order: the ids it made.
-fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
+pub(crate) fn fill(host: &Host, docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> {
     (0..n)
         .map(|i| {
             let action = act(

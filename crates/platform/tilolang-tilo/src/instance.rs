@@ -1873,6 +1873,34 @@ impl Instance {
 
     // ----- frames --------------------------------------------------------------------------
 
+    /// The first half of a frame over the record's chunks: [`Self::sync`] of the record (chunk
+    /// [`crate::chunk::FIRST`]), and each chunk above it this replica holds into the store,
+    /// which reads and writes there the resources the record's manifest places in it.
+    pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
+        let above = || {
+            chunks
+                .docs()
+                .filter(|(chunk, _)| *chunk != crate::chunk::FIRST)
+        };
+        // The chunks go into the store before the record's frame derives over them, and again
+        // after it, when the frame is the one that opened the store.
+        let mut moved = false;
+        if let Some(host) = self.host.borrow().as_ref().cloned() {
+            for (chunk, doc) in above() {
+                moved |= host.sync_chunk(chunk, doc);
+            }
+        }
+        self.sync(chunks.first());
+        if let Some(host) = self.host.borrow().as_ref().cloned() {
+            for (chunk, doc) in above() {
+                moved |= host.sync_chunk(chunk, doc);
+            }
+        }
+        if moved {
+            self.moved = true;
+        }
+    }
+
     /// The first half of a frame: bring the runtime up to date with the workspace record `record`
     /// (`None` while the instance opens over the workspace's indexes), open the root once the
     /// indexes are read, stage a scenario, and send the window what changed.

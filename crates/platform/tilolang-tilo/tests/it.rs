@@ -16,6 +16,8 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
+#[cfg(feature = "record")]
+mod chunk_records;
 mod chunks;
 mod collab;
 mod columns;
