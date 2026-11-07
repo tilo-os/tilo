@@ -122,9 +122,6 @@ fn card(
     } else if let Some(person) = issue.assigned_person() {
         facts = facts.push(Box::new(Badge::text(people.name(person))));
     }
-    if let Some(run) = &issue.run {
-        facts = facts.push(Box::new(crate::task_chip::chip(cx, id, run)));
-    }
     let (closed, total) = tracker.progress(id);
     if total > 0 {
         facts = facts.push(Box::new(

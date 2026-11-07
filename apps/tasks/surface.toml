@@ -11,11 +11,6 @@ fields = [
   { path = "issues.*.body", type = "rich_text", ops = "sha256:10bf507639fdd4f3" },
   { path = "issues.*.status", type = { named = "Status" } },
   { path = "issues.*.assignee", type = { option = "text" }, readonly = true },
-  { path = "issues.*.model", type = { option = { named = "ModelChoice" } }, readonly = true, stored = "record" },
-  { path = "issues.*.model.profile", type = "text" },
-  { path = "issues.*.model.model", type = "text" },
-  { path = "issues.*.subject", type = { option = "any" }, readonly = true },
-  { path = "issues.*.quick", type = "bool", readonly = true },
   { path = "issues.*.labels", type = { set = "text" } },
   { path = "issues.*.parent", type = { option = "text" }, readonly = true },
   { path = "issues.*.links", type = { collection = { named = "Link" } }, stored = "collection" },
@@ -31,8 +26,6 @@ fields = [
   { path = "issues.*.area.label", type = "text" },
   { path = "issues.*.due_ms", type = { option = "int" } },
   { path = "issues.*.priority", type = { option = "int" } },
-  { path = "issues.*.cost_budget", type = { option = "int" }, readonly = true },
-  { path = "issues.*.spend", type = { option = "int" }, readonly = true },
   { path = "issues.*.comments", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
   { path = "issues.*.comments.*.author", type = "text", readonly = true },
   { path = "issues.*.comments.*.by_agent", type = "bool", readonly = true },
@@ -45,53 +38,6 @@ fields = [
   { path = "issues.*.comments.*.incorporated", type = "bool", readonly = true },
   { path = "issues.*.author", type = "text", readonly = true },
   { path = "issues.*.created_ms", type = "int", readonly = true },
-  { path = "issues.*.budget", type = { option = { named = "Budget" } }, readonly = true, stored = "record" },
-  { path = "issues.*.budget.turn_ms", type = "int" },
-  { path = "issues.*.budget.total_ms", type = "int" },
-  { path = "issues.*.budget.max_turns", type = { option = "int" } },
-  { path = "issues.*.budget.max_tokens", type = { option = "int" } },
-  { path = "issues.*.budget.max_priced_calls", type = { option = "int" } },
-  { path = "issues.*.budget.max_cost_micros", type = { option = "int" } },
-  { path = "issues.*.budget.currency", type = "text" },
-  { path = "issues.*.run", type = { option = { named = "Run" } }, readonly = true, stored = "record" },
-  { path = "issues.*.run.epoch", type = "int" },
-  { path = "issues.*.run.agent", type = "text" },
-  { path = "issues.*.run.starter", type = "text" },
-  { path = "issues.*.run.delegation", type = { option = "text" } },
-  { path = "issues.*.run.paused", type = { option = { named = "PausedRun" } }, stored = "record" },
-  { path = "issues.*.run.paused.held", type = "int" },
-  { path = "issues.*.run.paused.through", type = "int" },
-  { path = "issues.*.run.paused.at_ms", type = "int" },
-  { path = "issues.*.run.paused.reason", type = "text" },
-  { path = "issues.*.run.phase", type = { named = "RunPhase" } },
-  { path = "issues.*.run.model", type = { option = { named = "ModelChoice" } }, stored = "record" },
-  { path = "issues.*.run.model.profile", type = "text" },
-  { path = "issues.*.run.model.model", type = "text" },
-  { path = "issues.*.run.device", type = { option = "text" } },
-  { path = "issues.*.run.started_ms", type = "int" },
-  { path = "issues.*.run.updated_ms", type = "int" },
-  { path = "issues.*.run.spend", type = { option = { named = "Spend" } }, stored = "record" },
-  { path = "issues.*.run.spend.steps", type = { list = { named = "StepSpend" } } },
-  { path = "issues.*.run.spend.steps_taken", type = "int" },
-  { path = "issues.*.run.spend.input_tokens", type = "int" },
-  { path = "issues.*.run.spend.output_tokens", type = "int" },
-  { path = "issues.*.run.spend.priced_calls", type = "int" },
-  { path = "issues.*.run.spend.cost_micros", type = "int" },
-  { path = "issues.*.run.spend.currency", type = "text" },
-  { path = "issues.*.run.spend.held_tokens", type = "int" },
-  { path = "issues.*.run.spend.held_cost_micros", type = "int" },
-  { path = "issues.*.run.confirmation", type = { option = { named = "Confirmation" } }, stored = "record" },
-  { path = "issues.*.run.confirmation.id", type = "text" },
-  { path = "issues.*.run.confirmation.app", type = "text" },
-  { path = "issues.*.run.confirmation.action", type = "text" },
-  { path = "issues.*.run.confirmation.resource", type = "text" },
-  { path = "issues.*.run.confirmation.arguments_digest", type = "text" },
-  { path = "issues.*.run.confirmation.draft", type = "any" },
-  { path = "issues.*.run.confirmation.preview", type = { option = "any" } },
-  { path = "issues.*.run.confirmation.state", type = { named = "ConfirmationState" } },
-  { path = "issues.*.run.confirmation.edits", type = "any" },
-  { path = "issues.*.run.confirmation.reason", type = "text" },
-  { path = "issues.*.run.confirmation.answered_by", type = "text" },
   { path = "areas", type = { collection = { named = "TrackerArea" } }, stored = "collection", unit = true },
   { path = "areas.*.id", type = "text", readonly = true },
   { path = "areas.*.name", type = "text", label = true },
@@ -180,31 +126,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "choose-model"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "model", type = { option = { named = "ModelChoice" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
-]
-
-[[resources.verbs]]
-id = "ask-agent"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "id", type = "text", required = true, schema = { type = "string" } },
-  { name = "title", type = "text", required = true, schema = { type = "string" } },
-  { name = "body", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-  { name = "agent", type = "text", required = true, schema = { type = "string" } },
-  { name = "model", required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { model = { type = "string" }, profile = { type = "string" } }, required = ["profile", "model"] } },
-  { name = "subject", required = false, schema = {} },
-  { name = "quick", type = "bool", required = false, schema = { type = "boolean" } },
-  { name = "chat", type = "bool", required = false, schema = { type = "boolean" } },
-  { name = "delegation", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-]
-
-[[resources.verbs]]
 id = "add-label"
 kind = "undoable"
 writes = ["record", "issues.*"]
@@ -265,77 +186,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "approve-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "tell-agent"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "pause-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "pause-run-for-budget"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "reason", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "resume-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "stop-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "end-idle-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "after_ms", type = "int", required = true, schema = { type = "integer" } },
-]
-
-[[resources.verbs]]
-id = "set-execution-budget"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "turn_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
-  { name = "total_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
-  { name = "limits", type = { option = { named = "SpendLimits" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { currency = { type = "string" }, max_cost_micros = { type = ["integer", "null"], minimum = 0 }, max_priced_calls = { type = ["integer", "null"], minimum = 0 }, max_tokens = { type = ["integer", "null"], minimum = 0 } }, required = ["currency"] } },
-  { name = "max_turns", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
-]
-
-[[resources.verbs]]
 id = "plan"
 kind = "undoable"
 writes = ["record", "issues.*"]
@@ -343,131 +193,7 @@ params = [
   { name = "issue", type = "text", required = true, schema = { type = "string" } },
   { name = "area", type = { option = { named = "Area" } }, required = false, schema = { type = ["object", "null"], additionalProperties = false, properties = { app = { type = "string" }, kind = { type = "string" }, label = { type = "string" }, resource = { type = "string" } }, required = ["resource", "app", "kind", "label"] } },
   { name = "priority", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], maximum = 255, minimum = 0 } },
-  { name = "cost_budget", type = { option = "int" }, required = false, schema = { type = ["integer", "null"], minimum = 0 } },
   { name = "due_ms", type = { option = "int" }, required = false, schema = { type = ["integer", "null"] } },
-]
-
-[[resources.verbs]]
-id = "send-message"
-field = "comments"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "text", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "report-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "phase", type = { named = "RunPhase" }, required = true, schema = { oneOf = [{ type = "string", const = "approved" }, { type = "string", const = "accepted" }, { type = "string", const = "planning" }, { type = "string", const = "executing" }, { type = "string", const = "waiting" }, { type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
-  { name = "text", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "incorporate"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "through", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "ask-confirmation"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "question", type = { named = "Question" }, required = true, schema = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, app = { type = "string" }, arguments_digest = { type = "string" }, draft = {}, id = { type = "string" }, preview = {}, resource = { type = "string" } }, required = ["id", "app", "action", "resource", "arguments_digest", "draft"] } },
-]
-
-[[resources.verbs]]
-id = "answer-confirmation"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "confirm", type = "bool", required = true, schema = { type = "boolean" } },
-  { name = "edits", type = { option = "any" }, required = false, schema = {} },
-  { name = "reason", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
-]
-
-[[resources.verbs]]
-id = "settle-confirmation"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "id", type = "text", required = true, schema = { type = "string" } },
-]
-
-[[resources.verbs]]
-id = "finish-run"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "outcome", type = { named = "RunOutcome" }, required = true, schema = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "failed" }, { type = "string", const = "stopped" }] } },
-  { name = "summary", type = { option = "text" }, required = false, schema = { type = ["string", "null"], minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "run-on-device"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "device", type = "text", required = true, schema = { type = "string", minLength = 1, pattern = "\\S" } },
-]
-
-[[resources.verbs]]
-id = "hold-spend"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "tokens", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-  { name = "cost_micros", type = "int", required = true, schema = { type = "integer", minimum = 0 } },
-]
-
-[[resources.verbs]]
-id = "settle-spend"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "step", type = { named = "StepSpend" }, required = true, schema = { type = "object", additionalProperties = false, properties = { cost_micros = { type = "integer", minimum = 0 }, currency = { type = "string" }, device = { type = "string" }, input_tokens = { type = "integer", minimum = 0 }, model = { type = "string" }, output_tokens = { type = "integer", minimum = 0 }, priced_calls = { type = "integer", minimum = 0 }, step = { type = "integer", minimum = 0 } }, required = ["step", "model", "device", "input_tokens", "output_tokens", "priced_calls", "cost_micros", "currency"] } },
-]
-
-[[resources.verbs]]
-id = "record-read"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "resource", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
-]
-
-[[resources.verbs]]
-id = "record-step"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "step", type = { named = "ProgramStep" }, required = true, schema = { type = "object", additionalProperties = false, properties = { answer = { type = "array", items = { type = "string" } }, changes = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, resource = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } }, required = ["resource", "action"] } }, outcome = { oneOf = [{ type = "string", const = "done" }, { type = "string", const = "rejected" }, { type = "string", const = "preview" }, { type = "string", const = "asked" }, { type = "string", const = "failed" }] }, planned = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, resource = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } }, required = ["resource", "action"] } }, previews = { type = "array", items = { type = "object", additionalProperties = false, properties = { action = { type = "string" }, invocation = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] }, summary = { type = "string" } }, required = ["invocation", "action"] } }, program = { type = "string" }, refs = { type = "array", items = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } } }, required = ["program", "outcome"] } },
-]
-
-[[resources.verbs]]
-id = "record-answer"
-kind = "undoable"
-writes = ["record", "issues.*"]
-params = [
-  { name = "issue", type = "text", required = true, schema = { type = "string" } },
-  { name = "view", required = true, schema = { type = "object", properties = { app = { type = "string", minLength = 1 }, id = { type = "string", minLength = 1 }, kind = { type = "string", minLength = 1 }, label = { type = "string" }, record = { type = "string", minLength = 1 } }, required = ["app", "kind", "id", "label"] } },
 ]
 
 [[resources.verbs]]
@@ -485,42 +211,6 @@ fields = [
   { name = "app", type = "text" },
   { name = "kind", type = "text" },
   { name = "label", type = "text" },
-]
-
-[[resources.types]]
-name = "Budget"
-fields = [
-  { name = "turn_ms", type = "int" },
-  { name = "total_ms", type = "int" },
-  { name = "max_turns", type = { option = "int" } },
-  { name = "max_tokens", type = { option = "int" } },
-  { name = "max_priced_calls", type = { option = "int" } },
-  { name = "max_cost_micros", type = { option = "int" } },
-  { name = "currency", type = "text" },
-]
-
-[[resources.types]]
-name = "Confirmation"
-fields = [
-  { name = "id", type = "text" },
-  { name = "app", type = "text" },
-  { name = "action", type = "text" },
-  { name = "resource", type = "text" },
-  { name = "arguments_digest", type = "text" },
-  { name = "draft", type = "any" },
-  { name = "preview", type = { option = "any" } },
-  { name = "state", type = { named = "ConfirmationState" } },
-  { name = "edits", type = "any" },
-  { name = "reason", type = "text" },
-  { name = "answered_by", type = "text" },
-]
-
-[[resources.types]]
-name = "ConfirmationState"
-cases = [
-  { name = "waiting" },
-  { name = "confirmed" },
-  { name = "declined" },
 ]
 
 [[resources.types]]
@@ -553,22 +243,15 @@ fields = [
   { name = "body", type = "rich_text" },
   { name = "status", type = { named = "Status" } },
   { name = "assignee", type = { option = "text" } },
-  { name = "model", type = { option = { named = "ModelChoice" } } },
-  { name = "subject", type = { option = "any" } },
-  { name = "quick", type = "bool" },
   { name = "labels", type = { set = "text" } },
   { name = "parent", type = { option = "text" } },
   { name = "links", type = { collection = { named = "Link" } } },
   { name = "area", type = { option = { named = "Area" } } },
   { name = "due_ms", type = { option = "int" } },
   { name = "priority", type = { option = "int" } },
-  { name = "cost_budget", type = { option = "int" } },
-  { name = "spend", type = { option = "int" } },
   { name = "comments", type = { collection = { named = "Message" } } },
   { name = "author", type = "text" },
   { name = "created_ms", type = "int" },
-  { name = "budget", type = { option = { named = "Budget" } } },
-  { name = "run", type = { option = { named = "Run" } } },
 ]
 
 [[resources.types]]
@@ -614,111 +297,10 @@ cases = [
 ]
 
 [[resources.types]]
-name = "ModelChoice"
-fields = [
-  { name = "profile", type = "text" },
-  { name = "model", type = "text" },
-]
-
-[[resources.types]]
-name = "PausedRun"
-fields = [
-  { name = "held", type = "int" },
-  { name = "through", type = "int" },
-  { name = "at_ms", type = "int" },
-  { name = "reason", type = "text" },
-]
-
-[[resources.types]]
 name = "Person"
 fields = [
   { name = "name", type = "text" },
   { name = "role", type = "text" },
-]
-
-[[resources.types]]
-name = "ProgramStep"
-fields = [
-  { name = "program", type = "text" },
-  { name = "outcome", type = { named = "StepOutcome" } },
-  { name = "answer", type = { list = "text" } },
-  { name = "refs", type = { list = "any" } },
-  { name = "changes", type = { list = { named = "StepChange" } } },
-  { name = "previews", type = { list = { named = "StepPreview" } } },
-  { name = "planned", type = { list = { named = "StepChange" } } },
-]
-
-[[resources.types]]
-name = "Question"
-fields = [
-  { name = "id", type = "text" },
-  { name = "app", type = "text" },
-  { name = "action", type = "text" },
-  { name = "resource", type = "text" },
-  { name = "arguments_digest", type = "text" },
-  { name = "draft", type = "any" },
-  { name = "preview", type = { option = "any" } },
-]
-
-[[resources.types]]
-name = "Run"
-fields = [
-  { name = "epoch", type = "int" },
-  { name = "agent", type = "text" },
-  { name = "starter", type = "text" },
-  { name = "delegation", type = { option = "text" } },
-  { name = "paused", type = { option = { named = "PausedRun" } } },
-  { name = "phase", type = { named = "RunPhase" } },
-  { name = "model", type = { option = { named = "ModelChoice" } } },
-  { name = "device", type = { option = "text" } },
-  { name = "started_ms", type = "int" },
-  { name = "updated_ms", type = "int" },
-  { name = "spend", type = { option = { named = "Spend" } } },
-  { name = "confirmation", type = { option = { named = "Confirmation" } } },
-]
-
-[[resources.types]]
-name = "RunOutcome"
-cases = [
-  { name = "done" },
-  { name = "failed" },
-  { name = "stopped" },
-]
-
-[[resources.types]]
-name = "RunPhase"
-cases = [
-  { name = "approved" },
-  { name = "accepted" },
-  { name = "planning" },
-  { name = "executing" },
-  { name = "waiting" },
-  { name = "done" },
-  { name = "failed" },
-  { name = "stopped" },
-]
-
-[[resources.types]]
-name = "Spend"
-fields = [
-  { name = "steps", type = { list = { named = "StepSpend" } } },
-  { name = "steps_taken", type = "int" },
-  { name = "input_tokens", type = "int" },
-  { name = "output_tokens", type = "int" },
-  { name = "priced_calls", type = "int" },
-  { name = "cost_micros", type = "int" },
-  { name = "currency", type = "text" },
-  { name = "held_tokens", type = "int" },
-  { name = "held_cost_micros", type = "int" },
-]
-
-[[resources.types]]
-name = "SpendLimits"
-fields = [
-  { name = "max_tokens", type = { option = "int" } },
-  { name = "max_priced_calls", type = { option = "int" } },
-  { name = "max_cost_micros", type = { option = "int" } },
-  { name = "currency", type = "text" },
 ]
 
 [[resources.types]]
@@ -733,74 +315,11 @@ cases = [
 ]
 
 [[resources.types]]
-name = "StepChange"
-fields = [
-  { name = "resource", type = "any" },
-  { name = "action", type = "text" },
-]
-
-[[resources.types]]
-name = "StepOutcome"
-cases = [
-  { name = "done" },
-  { name = "rejected" },
-  { name = "preview" },
-  { name = "asked" },
-  { name = "failed" },
-]
-
-[[resources.types]]
-name = "StepPreview"
-fields = [
-  { name = "invocation", type = "any" },
-  { name = "action", type = "text" },
-  { name = "summary", type = "text" },
-]
-
-[[resources.types]]
-name = "StepSpend"
-fields = [
-  { name = "step", type = "int" },
-  { name = "model", type = "text" },
-  { name = "device", type = "text" },
-  { name = "input_tokens", type = "int" },
-  { name = "output_tokens", type = "int" },
-  { name = "priced_calls", type = "int" },
-  { name = "cost_micros", type = "int" },
-  { name = "currency", type = "text" },
-]
-
-[[resources.types]]
 name = "TrackerArea"
 fields = [
   { name = "id", type = "text" },
   { name = "name", type = "text" },
   { name = "kind", type = { named = "Kind" } },
   { name = "people", type = { collection = { named = "Person" } } },
-]
-
-[[resources]]
-kind = "settings.offered-models"
-label = "Offered models"
-version = 1
-person = true
-fields = [
-  { path = "models", type = { list = "any" } },
-]
-
-[[resources.verbs]]
-id = "offer"
-kind = "undoable"
-params = [
-  { name = "models", type = { list = { named = "OfferedModel" } }, required = true, schema = { type = "array", items = { type = "object", additionalProperties = false, properties = { label = { type = "string" }, model = { type = "string" }, profile = { type = "string" }, provider = { type = "string" } }, required = ["profile", "provider", "model", "label"] } } },
-]
-
-[[resources.types]]
-name = "OfferedModel"
-fields = [
-  { name = "profile", type = "text" },
-  { name = "provider", type = "text" },
-  { name = "model", type = "text" },
-  { name = "label", type = "text" },
 ]
 
