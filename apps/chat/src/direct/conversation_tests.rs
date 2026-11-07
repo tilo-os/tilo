@@ -320,7 +320,7 @@ fn a_box_send_opens_its_conversation_where_the_box_stood() {
         .expect("Bob's box sends");
 
     let request = bob_window
-        .with_chat(|chat| ui::widget::FloatingSurfaceProvider::take_floating_surface_request(chat))
+        .with_chat(ui::widget::FloatingSurfaceProvider::take_floating_surface_request)
         .flatten()
         .expect("the send presents the conversation as a card");
     assert_eq!(
