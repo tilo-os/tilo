@@ -5,7 +5,7 @@
 // "Alle Notizen" beside the app's "Notiz" even where nobody installed a pack. They are shared
 // rather than a window's own, so they follow its language and never choose it (see
 // `ui::i18n::WIDGET_CATALOG`).
-static CATALOG: ui::i18n::EmbeddedCatalog = {
+pub static CATALOG: ui::i18n::EmbeddedCatalog = {
     let catalog = ui::i18n::EmbeddedCatalog::new(
         "en-US",
         &[
