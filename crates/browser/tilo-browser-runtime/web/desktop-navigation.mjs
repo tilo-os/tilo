@@ -48,3 +48,19 @@ export function createDesktopNavigation({snapshot,revision,dispatch,active}) {
   pendingCloses.clear();
  }};
 }
+
+/** The verbs a page, an agent or a script names, built where their arguments
+ * are known: each is its resource's effect id and the arguments it takes, the
+ * same encoding [`createDesktopNavigation`] carries. */
+export const verb={
+ /** Open an app in a new window of the shown strip. */
+ openApp:app=>({effect:'open-app',args:{app}}),
+ /** Bring the window holding the tab at `route` to the front. */
+ focus:route=>({effect:'focus',args:{tab:route.tab}}),
+ /** Close the tab at `route`, and its window when it is the window's last. */
+ closeTab:route=>({effect:'close-tab',args:{tab:route.tab}}),
+ /** Show a workspace's activity, `view` being `catch-up`, `explore` or `replay`. */
+ activity:(workspace,view)=>({effect:'activity',args:{workspace,view}}),
+ /** Close the workspace's activity surface. */
+ closeActivity:workspace=>({effect:'close-activity',args:{workspace}}),
+};

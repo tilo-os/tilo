@@ -27,6 +27,7 @@ import {tmpdir} from 'node:os';
 import {join, resolve} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {launch, serve, sleep} from '../../../../tools/web/chrome.mjs';
+import {verb} from '../../tilo-browser-runtime/web/desktop-navigation.mjs';
 
 const args = process.argv.slice(2);
 const option = (name, fallback) => { const i = args.indexOf(name); return i < 0 ? fallback : args[i + 1]; };
@@ -105,12 +106,12 @@ for (let i = 0; ; i++) {
   if (await evaluate('Boolean(globalThis.tiloMount?.navigation)').catch(() => false)) break;
   assert.ok(i < 90, `the desktop never presented: ${await evaluate("document.getElementById('status')?.textContent")}`);
 }
-const command = body => evaluate(`(async()=>{const s=tiloMount.navigation.getSnapshot();await tiloMount.navigation.dispatch({...${JSON.stringify(body)},generation:s.generation});return true;})()`);
+const command = action => evaluate(`(async()=>{await tiloMount.navigation.dispatch(${JSON.stringify(action)});return true;})()`);
 const available = (await evaluate('tiloMount.navigation.getSnapshot()')).applications.map(a => a.id);
 const opened = [];
 for (const app of APPS) {
   if (!available.includes(app)) continue;
-  await command({kind: 'launch', app});
+  await command(verb.openApp(app));
   opened.push(app);
   await sleep(1200);
 }

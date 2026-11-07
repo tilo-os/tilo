@@ -76,6 +76,7 @@ import {createHash} from 'node:crypto';
 import {existsSync, readFileSync, writeFileSync} from 'node:fs';
 import os from 'node:os';
 import {join, resolve} from 'node:path';
+import {verb} from '../../crates/browser/tilo-browser-runtime/web/desktop-navigation.mjs';
 import {launch, serve, sleep} from '../../tools/web/chrome.mjs';
 
 export const GOALS = {
@@ -355,7 +356,7 @@ const openExpression = (app, files, timeoutMs) => `(async () => {
   const loaded = () => files.every(file => file in globalThis.__tiloModules);
   const presented = presentedAfter(frames, opened);
   const start = performance.now();
-  await nav.dispatch({kind: 'launch', generation: snapshot.generation, app: ${JSON.stringify(app)}});
+  await nav.dispatch(${JSON.stringify(verb.openApp(app))});
   const end = await presented;
   // The frame the app's own code first drew: presented after its modules.
   let ready = end;
@@ -381,11 +382,11 @@ export function appModules(split, app) {
 
 const activateExpression = (route, timeoutMs) => `(async () => {
   ${presentedHelper(timeoutMs)}
-  const nav = tiloMount.navigation, snapshot = nav.getSnapshot(), route = ${JSON.stringify(route)};
+  const nav = tiloMount.navigation, route = ${JSON.stringify(route)};
   const frames = Number(host.dataset.frames);
   const presented = presentedAfter(frames, () => nav.getSnapshot().active?.tab === route.tab);
   const start = performance.now();
-  await nav.dispatch({kind: 'select', generation: snapshot.generation, route});
+  await nav.dispatch(${JSON.stringify(verb.focus(route))});
   return {ms: (await presented) - start};
 })()`;
 
@@ -588,8 +589,7 @@ async function gpuDiagnostics(browser) {
 
 /** The demo workload on the strip of `windows`, after one unmeasured pass. */
 async function measureDemo(page, windows, options, index) {
-  await page.evaluate(`(async () => { const s = tiloMount.navigation.getSnapshot();
-    await tiloMount.navigation.dispatch({kind: 'select', generation: s.generation, route: ${JSON.stringify(windows[0].route)}}); return true; })()`);
+  await page.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.focus(windows[0].route))})`);
   await sleep(1000);
   // Warm up with the same workload, unmeasured: the first pan frames over
   // each window compile the renderer's pipelines for it. On a GPU that is
@@ -623,8 +623,7 @@ const TYPING_TEXT = 'the quick brown fox jumps over the lazy dog';
 // way a person reaches it: New note, then a press in the note's body.
 async function measureTyping(page, windows, options, index) {
   const notes = windows.find(entry => entry.app === 'so.tilo.notes') ?? windows[0];
-  await page.evaluate(`(async () => { const s = tiloMount.navigation.getSnapshot();
-    await tiloMount.navigation.dispatch({kind: 'select', generation: s.generation, route: ${JSON.stringify(notes.route)}}); return true; })()`);
+  await page.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.focus(notes.route))})`);
   await sleep(1000);
   const click = async (rect, dx = 0.5, dy = 0.5) => {
     const x = Math.round(rect.x0 + (rect.x1 - rect.x0) * dx), y = Math.round(rect.y0 + (rect.y1 - rect.y0) * dy);
@@ -698,7 +697,11 @@ async function round(browser, url, options, index) {
 
     const opens = [];
     for (const app of apps) {
-      const result = await page.evaluate(openExpression(app, appModules(options.split, app), frameTimeoutMs));
+      const result = await page.evaluate(openExpression(app, appModules(options.split, app), frameTimeoutMs))
+        .catch(error => {
+          throw new Invalid(`round ${index}: opening ${app} failed: ${error.message}`
+            + `; the page said: ${page.errors.slice(0, 2).join(' | ') || 'nothing'}`);
+        });
       if (!Number.isFinite(result.ms)) throw new Invalid(`round ${index}: ${app} never presented its window`);
       if (!Number.isFinite(result.readyMs)) throw new Invalid(`round ${index}: ${app}'s code never presented a frame`);
       opens.push({app, ms: result.ms, readyMs: result.readyMs});
