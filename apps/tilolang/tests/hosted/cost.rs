@@ -448,6 +448,131 @@ fn what_the_interactions_a_person_feels_cost() {
     costs.report(TARGETS);
 }
 
+/// What one open of a window did, in counts that do not depend on the machine: the work opening
+/// a window costs is the work the window shows, whatever the workspace holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Opened {
+    /// Records the instance's publication looked at, one per record per turn.
+    published: u64,
+    /// Times it read every record in full.
+    sweeps: u64,
+    /// The actions the instance published to the workspace's surface.
+    surface: usize,
+    /// The rows the list rendered.
+    rows: usize,
+    /// What the views sent the window.
+    patches: u64,
+    /// The entries the instance published to the session's search index.
+    indexed: usize,
+    /// How many times the window's instance built its index from the record.
+    builds: u64,
+}
+
+impl Opened {
+    /// The work opening the window of the session `session` did.
+    fn of(session: &mut Session) -> Self {
+        let rows = session.titles().len();
+        let (indexed, _removed, _reset) = session.index_published();
+        let hosted = session
+            .host
+            .instances()
+            .next()
+            .expect("the window's instance");
+        let instance = hosted.instance();
+        let builds = instance
+            .host()
+            .map_or(0, |host| host.store().stats().builds);
+        Self {
+            published: instance.visited_records(),
+            sweeps: instance.sweeps(),
+            surface: hosted.published().len(),
+            rows,
+            patches: instance.patches_sent(),
+            indexed,
+            builds,
+        }
+    }
+
+    /// The counts, as a line: what a person reading a failure needs to see which of them grew.
+    fn line(self) -> String {
+        let Self {
+            published,
+            sweeps,
+            surface,
+            rows,
+            patches,
+            indexed,
+            builds,
+        } = self;
+        format!(
+            "{published} records published ({sweeps} sweeps), {surface} actions on the surface, \
+             {rows} rows, {patches} patches, {indexed} indexed, {builds} builds"
+        )
+    }
+}
+
+/// Opening a window costs what the window shows, not what the workspace holds: the same window
+/// over a thousand tasks and over ten thousand does the same work for the frame that opens it —
+/// the rows it shows, the actions it offers and the records it publishes — give or take a
+/// constant. Opening is the one step the workspace's size must not reach: a person feels it as
+/// the window appearing. The search index is read off the frame, so its size is the reader's
+/// work, not the open's; it is printed either way.
+#[test]
+fn opening_a_window_does_the_work_the_window_shows() {
+    let _motion = ui::motion::testing::settled();
+    let mut opened = Vec::new();
+    for &n in &[1_000, SEEDED] {
+        let doc = seeded_tasks(n);
+        let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+        // The window as it opens: its index read and the first frame that shows it, which is
+        // what a person waits for — not the turns after it.
+        let mut session = Session::tasks_over_launched(&route, doc, None);
+        session.wait_index();
+        session.host.turn();
+        session.window.frame();
+        assert!(
+            !session.titles().is_empty(),
+            "the window opens on the workspace's tasks"
+        );
+        let work = Opened::of(&mut session);
+        eprintln!("open at {n} tasks: {}", work.line());
+        opened.push((n, work));
+        session.settle();
+    }
+    let mut sizes = opened.iter();
+    let (Some((small_n, small)), Some((large_n, large))) = (sizes.next(), sizes.next()) else {
+        panic!("two opens are measured");
+    };
+    let (small_n, small, large_n, large) = (*small_n, *small, *large_n, *large);
+    // What the window shows does not grow with the workspace: a table longer than the window
+    // shows no more rows, offers no more actions and publishes no more records. The constant
+    // covers what a longer workspace may legitimately add to the work (a page read, a row of
+    // a list's tail).
+    let mut over = Vec::new();
+    let mut hold = |what: &str, small: u64, large: u64, slack: u64| {
+        if large > small.saturating_add(slack) {
+            over.push(format!(
+                "{what}: {large} at {large_n} tasks, {small} at {small_n}"
+            ));
+        }
+    };
+    hold("records published", small.published, large.published, 2);
+    hold("sweeps", small.sweeps, large.sweeps, 0);
+    hold(
+        "actions on the surface",
+        small.surface as u64,
+        large.surface as u64,
+        0,
+    );
+    hold("rows", small.rows as u64, large.rows as u64, 0);
+    hold("patches", small.patches, large.patches, 2);
+    assert!(
+        over.is_empty(),
+        "opening a window does the work the window shows:\n{}",
+        over.join("\n")
+    );
+}
+
 /// Opening a window of a workspace a person has used for years: the index an earlier run of the
 /// app kept answers what the record holds, so the open reads it and applies only what the record
 /// gained since — what a hundred thousand tasks cost to open, ten thousand do. A hundred thousand

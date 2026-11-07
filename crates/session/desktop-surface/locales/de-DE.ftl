@@ -91,6 +91,7 @@ workspace-menu-rename = Arbeitsbereich umbenennen
 workspace-menu-overview = Übersicht
 workspace-menu-new-strip = Neue Leiste
 workspace-menu-delete = Arbeitsbereich löschen
+workspace-menu-workspace = Arbeitsbereich
 profile-card = Dein Profil
 profile-card-of = Profil von { $name }
 profile-id = Personen-ID

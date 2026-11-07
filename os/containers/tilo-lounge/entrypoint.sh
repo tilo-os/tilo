@@ -17,7 +17,9 @@
 #
 # The pages' live plane is WebTransport on UDP, which the ingress publishes
 # separately from the HTTP routes: it binds TILO_ROOMS_LIVE and pages dial
-# TILO_ROOMS_LIVE_ORIGIN.
+# TILO_ROOMS_LIVE_ORIGIN. The HTTPS listener behind the ingress binds
+# TILO_ROOMS_WEB; an address ending in `:0` takes a port the kernel picks,
+# which the host announces in its started event.
 #
 # Everything else has the default below. Any other TILO_ROOMS_* variable stops
 # the start: this host does not read it, and a deployment that still sets what
@@ -35,7 +37,7 @@ TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
-TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN
+TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
 TILO_ROOMS_HTTP TILO_ROOMS_FETCH_PROXY
 TILO_ROOMS_MODERATION_KEY_FILE TILO_ROOMS_MODERATION_MODEL
 TILO_ROOMS_DISCORD_CLIENT_ID TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE
@@ -107,7 +109,7 @@ set -- room \
   --default-role "${TILO_ROOMS_DEFAULT_ROLE:-editor}" \
   --layout "${TILO_ROOMS_LAYOUT:-shared}" \
   --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
-  --web 127.0.0.1:9781 \
+  --web "${TILO_ROOMS_WEB:-127.0.0.1:9781}" \
   --web-live "${TILO_ROOMS_LIVE:-0.0.0.0:9781}" \
   --tls dev \
   --web-plain "${TILO_ROOMS_RELAY_PLAIN:-0.0.0.0:9780}" \

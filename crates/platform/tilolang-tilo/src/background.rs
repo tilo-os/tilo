@@ -16,7 +16,7 @@ pub(crate) struct Pending<T> {
 }
 
 /// What [`Pending::poll`] found.
-pub(crate) enum Poll<T> {
+pub enum Poll<T> {
     Ready(T),
     Running,
     /// The work ended without a result: it panicked. The caller does it on the frame instead.

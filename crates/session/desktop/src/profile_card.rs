@@ -1955,10 +1955,12 @@ mod tests {
         assert!(said.contains(&t("profile-name-hint")));
     }
 
-    /// Of the host's ways to keep who you are, the card offers one: the
-    /// first, which the host lists best first. Devices stay as listed.
+    /// Of the host's ways to keep who you are, the card offers the two it
+    /// lists first: keeping the identity and backing it up. A third
+    /// overlapping ask stays in search, where it does not compete here.
+    /// Devices stay as listed.
     #[test]
-    fn the_card_offers_one_way_to_keep_your_identity() {
+    fn the_card_offers_two_ways_to_keep_your_identity() {
         ui::i18n::I18nManager::init("en-US");
         let identity = |id: &str, title: &str| ProfileAction {
             id: id.into(),
@@ -1987,7 +1989,7 @@ mod tests {
             ui::headless::Framed::new(ui::State::new(), card, (1280, 720), Theme::dark());
         let said = says(&mut frame);
         assert!(said.contains("Keep your name and work"), "{said}");
-        assert!(!said.contains("Save a recovery key"), "{said}");
+        assert!(said.contains("Save a recovery key"), "{said}");
         assert!(!said.contains("Sign in with a passkey"), "{said}");
         assert!(said.contains("Pair a new device"), "{said}");
     }

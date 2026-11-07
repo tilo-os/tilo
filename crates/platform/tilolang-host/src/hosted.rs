@@ -96,12 +96,6 @@ type SurfaceInputs = (
 /// rows on screen leaves it as it was.
 type DirectoryInputs = (u64, Vec<tilolang_tilo::runtime::PackageId>, u64);
 
-/// What the instance publishes for its window: the resources a person can reach, by published
-/// id — the lanes' subjects and the rows on screen, with what holds them. A workspace of ten
-/// thousand tasks publishes the rows a window shows; a caller that wants the rest asks the
-/// directory, which answers from the workspace on demand.
-type Shown = HashSet<String>;
-
 /// What the instance publishes on its connection: the workspace's records with their actions, kept up
 /// to date change by change.
 struct Surface {
@@ -113,6 +107,8 @@ struct Surface {
     planner: Arc<dyn Planner>,
     committer: Arc<dyn Committer>,
     publications: RefCell<Publications>,
+    /// What schedules a frame when a read on a thread of its own ends.
+    wake: Waker,
 }
 
 impl Surface {
@@ -122,7 +118,7 @@ impl Surface {
                 .with_caller(|| CALLER.with(|caller| caller.borrow().clone())),
         );
         let mut publications = Publications::new(host);
-        publications.set_waker(wake);
+        publications.set_waker(wake.clone());
         let planner: Arc<dyn Planner> = handle.clone();
         let surface = Self {
             app: app.to_owned(),
@@ -131,6 +127,7 @@ impl Surface {
             planner,
             committer: handle,
             publications: RefCell::new(publications),
+            wake,
         };
         surface.update();
         surface
@@ -154,39 +151,15 @@ impl Surface {
         )
     }
 
-    /// Every resource the workspace's packages hold, each with its actions; the host's own resource;
-    /// and each package's actions that take no record, the instance's own app's with what every
-    /// app publishes. Built now, so an invocation resolves against what the record holds now.
+    /// The resources the instance publishes: the host's own resource, each package's actions that
+    /// take no record (the instance's own app's with what every app publishes), and the
+    /// workspace's records with their actions.
     ///
-    /// `shown` bounds what a record publishes to the resources a window can reach: its lane's
-    /// subject and the rows on screen. `None` is the whole workspace, what a caller that asks
-    /// the directory reads.
-    fn resources(&self, shown: Option<&Shown>) -> Vec<ResourceSpec> {
+    /// `shown` bounds what a record publishes to what the window reaches: its lane's subject and
+    /// the rows on screen. `None` is the whole workspace, what a caller that asks the directory
+    /// reads.
+    fn resources(&self, shown: Option<&[String]>) -> Vec<ResourceSpec> {
         let mut out = vec![host_resource(&self.committer)];
-        let trees: Vec<(String, Rc<ResourceSpec>)> = self
-            .publications
-            .borrow()
-            .trees()
-            .iter()
-            .map(|(doc, tree)| (doc.clone(), Rc::clone(tree)))
-            .collect();
-        for (_doc, tree) in trees {
-            out.push(match shown {
-                Some(shown) => {
-                    // The record's own resource always publishes: what it offers with no row
-                    // shown (its history, its `read`, the app's own verbs) is the app's answer
-                    // to a window that shows no row of it yet.
-                    let mut kept = shallow(&tree);
-                    kept.children = tree
-                        .children
-                        .iter()
-                        .filter_map(|child| pruned(child, shown))
-                        .collect();
-                    kept
-                }
-                None => (*tree).clone(),
-            });
-        }
         let words = self.host.runtime().words();
         for package in self.host.packages() {
             let mut resource = publish_package(&package.meta, &self.planner, &*words);
@@ -197,46 +170,39 @@ impl Surface {
                 out.push(resource);
             }
         }
+        let mut publications = self.publications.borrow_mut();
+        let trees = match shown {
+            Some(shown) => publications.reached(&self.host, &self.planner, &self.app, shown),
+            None => publications.everything(&self.host, &self.planner),
+        };
+        out.extend(trees.into_iter().map(|tree| (*tree).clone()));
         out
     }
 
-    /// `resources` with what the address names, added whole when the window does not show it:
-    /// an invocation resolves against the resource it names, whatever the window shows.
+    /// What an invocation of `address` resolves against: every app's own actions, and the
+    /// resource the address names, published down to it — what a caller that asks of one
+    /// resource reads, whatever a window shows.
+    fn addressed(&self, shown: &[String], address: &str) -> Vec<ResourceSpec> {
+        self.with_addressed(self.resources(Some(shown)), address)
+    }
+
+    /// `resources` with what the address names, added as the record publishes it when the window
+    /// does not show it: an invocation resolves against the resource it names, whatever the
+    /// window shows.
     fn with_addressed(&self, mut resources: Vec<ResourceSpec>, address: &str) -> Vec<ResourceSpec> {
         if resources.iter().any(|resource| holds(resource, address)) {
             return resources;
         }
-        let trees: Vec<Rc<ResourceSpec>> = self
-            .publications
-            .borrow()
-            .trees()
-            .values()
-            .map(Rc::clone)
-            .collect();
-        if let Some(spec) = trees.iter().find_map(|tree| find(tree, address)) {
+        if let Some(tree) =
+            self.publications
+                .borrow_mut()
+                .addressed(&self.host, &self.planner, &self.app, address)
+            && let Some(spec) = find(&tree, address)
+        {
             resources.push(spec);
         }
         resources
     }
-}
-
-/// `spec` with only the resources `shown` names or holds under them, each with its actions.
-/// `None` when nothing of it is shown: a record of ten thousand items publishes the rows on
-/// screen.
-fn pruned(spec: &ResourceSpec, shown: &Shown) -> Option<ResourceSpec> {
-    let mut out = shallow(spec);
-    out.children = spec
-        .children
-        .iter()
-        .filter_map(|child| pruned(child, shown))
-        .collect();
-    // A resource the window does not name is kept when one under it is: the record's shape
-    // holds a row not as its id spells it (a conversation under its account), and what the
-    // window shows is reached through the resources that hold it.
-    if out.children.is_empty() && !shown.contains(spec.id.as_str()) {
-        return None;
-    }
-    Some(out)
 }
 
 /// `spec` without its children: the resource itself, its actions and its views.
@@ -517,6 +483,9 @@ pub struct Hosted {
     search_entries: std::collections::BTreeMap<String, tilo_resource::search_index::IndexEntry>,
     /// How many builds of the entries the index has been sent: the state's generation.
     search_index_build: u64,
+    /// The whole of the index being read off the frame: the record's heads it was read at, what
+    /// the publication had moved then, and the read. The frame after it ends sends it.
+    search_index_whole: Option<(Vec<String>, u64, tilolang_tilo::search::WholeIndex)>,
     /// The invocation the person's last step ran in, when they asked to undo it: the host takes
     /// the action back in every unit that holds a change of it, all under one commit, whether
     /// this endpoint's logs still remember the action or only the records do.
@@ -628,6 +597,7 @@ impl Hosted {
             search_index_moved: None,
             search_entries: std::collections::BTreeMap::new(),
             search_index_build: 0,
+            search_index_whole: None,
             undo_ask: None,
             identity: None,
         }
@@ -639,6 +609,13 @@ impl Hosted {
         self.published
             .as_ref()
             .map_or(&[], |(descriptors, _)| descriptors.as_slice())
+    }
+
+    /// Whether the whole of the workspace's search index is still being read off the frame: the
+    /// frame that finds it read sends it.
+    #[must_use]
+    pub fn index_pending(&self) -> bool {
+        self.search_index_whole.is_some()
     }
 
     /// Why the instance's surface was last refused rather than published: empty while what it
@@ -835,6 +812,11 @@ impl Hosted {
     /// of the resources it moved, and drops those of the resources it deleted: a task checked in
     /// a book of ten thousand replaces one entry.
     fn publish_search_index(&mut self) {
+        // A whole index read off the frame this turn is taken in and sent: its entries were the
+        // workspace's to read, not the frame's.
+        if self.index_read_off_frame() {
+            return;
+        }
         let generation: Vec<String> = tilo_resource::heads_of(self.record.doc())
             .unwrap_or_default()
             .into_iter()
@@ -869,16 +851,18 @@ impl Hosted {
             })
         };
         // What a hit's address names opens at its resource; the entries carry the package's
-        // `open`.
+        // `open`. A change sends the entries it moved; a whole publication reads the workspace
+        // off the frame instead.
         let deltas = match moved {
             Some(tilolang_tilo::publish::TextMoves::These { texts, gone }) => {
                 let (upsert, remove) = self.moved_entries(&host, &texts, &gone);
-                match self.search_index.publish_moved(state, upsert, remove) {
-                    Some(deltas) => deltas,
-                    None => self.publish_index_whole(&host, state),
-                }
+                self.search_index.publish_moved(state, upsert, remove)
             }
-            _ => self.publish_index_whole(&host, state),
+            _ => None,
+        };
+        let Some(deltas) = deltas else {
+            self.read_index_whole(&host, state, generation);
+            return;
         };
         for delta in deltas {
             let Some(bytes) = delta.encode() else {
@@ -894,6 +878,70 @@ impl Hosted {
             .as_ref()
             .map(|surface| surface.publications.borrow().moved());
         self.search_index_from = Some(generation);
+    }
+
+    /// Read every entry of the workspace off the frame, at `state` and the record's `generation`:
+    /// what a first publication, a new route and a change the journal no longer reaches send.
+    /// Nothing is sent this turn; the frame the read ends on sends it ([`Self::index_read_off_frame`]).
+    fn read_index_whole(
+        &mut self,
+        host: &Host,
+        state: tilo_resource::search_index::IndexState,
+        generation: Vec<String>,
+    ) {
+        let publisher = std::mem::take(&mut self.search_index);
+        let wake = self
+            .surface
+            .borrow()
+            .as_ref()
+            .map(|surface| surface.wake.clone());
+        let moved = self.moved();
+        self.search_index_whole = Some((
+            generation,
+            moved,
+            tilolang_tilo::search::WholeIndex::start(host, publisher, state, wake),
+        ));
+    }
+
+    /// Take in the whole index read off the frame and send it: whether it ended this turn, which
+    /// leaves the frame with nothing else to publish. The thread that read it ended without an
+    /// answer only by panicking, and then the frame reads it.
+    fn index_read_off_frame(&mut self) -> bool {
+        let Some((generation, moved, read)) = self.search_index_whole.take() else {
+            return false;
+        };
+        let published = match read.poll() {
+            tilolang_tilo::background::Poll::Running => {
+                self.search_index_whole = Some((generation, moved, read));
+                return true;
+            }
+            tilolang_tilo::background::Poll::Ready(published) => published,
+            tilolang_tilo::background::Poll::Lost => {
+                let Some(host) = self.instance.host() else {
+                    return true;
+                };
+                host.sync_from(self.record.doc());
+                tilolang_tilo::search::read(
+                    &host.store().snapshot(),
+                    &tilolang_tilo::search::catalogue(&host),
+                    std::mem::take(&mut self.search_index),
+                    tilo_resource::search_index::IndexState {
+                        generation: self.search_index_build,
+                        secrets_unlocked: None,
+                    },
+                )
+            }
+        };
+        self.search_entries = published.entries;
+        self.search_index = published.publisher;
+        for bytes in published.deltas {
+            self.record
+                .manager_mut()
+                .send(collaboration::CollabRequest::PublishSearchIndex { delta_json: bytes });
+        }
+        self.search_index_moved = Some(moved);
+        self.search_index_from = Some(generation);
+        true
     }
 
     /// Fill what can run now on the resources the window shows ([`Instance::shown_resources`]):
@@ -945,21 +993,6 @@ impl Hosted {
         let publications = surface.publications.borrow();
         let packages = surface.host.package_ids();
         self.answers.forget(&publications, &packages);
-    }
-
-    /// Publish every entry of the app's resources again: the first publication, a new route, and
-    /// a change the publication's journal no longer reaches.
-    fn publish_index_whole(
-        &mut self,
-        host: &Host,
-        state: tilo_resource::search_index::IndexState,
-    ) -> Vec<tilo_resource::search_index::IndexDelta> {
-        let entries = tilolang_tilo::search::index_entries(host);
-        self.search_entries = entries
-            .iter()
-            .map(|entry| (entry.resource.clone(), entry.clone()))
-            .collect();
-        self.search_index.publish(state, entries)
     }
 
     /// The entries of the resources the change moved, and the keys of the entries it deleted:
@@ -1219,7 +1252,7 @@ impl Hosted {
             .borrow()
             .clone()
             .ok_or_else(|| Refused::new("action_unavailable", "the app has not started yet"))?;
-        let shown: Shown = self.shown().into_iter().collect();
+        let shown = self.shown();
         let resources = surface.with_addressed(surface.resources(Some(&shown)), &address.resource);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller.clone()));
@@ -1404,8 +1437,7 @@ impl Hosted {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let windowed: Shown = shown.iter().cloned().collect();
-        let resources = surface.resources(Some(&windowed));
+        let resources = surface.resources(Some(&shown));
         let handlers: HashSet<String> = HashSet::from([
             <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
             <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
@@ -1954,8 +1986,9 @@ impl Applier {
         // The record as the workspace holds it now: requirements are decided on what others wrote.
         self.host.sync_from(self.record.doc());
         let address = ActionAddress::new(change.resource.clone(), change.action.clone());
-        // An agent asks of the whole record, whatever a window shows.
-        let resources = self.surface.resources(None);
+        // An agent asks of the resource it names, whatever a window shows: the workspace is not
+        // published for one change, and an applier shows nothing.
+        let resources = self.surface.addressed(&[], &change.resource);
         let caller = caller_of(&invoker);
         CALLER.with(|slot| *slot.borrow_mut() = Some(caller));
         let encoded = tilo_actions::door::encode_json(&resources, &address, &change.arguments);

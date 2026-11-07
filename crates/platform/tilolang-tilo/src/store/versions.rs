@@ -249,7 +249,10 @@ pub(super) fn newest_page(
     doc: &DocId,
     page: usize,
 ) -> Result<NewestPage, StoreError> {
-    match store.held().newest_page(doc, page) {
+    // The store is let go before the log answers: answering from it reads the store's versions,
+    // which no read of the store may be held across.
+    let answered = store.held().newest_page(doc, page);
+    match answered {
         Some(answered) => answered,
         // No index answers yet: the log does.
         None => tilolang_runtime::store::newest_page_of_log(store, doc, page),
@@ -264,7 +267,10 @@ pub(super) fn removed_in(
     field: &str,
     item: &TypeId,
 ) -> Result<Vec<(String, Version)>, StoreError> {
-    match store.held().removed_in(holder, field, item) {
+    // The store is let go before the log answers: answering from it reads the store's versions,
+    // which no read of the store may be held across.
+    let answered = store.held().removed_in(holder, field, item);
+    match answered {
         Some(answered) => answered,
         // No index answers yet: the log does.
         None => tilolang_runtime::store::removed_of_log(store, holder, field, item),

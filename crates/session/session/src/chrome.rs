@@ -803,22 +803,32 @@ impl DesktopRules for SessionRules {
 
 impl crate::Session {
     /// The rows of the window menu the session shows now, in order, as a
-    /// harness reads them: empty while it is closed.
+    /// harness reads them: a submenu's rows read after the row that opens it,
+    /// a rule between groups is no row at all, and the list is empty while the
+    /// menu is closed.
     #[must_use]
     pub fn window_menu_rows(&self) -> Vec<String> {
+        fn walked(rows: &[serde_json::Value], into: &mut Vec<String>) {
+            for row in rows {
+                if row.get("separator").and_then(serde_json::Value::as_bool) == Some(true) {
+                    continue;
+                }
+                if let Some(label) = row.get("label").and_then(serde_json::Value::as_str) {
+                    into.push(label.to_owned());
+                }
+                if let Some(children) = row.get("children").and_then(serde_json::Value::as_array) {
+                    walked(children, into);
+                }
+            }
+        }
         let Some(reading) = self.read(crate::mount::shell::WINDOW_MENU) else {
             return Vec::new();
         };
-        reading
-            .get("rows")
-            .and_then(serde_json::Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("label").and_then(serde_json::Value::as_str))
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default()
+        let mut rows = Vec::new();
+        if let Some(top) = reading.get("rows").and_then(serde_json::Value::as_array) {
+            walked(top, &mut rows);
+        }
+        rows
     }
 }
 

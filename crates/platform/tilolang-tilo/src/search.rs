@@ -17,7 +17,9 @@ use tilolang_runtime::meta::Meta;
 use crate::host::Host;
 use crate::publish::{package_resource_id, resource_id};
 use crate::record::{DynRecord, DynValue};
-use tilo_resource::search_index::{IndexAction, IndexEntry, IndexWeight};
+use tilo_resource::search_index::{
+    IndexAction, IndexDelta, IndexEntry, IndexState, IndexWeight, Publisher,
+};
 
 /// One searchable resource.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -135,12 +137,28 @@ pub fn group_of(meta: &Meta) -> String {
 /// query against what they read, never against the title of a resource they do not hold.
 #[must_use]
 pub fn every_hit(host: &Host) -> Vec<Hit> {
-    let snapshot = host.store().snapshot();
+    hits_of(&host.store().snapshot(), &catalogue(host))
+}
+
+/// The apps the host runs a package of, each with the title people call it: what a hit is
+/// grouped by and what it opens through. What a read off the frame takes with it, beside the
+/// snapshot it reads.
+#[must_use]
+pub fn catalogue(host: &Host) -> Vec<(String, String)> {
+    host.packages()
+        .iter()
+        .map(|package| (package.meta.app.clone(), package.meta.title.clone()))
+        .collect()
+}
+
+/// [`every_hit`], read from `snapshot` and the apps `catalogue` names: what a thread of its own
+/// reads in one pass, a workspace of ten thousand included.
+fn hits_of(snapshot: &crate::store::Snapshot, catalogue: &[(String, String)]) -> Vec<Hit> {
     let _schemas = snapshot.scoped();
-    let reader: &crate::store::Snapshot = &snapshot;
+    let reader: &crate::store::Snapshot = snapshot;
     let mut out = Vec::new();
-    for package in host.packages() {
-        let Some(view) = snapshot.view(&package.meta.app) else {
+    for (app, title) in catalogue {
+        let Some(view) = snapshot.view(app) else {
             continue;
         };
         let Ok(texted) = view.every_text() else {
@@ -153,8 +171,8 @@ pub fn every_hit(host: &Host) -> Vec<Hit> {
                 .filter_map(|text| reader.said(&held.path, text))
                 .collect();
             Some(Hit {
-                resource: resource_id(&package.meta.app, &held.path),
-                app_title: package.meta.title.clone(),
+                resource: resource_id(app, &held.path),
+                app_title: title.clone(),
                 type_name: held.schema.name.clone(),
                 title: texts.first()?.clone(),
                 texts,
@@ -174,22 +192,20 @@ const OPEN_ACTION: &str = "open";
 /// published id and opening it through its package's `open` action at that anchor. This is what
 /// a live tilolang instance publishes on its connection, so a Mail message or a note is found by
 /// a word of its body through the system's one search, whether or not the app runs.
-#[must_use]
-pub fn index_entries(host: &Host) -> Vec<IndexEntry> {
-    let open_of: std::collections::HashMap<String, tilo_actions::ActionAddress> = host
-        .packages()
-        .into_iter()
-        .map(|package| {
+fn entries_of(
+    snapshot: &crate::store::Snapshot,
+    catalogue: &[(String, String)],
+) -> Vec<IndexEntry> {
+    let open_of: std::collections::HashMap<String, tilo_actions::ActionAddress> = catalogue
+        .iter()
+        .map(|(app, _)| {
             (
-                package.meta.app.clone(),
-                tilo_actions::ActionAddress::new(
-                    package_resource_id(&package.meta.app),
-                    OPEN_ACTION,
-                ),
+                app.clone(),
+                tilo_actions::ActionAddress::new(package_resource_id(app), OPEN_ACTION),
             )
         })
         .collect();
-    every_hit(host)
+    hits_of(snapshot, catalogue)
         .into_iter()
         .filter_map(|hit| {
             let app = hit
@@ -284,3 +300,74 @@ fn entry(
 
 /// The longest text an entry keeps as a short field: a name, a subject, a sender.
 const SHORT_TEXT: usize = 80;
+
+/// The whole of a workspace's search index, read on a thread of its own: every resource with
+/// text, one pass over the indexes, as publication's first trees are read. A frame after it ends
+/// takes it in and sends what it holds; until then the window shows.
+pub struct WholeIndex {
+    building: crate::background::Pending<Published>,
+}
+
+/// What [`WholeIndex`] read.
+pub struct Published {
+    /// The publisher, holding the whole set as what it has sent.
+    pub publisher: Publisher,
+    /// One entry per resource with text, by the resource's published id.
+    pub entries: std::collections::BTreeMap<String, IndexEntry>,
+    /// The deltas that publish them, each as it crosses the broker.
+    pub deltas: Vec<Vec<u8>>,
+}
+
+impl WholeIndex {
+    /// Read the index of `host` off the frame, publishing every entry through `publisher` at
+    /// `state`: what a first publication, a new route or a change the journal no longer reaches
+    /// sends. `wake` is called once it is read.
+    #[must_use]
+    pub fn start(
+        host: &Host,
+        publisher: Publisher,
+        state: IndexState,
+        wake: Option<crate::background::Waker>,
+    ) -> Self {
+        let snapshot = host.store().snapshot();
+        let catalogue = catalogue(host);
+        Self {
+            building: crate::background::Pending::start(
+                move || read(&snapshot, &catalogue, publisher, state),
+                wake,
+            ),
+        }
+    }
+
+    /// What it read, once it has; [`crate::background::Poll::Lost`] when the thread that read it
+    /// ended without an answer.
+    pub fn poll(&self) -> crate::background::Poll<Published> {
+        self.building.poll()
+    }
+}
+
+/// [`entries_of`] and the deltas that publish them, read from the snapshot `snapshot` and the
+/// apps `catalogue` names.
+#[must_use]
+pub fn read(
+    snapshot: &crate::store::Snapshot,
+    catalogue: &[(String, String)],
+    mut publisher: Publisher,
+    state: IndexState,
+) -> Published {
+    let entries = entries_of(snapshot, catalogue);
+    let kept = entries
+        .iter()
+        .map(|entry| (entry.resource.clone(), entry.clone()))
+        .collect();
+    let deltas = publisher
+        .publish(state, entries)
+        .iter()
+        .filter_map(IndexDelta::encode)
+        .collect();
+    Published {
+        publisher,
+        entries: kept,
+        deltas,
+    }
+}

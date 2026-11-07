@@ -83,9 +83,9 @@ pub struct Stamp {
     /// The change's hash, as hex.
     pub change: String,
     /// The counter of the change's first operation: a change made on top of another counts
-    /// past every operation of it, so the version the log holds later is the later one,
-    /// whatever a version says of when it happened. [`PROVISIONAL`] for an action this device
-    /// has not committed yet.
+    /// past every operation of it, so of two versions recorded in the same second the later
+    /// change is the later version. [`PROVISIONAL`] for an action this device has not
+    /// committed yet.
     pub op: u64,
 }
 
@@ -94,12 +94,14 @@ pub struct Stamp {
 pub const PROVISIONAL: u64 = u64::MAX;
 
 impl Stamp {
-    pub(crate) fn order(&self) -> (u64, &str) {
-        // Where the change stands in the log, not what its version says it happened at: a
-        // version may say it happened in the past (a staged or imported change), and what came
-        // later is the one the log holds later. [`PROVISIONAL`] sorts after every committed
-        // change, as the one this device made last.
-        (self.op, &self.change)
+    pub(crate) fn order(&self) -> (&str, u64, &str) {
+        // When it happened first: two people changing a resource apart each hold the version
+        // they made last until they exchange them, and the one made later in the day is the
+        // last version both read once they have. The change's place in the log says nothing
+        // there, since a replica holds the changes in the order they reached it. The counter
+        // orders the versions one second holds, and a change made on top of the other counts
+        // past it on every replica; the hash orders two that are neither before the other.
+        (&self.version.at, self.op, &self.change)
     }
 
     /// Whether this version comes before `other`.
@@ -675,4 +677,49 @@ pub fn stepped(
             ..stamp.version.clone()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn stamp(at: &str, op: u64, change: &str) -> Stamp {
+        Stamp {
+            version: Version {
+                who: "ada".to_owned(),
+                at: at.to_owned(),
+                ..Version::default()
+            },
+            change: change.to_owned(),
+            op,
+        }
+    }
+
+    #[test]
+    fn versions_order_by_when_they_happened_then_by_causal_place() {
+        // Two people's changes made apart stand at the same place in the log, whichever of
+        // them a replica received first: the later one happened is the later version.
+        assert!(stamp("2026-10-28T09:30:00Z", 7, "bb").before(&stamp(
+            "2026-10-28T10:00:00Z",
+            7,
+            "aa"
+        )));
+        assert!(stamp("2026-10-28T09:30:00Z", 9, "bb").before(&stamp(
+            "2026-10-28T10:00:00Z",
+            7,
+            "aa"
+        )));
+        // One second holds both: the change made on top of the other counts past it.
+        assert!(stamp("2026-10-28T09:00:00Z", 7, "zz").before(&stamp(
+            "2026-10-28T09:00:00Z",
+            9,
+            "aa"
+        )));
+        // Neither is before the other: the hash orders them, the same on every replica.
+        assert!(stamp("2026-10-28T09:00:00Z", 7, "aa").before(&stamp(
+            "2026-10-28T09:00:00Z",
+            7,
+            "bb"
+        )));
+    }
 }

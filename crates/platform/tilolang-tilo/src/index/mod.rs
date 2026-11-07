@@ -61,7 +61,7 @@ use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
 use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 11;
+pub const FORMAT: u32 = 12;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.

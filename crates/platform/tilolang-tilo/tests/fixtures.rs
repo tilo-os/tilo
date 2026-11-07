@@ -210,9 +210,15 @@ impl Replica {
 
     /// Exchange every change with `other`, as sync does.
     pub fn sync_with(&mut self, other: &mut Self) {
-        self.doc.merge_incoming(&mut other.doc).unwrap();
+        self.send_to(other);
+        other.send_to(self);
+    }
+
+    /// Hand this replica's changes to `other`, as a sync does from one side: the order two
+    /// replicas receive each other's changes in is theirs, so what they read must not depend
+    /// on it.
+    pub fn send_to(&mut self, other: &mut Self) {
         other.doc.merge_incoming(&mut self.doc).unwrap();
-        self.host.sync_from(&self.doc);
         other.host.sync_from(&other.doc);
     }
 

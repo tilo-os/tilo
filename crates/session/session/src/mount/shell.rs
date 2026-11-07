@@ -260,11 +260,11 @@ struct Row {
     /// window's own controls draw it.
     #[serde(skip_serializing_if = "Option::is_none")]
     icon: Option<String>,
-    /// The rows a row that opens a submenu offers.
-    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    /// The rows a row that opens a submenu offers: none for a plain row,
+    /// which says so rather than leaving the field out, as its type declares
+    /// it.
     children: Vec<Row>,
     /// A rule between two groups of rows, which chooses nothing.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
     separator: bool,
 }
 

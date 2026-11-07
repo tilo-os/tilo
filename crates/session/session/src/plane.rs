@@ -1538,7 +1538,14 @@ mod tests {
             None,
         );
         let decisions = decided.decisions();
-        assert_eq!(decisions.len(), 41, "the broker's seams, each decided");
+        // The broker names its seams, so a seam is decided here and never
+        // dropped from the list: the field's conversion above would not
+        // notice a name that went missing.
+        assert_eq!(
+            decisions.iter().map(|(seam, _)| *seam).collect::<Vec<_>>(),
+            tilo_action_broker::services::HostServices::SEAMS,
+            "the broker's seams, each decided in its order"
+        );
         let mut names = std::collections::BTreeSet::new();
         for (name, why) in &decisions {
             assert!(names.insert(*name), "`{name}` is decided once");

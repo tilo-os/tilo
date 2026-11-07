@@ -535,6 +535,12 @@ mod tests {
                 )
                 .expect("the app");
         }
+        // The entries are this test's own writes: the memoised scan is told to
+        // read them now, as a writer in this process that must see its own
+        // change does, rather than waiting for a directory notification that
+        // says the same thing later — or, on a machine whose application
+        // directories cannot be watched, never.
+        desktop_entry::cache::refresh();
         desktop_id
     }
 
@@ -735,9 +741,8 @@ mod tests {
             "Tilo Imager",
             &[applications.clone(), downloads.clone()],
         );
-        // The entry is written once per copy, so the registry's reading may
-        // first land between the two writes: wait for the one that lists
-        // every copy, which is what the question is built from.
+        // The entry is written once per copy; the registry reads both, and the
+        // question is built from the reading that lists every copy.
         desk.until("the app, with every copy of it", || {
             desk.apps().first().is_some_and(|app| app.copies.len() == 2)
         });

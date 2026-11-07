@@ -199,15 +199,18 @@ impl Instance {
         self.out.extend(sent);
     }
 
-    /// Whether the view of `lane` has no record to run over: a resource the record does not
+    /// Whether the view of `lane` has nothing to run over: a resource the record does not
     /// name — what was removed, or an item a change has not brought here yet — has no view, and
-    /// the window keeps the tree it has until the record holds it.
+    /// the window keeps the tree it has until the record holds it. A view of another app's
+    /// resource runs over the reading the session publishes for it, which stands where the
+    /// record would: it has something to run over from the first reading, and runs again when
+    /// that reading moves.
     fn unheld(&self, host: &Host, lane: Lane) -> bool {
         self.lane(lane).is_some_and(|shown| {
             matches!(
                 host.store().type_of(&shown.target),
                 Err(StoreError::NotFound(_))
-            )
+            ) && host.runtime().reading(&shown.target).is_none()
         })
     }
 

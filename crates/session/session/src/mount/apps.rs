@@ -1096,9 +1096,6 @@ impl Apps {
 
     /// Start `planned` with the door `door`, which the launch holds until it
     /// ends, and write it down as a launch of this session before the app can
-    /// reach a service of it.
-    /// Start `planned` with the door `door`, which the launch holds until it
-    /// ends, and write it down as a launch of this session before the app can
     /// reach a service of it. `asked` is what the app was asked as, when a
     /// window of it is what the launch is: a service asked as nothing has no
     /// window to offer again.

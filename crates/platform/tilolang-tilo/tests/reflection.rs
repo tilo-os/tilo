@@ -231,6 +231,64 @@ fn the_last_version_is_the_latest_on_every_replica_whichever_order_they_arrive_i
     assert_eq!(text(call(&ben, "ben", "describe", vec![line])), want);
 }
 
+/// The same two changes reaching each replica in either order: each person's change arrives
+/// before or after the other replica's own, and both read the one made later as the last
+/// version either way.
+#[test]
+fn the_last_version_is_the_same_whichever_change_reaches_a_replica_first() {
+    for ada_first in [true, false] {
+        let (mut ada, loaded) = Replica::new("ada", AutoCommit::new(), &[(TALK, "")]);
+        let talk = ada.host.root_of("so.tilo.lang.talk").unwrap();
+        ada.commit();
+        ada.host
+            .runtime()
+            .set_clock(|| "2026-10-28T09:00:00Z".to_owned());
+        let line = call(
+            &ada,
+            "ada",
+            "say",
+            vec![Value::resource(&talk), Value::text("hello")],
+        );
+        ada.commit();
+        let mut ben = ada.fork("ben", &[(TALK, &loaded[0].ids)]);
+        ben.host.sync_from(&ben.doc);
+        ada.host
+            .runtime()
+            .set_clock(|| "2026-10-28T10:00:00Z".to_owned());
+        call(
+            &ada,
+            "ada",
+            "reword",
+            vec![line.clone(), Value::text("hi all")],
+        );
+        ada.commit();
+        ben.host
+            .runtime()
+            .set_clock(|| "2026-10-28T09:30:00Z".to_owned());
+        call(&ben, "ben", "reword", vec![line.clone(), Value::text("hi")]);
+        ben.commit();
+        // Ada's change reaches Ben first, or his reaches her first.
+        if ada_first {
+            ada.send_to(&mut ben);
+            ben.send_to(&mut ada);
+        } else {
+            ben.send_to(&mut ada);
+            ada.send_to(&mut ben);
+        }
+        let want = "ada 2026-10-28T09:00:00Z ada 2026-10-28T10:00:00Z Reword 3";
+        assert_eq!(
+            text(call(&ada, "ada", "describe", vec![line.clone()])),
+            want,
+            "ada's change first: {ada_first}"
+        );
+        assert_eq!(
+            text(call(&ben, "ben", "describe", vec![line])),
+            want,
+            "ada's change first: {ada_first}"
+        );
+    }
+}
+
 /// Changes made one on top of another within one second: each is the last version once it is
 /// made, before and after it is committed, and on a replica that receives them all at once;
 /// never the one it was made on, whichever change's hash is smaller.
