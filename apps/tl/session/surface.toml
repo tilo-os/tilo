@@ -366,6 +366,20 @@ required = false
 type = "text"
 
 [[resources.verbs]]
+id = "delete-workspace"
+kind = "outside"
+
+[[resources.verbs.params]]
+name = "workspace"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "confirmed"
+required = false
+type = "bool"
+
+[[resources.verbs]]
 id = "workspace-settings"
 kind = "read"
 params = []
