@@ -87,6 +87,13 @@ impl Shared {
     pub(crate) fn recipients(&self, query: &str) -> Vec<Recipient> {
         self.search.recipients(query)
     }
+
+    /// Whether the shell's send key was pressed since the last pass, to be
+    /// asked of the window in front then, with no menu around its box
+    /// ([`ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection`]).
+    pub(crate) fn take_send_from(&self) -> bool {
+        self.send_from.replace(false)
+    }
 }
 
 /// The one action a send is: Chat's `send` in `workspace`, carrying whom the

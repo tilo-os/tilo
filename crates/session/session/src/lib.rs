@@ -288,6 +288,11 @@ struct Shared {
     drives: Option<Rc<mount::drives::Drives>>,
     /// What the desk and the chrome asked of the session.
     asks: Rc<RefCell<Vec<DesktopAsk>>>,
+    /// Whether the shell's send key was pressed, waiting for the pass that
+    /// asks the window in front to open its box. The key can arrive while the
+    /// desk is between two of its own frames, so the window it was over is
+    /// named then, by the desk, and never at the keypress.
+    send_from: Cell<bool>,
     /// Where the chrome takes intents the session raises.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether this session shows quick settings at all: its app is one of the
@@ -1731,6 +1736,7 @@ impl Session {
             restore: RefCell::new(restore),
             drives: options.drives,
             asks,
+            send_from: Cell::default(),
             intents,
             quick_settings: quick_settings::installed(&options.surfaces),
             panel_asks: Rc::clone(&panel_asks),

@@ -44,6 +44,7 @@ use serde::Deserialize;
 use tilo_app_launch::routing;
 use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
 use tilo_compositor::{Compositor, ReadableWatch};
+use tilo_desktop::launchpad::LaunchpadAction;
 use tilo_desktop_policy::{DesktopPolicy, app_ids_match};
 use tilo_surface_host::DesktopHost;
 use ui::Theme;
@@ -200,6 +201,10 @@ struct Link {
     /// Whether this app's launch let it know the network's state; a window
     /// never widens that for itself.
     network_allowed: bool,
+    /// Whether this window's app said it opens a send-to box
+    /// ([`FloatingSurfaceClientMessage::SelectionCapable`]): only a window
+    /// that answered is asked to open one.
+    selection: bool,
     /// Writing to the connection.
     writer: Arc<Mutex<UnixStream>>,
     /// The appearance the window was last told, so a pass that changes
@@ -334,6 +339,7 @@ impl AppTabs {
         // and a search is the desk's own.
         self.deliver_sends(shared);
         self.deliver_searches(shared);
+        self.deliver_send_from(shared, desktop, compositor);
         // Where each app's own card stands this pass: the floating layer's
         // place, which the desk lays the app's window out by.
         self.follow_cards(desktop, compositor);
@@ -368,6 +374,58 @@ impl AppTabs {
                 &asked.app,
             );
         }
+    }
+
+    /// Ask the window in front to open its send-to box, as the shell's send
+    /// key does ([`FloatingSurfaceHostMessage::ShareSelection`]): the app
+    /// draws the box alone, with no menu around it. A window whose app cannot
+    /// take it — it never said it opens a box, or it is gone — leaves the
+    /// chord to Chat, which a send has always opened.
+    fn deliver_send_from(
+        &self,
+        shared: &crate::Shared,
+        desktop: &DesktopHost,
+        compositor: &Compositor,
+    ) {
+        if !shared.take_send_from() {
+            return;
+        }
+        let asked = self.link_in_front(desktop, compositor).is_some_and(|link| {
+            tell(
+                &link.writer,
+                &FloatingSurfaceHostMessage::ShareSelection,
+                &link.app,
+            )
+        });
+        if !asked {
+            shared.launchpad(LaunchpadAction::Chat);
+        }
+    }
+
+    /// The connection of the window in front, among the windows whose app
+    /// opens a box: one that never said it does is never sent a box it would
+    /// not draw. A session that cannot tell which window is in front answers
+    /// with its one window that takes boxes, and none when it holds more.
+    fn link_in_front(&self, desktop: &DesktopHost, compositor: &Compositor) -> Option<&Link> {
+        let ready = || self.links.values().filter(|link| link.selection);
+        let focused = desktop
+            .with_policy(|policy| policy.focused())
+            .and_then(|window| {
+                compositor
+                    .windows()
+                    .into_iter()
+                    .find(|(held, _)| held.id == window)
+            })
+            .and_then(|(held, _)| held.pid)
+            .and_then(|pid| self.launches.launch_of(pid));
+        if let Some(launch) = focused
+            && let Some(link) = ready().find(|link| link.launch == launch)
+        {
+            return Some(link);
+        }
+        let mut only = ready();
+        let first = only.next()?;
+        only.next().is_none().then_some(first)
     }
 
     /// Stand each app's own card where the floating layer put it this pass,
@@ -684,6 +742,7 @@ impl Answers<'_> {
                         app,
                         launch,
                         network_allowed,
+                        selection: false,
                         writer: reply,
                         told: None,
                     },
@@ -776,13 +835,18 @@ impl Answers<'_> {
             // would press, so nothing here draws a second one; and the session
             // names none of them to assistive technology or opens what one
             // points at, so the inventory is read and adds nothing. A surface
-            // cleared or a destination presented is the app's own business,
-            // and a window that says it carries a send-to box is telling the
-            // truth about itself: there is nothing to answer.
+            // cleared or a destination presented is the app's own business.
             FloatingSurfaceClientMessage::ActionMarkers { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
-            | FloatingSurfaceClientMessage::DestinationPresented { .. }
-            | FloatingSurfaceClientMessage::SelectionCapable => {}
+            | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
+            // The window opens a send-to box when the shell asks: from now on
+            // it is the one the shell's send key asks, and no window that
+            // never said so is ever sent a box it would not draw.
+            FloatingSurfaceClientMessage::SelectionCapable => {
+                if let Some(link) = self.links.get_mut(&connection) {
+                    link.selection = true;
+                }
+            }
             // An app's own card — a call, a route — is a window of its own:
             // the app presents it, the floating layer decides where it
             // stands, and the app draws the activity inline whenever its own
