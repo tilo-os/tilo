@@ -14,8 +14,8 @@ mod cases {
     use serde_json::json;
     use tilolang::IdsLock;
     use tilolang_runtime::{
-        AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId,
-        Principal, Resolution, ResourceRef, RunOutcome, Runtime, RuntimeError, Space, UiNode, Value,
+        AmStore, EditOutcome, InvokeOutcome, MemorySink, ModuleHash, PackageId, Principal,
+        Resolution, ResourceRef, RunOutcome, Runtime, RuntimeError, Space, UiNode, Value,
         ViewEvent, ViewInstance,
     };
 
@@ -1598,11 +1598,10 @@ mod cases {
         add_todo(&m, &apps, "a", true);
         m.w.auth.trust(m.w.id_of(&apps.today));
         let cleanup = apps.today.action("morning_cleanup");
-        let out = m
-            .w
-            .rt
-            .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
-            .unwrap();
+        let out =
+            m.w.rt
+                .invoke_action(&me(), (cleanup, vec![res(&m.list), res(&m.notebook)]))
+                .unwrap();
         assert_eq!(out, InvokeOutcome::Done(Value::Int(1)));
         assert!(items(&m.w, &m.list, "items").is_empty());
     }
