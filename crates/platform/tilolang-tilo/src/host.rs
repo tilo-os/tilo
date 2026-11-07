@@ -965,6 +965,12 @@ impl Host {
         self.inner.store.set_loader(loader);
     }
 
+    /// How the host gets a chunk the store was not sent: when a window shows a row in it, a
+    /// lookup routes to it, or a write is addressed to it.
+    pub fn set_chunk_loader(&self, loader: crate::store::ChunkLoader) {
+        self.inner.store.set_chunk_loader(loader);
+    }
+
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
     /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {
@@ -1272,15 +1278,17 @@ impl Host {
         self.inner.packages.borrow().iter().find_map(find)
     }
 
-    /// Bring the runtime's view of the workspace record up to date; see [`TiloStore::sync_from`].
-    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_from(record)
+    /// Bring the runtime's view of the workspace record up to date: its own chunk
+    /// ([`crate::chunk::FIRST`]) and every chunk above it the replica holds; see
+    /// [`TiloStore::sync`].
+    pub fn sync(&self, record: &crate::chunk::Chunks) -> bool {
+        self.inner.store.sync(record)
     }
 
-    /// Bring the runtime's view of the chunk `chunk` of the workspace record up to date; see
-    /// [`TiloStore::sync_chunk`].
-    pub fn sync_chunk(&self, chunk: crate::chunk::ChunkNo, doc: &tilo_resource::Doc) -> bool {
-        self.inner.store.sync_chunk(chunk, doc)
+    /// Bring the runtime's view of a record kept as one document up to date; see
+    /// [`TiloStore::sync_from`].
+    pub fn sync_from(&self, record: &tilo_resource::Doc) -> bool {
+        self.inner.store.sync_from(record)
     }
 
     /// Whether the runtime reads exactly what the workspace record `record` holds; see

@@ -49,6 +49,7 @@ for f in usr/libexec/tilo-rollback-common \
          usr/lib/systemd/system/tilo-rollback-harden.timer \
          usr/lib/systemd/system/tilo-boot-entries.service \
          usr/lib/systemd/system/tilo-boot-entries.timer \
+         usr/lib/systemd/system/tilo-deployment-finalize.service \
          usr/lib/systemd/system/tilo-boot-health.service \
          usr/lib/systemd/system/tilo-repair.target \
          usr/lib/systemd/system/tilo-repair@.service \

@@ -26,7 +26,7 @@ use tilolang_runtime::store::{FieldValue, lit_of};
 
 use super::IndexError;
 use super::lists::Entry;
-use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, TypeSchema};
+use crate::schema::{ColumnKind, ColumnSchema, FieldSchema, MergeKind, TypeSchema};
 
 /// Separates an entry's value from what orders the entries of one value.
 pub const SEP: char = '\u{0}';
@@ -189,6 +189,14 @@ pub fn values(
         return Ok(vec![
             if holds.unwrap_or(false) { "1" } else { "0" }.to_owned(),
         ]);
+    }
+    // When a field last changed: the stamp the index keeps of it, by its time.
+    if let Some(id) = column.field.as_deref()
+        && super::reflect::field_of_changed(id).is_some()
+    {
+        let stamp = FieldSchema::new(id, MergeKind::Register).composite();
+        let lit = super::reflect::at_lit(&value(&stamp)?);
+        return Ok(vec![write(column.kind, &lit).unwrap_or_default()]);
     }
     let Some(field) = column
         .field

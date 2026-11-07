@@ -802,7 +802,7 @@ impl Core {
 
     /// Who made a version, as a sentence names them: the person looking as the platform's word
     /// for them, anyone else by the name the avatar beside it shows.
-    fn actor(&self, who: &str, mine: bool) -> String {
+    pub(crate) fn actor(&self, who: &str, mine: bool) -> String {
         if mine {
             return self.word("tilolang-you", "You");
         }

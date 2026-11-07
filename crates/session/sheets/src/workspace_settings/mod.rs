@@ -26,7 +26,8 @@ mod people;
 mod permissions;
 
 pub use agents::{
-    AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, ModelChoice, Models,
+    AccessApp, Agent, AgentReview, Agents, Bot, Exception, Intro, KindLine, Limit, ModelChoice,
+    Models,
 };
 pub use apps::{AppRow, Apps};
 pub use emoji::{Emoji, EmojiPane, Notice, Picture};
@@ -162,6 +163,14 @@ pub enum WorkspaceSettingsEffect {
         agent: String,
         #[param("The model, by its key in the review; empty for the default")]
         model: String,
+    },
+    /// Set the most an agent may spend in a day
+    #[effect(attended)]
+    SetAgentSpendLimit {
+        #[param("The agent, by its key in the list")]
+        agent: String,
+        #[param("What it may spend a day, in dollars; empty for no limit")]
+        dollars: String,
     },
     /// Take an agent out of the workspace
     #[effect(destructive, attended)]
@@ -458,6 +467,7 @@ impl ResourceApp for WorkspaceSettingsApp {
         let new_agent = cx.local(String::new());
         let new_model = cx.local(String::new());
         let new_colour = cx.local(String::new());
+        let limit = cx.local(String::new());
         let shown = cx.local(initial);
         let staged = cx.fixture::<Local>().map(|local| (*local).clone());
         let local = cx.local(staged.unwrap_or_default());
@@ -481,6 +491,7 @@ impl ResourceApp for WorkspaceSettingsApp {
             new_agent,
             new_model,
             new_colour,
+            limit,
             local: local.clone(),
             seat,
         };
@@ -672,6 +683,8 @@ struct Parts {
     new_model: LocalState<String>,
     /// The colour a new agent is drawn in as chosen, a presence colour's id.
     new_colour: LocalState<String>,
+    /// What an agent may spend a day as its keeper typed it.
+    limit: LocalState<String>,
     /// What the sheet keeps to itself while it is up.
     local: LocalState<Local>,
     seat: Option<WorkspaceSettingsSeat>,
@@ -712,6 +725,17 @@ impl Parts {
         } else if typed != settings.name {
             self.name.set(settings.name);
         }
+    }
+
+    /// Set what the agent `agent` may spend a day to what its field holds, as
+    /// pressing Set or Enter takes it: empty asks for no limit.
+    fn commit_agent_limit(&self, agent: &str) {
+        let typed = self.limit.get();
+        self.ask(WorkspaceSettingsEffect::SetAgentSpendLimit {
+            agent: agent.to_owned(),
+            dollars: typed.trim().to_owned(),
+        });
+        self.limit.set(String::new());
     }
 
     fn show_tab(&self, tab: Tab) {

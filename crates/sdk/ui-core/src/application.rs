@@ -161,10 +161,11 @@ pub struct HostContext {
     launch_options: Vec<LaunchOption>,
     private: bool,
     lent: Vec<Box<dyn std::any::Any>>,
-    /// The session's document host keeps this app's record: no record here,
-    /// read and written over its one connection (`prepare_session_hosted`,
-    /// `provide_connection`). Erased: the app framework's type, unnamed here.
-    hosted: bool,
+    /// The session's document host keeps this app's record: no record here, read and written
+    /// over its one connection at this resource address (`prepare_session_hosted`,
+    /// `provide_connection`). The launch's input, as the record it names is: the app reads it
+    /// here rather than from the process it runs in.
+    hosted_resource: Option<String>,
     connection: Option<std::rc::Rc<dyn std::any::Any>>,
 }
 
@@ -692,7 +693,7 @@ impl HostContext {
             launch_options: Vec::new(),
             private: false,
             lent: Vec::new(),
-            hosted: false,
+            hosted_resource: None,
             connection: None,
         })
     }
@@ -1157,7 +1158,7 @@ impl ApplicationDefinition {
     ) -> Result<AppComponent, LaunchError> {
         let records = context.records.clone();
         let record = context.record.clone();
-        let hosted = context.hosted;
+        let hosted = context.hosted();
         let result = self.instantiate_checked(context, target, restore);
 
         result.map_err(|source| {
@@ -1231,7 +1232,7 @@ impl ApplicationDefinition {
         let result = (self.create)(context, target, restore).and_then(|mut component| {
             // A window the session serves opens no record here (§8 step 2).
             if !Rc::ptr_eq(&construction, &component.context.construction)
-                || !(component.context.hosted
+                || !(component.context.hosted()
                     || records.is_ready(&record.id)
                     || records.is_opening(&record.id))
             {
@@ -1884,7 +1885,7 @@ impl AppComponent {
                 }
                 Ok(())
             };
-        if self.context.hosted {
+        if self.context.hosted() {
             restore(root, &AutoCommit::new())?;
         } else {
             self.context

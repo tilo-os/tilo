@@ -577,6 +577,31 @@ fn icon(app: &AppHooks) -> IconDescriptor {
     )
 }
 
+/// Where the app's record lives: its window's own, or the session's document
+/// host's ([`ResourceApp::HOSTED_BY_SESSION`]).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Hosting {
+    /// The window opens its record and edits it here.
+    Own,
+    /// The session's document host keeps it: the view reads the session's
+    /// reading and submits its actions over the session's connection.
+    Session,
+}
+
+impl Hosting {
+    const fn of(hosted_by_session: bool) -> Self {
+        if hosted_by_session {
+            Self::Session
+        } else {
+            Self::Own
+        }
+    }
+
+    const fn in_session(self) -> bool {
+        matches!(self, Self::Session)
+    }
+}
+
 /// What the launch path, the window and History read of an app: its
 /// constants, and shims over the parts that need its types. One table per
 /// app; everything that reads it is compiled once for every app.
@@ -619,7 +644,7 @@ pub(crate) struct AppHooks {
     /// reading and submits over the connection.
     open_hosted: OpenHosted,
     /// [`ResourceApp::HOSTED_BY_SESSION`].
-    hosted_by_session: bool,
+    hosting: Hosting,
     /// [`ResourceApp::OPENS_BEFORE_RECORD`].
     opens_before_record: bool,
     /// [`ResourceApp::opening`].
@@ -684,7 +709,7 @@ impl<A: ResourceApp> Hooks<A> {
         prepare_capture: prepare_capture::<A>,
         open: open_root::<A>,
         open_hosted: open_hosted_root::<A>,
-        hosted_by_session: A::HOSTED_BY_SESSION,
+        hosting: Hosting::of(A::HOSTED_BY_SESSION),
         opens_before_record: A::OPENS_BEFORE_RECORD && !A::WINDOW_RESOURCE,
         opening: A::opening,
         action_registry: action_registry::<A>,
@@ -836,7 +861,7 @@ pub(crate) fn build_root_from<A: ResourceApp>(
                 .as_ref()
                 .map_or("", |record| record.route()),
         )
-        .from_source(source.clone());
+        .over_source(source);
     let dispatch = if permissions.is_none() {
         dispatch.past()
     } else {
@@ -1118,10 +1143,10 @@ fn session_reading(
     context: &mut HostContext,
     editing: &Editing,
 ) -> Result<Option<Box<dyn ui_core::widget::AppWidget>>, LaunchError> {
-    if !app.hosted_by_session || context.capture().is_some() {
+    if !app.hosting.in_session() || context.capture().is_some() {
         return Ok(None);
     }
-    let Some(resource) = ui_core::application::session_hosted_resource() else {
+    let Some(resource) = context.hosted_resource().map(str::to_owned) else {
         return Ok(None);
     };
     // The launcher made this launch its connection; a host that runs the app
@@ -1293,30 +1318,56 @@ fn create_component(
         }
         record.take_in(true).map_err(LaunchError::Record)?;
     }
+    let starting = start_record(app, &mut context, target)?;
+    window(app, context, starting)
+}
+
+/// What the launch read of the record the window starts on, before the root
+/// is built over it.
+struct Starting {
+    /// The recording the launch opened, when it replays one.
+    replay: Option<tilo_resource::recording::Recording>,
+    /// The record's file-time History, when the app keeps one.
+    files: Option<FileHistorySource>,
+    /// Who edits, over the run the launch started.
+    editing: Editing,
+    /// Whether the launch created the record.
+    created: bool,
+    /// Whether the launch stages a capture.
+    capture: bool,
+}
+
+/// Open the record the launch starts on: create or replay it, then read its
+/// file, its arguments and options, and start the run they go with.
+fn start_record(
+    app: &'static AppHooks,
+    context: &mut HostContext,
+    target: &LaunchTarget,
+) -> Result<Starting, LaunchError> {
     // A record of its own, or the workspace's record an app keeps one of
     // (`ResourceApp::WORKSPACE_RECORD`), opened for the first time.
     let created = matches!(target, LaunchTarget::New | LaunchTarget::PrimaryNew)
         || context.creation_workspace().is_some();
-    record_content(&mut context);
+    record_content(context);
     let file = context.take_open_file();
     let arguments = context.take_launch_arguments();
     let options = context.take_launch_options();
     let replay = file
         .as_ref()
         .filter(|file| file.media_type() == tilo_content::RECORDING.mime)
-        .map(|file| replay_of(app, &mut context, file, created))
+        .map(|file| replay_of(app, context, file, created))
         .transpose()?;
     match &replay {
-        Some(recording) => initialize_record(&mut context, &mut |_| Ok(()), &mut |doc| {
+        Some(recording) => initialize_record(context, &mut |_| Ok(()), &mut |doc| {
             tilo_automerge::ApplyIncoming::merge_incoming(doc, &mut recording.doc().clone())
                 .map(drop)
                 .map_err(|error| error.to_string())
         })?,
-        None if created => (app.new_record)(&mut context, &arguments, file.as_ref(), &options)?,
+        None if created => (app.new_record)(context, &arguments, file.as_ref(), &options)?,
         None => {}
     }
     let capture = context.capture().is_some();
-    let file_history = app.file_history.map(|_| FileHistorySource::default());
+    let files = app.file_history.map(|_| FileHistorySource::default());
     // A window someone uses can open another record in its place; a
     // capture shows the one it staged.
     let opener = (!capture).then(|| {
@@ -1324,8 +1375,9 @@ fn create_component(
         super::launch::OpenHere::new(move |arguments| open_in_place(app, &reopener, arguments))
     });
     let run = match context.capture().cloned() {
-        Some(capture) => (app.prepare_capture)(&mut context, capture.scenario())?
-            .driven_by_drive(capture.is_driven()),
+        Some(capture) => {
+            (app.prepare_capture)(context, capture.scenario())?.driven_by_drive(capture.is_driven())
+        }
         // The workspace's record, not on this device when the window opened:
         // the workspace may hold it, so the view waits for what the workspace holds.
         None => Run::live(context.content().cloned())
@@ -1349,7 +1401,7 @@ fn create_component(
         })
         .opening_with(opener)
         .showing_file_history(
-            file_history
+            files
                 .clone()
                 .map(|source| (source, (app.file_history_witness)())),
         );
@@ -1358,6 +1410,29 @@ fn create_component(
         me: context.author().0.clone(),
         run,
     };
+    Ok(Starting {
+        replay,
+        files,
+        editing,
+        created,
+        capture,
+    })
+}
+
+/// Build the window over the record the launch started on: its root, the
+/// document History its versions go to, and the step a replay opens at.
+fn window(
+    app: &'static AppHooks,
+    mut context: HostContext,
+    starting: Starting,
+) -> Result<AppComponent, LaunchError> {
+    let Starting {
+        replay,
+        files,
+        editing,
+        created,
+        capture,
+    } = starting;
     let root = match session_reading(app, &mut context, &editing)? {
         Some(hosted) => hosted,
         None => match (app.open)(&mut context, editing, capture, created)? {
@@ -1373,7 +1448,7 @@ fn create_component(
     // component registers no document History (`one-app-model.md` §4).
     if app.document_history && !hosted {
         let history = (app.history)();
-        match file_history {
+        match files {
             Some(files) => component.register_document_and_file_history(history, files),
             None => component.register_document_history(history),
         }

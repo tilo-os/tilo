@@ -105,6 +105,17 @@ pass right after staging: `tilo update`, `bootc-fetch-apply-updates`, and
 the staged entry itself, on the ESP the boot loader names, so moving a
 machine off such an image is protected too.
 
+Staging an image and booting it are two steps in bootc: the entries under
+`loader/entries.staged` become the boot plan only when bootc finalizes them,
+and bootc does that at shutdown. A machine that is switched off instead never
+gets there and keeps booting its old deployment, however often it is
+restarted. So Tilo finalizes as soon as the staged entry carries its counter,
+and at every boot for a staged plan whose shutdown never came
+(`tilo-deployment-finalize.service`, running bootc's own
+`composefs-finalize-staged`). A deployment that already is the boot plan has
+nothing left to exchange, which keeps that step idempotent and leaves bootc's
+shutdown hook as the last chance.
+
 The counter is only removed when the boot is declared good.
 `tilo-boot-health.service` is what declares it: it is ordered before
 `boot-complete.target`, which `systemd-bless-boot.service` requires, so an

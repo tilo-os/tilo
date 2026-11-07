@@ -373,3 +373,27 @@ fn the_panel_is_painted_in_the_top_layer_lighter_than_the_window() {
         );
     }
 }
+
+/// Whatever the anchor's edges are, the panel's edges land on the display's
+/// pixels: the frame draws the popover where it placed it.
+#[test]
+fn popover_edges_land_on_device_pixels() {
+    for scale in [1.25_f64, 1.5, 2.0, 3.0] {
+        let _grid = crate::widget::enter_device_scale(scale);
+        let mut tr = TextRenderer::new();
+        let mut p = Popover::new()
+            .with_label("Refresh interval")
+            .with_items(["1 second", "2 seconds"]);
+        p.set_viewport(WINDOW);
+        p.open_at(Rect::new(100.3, 40.7, 180.6, 68.4), Some(1));
+        p.place(&mut tr, &Theme::dark());
+        let rect = p.get_rect();
+        for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
+            let pixels = edge * scale;
+            assert!(
+                (pixels - pixels.round()).abs() < 1e-6,
+                "{edge} is not a device pixel at {scale}x: {rect:?}"
+            );
+        }
+    }
+}

@@ -173,6 +173,10 @@ struct Typed {
     /// It followed the press into the field the press opened: it goes at that field's end,
     /// after whatever went there before it.
     moved: bool,
+    /// It is the field a press opened's, typed while the window's request for the keyboard to
+    /// go there was still on its way ([`AppWindow::hold_for_landing`]): it goes once the app
+    /// took that request.
+    waits_focus: bool,
     /// What the control holds as they typed.
     held: Held,
     /// What the app sent for the field since (it showed something else meanwhile, such as the
@@ -244,8 +248,8 @@ pub struct AppWindow {
     /// The task runs a change mark asked to show ([`ToUi::ShowRun`]), until the window's
     /// host takes them ([`Self::take_shown_runs`]).
     shown_runs: Vec<String>,
-    /// How many presses the window sent the app (`ToApp::Fire`), and how many of them the app
-    /// said it ran (`ToUi::Took`).
+    /// How many presses the window sent the app (`ToApp::Fire`, `ToApp::Invoke`), and how many
+    /// of them the app said it ran (`ToUi::Took`).
     fired: u64,
     took: u64,
     /// What the person typed after presses the app has not run yet, oldest first.
@@ -257,6 +261,10 @@ pub struct AppWindow {
     /// The control to take the keyboard once the window's tree is laid out, by key in the
     /// composed tree ([`Widget::take_focus_request`]).
     focus_request: Option<String>,
+    /// The field a press opened, the window asked the keyboard for and has not heard back of:
+    /// what the person types meanwhile is that field's, not the one the keyboard is leaving
+    /// ([`Self::hold_for_landing`]). In the composed tree.
+    landing: Option<String>,
     /// How many presses the window had sent when the app last opened a view for the person's
     /// input, until the app says it ran them (`ToUi::Took`).
     opened: Option<u64>,
@@ -362,6 +370,7 @@ impl AppWindow {
             typed: std::collections::VecDeque::new(),
             pointed_after: None,
             focus_request: None,
+            landing: None,
             opened: None,
             rem: 16.0,
             root_space: None,
@@ -386,9 +395,10 @@ impl AppWindow {
         &self.actions
     }
 
-    /// The person chose `address` from the window's command palette with `argument`: the app
-    /// runs it as their own step. `argument` is the palette's collected text or canonical JSON
-    /// arguments, as a prompt or typed form encodes them.
+    /// The person chose `address` from the window's command palette with `argument`, or pressed
+    /// a control the app published the action for: the app runs it as their own step. `argument`
+    /// is the palette's collected text or canonical JSON arguments, as a prompt or typed form
+    /// encodes them.
     ///
     /// An action whose key a text field of the view declares (a list's entry) is pressed where
     /// that field stands: the press puts the keyboard in it, as the key does, rather than
@@ -413,6 +423,9 @@ impl AppWindow {
             self.flush();
             return;
         }
+        // A press like any other: what the person types while the app runs it goes where it
+        // leaves the keyboard, and what it makes opens as their input.
+        self.fired = self.fired.saturating_add(1);
         self.tell(ToApp::Invoke { address, argument });
     }
 
@@ -729,6 +742,11 @@ impl AppWindow {
         self.bound.borrow_mut().retain(|key, _| !ours(key));
         self.texts.retain(|key, _| !ours(key));
         self.seqs.retain(|key, _| !ours(key));
+        // The field a press opened for this lane is gone with it: what was typed for it goes
+        // to the resource it was typed into, wherever the lane shows now.
+        if self.landing.as_ref().is_some_and(ours) {
+            self.landing = None;
+        }
     }
 
     /// Keep rows for every virtual list of the views, and drop the rows of lists gone.
@@ -776,7 +794,8 @@ impl AppWindow {
                 && typed.target == shows
         }) {
             // What the app sent for the field: the typing goes against it when the app ran the
-            // press.
+            // press. The field keeps showing what the person typed into it, which the app has
+            // not taken: a value it held before that is no reason to take their words away.
             typed.sent = Some(value);
             return;
         }
@@ -1074,6 +1093,9 @@ impl AppWindow {
 
     /// Send the app what the person did since the last frame: one batch.
     pub fn flush(&mut self) {
+        // What was typed while the keyboard was on its way to the field a press opened goes
+        // there once it arrived.
+        self.release_landing();
         for answer in std::mem::take(&mut *self.answers.borrow_mut()) {
             self.out.push(ToApp::Answer(answer));
         }
@@ -1317,6 +1339,7 @@ impl AppWindow {
                 target,
                 follows,
                 moved: false,
+                waits_focus: false,
                 held,
                 sent: None,
             });
@@ -1385,16 +1408,112 @@ impl AppWindow {
                         },
                     };
                 }
+                // Its old value is no part of the field it goes to now: what it holds there is
+                // read from that field.
+                typed.sent = None;
                 typed.moved = true;
                 typed.key = Some(field.clone());
                 typed.target.clone_from(&target);
             }
         }
+        self.ask_focus(field);
+    }
+
+    /// Ask the app to put the keyboard in `field` (its key in the composed tree), and keep
+    /// what the person types until it has it that field's ([`Self::hold_for_landing`]).
+    fn ask_focus(&mut self, field: String) {
+        self.landing = Some(field.clone());
         self.focus_request = Some(field);
     }
 
-    /// Hold `event` when it types text while a press runs and no field has the keyboard (the
-    /// press took it): it goes to the field the press leaves the keyboard in. Whether it was
+    /// What the person typed while the keyboard was on its way to the field a press opened goes
+    /// there once the app took the window's request for it.
+    fn release_landing(&mut self) {
+        if self.landing.is_some() || !self.typed.iter().any(|typed| typed.waits_focus) {
+            return;
+        }
+        for typed in &mut self.typed {
+            typed.waits_focus = false;
+        }
+        self.send_typed();
+    }
+
+    /// Hold the text the person typed while the keyboard was on its way to `field`, the field a
+    /// press opened, showing it there as they type: it goes when the keyboard arrives.
+    fn hold_for_landing(&mut self, field: &str, text: &str) {
+        let after = self.fired;
+        let (lane, _) = lane_of(field);
+        let target = self.target(lane);
+        if let Some(typed) = self
+            .typed
+            .back_mut()
+            .filter(|typed| typed.waits_focus && typed.key.as_deref() == Some(field))
+        {
+            match &mut typed.held {
+                Held::Text { now, .. } => now.push_str(text),
+                Held::Rich { now, .. } => {
+                    *now = rich_spliced_at(now, rich_text_of(now).len(), 0, text);
+                }
+            }
+        } else {
+            // What the app has for the field: the text the person's typing goes after, and what
+            // its echo is measured against.
+            let before = self.bound.borrow().get(field).cloned();
+            let (held, shown) = match before {
+                Some(Value::Rich(rich)) => (
+                    Held::Rich {
+                        now: rich_spliced_at(&rich, rich_text_of(&rich).len(), 0, text),
+                        base: rich.clone(),
+                    },
+                    Value::Rich(rich),
+                ),
+                Some(Value::Text(base)) => (
+                    Held::Text {
+                        base: base.clone(),
+                        now: format!("{base}{text}"),
+                    },
+                    Value::Text(base),
+                ),
+                _ => (
+                    Held::Text {
+                        base: String::new(),
+                        now: text.to_owned(),
+                    },
+                    Value::Text(String::new()),
+                ),
+            };
+            self.typed.push_back(Typed {
+                after,
+                key: Some(field.to_owned()),
+                target,
+                follows: true,
+                moved: true,
+                waits_focus: true,
+                held,
+                sent: Some(shown),
+            });
+        }
+        // The field shows what the person typed, as it would had the keyboard arrived first.
+        match self.typed.back().map(|typed| &typed.held) {
+            Some(Held::Text { now, .. }) => {
+                self.texts.insert(field.to_owned(), now.clone());
+                self.bound
+                    .borrow_mut()
+                    .insert(field.to_owned(), Value::Text(now.clone()));
+            }
+            Some(Held::Rich { now, .. }) => {
+                self.bound
+                    .borrow_mut()
+                    .insert(field.to_owned(), Value::Rich(now.clone()));
+            }
+            None => {}
+        }
+        self.refresh_bound();
+    }
+
+    /// Hold `event` when it types text the window cannot place yet: while the keyboard is on its
+    /// way to the field a press opened, into that field; while a press runs and no field has the
+    /// keyboard (the press took it), into the field it leaves the keyboard in. Whether it was
     /// held.
     fn hold_typing(&mut self, event: &ui::winit::event::WindowEvent) -> bool {
         let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event else {
@@ -1410,10 +1529,18 @@ impl AppWindow {
         // A press the window's controls reported since the last event counts: the key may
         // follow it in the same frame.
         self.take_events();
-        if self.fired <= self.took
-            || key.state != ui::winit::event::ElementState::Pressed
-            || takes_typing(self.body.as_ref())
+        if key.state != ui::winit::event::ElementState::Pressed {
+            return false;
+        }
+        // The keyboard is on its way to the field a press opened: what the person types
+        // meanwhile is that field's, never the one the keyboard is leaving.
+        if let Some(field) = self.landing.clone()
+            && self.focused_control().as_deref() != Some(field.as_str())
         {
+            self.hold_for_landing(&field, text);
+            return true;
+        }
+        if self.fired <= self.took || takes_typing(self.body.as_ref()) {
             return false;
         }
         let fired = self.fired;
@@ -1434,6 +1561,7 @@ impl AppWindow {
                 target: None,
                 follows: true,
                 moved: false,
+                waits_focus: false,
                 held: Held::Text {
                     base: String::new(),
                     now: text.to_owned(),
@@ -1474,7 +1602,7 @@ impl AppWindow {
             return false;
         };
         // The window's own request, taken once its tree is laid out again.
-        self.focus_request = Some(next);
+        self.ask_focus(next);
         self.structure_dirty = true;
         true
     }
@@ -1591,11 +1719,9 @@ impl AppWindow {
     /// Send what the person typed after each press the app ran since.
     fn send_typed(&mut self) {
         let mut sent = false;
-        while self
-            .typed
-            .front()
-            .is_some_and(|typed| typed.after <= self.took)
-        {
+        while self.typed.front().is_some_and(|typed| {
+            typed.after <= self.took && !(typed.waits_focus && self.landing.is_some())
+        }) {
             if let Some(typed) = self.typed.pop_front() {
                 self.send_typed_now(typed);
                 sent = true;
@@ -1630,7 +1756,9 @@ impl AppWindow {
         let Some(key) = typed.key else {
             return;
         };
-        if typed.moved {
+        // What the field shows now, when the window did not hold what the person typed: their
+        // own typing is no part of what the app has of it.
+        if typed.moved && typed.sent.is_none() {
             typed.sent = self.bound.borrow().get(&key).cloned();
         }
         let (lane, field) = lane_of(&key);
@@ -2397,8 +2525,11 @@ impl ui::widget::Decorator for AppWindow {
         event: &ui::winit::event::WindowEvent,
         ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        // Focus moves on a key, a press or a touch, never on a pointer that only moves.
         use ui::winit::event::WindowEvent;
+        // What the person typed while the keyboard was on its way to the field a press opened
+        // goes there first, before the input this event brings.
+        self.release_landing();
+        // Focus moves on a key, a press or a touch, never on a pointer that only moves.
         if matches!(
             event,
             WindowEvent::KeyboardInput { .. }
@@ -2466,9 +2597,16 @@ impl ui::widget::Decorator for AppWindow {
     }
 
     fn take_focus_request(&mut self) -> Option<String> {
-        self.focus_request
+        let request = self
+            .focus_request
             .take()
-            .or_else(|| self.body.take_focus_request())
+            .or_else(|| self.body.take_focus_request());
+        // The app places the keyboard now: what the person typed while it was on its way is
+        // the field's it is arriving in.
+        if request.is_some() {
+            self.landing = None;
+        }
+        request
     }
 
     fn take_structure_dirty(&mut self) -> bool {

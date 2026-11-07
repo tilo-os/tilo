@@ -106,6 +106,54 @@ fn the_catch_up_names_each_item_it_changed(window: &tilo_ui_host::UiNode) {
         !nodes_of(content, "ui.Avatar").is_empty() && !nodes_of(content, "ui.Time").is_empty(),
         "each step says who made it and when: {content:?}"
     );
+    // A line reads as history writes a sentence: the name first, then what they did
+    // ("Scout marked it done"). A face alone does not say who.
+    let mut rows = Vec::new();
+    nodes(content, "row", &mut rows);
+    let steps: Vec<&tilo_ui_host::UiNode> = rows
+        .into_iter()
+        .filter(|row| row.key.contains("~step-"))
+        .collect();
+    assert!(
+        !steps.is_empty(),
+        "the catch-up holds a line per step: {content:?}"
+    );
+    let mut lines = Vec::new();
+    for step in &steps {
+        let texts: Vec<(&str, String)> = nodes_of(step, "ui.Text")
+            .into_iter()
+            .map(|text| {
+                let role = match text.props.get("role") {
+                    Some(tilo_render_protocol::patch::Value::Text(role)) => role.as_str(),
+                    _ => "",
+                };
+                match text.props.get("value") {
+                    Some(tilo_render_protocol::patch::Value::Text(value)) => (role, value.clone()),
+                    _ => panic!("a step's text says something: {text:?}"),
+                }
+            })
+            .collect();
+        assert!(
+            texts.len() >= 2 && texts[0].0 == "label" && !texts[0].1.is_empty(),
+            "a step leads with who made it, by name: {texts:?}"
+        );
+        assert!(
+            !texts[1].1.is_empty() && !texts[1].1.contains("this"),
+            "and goes on with what they did: {texts:?}"
+        );
+        lines.push(format!("{} {}", texts[0].1, texts[1].1));
+    }
+    assert!(
+        lines.iter().all(|line| ["Bo", "Scout", "You"]
+            .iter()
+            .any(|name| line.starts_with(name))),
+        "every step names its person before its verb: {lines:?}"
+    );
+    assert!(
+        lines.iter().any(|line| line.starts_with("Bo "))
+            && lines.iter().any(|line| line.starts_with("Scout ")),
+        "the steps name Bo and her agent: {lines:?}"
+    );
 }
 
 /// What the audit finds wrong with `staged`'s window as it stands at `viewport`.
@@ -134,6 +182,22 @@ fn floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
         node.children.iter().find_map(|child| find(child, name))
     }
     find(&staged.harness().inspection().root, name)
+}
+
+/// Where the column title that says `said` stands once the layout ran.
+fn title_rect(staged: &stage::Staged, said: &str) -> Option<Rect> {
+    fn find(node: &ui::headless::InspectionNode, said: &str) -> Option<Rect> {
+        let names = node
+            .semantics
+            .as_ref()
+            .and_then(|semantics| semantics.name.as_deref());
+        if node.widget == "NavShellTitle" && names == Some(said) {
+            let [x, y, width, height] = node.rect;
+            return Some(Rect::new(x, y, x + width, y + height));
+        }
+        node.children.iter().find_map(|child| find(child, said))
+    }
+    find(&staged.harness().inspection().root, said)
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
@@ -975,6 +1039,12 @@ fn input_at(size: (u32, u32)) -> ui::interaction::InteractionEnvironment {
 }
 
 #[test]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    reason = "frame and mark sizes are small counts, far inside usize and f64"
+)]
 fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
     // The marks a row and a window carry are read from the record's steps, which are the
     // store's versions and the person's seen marks: a scenario staged for a capture is
@@ -1038,6 +1108,49 @@ fn a_capture_writes_the_scenarios_steps_down_so_what_changed_shows() {
             .iter()
             .any(|child| child.kind == "ui.ChangeMark"),
         "the list header's mark stands beside its title: {header:?}"
+    );
+    // A node in the tree is not a pixel: the mark stands beside "Today", in its row, and the
+    // frame has its ink there.
+    let mark = floating_rect(&away, "ChangeMark").expect("the window's mark is laid out");
+    let today = title_rect(&away, "Today").expect("the list column's title is laid out");
+    assert!(
+        mark.width() > 40.0 && mark.height() > 20.0,
+        "the mark has room to stand in the header: {mark:?}"
+    );
+    assert!(
+        mark.y0 <= today.y1 && mark.y1 >= today.y0,
+        "the mark stands in the title's row: title {today:?}, mark {mark:?}"
+    );
+    assert!(
+        mark.x0 >= today.x1 && mark.x0 < today.x1 + 300.0,
+        "the mark stands beside the title it counts: title {today:?}, mark {mark:?}"
+    );
+    let rgba = away.harness().render_rgba();
+    let (wide, tall) = (1280usize, 800usize);
+    assert!(!rgba.is_empty(), "the frame renders");
+    let device = rgba.len() / 4;
+    let scale = ((device / (wide * tall)) as f64).sqrt().round().max(1.0) as usize;
+    let ground = ui::Theme::light().tokens.colors.surfaces.content.to_rgba8();
+    let ground = [ground.r, ground.g, ground.b];
+    let pixel = |x: usize, y: usize| {
+        let at = (y * wide * scale + x) * 4;
+        [rgba[at], rgba[at + 1], rgba[at + 2]]
+    };
+    let mut inked = 0;
+    for y in (mark.y0 as usize * scale)..(mark.y1 as usize * scale) {
+        for x in (mark.x0 as usize * scale)..(mark.x1 as usize * scale) {
+            if !pixel(x, y)
+                .iter()
+                .zip(ground)
+                .all(|(painted, beneath)| painted.abs_diff(beneath) <= 12)
+            {
+                inked += 1;
+            }
+        }
+    }
+    assert!(
+        inked > 500,
+        "the mark is painted in the header, not only built: {inked} px in {mark:?}"
     );
 }
 
