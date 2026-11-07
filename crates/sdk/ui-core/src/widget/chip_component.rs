@@ -34,6 +34,13 @@ pub struct ChipProps {
 impl Described for Chip {
     type Props = ChipProps;
 
+    /// A press is the chip's own action: the widget holds the binding, so the press is a route
+    /// an agent's invocation of it lands on, and both run from the door. Removing it uncovers a
+    /// command drawn as its own button.
+    fn press_events() -> &'static [&'static str] {
+        &["press"]
+    }
+
     fn from_props(key: &str, props: ChipProps) -> Self {
         let ChipProps {
             label,
