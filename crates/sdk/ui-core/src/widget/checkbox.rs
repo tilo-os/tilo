@@ -467,11 +467,6 @@ impl Checkbox {
         self.indeterminate
     }
 
-    /// Show a mixed mark, or stop; the value does not change.
-    pub fn set_indeterminate(&mut self, indeterminate: bool) {
-        self.indeterminate = indeterminate;
-    }
-
     /// Paint a checkbox without taking ownership of its state or events.
     ///
     /// The box is always square: the largest square centred in `face.rect`,
