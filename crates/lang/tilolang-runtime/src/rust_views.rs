@@ -136,18 +136,27 @@ pub(crate) fn app_of(shared: &Shared, ty: &str) -> Option<Rc<dyn RustViews>> {
 
 /// The kind a Rust app declares for the resource type `ty`: its own kind whose type name is
 /// `ty`'s (`tube.Channel` for `tube#Channel`), when it declares one.
+///
+/// The app matters as well as the type's name: two apps declare a `Channel` (`tube.Channel`,
+/// `chat.Channel`), and a resource of one is drawn by its own app's view, never the other's.
 pub(crate) fn kind_of(views: &Rc<dyn RustViews>, ty: &str) -> String {
+    let app = ty.split(['#', '.']).next().unwrap_or(ty);
     let name = ty.rsplit(['#', '.']).next().unwrap_or(ty);
     views
         .kinds()
         .into_iter()
-        .find(|kind| kind.rsplit(['#', '.']).next() == Some(name))
-        .unwrap_or_else(|| {
-            // The type's own kind (`tube.Channel`, as a place names it); a registry that answers
-            // for every app already knows its kind, so this is the last resort.
-            let app = ty.split(['#', '.']).next().unwrap_or(ty);
-            format!("{app}.{name}")
+        .find(|kind| {
+            kind.split(['#', '.']).next() == Some(app)
+                && kind.rsplit(['#', '.']).next() == Some(name)
         })
+        .or_else(|| {
+            // A kind a registry of every app names by the type alone.
+            views
+                .kinds()
+                .into_iter()
+                .find(|kind| kind.rsplit(['#', '.']).next() == Some(name))
+        })
+        .unwrap_or_else(|| format!("{app}.{name}"))
 }
 
 /// The view a place's `shown_as` names the resource type `ty` through, or the type's default view:
