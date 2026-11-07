@@ -6,7 +6,7 @@
 use super::*;
 use crate::retained_raster::{
     FrameContent, RasterCheck, Readback, Repaint, RetainedFrames, RetainedRaster, RetainedTarget,
-    TargetKey, Unknown,
+    TargetKey, Unknown, culled_for_damage,
 };
 use crate::widget::{
     Column, Dropdown, GroupRow, ScrollAxis, Scrollable, TabDescriptor, Text, TextInput,
@@ -100,13 +100,12 @@ crate::testing::test_app_widget!(Chat, "Chat");
 const SIZE: (u32, u32) = (1200, 800);
 
 /// A desktop of two windows, the chat first, drawing its damage parts.
-fn desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
-    let places = Rc::new(RefCell::new(Places::default()));
+fn desk_row(places: Rc<RefCell<Places>>) -> GroupRow {
     let chat = WindowGroup::new(
         100,
         vec![(
             TabDescriptor::new(1, "Chat"),
-            TileContent::App(Box::new(Chat::new(Rc::clone(&places)))),
+            TileContent::App(Box::new(Chat::new(places))),
         )],
         1,
         WindowWidth::Normal,
@@ -123,16 +122,23 @@ fn desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
         2,
         WindowWidth::Normal,
     );
-    let mut harness = FrameHarness::for_root(
-        crate::State::new(),
-        GroupRow::new(vec![chat, notes]),
-        SIZE,
-        Theme::dark(),
-    );
+    GroupRow::new(vec![chat, notes])
+}
+
+/// `root` in a frame of [`SIZE`], parts tracked, laid out once as a frame
+/// does.
+fn desktop_of(root: impl Widget + 'static) -> FrameHarness {
+    let mut harness = FrameHarness::for_root(crate::State::new(), root, SIZE, Theme::dark());
     harness.track_scene_parts(true);
     // As the browser does: inputs are laid out and drawn once, by the frame.
     harness.set_coalesce_input_frames(true);
     harness.relayout();
+    harness
+}
+
+fn desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
+    let places = Rc::new(RefCell::new(Places::default()));
+    let harness = desktop_of(desk_row(Rc::clone(&places)));
     (harness, places)
 }
 
@@ -230,77 +236,99 @@ fn a_resize_repaints_the_whole_frame() {
     );
 }
 
-/// Every frame of a session repainted in part equals a full render of it,
-/// through Vello's sparse fine pass and through a window around the damage
-/// (the web build's only way).
-#[test]
-fn a_session_repainted_in_part_matches_full_renders() {
-    session_matches_full_renders(true);
-    session_matches_full_renders(false);
+/// A host's retained target on the shared GPU: each frame repaints only where
+/// it changed, what it repaints is culled to the parts that can reach the
+/// damage (as the hosts cull it), and every repaint is compared with a full
+/// render of the frame.
+struct Retained {
+    device: vello::wgpu::Device,
+    queue: vello::wgpu::Queue,
+    renderer: vello::Renderer,
+    texture: vello::wgpu::Texture,
+    view: vello::wgpu::TextureView,
+    raster: RetainedRaster,
+    frames: RetainedFrames,
+    /// How many frames it repainted in part.
+    partial: usize,
+    sparse: bool,
 }
 
-fn session_matches_full_renders(sparse: bool) {
-    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the raster check");
-    let (device, queue) = (&gpu.device, &gpu.queue);
-    let mut renderer = vello::Renderer::new(
-        device,
-        vello::RendererOptions {
-            use_cpu: false,
-            antialiasing_support: vello::AaSupport::area_only(),
-            num_init_threads: None,
-            pipeline_cache: None,
-        },
-    )
-    .unwrap();
-    // Software rasterization sums a tile's segments in scheduling order; a
-    // fixed order leaves the comparison only stale or missing pixels.
-    renderer.enable_canonical_segment_order(device).unwrap();
-    renderer.set_sparse_fine_enabled(sparse);
-    let texture = device.create_texture(&vello::wgpu::TextureDescriptor {
-        label: Some("retained-session-target"),
-        size: vello::wgpu::Extent3d {
-            width: SIZE.0,
-            height: SIZE.1,
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: vello::wgpu::TextureDimension::D2,
-        format: vello::wgpu::TextureFormat::Rgba8Unorm,
-        usage: vello::wgpu::TextureUsages::STORAGE_BINDING
-            | vello::wgpu::TextureUsages::COPY_SRC
-            | vello::wgpu::TextureUsages::TEXTURE_BINDING
-            | vello::wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
-    let target = RetainedTarget {
-        texture: &texture,
-        view: &view,
-    };
-    let mut raster = RetainedRaster::new(false);
-    let mut frames = RetainedFrames::default();
-    let (mut harness, places) = desktop();
-    let key = key(&harness, SIZE, 0);
-    let mut partial = 0;
-    let mut step = |harness: &mut FrameHarness, what: &str| {
-        let repaint = present(harness, &mut frames, key);
+impl Retained {
+    fn new(sparse: bool) -> Self {
+        let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the raster check");
+        let mut renderer = vello::Renderer::new(
+            &gpu.device,
+            vello::RendererOptions {
+                use_cpu: false,
+                antialiasing_support: vello::AaSupport::area_only(),
+                num_init_threads: None,
+                pipeline_cache: None,
+            },
+        )
+        .unwrap();
+        // Software rasterization sums a tile's segments in scheduling order; a
+        // fixed order leaves the comparison only stale or missing pixels.
+        renderer
+            .enable_canonical_segment_order(&gpu.device)
+            .unwrap();
+        renderer.set_sparse_fine_enabled(sparse);
+        let texture = gpu.device.create_texture(&vello::wgpu::TextureDescriptor {
+            label: Some("retained-session-target"),
+            size: vello::wgpu::Extent3d {
+                width: SIZE.0,
+                height: SIZE.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: vello::wgpu::TextureDimension::D2,
+            format: vello::wgpu::TextureFormat::Rgba8Unorm,
+            usage: vello::wgpu::TextureUsages::STORAGE_BINDING
+                | vello::wgpu::TextureUsages::COPY_SRC
+                | vello::wgpu::TextureUsages::TEXTURE_BINDING
+                | vello::wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
+        Self {
+            device: gpu.device,
+            queue: gpu.queue,
+            renderer,
+            texture,
+            view,
+            raster: RetainedRaster::new(false),
+            frames: RetainedFrames::default(),
+            partial: 0,
+            sparse,
+        }
+    }
+
+    /// Repaint what this frame changed onto the target, then compare the
+    /// target with a full render of the frame.
+    fn step(&mut self, harness: &mut FrameHarness, key: TargetKey, what: &str) {
+        let repaint = present(harness, &mut self.frames, key);
         let input = harness.frame_render_input();
-        let (regions, full_redraw) = match &repaint {
+        let (damage, full_redraw) = match &repaint {
             Repaint::Full(_) => (&[][..], true),
             Repaint::Regions(regions) => (regions.as_slice(), false),
         };
-        raster
+        let culled = culled_for_damage(input.scene, harness.scene_parts(), key, damage);
+        let mut physical = vello::Scene::new();
+        physical.append(culled.as_ref().unwrap_or(input.scene), Some(key.to_device));
+        self.raster
             .rasterize(
-                (device, queue),
-                Some(&mut renderer),
-                target,
+                (&self.device, &self.queue),
+                Some(&mut self.renderer),
+                RetainedTarget {
+                    texture: &self.texture,
+                    view: &self.view,
+                },
                 FrameContent {
-                    scene: input.scene,
+                    scene: &physical,
                     width: SIZE.0,
                     height: SIZE.1,
                     base_color: input.background,
-                    damage_regions: regions,
+                    damage_regions: damage,
                     scroll_copies: &[],
                     full_redraw,
                     backdrop: &crate::backdrop::BackdropFrame::default(),
@@ -311,12 +339,20 @@ fn session_matches_full_renders(sparse: bool) {
         if full_redraw {
             return;
         }
-        partial += 1;
+        self.partial += 1;
+        let whole = culled.is_some().then(|| {
+            let mut whole = vello::Scene::new();
+            whole.append(input.scene, Some(key.to_device));
+            whole
+        });
         let check = RasterCheck::start(
-            (device, queue),
-            &mut renderer,
-            target,
-            input.scene,
+            (&self.device, &self.queue),
+            &mut self.renderer,
+            RetainedTarget {
+                texture: &self.texture,
+                view: &self.view,
+            },
+            whole.as_ref().unwrap_or(&physical),
             SIZE,
             input.background,
         )
@@ -324,16 +360,17 @@ fn session_matches_full_renders(sparse: bool) {
         // Another test polling the shared device may be the one that runs
         // the readback's callbacks, after this poll returns.
         let readback = loop {
-            let _ = device.poll(vello::wgpu::PollType::wait_indefinitely());
+            let _ = self.device.poll(vello::wgpu::PollType::wait_indefinitely());
             if let Some(readback) = check.differences() {
                 break readback;
             }
             std::thread::yield_now();
         };
+        let sparse = self.sparse;
         match readback {
             Readback::Differing(differences) => assert_eq!(
                 differences.count, 0,
-                "after {what} (sparse {sparse}), repainting {regions:?} left stale pixels at {:?}",
+                "after {what} (sparse {sparse}), repainting {damage:?} left stale pixels at {:?}",
                 differences.bounds
             ),
             // A check that could not run proves nothing either way, and the
@@ -342,7 +379,23 @@ fn session_matches_full_renders(sparse: bool) {
                 "after {what} (sparse {sparse}), the check could not read its frames back: {why}"
             ),
         }
-    };
+    }
+}
+
+/// Every frame of a session repainted in part equals a full render of it,
+/// through Vello's sparse fine pass and through a window around the damage
+/// (the web build's only way).
+#[test]
+fn a_session_repainted_in_part_matches_full_renders() {
+    session_matches_full_renders(true);
+    session_matches_full_renders(false);
+}
+
+fn session_matches_full_renders(sparse: bool) {
+    let mut target = Retained::new(sparse);
+    let (mut harness, places) = desktop();
+    let key = key(&harness, SIZE, 0);
+    let mut step = |harness: &mut FrameHarness, what: &str| target.step(harness, key, what);
     step(&mut harness, "the first frame");
 
     let (x, y) = centre(places.borrow().composer);
@@ -379,9 +432,93 @@ fn session_matches_full_renders(sparse: bool) {
     step(&mut harness, "typing after the move");
 
     assert!(
-        partial >= 3,
-        "the session repainted in part {partial} times"
+        target.partial >= 3,
+        "the session repainted in part {} times",
+        target.partial
     );
+}
+
+/// A desk under an overlay's scrim, as search dims the frame behind its
+/// palette.
+struct Scrimmed {
+    row: GroupRow,
+    open: bool,
+}
+
+impl Widget for Scrimmed {
+    crate::testing::delegate_widget_methods!(
+        row: sync,
+        build_layout,
+        apply_layout,
+        handle_event,
+        get_rect
+    );
+    fn draw(
+        &mut self,
+        scene: &mut vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.row.draw(scene, transform, text, theme, presence);
+        if self.open {
+            let frame = Rect::new(0.0, 0.0, f64::from(SIZE.0), f64::from(SIZE.1));
+            crate::overlay::scrim::modal(scene, transform, frame, 1.0, theme);
+        }
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.row]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.row]
+    }
+    fn collect_damage(&self, regions: &mut Vec<Rect>) {
+        self.row.collect_damage(regions);
+    }
+    fn name(&self) -> &str {
+        "Scrimmed desk"
+    }
+}
+
+crate::testing::test_app_widget!(Scrimmed, "Scrimmed desk");
+
+/// The desk of [`desktop`] under a scrim that opens and closes.
+fn scrimmed_desktop() -> (FrameHarness, Rc<RefCell<Places>>) {
+    let places = Rc::new(RefCell::new(Places::default()));
+    let desk = Scrimmed {
+        row: desk_row(Rc::clone(&places)),
+        open: false,
+    };
+    (desktop_of(desk), places)
+}
+
+/// A scrim dims every pixel of the frame. Closing it must repaint every pixel
+/// it dimmed: no frame may keep the dim, not the one that closes it and not
+/// the unchanged frames after it.
+#[test]
+fn closing_a_scrim_repaints_the_frame_it_dimmed() {
+    let (mut harness, places) = scrimmed_desktop();
+    let key = key(&harness, SIZE, 0);
+    let mut target = Retained::new(false);
+    target.step(&mut harness, key, "the first frame");
+
+    harness.root_mut::<Scrimmed>().open = true;
+    harness.relayout();
+    target.step(&mut harness, key, "opening the scrim");
+
+    // What a person does under the scrim: typing repaints its caret and line,
+    // and the dim stays as it was over everything else.
+    let (x, y) = centre(places.borrow().composer);
+    harness.click_at(x, y);
+    target.step(&mut harness, key, "focusing the composer under the scrim");
+    harness.type_text("x");
+    target.step(&mut harness, key, "typing under the scrim");
+
+    harness.root_mut::<Scrimmed>().open = false;
+    harness.relayout();
+    target.step(&mut harness, key, "closing the scrim");
+    target.step(&mut harness, key, "the frame after the scrim closed");
 }
 
 /// A note: a page that scrolls a block editor of many paragraphs, as a

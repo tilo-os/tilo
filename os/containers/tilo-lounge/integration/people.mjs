@@ -385,11 +385,13 @@ try {
   if (refused.length) failed(`a page's change was refused: ${refused.slice(0, 5).join('; ')}`);
   // A frame repainted in part must leave no stale pixel. A page built with the
   // retained-frame check says so where it happens; the check also says when it
-  // could not read its two frames back. Both are reported: the pages' frames
-  // are compared here, so a run that sees them says what it saw rather than
-  // hiding it, and a check that cannot compare on the web is visible too.
+  // could not read its two frames back. A stale pixel on either page fails the
+  // run: the desk a person sees is the frame that repaint left behind.
   report.mismatched = both.filter(line => /retained frame differs from a full render/.test(line));
   report.unreadable = both.filter(line => /could not read a frame back/.test(line));
+  if (report.mismatched.length) {
+    failed(`a page showed a stale frame: ${report.mismatched.slice(0, 3).join('; ')}`);
+  }
 
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

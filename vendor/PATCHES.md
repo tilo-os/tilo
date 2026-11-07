@@ -670,6 +670,12 @@ first, which a software GPU (lavapipe) holds in the process heap: about
 40 MiB in the idle compositor, whose headless frames and captures need the
 fixed order from their first render.
 
+`Renderer::new_async_canonical_reporting(device, options, deferral, built)` is
+`new_async_deferring_reporting` with that order from the start, for a renderer
+whose renders are compared pixel by pixel: the web page built with the
+retained-frame check renders one frame twice, and two renders that differ only
+in how the GPU summed a tile's segments read as a stale frame.
+
 ## `vendor/vello/src/lib.rs`, `shaders.rs`, `wgpu_engine.rs`: deferred pipelines
 
 `Renderer::new_deferring(device, options, deferral)` registers every shader

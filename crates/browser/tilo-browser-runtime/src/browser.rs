@@ -1705,17 +1705,34 @@ fn compile_deferred_pipelines_later() {
 /// needs one sooner creates it there and then, so nothing is ever drawn
 /// without its pipeline.
 async fn new_renderer(device: &wgpu::Device) -> Result<vello::Renderer, String> {
-    vello::Renderer::new_async_deferring_reporting(
-        device,
-        vello::RendererOptions {
-            antialiasing_support: vello::AaSupport::area_only(),
-            ..Default::default()
-        },
-        vello::PipelineDeferral::Unused,
-        &mut || PIPELINES_BUILT.set(PIPELINES_BUILT.get().saturating_add(1)),
-    )
-    .await
-    .map_err(|e| e.to_string())
+    let options = vello::RendererOptions {
+        antialiasing_support: vello::AaSupport::area_only(),
+        ..Default::default()
+    };
+    let mut built = || PIPELINES_BUILT.set(PIPELINES_BUILT.get().saturating_add(1));
+    // Debug builds compare a frame repainted in part with a full render of it
+    // pixel by pixel: two renders of one scene that differ only in the order
+    // the GPU summed their segments would read as a stale frame
+    // (`EnableCanonicalSegmentOrder`), so they sum them in one order here.
+    // Release builds have no such check and keep the faster order.
+    let renderer = if cfg!(debug_assertions) {
+        vello::Renderer::new_async_canonical_reporting(
+            device,
+            options,
+            vello::PipelineDeferral::Unused,
+            &mut built,
+        )
+        .await
+    } else {
+        vello::Renderer::new_async_deferring_reporting(
+            device,
+            options,
+            vello::PipelineDeferral::Unused,
+            &mut built,
+        )
+        .await
+    };
+    renderer.map_err(|e| e.to_string())
 }
 
 /// The shared device and renderer, created with the first surface (or taken
