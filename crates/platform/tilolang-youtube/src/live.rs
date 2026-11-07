@@ -122,13 +122,19 @@ fn fetch_over_http(url: &str) -> Option<Vec<u8>> {
     // answer names tens of stills at once.
     static CLIENT: OnceLock<Option<tilo_net::http::BlockingClient>> = OnceLock::new();
     let client = CLIENT.get_or_init(|| {
-        tilo_net::http::blocking_client()
+        let built = tilo_net::http::blocking_client()
             .timeout(std::time::Duration::from_secs(15))
             .build()
-            .ok()
+            .map_err(|error| tracing::warn!(%error, "no client for YouTube's pictures"));
+        built.ok()
     });
-    let response = client
-        .as_ref()?
+    // Every way this can fail says which: a picture that could not be fetched is named by its
+    // URL and its reason, never left for someone to guess from a placeholder.
+    let Some(client) = client.as_ref() else {
+        tracing::warn!(%url, "no client for YouTube's pictures");
+        return None;
+    };
+    let response = match client
         .get(url)
         // A browser's user agent: the image CDNs answer an unknown client with a 403.
         .header(
@@ -136,18 +142,40 @@ fn fetch_over_http(url: &str) -> Option<Vec<u8>> {
             "Mozilla/5.0 (X11; Linux x86_64; rv:120.0) Gecko/20100101 Firefox/120.0",
         )
         .send()
-        .ok()?
-        .error_for_status()
-        .ok()?;
+    {
+        Ok(response) => match response.error_for_status() {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::warn!(%url, %error, "YouTube's picture host refused a still");
+                return None;
+            }
+        },
+        Err(error) => {
+            tracing::warn!(%url, %error, "a YouTube picture could not be fetched");
+            return None;
+        }
+    };
     if response
         .content_length()
         .is_some_and(|len| len > MAX_PICTURE_BYTES)
     {
+        tracing::warn!(%url, "a YouTube picture is larger than a still ever is");
         return None;
     }
-    let bytes = response.bytes().ok()?;
-    (!bytes.is_empty() && u64::try_from(bytes.len()).ok()? <= MAX_PICTURE_BYTES)
-        .then(|| bytes.to_vec())
+    let bytes = match response.bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            tracing::warn!(%url, %error, "a YouTube picture's bytes could not be read");
+            return None;
+        }
+    };
+    let bytes = bytes.to_vec();
+    if bytes.is_empty() || u64::try_from(bytes.len()).is_ok_and(|len| len > MAX_PICTURE_BYTES) {
+        tracing::warn!(%url, len = bytes.len(), "a YouTube picture's bytes are not a still");
+        return None;
+    }
+    tracing::debug!(%url, len = bytes.len(), "a YouTube picture is fetched");
+    Some(bytes)
 }
 
 impl LiveClient {
@@ -182,11 +210,17 @@ impl LiveClient {
         {
             return kept.clone();
         }
+        // A connector with no content store is a launch the launcher handed no device store:
+        // its answers carry no picture, and saying so is the only clue the person's window
+        // gets as to why every still is a placeholder.
         let Some(content) = &self.content else {
+            tracing::warn!(
+                %url,
+                "this process holds no content store: the answer's pictures are left empty"
+            );
             return String::new();
         };
         let Some(bytes) = (self.fetch)(url) else {
-            tracing::warn!(%url, "a YouTube picture could not be fetched");
             return String::new();
         };
         let hash = match content.put(&bytes) {
@@ -197,6 +231,15 @@ impl LiveClient {
             }
         };
         let address = format!("{}{hash}", ui::pictures::BLOB_SCHEME);
+        // The address is only readable by a window whose store holds the same content: say
+        // where this one put it, and whether reading it back through the store answers.
+        tracing::debug!(
+            %url,
+            len = bytes.len(),
+            hash = %hash,
+            read_back = content.read(&hash).is_some(),
+            "a YouTube picture is kept as this device's content"
+        );
         self.held
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
