@@ -20385,7 +20385,6 @@ dependencies = [
  "tilo-identity-host",
  "tilo-lock",
  "tilo-relay",
- "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
  "tilo-test-env",
