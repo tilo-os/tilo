@@ -1,7 +1,7 @@
 //! `GroupRow` — a horizontal flex container of `WindowGroup`s that also routes cross-group tab
-//! drag-drop: it intercepts release events after every child `TabBar` drained its own drag, and
-//! splices a published `pending_detach` tab + `TileHost` into a matching sibling. Within-group
-//! reorder lives in `TabBar` / `WindowGroup`.
+//! drag-drop: it intercepts releases after every child `TabBar` drained its own drag, and
+//! splices a published `pending_detach` tab and `TileHost` into a matching sibling. Within-group
+//! reorder lives in `TabBar` and `WindowGroup`.
 
 use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
@@ -52,13 +52,9 @@ const SNAP_SETTLED_PX: f64 = 0.5;
 /// How long a drag rests on a background tab before it comes to the front.
 pub(crate) const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
 
-/// What a drag (a tab, or content the compositor carries) is reaching for
-/// beyond what is on screen. Strips are unbounded and windows hold several
-/// tabs, so the drop target is usually off screen or behind another tab:
-/// resting the drag at a lane's edge pans the strip under it, faster the
-/// deeper it is, and resting it on a background tab brings that tab to the
-/// front, so the drop can land there without dropping, panning and dragging
-/// again.
+/// What a drag reaches for beyond the screen: strips are unbounded and windows hold several tabs,
+/// so resting at a lane's edge pans the strip (faster deeper in) and resting on a background tab
+/// brings it forward.
 #[derive(Clone, Copy, Debug, Default)]
 struct DragReach {
     /// The edge pan's frame clock.
@@ -70,16 +66,14 @@ struct DragReach {
 /// it is rather than throwing it.
 const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
 
-/// A tab dragged over a window body gets a generous before/after target at
-/// each outer edge. The target follows the window size, but stays useful on a
-/// compact window and does not consume an absurd amount of an ultrawide one.
+/// A tab dragged over a window body gets a generous target at each outer edge: a share of the
+/// window, so it stays usable when compact and does not eat an ultrawide.
 const TAB_GROUP_EDGE_FRAC: f64 = 0.25;
 const TAB_GROUP_EDGE_MIN_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
 const TAB_GROUP_EDGE_MAX_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64 * 3.0;
 const TAB_GROUP_EDGE_MAX_FRAC: f64 = 0.32;
-/// Keep a resolved target through a few pixels of boundary jitter. Release
-/// commits the retained preview verbatim, so the window cannot land somewhere
-/// other than the place the indicator showed.
+/// Keep a resolved target through a few pixels of jitter; release commits the retained preview
+/// verbatim, so the window cannot land elsewhere than the indicator showed.
 const TAB_DROP_HYSTERESIS_PX: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 
 fn tab_group_edge_width(group_width: f64) -> f64 {
@@ -89,45 +83,37 @@ fn tab_group_edge_width(group_width: f64) -> f64 {
         .min(group_width * TAB_GROUP_EDGE_MAX_FRAC)
 }
 
-/// Empty canvas kept after the final group at the legal end of a strip.
-/// A fifth of the viewport is enough breathing room to make the end legible
-/// without letting the focused app feel abandoned in the middle of the screen.
+/// Empty canvas kept after the final group at the legal end of a strip: a fifth of the viewport
+/// makes the end legible without stranding the focused app mid-screen.
 const TRAILING_REVEAL_FRAC: f64 = 0.20;
-/// Wallpaper a desktop keeps at both ends of a strip, as its leading inset
-/// ([`GroupRow::with_leading_inset`]) and, through the usable width it
-/// sizes windows against, at the trailing end: without it a window at the
-/// strip's home or end has its border, rounded corners and shadow cut off
-/// by the screen edge. A window casts `e2` (blur 8, a visible falloff of
-/// about 10 px plus a 2 px offset), so `s8` holds the whole shadow.
+/// Wallpaper a desktop keeps at both ends of a strip, as the leading inset and, through usable
+/// width, at the trailing end: without it a window at either end has its border, corners and shadow
+/// (`e2`: blur 8) cut off by the screen edge.
 pub const STRIP_EDGE_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
-/// Wallpaper a desktop keeps under a strip's tiled windows, so their bottom
-/// border and rounded corners stand clear of the screen's bottom edge. A
-/// maximized or fullscreen window takes the band.
+/// Wallpaper under a strip's tiled windows, so their bottom border and corners stand clear of the
+/// screen edge; a maximized or fullscreen window takes the band.
 pub const STRIP_BOTTOM_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
-/// Wallpaper between the bar's band and the top of a strip: a window's own top edge and rounded
-/// corners stand on it rather than against the bar, and the step is small enough that the two still
-/// read as one stack under the screen's edge. A maximized or fullscreen window takes the band.
+/// Wallpaper between the bar's band and the top of a strip, so a window's top edge and corners
+/// stand on it rather than against the bar, while both still read as one stack.
 pub const STRIP_TOP_GAP_PX: f64 = crate::tokens::Spacing::BASE.s1 as f64;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
-/// How far a group's shadow sprites paint past its rect: `bloom_pad` (120 px) in
-/// `TileHost::draw_steady_state`, with the clip's margin. Not a Theme spacing token: it must match
-/// the compositor shadow draw, not layout padding a theme can resize.
+/// How far a group's shadow sprites paint past its rect: `bloom_pad` with the clip's margin. Not a
+/// theme token, since it must match the compositor's shadow draw.
 const GROUP_SPRITE_REACH_PX: f64 = crate::tokens::motion::GROUP_SPRITE_REACH;
 
 /// Press displacement (px) before a tab-bar-background press becomes a
 /// whole-group reorder drag instead of a focus click.
 const GROUP_DRAG_THRESHOLD: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
 
-/// How long a finger rests on a tab bar before moving for the drag to carry the window instead of
-/// panning the strip: a quick swipe pans, touch then hold then drag moves the window as on a
-/// phone's home screen, shorter than the long press that opens a context menu.
+/// How long a finger rests on a tab bar before moving drags the window instead of panning the
+/// strip: a quick swipe pans, touch-hold-drag moves as on a phone, shorter than the long press for
+/// a menu.
 const TOUCH_GRAB_HOLD: crate::time::Duration = crate::time::Duration::from_millis(300);
 
-/// One-finger swipe that is following the strip. Distinct from
-/// [`GroupDrag`]: a horizontal swipe pans; a grab that goes mostly
-/// vertical, or a pointer drag, still reorders.
+/// One-finger swipe following the strip, distinct from [`GroupDrag`]: a horizontal swipe pans, a
+/// mostly vertical grab or a pointer drag reorders.
 #[derive(Clone, Copy, Debug)]
 struct TouchPan {
     id: u64,
@@ -143,9 +129,8 @@ struct PointerPan {
     engaged: bool,
 }
 
-/// In-flight whole-group reorder drag, set on a tab-bar-background press
-/// or touch (see [`WindowGroup::bar_grab_hit`]) and cleared on release.
-/// `moved` latches once the pointer passes [`GROUP_DRAG_THRESHOLD`].
+/// In-flight whole-group reorder drag, set on a tab-bar-background press or touch and cleared on
+/// release; `moved` latches once the pointer passes the threshold.
 #[derive(Clone, Copy, Debug)]
 struct GroupDrag {
     src_idx: usize,
@@ -155,15 +140,13 @@ struct GroupDrag {
     moved: bool,
     /// The finger carrying the drag; `None` for the pointer.
     touch: Option<u64>,
-    /// Someone else holds a window of the group
-    /// ([`WindowGroup::is_held`]): it follows the drag a little and springs
-    /// back, and never moves.
+    /// Someone else holds a window of the group: it follows the drag a little and springs back, and
+    /// never moves.
     held: bool,
 }
 
-// A held group springs back once let go as a let-go surface settles
-// (`motion::Snap`); how far it follows a drag before it stops is a section
-// gap ([`crate::tokens::Spacing::BASE`]).
+// A held group springs back once let go as a let-go surface settles (`motion::Snap`); it follows a
+// drag up to a section gap.
 
 /// `delta` as a held window follows it: a rubber band that gives a little
 /// and no more, less so up and down.
@@ -178,15 +161,14 @@ fn resisted(delta: vello::kurbo::Vec2) -> vello::kurbo::Vec2 {
     vello::kurbo::Vec2::new(pull(delta.x), pull(delta.y) / 2.0)
 }
 
-/// The one spatial answer to a tab drag within a strip — the desktop model's drop target, so what
-/// the row previews is exactly what the model applies, and both hover feedback and release consume
-/// it. A target in an existing group names the exact tab-list insertion point; a group gap names
-/// the slot where a new window group will be made.
+/// The one spatial answer to a tab drag within a strip, straight from the desktop model, so the row
+/// previews exactly what the model applies; a target in a group names an insertion point, a group
+/// gap the slot where a new one is made.
 pub use tilo_desktop_model::DropTarget as TabDropTarget;
 
-/// Payload published when a tab drag ends outside the row's own band; the shell hit-tests the
-/// release point against other strips and delivers it via [`GroupRow::accept_cross_strip_drop`] or
-/// returns it to source. The source group is already detached by the time this is published.
+/// Payload published when a tab drag ends outside the row's band; the shell hit-tests the release
+/// against other strips and delivers it or returns it to source. The source group is already
+/// detached.
 pub struct CrossStripDetach {
     pub tab_id: u64,
     pub source_group_id: u64,
@@ -197,9 +179,8 @@ pub struct CrossStripDetach {
     pub release_point: Point,
 }
 
-/// Persistable shape of one live window group after a same-strip tab move. Tile content stays owned
-/// by the shell's `WorkspaceTree`: the UI reports identities and presentation state only, avoiding
-/// a second copy of app data at the widget boundary.
+/// Persistable shape of one live group after a same-strip move: the shell's workspace tree owns
+/// tile content, so the UI reports identities and presentation state only.
 pub use tilo_desktop_model::GroupShape as GroupTopology;
 
 #[allow(
@@ -239,9 +220,8 @@ pub struct GroupRow {
     /// The exact target currently previewed for a child tab drag. Release
     /// consumes this value rather than hit-testing a second time.
     tab_drop_target: Option<TabDropTarget>,
-    /// Target previewed in this row for a tab whose gesture belongs to a
-    /// different strip. Kept separate so the shell can clear cross-strip
-    /// routing without disturbing compositor-owned content drag feedback.
+    /// Target previewed for a tab whose gesture belongs to another strip, kept apart so clearing
+    /// cross-strip routing leaves compositor content-drag feedback alone.
     cross_strip_drop_target: Option<TabDropTarget>,
     /// Content the compositor carries is being dragged over this row
     /// ([`Self::set_external_content_drag_hover`]).
@@ -251,22 +231,19 @@ pub struct GroupRow {
     /// Pan state of the whole row, or of the lane being worked on while
     /// [`Self::lanes`] is populated (see [`Pan`]).
     pan: Pan,
-    /// The step a presenter that moves existing pixels needs the drawn pan
-    /// on, in layout pixels: one device pixel (`1 / scale`), or one layout
-    /// pixel for a CPU presenter. `None` draws the exact pan.
+    /// The step a presenter that moves existing pixels needs the drawn pan on, in layout pixels;
+    /// `None` draws the exact pan.
     scroll_quantum: Option<f64>,
-    /// The row is drawn into a scene of its own ([`Self::draw_apart`]):
-    /// its parent's draw only records the transform it would have drawn
-    /// with.
+    /// The row is drawn into a scene of its own: its parent's draw only records the transform it
+    /// would have drawn with.
     drawn_apart: bool,
     /// The transform the parent's draw passed while [`Self::drawn_apart`].
     apart_transform: Option<Affine>,
     /// One per display the strip is partitioned across, left to right.
     /// Empty when the strip is one continuous row (a single display).
     lanes: Vec<Lane>,
-    /// Which lane each group sits in, by group id. Pushed by the shell from
-    /// its per-device partition; a group the row itself creates is entered
-    /// here with the lane it was dropped into.
+    /// Which lane each group sits in, pushed by the shell from its per-device partition; a group
+    /// the row creates is entered with the lane it was dropped into.
     group_lanes: HashMap<u64, usize>,
     /// The lane keyboard focus and direct strip pans act on.
     focus_lane: usize,
@@ -275,17 +252,14 @@ pub struct GroupRow {
     /// Set by the post-dispatch detach sweep when a release lands outside
     /// this row's band; drained via [`Self::take_pending_cross_strip_detach`].
     pending_cross_strip_detach: Option<CrossStripDetach>,
-    /// Set whenever `scroll_x` changes since the last `draw`; without it
-    /// the parent's cached scene would keep painting stale positions on a
-    /// wheel-pan.
+    /// Set whenever `scroll_x` changes, or the parent's cached scene would keep painting stale
+    /// positions on a wheel-pan.
     scroll_dirty: bool,
-    /// Canvas-x gutter before the first group (the strip-edge gutter, so
-    /// it pans with the strip). `apply_layout` offsets every
-    /// child's screen-space origin by `rect.x0 + leading_inset - scroll_x`.
+    /// Canvas-x gutter before the first group (the strip-edge gutter, so it pans with the strip);
+    /// every child's screen origin is `rect.x0 + leading_inset - scroll_x`.
     leading_inset: f64,
-    /// Transient fullscreen override (not persisted), set by the shell each frame from compositor
-    /// state. Collapses the row to this one group; if it belongs to another strip, [`Self::hidden`]
-    /// is set instead.
+    /// Transient fullscreen override (not persisted), set by the shell from compositor state: the
+    /// row collapses to that group, or to [`Self::hidden`] when it belongs to another strip.
     fullscreen_group: Option<u64>,
     /// Transient: the promoted group leaves its lane's leading gutter clear,
     /// as a user maximize does; a client fullscreen covers it.
@@ -295,13 +269,11 @@ pub struct GroupRow {
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
-    /// How far the [`super::StripDeck`] holding this row has it moved down
-    /// (up, when negative) from where it rests: the row is laid out where it
-    /// rests and moved by this, so a strip sliding in or out costs no layout.
+    /// How far the strip deck holding this row moved it down from rest: laid out where it rests and
+    /// moved by this, so a strip sliding in or out costs no layout.
     deck_shift: f64,
-    /// Transient: the display another strip's fullscreen covers. This
-    /// strip's lane there collapses; its lanes on other displays stay. A
-    /// row with no lanes spans every display and collapses whole.
+    /// Transient: the display another strip's fullscreen covers. This lane collapses there and its
+    /// lanes elsewhere stay; a row with no lanes spans every display and collapses whole.
     covered_output: Option<u32>,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an edge resize).
@@ -328,13 +300,11 @@ pub struct GroupRow {
     /// One-shot `(group_id, new_index)` on reorder commit; drained via
     /// [`Self::take_pending_group_reorder`] into the persisted `WorkspaceTree`.
     pending_group_reorder: Option<(u64, usize)>,
-    /// Set after a tab crosses a group boundary within this row. The shell
-    /// drains a compact identity-only snapshot and applies it to the
-    /// persisted workspace tree.
+    /// Set after a tab crosses a group boundary in this row; the shell drains an identity-only
+    /// snapshot and applies it to the persisted workspace tree.
     pending_topology_change: bool,
-    /// Displays this strip spans; each group resolves its [`WindowWidth`] fraction against the span
-    /// it is laid out on, not the combined desktop, so a full-width window cannot span two
-    /// monitors. Empty in a bare `ui` host ([`Self::usable_at`]).
+    /// Displays this strip spans: each group resolves its width fraction against the span it is
+    /// laid out on, so a full-width window cannot span two monitors. Empty in a bare host.
     output_spans: Vec<OutputSpan>,
     /// Each group's on-screen x from the last layout, after the pan,
     /// keyed by id — a move's "where it used to be".
@@ -342,13 +312,11 @@ pub struct GroupRow {
     /// Set when an insert, close or reorder moves groups along; the next
     /// layout turns prior positions into moves and clears this.
     shift_armed: bool,
-    /// Each moved group's drawn offset from its laid-out x (px, negative =
-    /// left of home), springing to 0 on [`crate::motion::WindowMotion::MOVE`].
-    /// All of them start in the layout that moved them.
+    /// Each moved group's drawn offset from its laid-out x, springing to 0 on `WindowMotion::MOVE`;
+    /// all start in the layout that moved them.
     moves: Vec<(u64, crate::motion::MotionValue<f64>)>,
-    /// Groups another surface draws for now, as one shared element: the overview flying a window's
-    /// picture between its strip and its place in the overview ([`Self::set_shown_elsewhere`]). Not
-    /// painted here meanwhile, so the window is never on screen twice.
+    /// Groups another surface draws for now as one shared element (the overview flying a window's
+    /// picture); not painted here meanwhile, so a window is never on screen twice.
     shown_elsewhere: Vec<u64>,
     /// Capture-harness pose for every move: how far into its run it is
     /// drawn ([`Self::hold_shift_at`]); always `None` in a running shell.
@@ -361,45 +329,37 @@ pub struct GroupRow {
     motion_source: MotionSource,
     /// `theme.tokens.motion` as last laid out or drawn.
     motion: crate::tokens::Motion,
-    /// Openness of sibling groups while one is maximized or fullscreen.
-    /// `1` is the tiled strip; `0` is hidden. A mid-flight Super+M
-    /// retargets from the current alpha so the fade is interruptible.
+    /// Openness of sibling groups while one is maximized or fullscreen: `1` is the tiled strip, `0`
+    /// hidden. A mid-flight Super+M retargets from the current alpha, so the fade is interruptible.
     sibling_fade: crate::motion::Presence,
-    /// Capture-harness pose for [`Self::hold_sibling_fade_at`]. Skips
-    /// `sync_sibling_fade` so a slow offscreen paint cannot retire the
-    /// 130 ms curve before the next snapshot.
+    /// Capture-harness pose for [`Self::hold_sibling_fade_at`]: skips `sync_sibling_fade`, so a
+    /// slow offscreen paint cannot retire the curve before the next snapshot.
     sibling_fade_hold: Option<Duration>,
-    /// Group that stayed visible through the last maximize/fullscreen.
-    /// Restore uses this so siblings fade in on the tiled draw path,
-    /// not only while `maximized_idx` is still set.
+    /// Group that stayed visible through the last maximize: restore uses it so siblings fade in on
+    /// the tiled draw path, not only while `maximized_idx` is still set.
     fade_hero: Option<u64>,
-    /// The last draw caught [`Self::sibling_fade`] in flight. The row then stays dirty one frame
-    /// past the fade's end, so a cached scene or slow frame that last drew it partway does not keep
-    /// that pose after the fade stopped asking for frames.
+    /// The last draw caught the sibling fade in flight: the row stays dirty one frame past its end,
+    /// so a cached or slow frame does not keep that pose.
     sibling_fade_drawn_moving: bool,
     /// Groups the last draw skipped as outside the row. They keep their
     /// dirty state, so cached scenes rebuild once they are painted again.
     culled_groups: Vec<u64>,
-    /// When the latest frame synced the groups, and which of them its draw
-    /// then left unpainted: a deadline of theirs that was due by then has
-    /// had its frame, and what is left of it is for their paint.
+    /// When the latest frame synced the groups, and which of them its draw left unpainted: a
+    /// deadline due by then has had its frame, and the rest is for their paint.
     synced_at: Option<Instant>,
     unpainted: Vec<u64>,
     unpainted_since: Option<Instant>,
-    /// While the lane being drawn is in canvas coordinates (a presenter
-    /// keeps the strip): what of the canvas the screen shows this draw.
-    /// `None` in screen space.
+    /// While the lane being drawn is in canvas coordinates (a presenter keeps the strip): what of
+    /// the canvas the screen shows. `None` in screen space.
     apart_window: Option<ApartWindow>,
     /// The canvas stretch each lane's last draw in canvas coordinates
     /// showed, by lane index: a lane showing another one now is panning.
     apart_spans: Vec<(usize, (f64, f64))>,
-    /// While the row is drawn in canvas coordinates: each group's last drawing, which a group
-    /// wholly off screen replays instead of drawing again while the strip pans
-    /// ([`Self::draw_group_apart`]). Emptied once the row is drawn in screen space again.
+    /// While drawn in canvas coordinates: each group's last drawing, replayed instead of redrawn
+    /// while the strip pans; emptied in screen space.
     apart_drawings: Vec<ApartDrawing>,
-    /// While frames only move the strip drawn in screen space
-    /// ([`crate::retained_present::pan_replay`]): the last drawing of each window at rest, which
-    /// the next such frame replays where the window is now ([`Self::draw_group_replaying`]).
+    /// While frames only move a screen-space strip: the last drawing of each window at rest,
+    /// replayed where the window is now.
     pan_drawings: Vec<ApartDrawing>,
     /// Windows at rest the current draw drew or replayed: their drawings
     /// are kept, every other one is dropped.
@@ -415,13 +375,11 @@ pub struct GroupRow {
     /// Windows whose drawing cannot be kept (it carries a blurred material
     /// or pixels living outside it) while frames only move: drawn plainly.
     pan_unkept: Vec<u64>,
-    /// Windows that put anything on the top layer in the last frame ([`Widget::draw_overlay`]): an
-    /// open menu or popover may hang on where the window's widgets last drew, so such a window is
-    /// drawn, never replayed.
+    /// Windows that put anything on the top layer in the last frame: an open menu may hang on where
+    /// its widgets last drew, so such a window is drawn, never replayed.
     overlay_groups: Vec<u64>,
-    /// Per lane: the canvas shift of the pan its strips last read the
-    /// desktop at, whether the lane's last draw was in screen space, and
-    /// the shift it was drawn at.
+    /// Per lane: the desktop shift its strips last read, whether its last draw was in screen space,
+    /// and the shift it was drawn at.
     strip_desktop_shift: Vec<(usize, f64, bool, f64)>,
     /// The desktop's coordinates in the scene the current lane is drawn
     /// into ([`WindowGroup::draw_docked_strip`]).
@@ -437,10 +395,8 @@ pub struct GroupRow {
     pending_canvas_move: Option<(u64, Rect)>,
 }
 
-/// What of a group at `rect` the draw viewport shows across, measured from the group's left edge
-/// and limited to the group, which its widgets cull against; `None` with no viewport. Whether a
-/// drawing that culled nothing in `seen` of its group ([`seen_across`]) shows all the screen
-/// `shows` of it now.
+/// What of a group at `rect` the draw viewport shows across, limited to the group, which its
+/// widgets cull against; `None` with no viewport.
 fn covers(seen: Option<(f64, f64)>, shows: Option<(f64, f64)>) -> bool {
     match (seen, shows) {
         (None, _) => true,
@@ -475,18 +431,15 @@ impl GroupDrawing {
         )
     }
 
-    /// The drawing, when it may be kept for a replay: one that carried a blurred material
-    /// (`carried` surfaces) is drawn every frame, since replayed the material would lose its
-    /// backdrop. So is one that draws pixels living outside it (a client's GPU buffer), valid only
-    /// for the frame that drew them.
+    /// The drawing, when it may be kept for a replay: one that carried a blurred material is drawn
+    /// every frame (replayed it would lose its backdrop), as is one drawing pixels that live
+    /// outside it.
     fn keep(self, carried: usize) -> Option<ApartDrawing> {
         (carried == 0 && !draws_external_pixels(&self.0.scene)).then_some(self.0)
     }
 
-    /// Keep the drawing as the window's live picture where one is wanted
-    /// ([`crate::window_pictures`]). A blurred material it carried stays out (its backdrop is the
-    /// screen's, not the picture's), which at a miniature's size leaves the window readable; a
-    /// drawing with outside pixels is never shown small.
+    /// Keep the drawing as the window's live picture where one is wanted: a blurred material stays
+    /// out (its backdrop is the screen's), and at miniature size the window stays readable.
     fn offer_picture(&self, _carried: usize) {
         if !crate::window_pictures::wanted(self.0.id) {
             return;
@@ -512,9 +465,8 @@ struct ApartWindow {
     rows: (f64, f64),
 }
 
-/// Whether `scene` draws an image whose pixels are not in it: a client's
-/// GPU buffer or another external frame carries no CPU pixels, every other
-/// image does.
+/// Whether `scene` draws an image whose pixels are not in it: a client's GPU buffer or another
+/// external frame carries none.
 fn draws_external_pixels(scene: &Scene) -> bool {
     scene.encoding().resources.patches.iter().any(|patch| {
         matches!(patch, vello_encoding::Patch::Image { image, .. } if image.data.is_empty())
@@ -522,9 +474,8 @@ fn draws_external_pixels(scene: &Scene) -> bool {
 }
 
 impl ApartDrawing {
-    /// Keep this drawing, which stands on its own, as the window's live picture where one is wanted
-    /// ([`crate::window_pictures`]). One that showed a secret is never shown small, and one that
-    /// culled part of the window leaves the last whole picture in place.
+    /// Keep this self-standing drawing as the window's live picture; one that showed a secret is
+    /// never shown small, and one that culled part of the window leaves the last whole one.
     fn offer_picture(&self) {
         if !crate::window_pictures::wanted(self.id) {
             return;
@@ -560,40 +511,35 @@ struct ApartDrawing {
     parts: Option<crate::scene_parts::SectionParts>,
     /// The drawing put a secret on screen; a replay notes it again.
     shows_secret: bool,
-    /// What of the group the drawing culled nothing in, across: the draw
-    /// viewport's `(x0, x1)` measured from the group's left edge. `None`
+    /// What of the group the drawing culled nothing in, across, from the group's left edge; `None`
     /// when nothing was culled. A replay must show no more of the group.
     seen: Option<(f64, f64)>,
-    /// Nothing changed in the group since the drawing was made: it was drawn in the frame that last
-    /// changed anything, or every frame since only moved laid-out content. A drawing replayed off
-    /// screen through a frame that may have changed the group is not, and is never shown.
+    /// Nothing changed in the group since the drawing was made; a drawing replayed through a frame
+    /// that may have changed it is not current, and is never shown.
     current: bool,
 }
 
-/// One display's horizontal extent in the compositor's combined
-/// coordinate space, plus the width window groups on it size themselves
-/// against.
+/// One display's horizontal extent in the compositor's combined space, plus the width groups on it
+/// size themselves against.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct OutputSpan {
     /// Left edge of the display in combined coordinates.
     pub x: f64,
     pub width: f64,
-    /// Width available to window groups on this display: `width` minus whatever shell chrome it
-    /// reserves (on the leftmost display, the strip-edge gutter), the denominator every
-    /// [`WindowWidth`] fraction is taken of.
+    /// Width available to groups on this display: `width` minus the shell chrome it reserves, the
+    /// denominator every width fraction is taken of.
     pub usable: f64,
 }
 
-/// One display's share of a strip that is partitioned across displays. Each display holds its own
-/// groups, laid out, panned and clipped inside that display's lane only, so a group never straddles
-/// a seam and panning one display never reveals another's windows.
+/// One display's share of a strip partitioned across displays: each holds its own groups, laid out
+/// and clipped inside its lane only, so none straddles a seam and panning one never reveals
+/// another's.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct StripLane {
     /// The display this lane belongs to (the compositor's output id).
     pub output: u32,
-    /// Where the lane's windows sit, in the row's coordinate space: this strip's band of the
-    /// display. Every display stacks all of a workspace's strips in its own height, so the band
-    /// lies on the display whatever part of the desktop the row is laid out over.
+    /// Where the lane's windows sit, in the row's space: this strip's band of the display. Every
+    /// display stacks a workspace's strips in its own height.
     pub area: Rect,
     /// Width window groups in this lane resolve their fractions against.
     pub usable: f64,
@@ -601,30 +547,24 @@ pub struct StripLane {
     pub leading: bool,
 }
 
-/// Horizontal pan of one run of groups: the whole row, or one lane. Canvas-x is the unscrolled
-/// coordinate groups are laid out in, starting at the viewport's left edge; `scroll_x` is how far
-/// that canvas is panned past it.
+/// Horizontal pan of one run of groups (the whole row, or one lane): canvas-x is the unscrolled
+/// coordinate, `scroll_x` how far it is panned past the viewport's edge.
 #[derive(Clone, Debug, Default)]
 pub struct Pan {
     /// What this run is clipped to and framed against.
     viewport: Rect,
     /// Canvas-x gutter before the first group (the strip-edge gutter).
     inset: f64,
-    /// Horizontal scroll offset (px): each child renders at `-scroll_x`. At rest it is bounded by
-    /// [`Self::pan_max_scroll_x`]; a direct gesture may hold a resisted transient value just
-    /// outside either end.
+    /// Horizontal scroll offset (px): each child renders at `-scroll_x`; at rest it is bounded by
+    /// `pan_max_scroll_x`, and a direct gesture may hold a resisted value just outside.
     scroll_x: f64,
-    /// Scroll offset at the start of the current direct-manipulation
-    /// gesture. Gesture updates carry total travel, so this remains fixed
-    /// until End.
+    /// Scroll offset at the start of the current direct-manipulation gesture: updates carry total
+    /// travel, so this stays fixed until End.
     strip_pan_origin: Option<f64>,
-    /// The current gesture's finger path. The frame tick resamples it
-    /// ([`FingerPath::resampled`]); release reads its velocity
-    /// ([`FingerPath::release_velocity`]).
+    /// The gesture's finger path, resampled by the frame tick; release reads its velocity.
     finger_path: super::finger_path::FingerPath,
-    /// The pan travelling on its own: a throw coasting, an overpull settling, a reveal, a wheel's
-    /// snap to a group's edge. It carries its velocity, so a retarget continues the motion instead
-    /// of restarting a curve from rest.
+    /// The pan moving on its own: a throw coasting, an overpull settling, a reveal, a wheel's snap.
+    /// It carries its velocity, so a retarget continues the motion.
     motion: Option<crate::motion::MotionValue<f64>>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
@@ -634,23 +574,20 @@ pub struct Pan {
     /// Timestamp of the last wheel event; `tick_snap` waits
     /// `SNAP_IDLE_MS` of quiet here before starting the snap animation.
     last_wheel_at: Option<Instant>,
-    /// Each group's `(id, left, right)` canvas-x extent as last laid out, measured off taffy rather
-    /// than re-derived from stored widths: a group taffy shrank to fit is that width on screen
-    /// regardless of its stored fraction.
+    /// Each group's `(id, left, right)` canvas-x extent as last laid out, taken off taffy: a group
+    /// taffy shrank to fit is that width on screen whatever its stored fraction says.
     laid_spans: Vec<(u64, f64, f64)>,
     /// Absolute external viewport navigation ([`GroupRow::pan_to`]) stays
     /// bounded through geometry changes.
     absolute: bool,
-    /// A person's own pan last came to rest in the empty canvas past the last window
-    /// ([`Self::pan_max_scroll_x`]'s allowance). Only then does the pan keep that allowance when
-    /// the strip ends sooner.
+    /// A person's own pan last came to rest in the empty canvas past the last window, the only case
+    /// where the pan keeps that allowance when the strip ends sooner.
     past_windows: bool,
 }
 
 impl Pan {
-    /// Room a retained canvas keeps past each end of the content, so an
-    /// overscroll pans within it too: the rubber band never reaches
-    /// [`STRIP_OVERSCROLL_REACH_FRAC`] of the viewport.
+    /// Room a retained canvas keeps past each end of the content, so an overscroll pans within it;
+    /// the rubber band never reaches the viewport share.
     fn canvas_pad(&self) -> f64 {
         (self.viewport.width().max(0.0) * STRIP_OVERSCROLL_REACH_FRAC).ceil() + 1.0
     }
@@ -663,9 +600,8 @@ impl Pan {
         self.viewport
     }
 
-    /// The furthest a focus or host navigation pans: the last group in
-    /// view with the strip's gutter after it, as the leading inset keeps
-    /// one before the first.
+    /// The furthest focus or host navigation pans: the last group in view with the strip's gutter
+    /// after it.
     fn max_scroll_x(&self) -> f64 {
         self.max_scroll_x_of(self.content_w)
     }
@@ -746,9 +682,8 @@ impl Pan {
         self.finger_path.release_velocity(now)
     }
 
-    /// Whether a frame at `now` would show a direct pan somewhere else
-    /// than the strip is: fingers down and the resampled path not yet where
-    /// the last frame put it. Fingers resting on the pad ask for nothing.
+    /// Whether a frame at `now` would show a direct pan elsewhere than the strip is: fingers down
+    /// and the resampled path not yet where the last frame put it. Resting fingers ask for nothing.
     fn direct_pan_moving(&self, now: Instant) -> bool {
         let Some(origin) = self.strip_pan_origin else {
             return false;
@@ -758,9 +693,8 @@ impl Pan {
         })
     }
 
-    /// Record the fingers' total `travel` reported `at`. The strip shows it
-    /// at once; the next frame tick then places it where the fingers were
-    /// at that frame ([`Self::resampled_travel`]).
+    /// Record the fingers' total `travel` at `at`: the strip shows it at once, and the next frame
+    /// tick places it where the fingers were then.
     fn update_strip_pan(&mut self, travel: f64, at: Instant) -> bool {
         let origin = *self.strip_pan_origin.get_or_insert(self.scroll_x);
         self.finger_path.push(at, travel);
@@ -774,10 +708,9 @@ impl Pan {
         true
     }
 
-    /// The fingers lifted at `now`. With `throw`, a strip still moving keeps the fingers' velocity
-    /// and coasts to a stop ([`Snap::COAST`]); one released in elastic overpull, or thrown past an
-    /// end, settles on that end. A strip released at rest within the canvas stays exactly where it
-    /// is.
+    /// The fingers lifted. With `throw`, a moving strip keeps their velocity and coasts to a stop;
+    /// one released in elastic overpull or thrown past an end settles on that end; one released at
+    /// rest stays where it is.
     fn end_strip_pan(
         &mut self,
         now: Instant,
@@ -806,9 +739,8 @@ impl Pan {
             self.scroll_x = to;
             return false;
         }
-        // Within the canvas the throw coasts on, its velocity decaying exponentially over the
-        // gesture token's coast. Past an end it lands on that end at the settle rate, a short give
-        // rather than a long crawl.
+        // Inside the canvas the throw coasts with the gesture's decay; past an end it lands at the
+        // settle rate, a short give rather than a long crawl.
         let timing = if (coast - to).abs() <= f64::EPSILON {
             crate::motion::Snap::COAST.timing(
                 crate::motion::Direction::Enter,
@@ -835,26 +767,23 @@ impl Pan {
     }
 
     /// The offset that brings a group laid out at `gr` fully inside the viewport, or `None` when it
-    /// already is, on a strip whose windows end at offset `end` once their width springs settle. A
-    /// reveal comes to rest within the windows, so it never eases into the canvas past the last
-    /// window only to be pulled back.
+    /// already is, on a strip whose windows end at `end` once widths settle, so a reveal never
+    /// eases into empty canvas.
     fn reveal_target(&self, gr: Rect, end: f64) -> Option<f64> {
         // Degenerate rect → layout hasn't run for this group yet.
         if gr.width() <= 0.0 {
             return None;
         }
         // A revealed group stands at least the gap between two windows clear of the viewport's
-        // edges, as far as the room allows: a window's edge is drawn just outside its rect, so a
-        // reveal flush with the screen edge cut its border and corners off. The strip's first and
-        // last groups keep their whole gutter.
+        // edges: a window's edge is drawn just outside its rect, so a reveal flush with the edge
+        // would cut its border.
         let slack = (self.viewport.width() - gr.width()).max(0.0);
         let margin = HANDLE_SLOT_PX.min(slack / 2.0);
         let left_bound = self.viewport.x0 + margin;
         let right_bound = self.viewport.x1 - margin;
         let mut sx = self.scroll_x;
-        // An oversized group cannot fit; reveal its start consistently.
-        // Otherwise use the nearest edge. Checking the original left rect
-        // after a right-edge correction would right-align an oversized card.
+        // An oversized group cannot fit, so reveal its start consistently; checking the original
+        // rect after a right-edge correction would right-align it.
         if gr.width() > right_bound - left_bound {
             sx += gr.x0 - left_bound;
         } else if gr.x1 > right_bound {
@@ -867,9 +796,8 @@ impl Pan {
         } else {
             end
         };
-        // A reveal that would stop within the gutter of either end of the strip goes to that end,
-        // when what it reveals still fits there: flush with the screen edge, the first or last
-        // window's border and corners are cut off by it.
+        // A reveal that would stop in either end's gutter goes to that end when what it reveals
+        // still fits: flush with the edge, a window's border and corners are cut off.
         let at = |to: f64| gr + vello::kurbo::Vec2::new(self.scroll_x - to, 0.0);
         if self.inset > 0.0 {
             if sx > 0.0 && sx <= self.inset + 0.5 && at(0.0).x1 <= right_bound + 0.5 {
@@ -907,10 +835,8 @@ impl Pan {
         self.motion.is_some_and(|motion| motion.is_moving(now))
     }
 
-    /// Glide to `sx` on `timing`, from where the pan is at `now` and at the speed it is moving, so
-    /// a stream of retargets (one per wheel notch) reads as one continuous motion rather than a
-    /// curve restarting from rest. Re-asking for the target in flight changes nothing, and a
-    /// sub-pixel move is not worth a frame.
+    /// Glide to `sx` from where the pan is and at the speed it moves, so a stream of retargets
+    /// reads as one motion; re-asking in flight changes nothing, and a sub-pixel move is no frame.
     fn glide_to(&mut self, sx: f64, now: Instant, timing: crate::motion::Timing) {
         if timing.is_instant() {
             self.jump_to(sx);
@@ -948,9 +874,8 @@ impl Pan {
             .collect()
     }
 
-    /// True while a snap is in flight, or the user just wheeled (within
-    /// the idle threshold and the `snap` that follows it); keeps the
-    /// shell's redraw chain pumping.
+    /// True while a snap is in flight or the person just wheeled, which keeps the shell's redraw
+    /// chain pumping.
     fn snap_in_flight(&self, snap: SnapTiming) -> bool {
         let now = crate::motion::frame_now();
         if self.motion_moving(now) || self.direct_pan_moving(now) {
@@ -977,9 +902,8 @@ impl Pan {
             .any(|&e| (e - self.scroll_x).abs() < 0.5)
     }
 
-    /// Snap target nearest the current `scroll_x`. Candidates include canvas-x = 0 (the
-    /// gutter-visible home) when the run has a gutter: without it, a small flick away from 0 would
-    /// snap forward to the first group instead of relaxing back home.
+    /// Snap target nearest `scroll_x`; canvas-x 0 (the gutter-visible home) is a candidate when the
+    /// run has a gutter, or a small flick would snap forward to the first group.
     fn nearest_group_edge(&self) -> Option<f64> {
         if self.group_left_edges.is_empty() {
             return None;
@@ -1002,9 +926,9 @@ impl Pan {
         best
     }
 
-    /// Advance the snap state to `now`; a wheel's snap settles on `snap`, and under reduced motion
-    /// a snap lands on the tick it starts. A capture's `hold` poses the pan's motion that far into
-    /// its run. Returns whether `scroll_x` moved.
+    /// Advance the snap state to `now`; a wheel's snap settles, under reduced motion it lands the
+    /// tick it starts, and a capture's `hold` poses it that far in. Returns whether `scroll_x`
+    /// moved.
     fn tick_snap_at(&mut self, now: Instant, snap: SnapTiming, hold: Option<Duration>) -> bool {
         let before = self.scroll_x;
         // Fingers down: show where they were at this frame.
@@ -1028,10 +952,9 @@ impl Pan {
                         self.scroll_x = target;
                         self.last_wheel_at = None;
                     } else {
-                        // The snap starts the moment the idle gate was met, not `now`, so the tick
-                        // that sees the idle already shows how far it has come since. Falls back to
-                        // `last_wheel` (skipping the idle delay) in the astronomically unlikely
-                        // case this addition would overflow `Instant`.
+                        // The snap starts when the idle gate was met, not at `now`, so the tick
+                        // that sees the idle shows how far it has come; it falls back to
+                        // `last_wheel` on the astronomically unlikely overflow.
                         let started = last_wheel
                             .checked_add(Duration::from_millis(u64::from(SNAP_IDLE_MS)))
                             .unwrap_or(last_wheel);
@@ -1073,9 +996,8 @@ impl Pan {
         self.scroll_x = from;
     }
 
-    /// Slide to `sx` on `timing` from where the pan is drawn at `now`: a shortcut's reveal, which
-    /// may only say where the target went and must be over within its budget, so it starts from
-    /// rest. A press mid-slide retargets from the drawn position, so presses never queue.
+    /// Slide to `sx` from the drawn position, from rest: a shortcut's reveal must be over within
+    /// its budget, and a press mid-slide retargets from the drawing, so presses never queue.
     fn slide_to(&mut self, sx: f64, now: Instant, timing: SnapTiming) {
         self.last_wheel_at = None;
         let drawn = self.motion.map_or(self.scroll_x, |motion| motion.get(now));
@@ -1090,19 +1012,16 @@ impl Pan {
         self.scroll_x = drawn;
     }
 
-    /// Note where the run's groups were laid out. The pan stays where it is: the strip never
-    /// scrolls by itself after a resize, insert, close or output change; only explicit navigation
-    /// and bringing a newly opened or focused window into view move it, besides the clamp into its
-    /// legal range.
+    /// Note where the groups were laid out; the pan stays. A strip never scrolls by itself after a
+    /// resize, insert, close or output change — only explicit navigation moves it, plus the clamp
+    /// into range.
     fn note_laid_spans(&mut self, spans: Vec<(u64, f64, f64)>) {
         self.laid_spans = spans;
     }
 
-    /// Keep what the run shows where it is while a window before it closes: as the closing window
-    /// narrows, or its slot goes, the canvas before the view shrinks and the pan follows it by as
-    /// much, so a window closed left of the view takes nothing on screen with it. The anchor is the
-    /// first window reaching into the view, as last laid out; `spans` is the new layout, `going`
-    /// the windows closing. Reordering across the anchor, resizes and openings leave the pan alone.
+    /// Keep what the run shows where it is while a window before it closes: the pan follows the
+    /// canvas shrink by as much, anchored on the first window reaching into the view. Reordering,
+    /// resizes and openings leave the pan alone.
     fn hold_view_across_close(&mut self, spans: &[(u64, f64, f64)], going: &[u64]) {
         let old = &self.laid_spans;
         let kept = |id: u64| spans.iter().any(|&(other, _, _)| other == id);
@@ -1173,9 +1092,8 @@ impl Lane {
         self.area() + vello::kurbo::Vec2::new(0.0, self.shift)
     }
 
-    /// Whether the strip deck has moved the lane wholly off its display:
-    /// another strip fills it there. Such a lane is neither drawn nor
-    /// hit, so it never shows on, or takes input from, a display beside it.
+    /// Whether the deck moved the lane wholly off its display, where another strip fills it: such a
+    /// lane is neither drawn nor hit.
     fn off_deck(&self) -> bool {
         let height = self.area().height();
         height > 0.0 && self.shift.abs() >= height - 0.5
@@ -1185,20 +1103,15 @@ impl Lane {
 /// Steps per layout pixel of [`on_binary_grid`].
 const BINARY_GRID: f64 = 1_048_576.0;
 
-/// `value` rounded to a multiple of 2⁻²⁰ layout pixels. A device-pixel pan
-/// step (two thirds of a layout pixel at 150 %) is no binary fraction, so
-/// moving a strip to canvas coordinates and back would round differently
-/// at every pan, and the canvas a presenter keeps would never be the same
-/// twice. On this grid the sums are exact (a desktop is far narrower than
-/// 2³² layout pixels), and the pan is off a device pixel by under 10⁻⁶ of
-/// one.
+/// `value` rounded to a multiple of 2⁻²⁰ layout pixels: a device-pixel pan step is no binary
+/// fraction, so a strip moved into canvas coordinates and back would round differently and a kept
+/// canvas would never match.
 fn on_binary_grid(value: f64) -> f64 {
     (value * BINARY_GRID).round() / BINARY_GRID
 }
 
-/// Whether a strip panned to `scroll` (whole pixels) can be drawn in canvas
-/// coordinates: the retained canvas spans the content from no pan to the
-/// furthest, plus `pad` past either end for the rubber band.
+/// Whether a strip panned to `scroll` can be drawn in canvas coordinates: the retained canvas spans
+/// the content from no pan to the furthest, plus `pad` past either end.
 pub fn pan_within_canvas(scroll: f64, max_scroll: f64, pad: f64) -> bool {
     (-pad..=max_scroll.max(0.0) + pad).contains(&scroll)
 }
@@ -1286,12 +1199,9 @@ impl GroupRow {
         }
     }
 
-    /// Whether a group at `rect`, shifted by `dx`, paints anything inside
-    /// the row, including its shadow sprites.
-    ///
-    /// A strip drawn in canvas coordinates draws the whole canvas: after
-    /// [`Self::offset_lane`] the rects are canvas coordinates, so the window
-    /// has to include every group a pan can reveal.
+    /// Whether a group at `rect`, shifted by `dx`, paints anything inside the row, shadows
+    /// included; a canvas-coordinate draw covers the whole canvas, so the window must include every
+    /// group a pan can reveal.
     fn paints_within_row(&self, rect: Rect, dx: f64) -> bool {
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
         let x1 = if crate::retained_present::unbake_scroll() {
@@ -1331,9 +1241,8 @@ impl GroupRow {
         self.groups.iter().position(|g| g.id == id)
     }
 
-    /// Set (or clear) the transient fullscreen override, driven by the
-    /// shell each frame from compositor state. `(None, false)` restores
-    /// normal tiling exactly.
+    /// Set or clear the transient fullscreen override, driven by the shell from compositor state;
+    /// `(None, false)` restores normal tiling exactly.
     pub fn set_external_navigation(&mut self, external: bool) {
         if self.external_navigation != external {
             self.external_navigation = external;
@@ -1413,9 +1322,8 @@ impl GroupRow {
         self.sibling_fade.is_moving(crate::motion::frame_now())
     }
 
-    /// Rewind the live fade so a test can sample it mid-flight without
-    /// sleeping. Rebuilds from the current hide intent against a start
-    /// `elapsed` ago.
+    /// Rewind the live fade so a test can sample it mid-flight without sleeping, rebuilt from the
+    /// current hide intent.
     #[cfg(test)]
     pub(crate) fn advance_sibling_fade(&mut self, elapsed: Duration) {
         let now = crate::time::now();
@@ -1435,11 +1343,9 @@ impl GroupRow {
         );
     }
 
-    /// Freeze the sibling fade at `elapsed` along `durations.fast`.
-    /// Offscreen paints cost more wall time than the 130 ms curve, so a
-    /// capture harness stepping frames only ever sees the endpoints —
-    /// this poses production `draw` at a chosen point. Not gated on
-    /// `debug_assertions`: `shots` ships in release.
+    /// Freeze the sibling fade at `elapsed` along `durations.fast`: offscreen paints cost more wall
+    /// time than the curve, so a capture harness would only ever see the endpoints. Not gated on
+    /// `debug_assertions`, since `shots` ships in release.
     pub fn hold_sibling_fade_at(&mut self, elapsed: Duration) -> bool {
         if self.groups.len() < 2 {
             return false;
@@ -1479,9 +1385,8 @@ impl GroupRow {
         self.fullscreen_idx().is_some()
     }
 
-    /// Collapse this strip's lane on display `output`, which another
-    /// strip's fullscreen covers, and keep its lanes on the other displays;
-    /// `None` shows every lane again.
+    /// Collapse this strip's lane on `output`, where another strip's fullscreen covers it, keeping
+    /// its lanes on other displays; `None` shows every lane again.
     pub fn set_covered_output(&mut self, output: Option<u32>) {
         if self.covered_output != output {
             self.covered_output = output;
@@ -1498,9 +1403,8 @@ impl GroupRow {
             .position(|lane| lane.spec.output == output)
     }
 
-    /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
-    /// lane's leading gutter (a maximize) or covers it (a client
-    /// fullscreen).
+    /// Whether the promoted group stops at its lane's leading gutter (a maximize) or covers it (a
+    /// client fullscreen).
     pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
         if self.promotion_keeps_gutter != keeps {
             self.promotion_keeps_gutter = keeps;
@@ -1517,9 +1421,8 @@ impl GroupRow {
         }
     }
 
-    /// Reserve a canvas-x gutter before the first group so it pans with
-    /// `scroll_x` too (the strip-edge gutter). On a strip partitioned
-    /// across displays only the leading lane carries it.
+    /// Reserve a canvas-x gutter before the first group so it pans with `scroll_x`; on a
+    /// partitioned strip only the leading lane carries it.
     #[must_use]
     pub fn with_leading_inset(mut self, px: f64) -> Self {
         self.leading_inset = px;
@@ -1556,12 +1459,9 @@ impl GroupRow {
         &self.output_spans
     }
 
-    /// Partition this strip across displays: one lane per display, left to right, and the display
-    /// each group belongs to (`assignment`, by group id → [`StripLane::output`]). Fewer than two
-    /// lanes restores the one continuous row. A lane keeps its pan across calls as long as its
-    /// display stays, so re-pushing the same partition every frame is free. The groups must already
-    /// be ordered lane by lane (every group of the first lane, then every group of the second, …);
-    /// the shell's reconciliation keeps them so.
+    /// Partition the strip across displays: one lane per display, left to right, and each group's
+    /// display. Fewer than two lanes restores the one continuous row, and a lane keeps its pan
+    /// while its display stays. Groups must already be ordered lane by lane.
     pub fn set_lanes(&mut self, lanes: &[StripLane], assignment: &HashMap<u64, u32>) {
         if lanes.len() < 2 {
             if !self.lanes.is_empty() {
@@ -1640,10 +1540,8 @@ impl GroupRow {
         self.focus_lane = self.focus_lane.min(self.lanes.len().saturating_sub(1));
     }
 
-    /// Show this strip on `outputs` only: its lane on every other display is
-    /// moved off that display, so it neither draws there nor takes input
-    /// there while another strip fills it. The lanes keep their places, so a
-    /// display coming back draws the strip where it was left.
+    /// Show this strip on `outputs` only: its other lanes move off their display, so it neither
+    /// draws nor takes input there, and a display coming back draws it where it was left.
     pub fn set_shown_outputs(&mut self, outputs: &[u32]) {
         for lane in &mut self.lanes {
             lane.shift = if outputs.contains(&lane.spec.output) {
@@ -1654,10 +1552,8 @@ impl GroupRow {
         }
     }
 
-    /// Put `group_id` in the lane of `display` before the shell's next
-    /// [`Self::set_lanes`]: the display a window opens on owns it from the
-    /// first frame, so it shares the strip with the windows there and with
-    /// no window its index merely falls after.
+    /// Put `group_id` in `display`'s lane before the shell's next [`Self::set_lanes`], so the
+    /// display a window opens on owns it from the first frame.
     pub fn set_group_display(&mut self, group_id: u64, display: u32) {
         let Some(lane) = self
             .lanes
@@ -1743,9 +1639,8 @@ impl GroupRow {
         self.lanes.get(lane).map(|lane| lane.spec.output)
     }
 
-    /// Vector indices of the groups in lane `lane`. Groups are kept lane by
-    /// lane, so this is one run; for an empty lane it is the empty run where
-    /// its groups would go.
+    /// Vector indices of the groups in `lane`; groups are kept lane by lane, so this is one run,
+    /// empty where an empty lane's groups would go.
     fn lane_range(&self, lane: usize) -> std::ops::Range<usize> {
         if self.lanes.is_empty() {
             return 0..self.groups.len();
@@ -1839,12 +1734,9 @@ impl GroupRow {
         self.pan_of_lane_mut(lane)
     }
 
-    /// Usable width a group at canvas-x `x` should resolve its
-    /// [`WindowWidth`] fraction against. `x` is canvas, not screen: panning
-    /// must not resize windows, so a group keeps the basis of the display
-    /// it's laid out on regardless of scroll. Falls back to the row's own
-    /// width minus the leading gutter, then [`DEFAULT_STRIP_USABLE_PX`]
-    /// before any layout has run.
+    /// Usable width a group at canvas-x `x` resolves its width fraction against: canvas, not
+    /// screen, so panning never resizes windows. Falls back to the row's width less the leading
+    /// gutter, then the default.
     pub fn usable_at(&self, x: f64) -> f64 {
         if let Some(&first) = self.output_spans.first() {
             // Last span whose left edge is at or before `x`; the first
@@ -1865,11 +1757,8 @@ impl GroupRow {
         }
     }
 
-    /// Per group, in strip order, whether it has its run of the strip (its
-    /// lane) to itself: no other window there that is not closing. A lone
-    /// window at the default width takes the strip
-    /// ([`WindowWidth::resolve_in_strip`]), so closing its last neighbour
-    /// widens it and opening one beside it narrows it again.
+    /// Per group, in strip order, whether it has its run of the strip to itself: a lone window at
+    /// the default width takes it, so a neighbour closing widens it and a new one narrows it again.
     pub fn alone_per_group(&self) -> Vec<bool> {
         let lanes: Vec<usize> = (0..self.groups.len())
             .map(|i| self.lane_index_of(i))
@@ -1887,9 +1776,8 @@ impl GroupRow {
             .collect()
     }
 
-    /// Per-group usable width, in strip order. Depends only on the groups'
-    /// own stored widths and the pushed output spans or lanes, never on a
-    /// previous frame's layout, so it's stable on the very first frame.
+    /// Per-group usable width in strip order, from stored widths and pushed spans alone, so it is
+    /// stable on the first frame.
     pub fn usable_per_group(&self) -> Vec<f64> {
         if !self.lanes.is_empty() {
             return (0..self.groups.len())
@@ -1913,11 +1801,9 @@ impl GroupRow {
             .collect()
     }
 
-    /// Each group's `(id, left, right)` extent in unscrolled canvas space.
-    /// Derived the same way as [`Self::usable_per_group`], so a group
-    /// spliced in this frame already has a span without waiting for taffy.
-    /// On a partitioned strip each lane's canvas starts at its own
-    /// display's left edge.
+    /// Each group's `(id, left, right)` in unscrolled canvas space, derived like the usable width
+    /// so a group spliced in this frame already has a span; on a partitioned strip each lane's
+    /// canvas starts at its display's edge.
     pub fn group_canvas_spans(&self) -> Vec<(u64, f64, f64)> {
         let alone = self.alone_per_group();
         if !self.lanes.is_empty() {
@@ -1959,10 +1845,8 @@ impl GroupRow {
             .collect()
     }
 
-    /// Dest-width canvas extent of one lane, in the same units as
-    /// [`Pan::content_w`]. Taffy sees in-flight spring widths; the legal
-    /// pan bound is the strip those springs are going to, so a half-open
-    /// slot cannot shrink overflow.
+    /// Dest-width canvas extent of one lane: taffy sees in-flight spring widths, but the legal pan
+    /// bound is the strip those springs are going to.
     fn dest_content_w(&self, lane: usize) -> f64 {
         let inset = self.pan_of_lane(lane).inset;
         let collapsed = self.groups.iter().enumerate().any(|(i, g)| {
@@ -1993,9 +1877,8 @@ impl GroupRow {
         x
     }
 
-    /// Ids of groups currently visible. Reads laid-out rects, not canvas
-    /// spans: "can I see it" is a question about pixels, so a group with
-    /// no rect yet just reads as not-on-screen for that one frame.
+    /// Ids of groups currently visible, read off laid-out rects: "can I see it" is about pixels, so
+    /// a group with no rect yet reads as not on screen.
     pub fn onscreen_group_ids(&self) -> Vec<u64> {
         self.groups
             .iter()
@@ -2013,9 +1896,8 @@ impl GroupRow {
             .collect()
     }
 
-    /// The visible viewport shifted by the pan, in the same space as
-    /// [`Self::group_canvas_spans`]. On a partitioned strip, the focused
-    /// display's lane.
+    /// The visible viewport shifted by the pan, in the same space as the group canvas spans; on a
+    /// partitioned strip, the focused display's lane.
     pub fn visible_canvas_span(&self) -> (f64, f64) {
         if self.lanes.is_empty() {
             return (
@@ -2048,16 +1930,14 @@ impl GroupRow {
             .collect()
     }
 
-    /// Used by the shell's `resync_strips_from_tree` to diff against the
-    /// persisted `shell::state::Strip::window_groups`, preserving
-    /// existing groups' host state across an unrelated revision bump.
+    /// Used by the shell's `resync_strips_from_tree` to diff against the persisted window groups,
+    /// keeping host state across an unrelated revision bump.
     pub fn group_ids(&self) -> Vec<u64> {
         self.groups.iter().map(|g| g.id).collect()
     }
 
-    /// Inserting anywhere but the end pushes later groups along; the
-    /// motion is armed here and measured by the next layout pass, see
-    /// [`Self::shift_offset_for`]. Closing and reordering arm it too.
+    /// Inserting anywhere but the end pushes later groups along: the motion is armed here and
+    /// measured by the next layout pass.
     pub fn insert_group(&mut self, group: WindowGroup, idx: usize) {
         let clamped = idx.min(self.groups.len());
         if clamped < self.groups.len() {
@@ -2067,12 +1947,9 @@ impl GroupRow {
         self.structure_dirty = true;
     }
 
-    /// Make room on screen for `group_id`, a window that has just opened, beside the window next to
-    /// it: the one it opened to the right of, else the one after it. When the two don't fit
-    /// together they share the display ([`tilo_desktop_model::width::share_beside`]); when no share
-    /// leaves both usable, nothing changes and the strip scrolls to the new window instead. New
-    /// widths are stamped as pending width changes, so the host persists them as it persists a
-    /// resize. Returns whether any width changed.
+    /// Make room for a window that just opened, beside the one it opened to the right of, else the
+    /// one after it: two that don't fit share the display, and when no share leaves both usable the
+    /// strip scrolls instead. New widths are stamped as pending changes.
     pub fn share_with_neighbour(&mut self, group_id: u64) -> bool {
         let Some(idx) = self.groups.iter().position(|g| g.id == group_id) else {
             return false;
