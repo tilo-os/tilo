@@ -6463,22 +6463,6 @@ impl AppBrokerState {
         self.surface_changes.subscribe()
     }
 
-    /// Read one current receipt without surveying or disclosing another
-    /// actor's jobs.
-    #[must_use]
-    pub fn invocation_status_for_actor(
-        &self,
-        id: u64,
-        actor: &str,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        self.invocation_status_for_owner(
-            id,
-            &InvocationOwner::Local {
-                actor: actor.to_string(),
-            },
-        )
-    }
-
     /// Check `evidence` against the offered action's confirmation policy and,
     /// when one is required, mint the one-use grant that binds it to this
     /// exact peer, address, argument and actor.
@@ -12187,8 +12171,6 @@ pub mod tests {
         source_identity: Option<AdmittedJoinIdentity>,
     }
 
-    include!("local_directory_surface.rs");
-
     impl LocalDirectoryFixture {
         pub fn query_count(&self) -> usize {
             self.directory_state.borrow().query_count
@@ -12214,11 +12196,6 @@ pub mod tests {
 
         pub fn set_confirmation_required(&self, required: bool) {
             self.directory_state.borrow_mut().confirmation_required = required;
-        }
-
-        /// The parameters the directory's action takes.
-        pub fn set_params(&self, params: Vec<tilo_actions::ActionParam>) {
-            self.directory_state.borrow_mut().params = params;
         }
 
         fn invocation_channel(&self) -> runtime_collab::ChannelHandle {

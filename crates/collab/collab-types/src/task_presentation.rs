@@ -2,9 +2,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Maximum retained turns per task execution. Excess turns fail explicitly.
-pub const MAX_TASK_PRESENTATIONS: usize = 32;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskPresentationFinish {

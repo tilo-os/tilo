@@ -535,18 +535,3 @@ where
         Ok(())
     }
 }
-
-/// `id` as a call names it: the lowercase hex of the endpoint's public key.
-///
-/// # Errors
-///
-/// Returns a message unless `text` is exactly that.
-pub fn parse_endpoint_id(text: &str) -> Result<EndpointId, String> {
-    EndpointId::from_str(text).map_err(|error| error.to_string())
-}
-
-/// The address `id` is reachable at on `address`.
-#[must_use]
-pub fn direct_addr(id: EndpointId, address: std::net::SocketAddr) -> EndpointAddr {
-    EndpointAddr::new(id).with_ip_addr(address)
-}
