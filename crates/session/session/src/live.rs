@@ -43,7 +43,7 @@ use tilo_live::relay::{
 use tilo_live::roster::Roster;
 use tilo_lock::MutexRecover as _;
 use tilo_network_actor::local_host::Protocols;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{DeviceCert, EndpointDelegation};
 
 use crate::channels::{self, Member};
 use crate::engine::Engine;
@@ -104,11 +104,13 @@ struct Request {
 
 /// Bind a grant to the transport and the roster:
 ///
-/// * the certificate's device key is the one the iroh handshake proved;
 /// * the certificate is byte for byte the row the workspace's governance
-///   holds for that device — the membership every device already syncs, so a
+///   holds for its device — the membership every device already syncs, so a
 ///   device presenting another device's certificate, or one the workspace
 ///   removed, is refused;
+/// * the connection's endpoint speaks for that device: it is the device's own
+///   key, or one the device signed an [`EndpointDelegation`] for, live now,
+///   which is how a page whose device key cannot leave `WebCrypto` dials;
 /// * the certificate has not expired, and the workspace is one this device
 ///   relays, by the same rule every member applies ([`relays_of`]).
 fn bind(
@@ -118,7 +120,7 @@ fn bind(
     own: [u8; 32],
     now_ns: u64,
 ) -> Result<Request, Denied> {
-    let Peer::Native(device) = peer else {
+    let Peer::Native(endpoint) = peer else {
         return Err(Denied);
     };
     let workspace = WorkspaceId::parse(&live::workspace_id(grant.workspace)).ok_or(Denied)?;
@@ -131,16 +133,25 @@ fn bind(
     if !relays_of(members, now_ns).contains(&own) {
         return Err(Denied);
     }
+    let certificate: DeviceCert = serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
+    if certificate.is_expired_at(now_ns) {
+        return Err(Denied);
+    }
+    let device = certificate.device_public_key;
     let member = members
         .iter()
         .find(|member| member.device == device)
         .ok_or(Denied)?;
-    let certificate: DeviceCert = serde_json::from_slice(&grant.certificate).map_err(|_| Denied)?;
-    if certificate != member.cert || certificate.device_public_key != device {
+    if certificate != member.cert {
         return Err(Denied);
     }
-    if certificate.is_expired_at(now_ns) {
-        return Err(Denied);
+    if endpoint != device {
+        let delegation: EndpointDelegation =
+            serde_json::from_slice(&grant.delegation).map_err(|_| Denied)?;
+        if delegation.device_public_key != device {
+            return Err(Denied);
+        }
+        delegation.verify(&endpoint, now_ns).map_err(|_| Denied)?;
     }
     Ok(Request { workspace, device })
 }
@@ -450,6 +461,7 @@ impl Shared {
             &scope.id(),
             epoch,
             certificate,
+            Vec::new(),
         )
         .map(|grant| grant.encode())
     }
@@ -985,6 +997,7 @@ mod tests {
             &scope_of(workspace).id(),
             1,
             serde_json::to_vec(device).unwrap(),
+            Vec::new(),
         )
         .unwrap()
     }
@@ -1036,6 +1049,82 @@ mod tests {
             )
             .is_err(),
             "a device that is not on the roster is refused"
+        );
+    }
+
+    /// A page keeps its device key unextractable, so it dials under a key of
+    /// its own and presents the device's signature for it: the relay admits
+    /// that endpoint as the device, and refuses an endpoint the device never
+    /// signed for or whose delegation ran out.
+    #[test]
+    fn a_delegated_transport_is_admitted_as_its_device_only_while_it_lasts() {
+        let workspace = WorkspaceId::new();
+        let device_key = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let page_key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let page = page_key.verifying_key().to_bytes();
+        let mine = cert(device_key.verifying_key().to_bytes(), true, None);
+        let members = vec![Member {
+            device: mine.device_public_key,
+            cert: mine.clone(),
+        }];
+        let delegation = tilo_user_identity::sign_endpoint_delegation(
+            &device_key,
+            page,
+            100,
+            60 * 60 * 1_000_000_000,
+        )
+        .unwrap();
+        let mut delegated = grant(workspace, &mine);
+        delegated.delegation = serde_json::to_vec(&delegation).unwrap();
+        assert!(
+            bind(
+                Peer::Native(page),
+                &delegated,
+                &members,
+                mine.device_public_key,
+                200
+            )
+            .is_ok(),
+            "the page's endpoint speaks for the device that signed for it"
+        );
+        assert!(
+            bind(
+                Peer::Native(page),
+                &grant(workspace, &mine),
+                &members,
+                mine.device_public_key,
+                200
+            )
+            .is_err(),
+            "without the device's signature the endpoint is somebody else"
+        );
+        let later = 100 + 60 * 60 * 1_000_000_000;
+        assert!(
+            bind(
+                Peer::Native(page),
+                &delegated,
+                &members,
+                mine.device_public_key,
+                later
+            )
+            .is_err(),
+            "an expired delegation admits nobody"
+        );
+        let mut anyone = delegated.clone();
+        anyone.delegation = serde_json::to_vec(
+            &tilo_user_identity::sign_endpoint_delegation(&page_key, page, 100, 1000).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            bind(
+                Peer::Native(page),
+                &anyone,
+                &members,
+                mine.device_public_key,
+                200
+            )
+            .is_err(),
+            "an endpoint cannot vouch for itself"
         );
     }
 

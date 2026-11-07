@@ -385,6 +385,7 @@ async fn native(
         &scope.id(),
         keys.epoch(),
         certificate,
+        Vec::new(),
     )
     .map_err(|_| Failed::Unavailable)?;
     Plane::join(

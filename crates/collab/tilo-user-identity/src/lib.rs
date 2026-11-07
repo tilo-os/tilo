@@ -69,6 +69,7 @@ pub mod certification;
 pub mod clock;
 pub mod cloud_enrollment;
 pub mod directory;
+pub mod endpoint_delegation;
 pub mod enrollment;
 pub mod fleet;
 pub mod image;
@@ -106,6 +107,11 @@ pub use clock::wait_for_wall_clock;
 pub use clock::{CertificateClockError, WallClockWait};
 pub use directory::{
     CommunityState, DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,
+};
+pub use endpoint_delegation::{
+    ENDPOINT_DELEGATION_PREIMAGE_TAG, EndpointDelegation, EndpointDelegationError,
+    MAX_LIFETIME_NS as MAX_ENDPOINT_DELEGATION_LIFETIME_NS, sign_endpoint_delegation,
+    verify_endpoint_delegation,
 };
 pub use enrollment::{
     ENROLLMENT_PREIMAGE_TAG, EnrollmentError, EnrollmentToken, MAX_ENROLLMENT_TOKEN_LIFETIME_NS,
