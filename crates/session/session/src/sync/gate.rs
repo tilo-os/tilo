@@ -44,9 +44,8 @@ impl Client {
             }
             let workspace = plane.workspaces.iter().find(|held| held.ws == *ws)?;
             let known = workspace
-                .peers
-                .iter()
-                .find(|known| known.publisher == *peer)
+                .board
+                .member(*peer.as_bytes())
                 .and_then(|known| known.user.clone());
             (workspace.id.clone(), known)
         };

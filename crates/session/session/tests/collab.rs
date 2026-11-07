@@ -415,8 +415,11 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
     );
     assert!(listed("Away"), "how they said they are: {labels:?}");
     assert_eq!(
-        sync.pointers(WORKSPACE, NOTES),
-        [(device(0xaa).to_string(), 12.0, 34.0)],
+        sync.placed(
+            WORKSPACE,
+            &[(NOTES, ui::kurbo::Rect::new(0.0, 0.0, 1000.0, 1000.0))]
+        ),
+        [(device(0xaa).to_string(), NOTES, 12.0, 34.0)],
         "their pointer is over Notes, where the desk draws it"
     );
 

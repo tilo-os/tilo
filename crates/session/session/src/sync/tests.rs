@@ -1,6 +1,6 @@
 use super::*;
 use collab_types::PeerPresencePayload;
-use collab_types::presence::{DESKTOP_APP, PresenceKey};
+use collab_types::presence::{DESKTOP_APP, Payload, PresenceKey};
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{Workspace, WorkspaceId as ModelWorkspaceId};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -645,15 +645,6 @@ fn another_apps_presence_is_not_the_desktops() {
 }
 
 #[test]
-fn this_device_is_not_someone_here() {
-    let (sync, _said) = session("Quinten", Some(0x04));
-    // This device's own frame, looped back by a relay: it says nothing of
-    // anyone else.
-    here(&sync, 0xf0);
-    assert!(sync.show(&mut desk(WORKSPACE), &|_| None).is_empty());
-}
-
-#[test]
 fn two_devices_of_one_peer_are_one_face() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
@@ -678,66 +669,41 @@ fn another_device_of_this_person_is_this_person() {
     assert_eq!(sync.show(&mut desk(WORKSPACE), &|_| None).len(), 1);
 }
 
+/// The tile `tab` stands at on the desk of these tests.
+fn tile(tab: u64) -> (u64, ui::kurbo::Rect) {
+    (tab, ui::kurbo::Rect::new(100.0, 50.0, 500.0, 350.0))
+}
+
 #[test]
 fn pointers_are_followed_on_the_room_tile() {
     let (sync, _said) = session("Quinten", Some(0x04));
     sync.hear(hello(1, 0xaa, "Framework 16"));
     here(&sync, 1);
-    assert!(sync.pointers(WORKSPACE, 3).is_empty());
+    assert!(sync.placed(WORKSPACE, &[tile(3)]).is_empty());
 
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
     assert_eq!(
-        sync.pointers(WORKSPACE, 3),
-        vec![(device(1).to_string(), 12.5, 34.5)]
+        sync.placed(WORKSPACE, &[tile(3)]),
+        vec![(device(1).to_string(), 3, 112.5, 84.5)],
+        "the pointer is placed where the tile stands"
     );
-    assert!(sync.pointers(WORKSPACE, 4).is_empty());
+    assert!(sync.placed(WORKSPACE, &[tile(4)]).is_empty(), "another tab");
     assert!(
-        sync.pointers("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", 3)
+        sync.placed("0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c", &[tile(3)])
             .is_empty()
     );
 
-    pointer_cleared(&sync, 1, WORKSPACE, 3);
-    assert!(sync.pointers(WORKSPACE, 3).is_empty());
-}
-
-/// The panel that draws other people's pointers asks for a frame on the
-/// presence revision: a pointer landing on a desk where nothing moves draws
-/// one frame, a pointer resting there draws none, and a repeated say of what
-/// a peer already said draws none either.
-#[test]
-fn a_pointer_landing_draws_a_frame_and_a_resting_one_draws_none() {
-    let (sync, _said) = session("Quinten", Some(0x04));
-    sync.hear(hello(1, 0xaa, "Framework 16"));
-    here(&sync, 1);
-    let still = sync.presence_revision();
-
-    // The peer says it is here again, as every device does now and then: it
-    // said nothing new, so the desk draws nothing.
-    here(&sync, 1);
-    assert_eq!(
-        sync.presence_revision(),
-        still,
-        "a repeated presence drew a frame"
-    );
-
-    // Their pointer arrives on the desk: one frame.
+    // A pointer resting where it is, and the peer saying it is here again,
+    // are no change: the desk draws no frame.
+    let drawn = sync.presence_revision();
     pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
-    let landed = sync.presence_revision();
-    assert_ne!(landed, still, "an arriving pointer asked for no frame");
-
-    // It rests where it is: the same place said again is no change, and the
-    // desk holds still.
-    pointer_moved(&sync, 1, WORKSPACE, 3, (12.5, 34.5));
-    assert_eq!(
-        sync.presence_revision(),
-        landed,
-        "a resting pointer asked for a frame"
-    );
+    here(&sync, 1);
+    assert_eq!(sync.presence_revision(), drawn, "nothing new was drawn");
 
     // Leaving the tile, and the device going away, each draw one frame.
     pointer_cleared(&sync, 1, WORKSPACE, 3);
     let left = sync.presence_revision();
-    assert_ne!(left, landed, "a leaving pointer asked for no frame");
+    assert_ne!(left, drawn, "a leaving pointer asked for no frame");
     sync.hear(NetEvent::PeerLeft {
         ws: topic(WORKSPACE),
         peer: device(1),

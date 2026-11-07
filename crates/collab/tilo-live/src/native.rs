@@ -26,7 +26,6 @@
 
 use std::future::Future;
 use std::pin::{Pin, pin};
-use std::str::FromStr as _;
 use std::sync::Mutex;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -37,7 +36,7 @@ use iroh::endpoint::{
     SendDatagramError, SendStream, StoppedError, VarInt, WriteError,
 };
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, EndpointAddr, EndpointId};
+use iroh::{Endpoint, EndpointAddr};
 use moq_net::web_transport_trait as wt;
 use moq_net::web_transport_trait::poll;
 use tilo_lock::MutexRecover as _;
