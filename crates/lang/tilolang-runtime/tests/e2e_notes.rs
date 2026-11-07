@@ -146,15 +146,24 @@ mod cases {
                 .unwrap();
         // These checks read the whole tree, as a host that draws every row does.
         list.set_lazy_rows(false).unwrap();
+        // The notebook's window is the library's list window: the view's root is the branch
+        // that picked it, which holds the shell.
+        let root = list.tree();
+        let window = match root.children.as_slice() {
+            [only] => only,
+            _ => root,
+        };
         assert_eq!(
-            list.tree().kind,
+            window.kind,
             "ui.NavShell",
             "the window is a shell: {}",
             dump(list.tree())
         );
+        // The words are the library's phrase, which a host gives from its catalogue; here the
+        // runtime shows the phrase itself.
         assert_eq!(
             text_prop(of_kind(list.tree(), "ui.EmptyState")[0], "title"),
-            "No notes yet"
+            "tilolang-empty-kind"
         );
         assert_eq!(
             text_prop(

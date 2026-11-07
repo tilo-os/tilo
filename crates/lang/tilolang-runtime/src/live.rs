@@ -342,6 +342,8 @@ struct Reach {
 pub struct LiveStats {
     /// Boundaries rendered (a view call run), since the view was opened.
     pub renders: u64,
+    /// Of those, the runs of the view's root: how many times a change reached the window.
+    pub root_runs: u64,
     /// Boundaries in the tree now.
     pub boundaries: usize,
     /// Of those, rows of lists not rendered because they were not shown.
@@ -362,6 +364,8 @@ pub(crate) struct Live {
     /// Whether rows of lists wait to be shown before they render.
     pub lazy_rows: bool,
     pub renders: u64,
+    /// Of those, the runs of the root: how many times a change reached the window.
+    pub root_runs: u64,
     /// View calls kept without running during the current re-render, by key.
     reused: HashSet<String>,
     /// Action references of trees replaced during the current re-render: released once the
@@ -428,6 +432,7 @@ impl Live {
             window,
             lazy_rows: true,
             renders: 0,
+            root_runs: 0,
             reused: HashSet::new(),
             to_release: Vec::new(),
             shown: HashMap::new(),
@@ -452,6 +457,41 @@ impl Live {
         self.bounds.get(id).and_then(Option::as_ref)
     }
 
+    /// Plant a boundary by hand, as a boundary whose branch has left the tree stands: rendered,
+    /// with the cached trail `path` of a call that is no longer placed. `target` is a call that
+    /// renders, so a run of it has content to write: without the guard that refuses a boundary
+    /// the tree does not hold, that content lands at `path`.
+    #[cfg(test)]
+    pub(crate) fn plant_orphan(
+        &mut self,
+        key: &str,
+        target: crate::render::ViewTarget,
+        args: Vec<Value>,
+        path: Vec<usize>,
+    ) -> BoundId {
+        let mut bound = Bound::new(
+            crate::render::Stub {
+                key,
+                target: Rc::new(target),
+                args,
+                lazy: false,
+                depth: 1,
+            },
+            false,
+        );
+        bound.path = path;
+        bound.rendered = true;
+        let id = self.add_bound(bound);
+        self.dirty.insert(id);
+        id
+    }
+
+    /// The keys of the tree's children, to say what a tree holds.
+    #[cfg(test)]
+    pub(crate) fn child_keys(&self) -> Vec<String> {
+        self.tree.children.iter().map(|n| n.key.clone()).collect()
+    }
+
     fn bound_mut(&mut self, id: BoundId) -> Option<&mut Bound> {
         self.bounds.get_mut(id).and_then(Option::as_mut)
     }
@@ -466,6 +506,7 @@ impl Live {
         let unrendered = self.bounds.iter().flatten().filter(|b| !b.rendered).count();
         LiveStats {
             renders: self.renders,
+            root_runs: self.root_runs,
             boundaries,
             unrendered,
         }
@@ -813,6 +854,9 @@ impl Live {
         }
         let rendered = rendered?;
         self.renders = self.renders.saturating_add(1);
+        if id == ROOT {
+            self.root_runs = self.root_runs.saturating_add(1);
+        }
         let Rendered {
             root,
             reads,
@@ -970,6 +1014,26 @@ impl Live {
         }
     }
 
+    /// Whether the `fragment` of boundary `id`, at `path`, is still the node the tree holds
+    /// there for it: a `fragment` keyed by the boundary's own key, and whose key this boundary
+    /// is the one that stands for. False for a boundary whose branch of the view has since
+    /// left the tree, which has nowhere to write.
+    ///
+    /// The key alone is not enough. Two calls of one view can stand at once (a view drawn in
+    /// two branches, a row called twice), and a boundary freed and handed to another call can
+    /// keep a key the tree now holds elsewhere. Asking [`Self::by_key`] whose the fragment is,
+    /// and refusing when it is not this boundary's, keeps a stale boundary from writing over
+    /// the content the boundary standing there now owns.
+    fn placed(&self, id: BoundId, path: &[usize]) -> bool {
+        let Some(b) = self.bound(id) else {
+            return false;
+        };
+        self.by_key.get(&b.key) == Some(&id)
+            && self
+                .node_at(path)
+                .is_some_and(|node| node.kind == "fragment" && node.key == b.key)
+    }
+
     /// Re-run every boundary that is stale, outermost first, and return the patches that
     /// bring the tree up to date.
     pub fn poll(&mut self, core: &Rc<Core>) -> Result<Vec<Patch>, RuntimeError> {
@@ -1012,6 +1076,20 @@ impl Live {
         let Some(path) = self.bound(id).map(|b| b.path.clone()) else {
             return Ok(());
         };
+        // A boundary writes into its own `fragment`, and nowhere else. Its path is a cached
+        // trail of child indices, so it can outlive the node it named: when a branch of the
+        // view swaps (a preset that lays the desk another way), the `fragment` the boundary
+        // was made for leaves the tree while the boundary itself stays behind, rendered and
+        // reading what changed. Its path is then the empty trail of a boundary that was never
+        // placed, and an empty path names the root: writing there would put this one call's
+        // content where the whole view's belongs, and the screen would show that call alone.
+        // A boundary whose fragment the tree no longer holds has nothing to update; what is
+        // drawn is drawn by whichever boundary holds the branch now, and the call makes a
+        // boundary anew when the branch comes back.
+        if id != ROOT && !self.placed(id, &path) {
+            self.drop_bound(id);
+            return Ok(());
+        }
         self.reused.clear();
         self.row_changes.clear();
         let new_content = match self.render(core, id) {
@@ -1533,7 +1611,12 @@ impl Live {
             }
             let path = self.bound(id).map(|b| b.path.clone()).unwrap_or_default();
             let keys = self.keys_at(&path);
-            if let Some(fragment) = self.node_at_mut(&path) {
+            // Only a row whose own `fragment` the tree still holds has rows to hide: a row kept
+            // behind by a list the view no longer draws has nowhere to write, and hiding it would
+            // empty whatever stands at its stale path.
+            if self.placed(id, &path)
+                && let Some(fragment) = self.node_at_mut(&path)
+            {
                 for child in std::mem::take(&mut fragment.children) {
                     patches.push(Patch::Remove {
                         parent: keys.clone(),

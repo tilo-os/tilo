@@ -225,6 +225,10 @@ maps-congestion-moderate = Mäßig
 maps-congestion-heavy = Dicht
 maps-congestion-standstill = Stillstand
 maps-remaining = noch { $distance }
+# Wie lange eine Fahrt dauert, in der Sprache der Person.
+maps-duration-minutes = { $minutes } Min.
+maps-duration-hours = { $hours } Std.
+maps-duration-hours-minutes = { $hours } Std. { $minutes } Min.
 maps-turn-start = Start
 maps-turn-head-out = Auf { $road } losfahren
 maps-turn-arrive = Am Ziel ankommen

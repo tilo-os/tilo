@@ -258,6 +258,12 @@ impl Fit {
 
     /// The bounds and weights of this fit written onto a wrapper style of a container running
     /// along `main`, with `rem` logical pixels to a `rem`.
+    ///
+    /// An `aspect` decides the block size from the inline one. Taffy derives one size from the
+    /// other only where the known one is definite in the style, so the ratio itself is applied
+    /// out of the solved sizes ([`Arranged::derive_aspects`](super::Arranged)); here a weight on
+    /// the block axis is left out, since a share of the room is not the size the ratio asked
+    /// for.
     pub fn apply(&self, style: &mut taffy::Style, main: Axis, rem: f32) {
         use taffy::style_helpers::length;
         let (along, across) = match main {
@@ -266,6 +272,7 @@ impl Fit {
         };
         if let Some(weight) = along.fill
             && weight > 0.0
+            && !(self.aspect.is_some() && main == Axis::Block)
         {
             // A weight above zero takes a share of the leftover room from a zero basis; zero
             // takes no share at all, and the child is as big as its content (a dock's body that

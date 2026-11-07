@@ -132,21 +132,66 @@ fn the_studio_takes_a_screenshot_of_the_display_as_the_compositor_draws_it() {
     );
 }
 
+/// The key a person presses for Print, as the layout names it.
+fn print_key(session: &mut Session) -> u32 {
+    session
+        .compositor()
+        .keycode_for_keysym(0xff61) // `XK_Print`
+        .expect("the layout has a Print key")
+}
+
 #[test]
-fn the_print_key_takes_a_screenshot_without_the_studio_coming_up() {
+fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
     let _settled = ui::motion::testing::settled();
+    // The desk is the frame the bar's arrival must change: with the clock
+    // held, a minute turning over cannot pass for it.
+    let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
-    let print = session
-        .compositor()
-        .keycode_for_keysym(0xff61) // `XK_Print`
-        .expect("the layout has a Print key");
-    assert!(kept(pictures.path(), "png").is_empty(), "nothing yet");
+    let print = print_key(&mut session);
+    let desk = quiet_desk(&mut session, "HEADLESS-1");
 
     tap(&mut session, print);
+    // The studio comes up over the desk, and takes nothing on its own: the
+    // person picks the screen, a window or an area on it.
+    bar_up(&mut session, "HEADLESS-1", &desk);
+    assert!(
+        kept(pictures.path(), "png").is_empty(),
+        "the press alone keeps nothing"
+    );
+}
+
+#[test]
+fn shift_and_the_print_key_take_the_whole_display_at_once() {
+    let _settled = ui::motion::testing::settled();
+    // The desk is the frame the card's arrival must change: with the clock
+    // held, a minute turning over cannot pass for it.
+    let _clock = held_clock();
+    let pictures = tempfile::tempdir().unwrap();
+    let mut session = studio_session(pictures.path());
+    settle(&mut session, 4);
+    let print = print_key(&mut session);
+    assert!(kept(pictures.path(), "png").is_empty(), "nothing yet");
+
+    // The desk as the press leaves it: with the bar down, anything the desk
+    // shows after the press is the shot's own card.
+    let desk = quiet_desk(&mut session, "HEADLESS-1");
+
+    // Shift takes the whole display without the studio coming up to ask.
+    key(&mut session, super::keys::LEFT_SHIFT, true);
+    tap(&mut session, print);
+    key(&mut session, super::keys::LEFT_SHIFT, false);
     pump(&mut session, &mut [], |_, _| {
         !kept(pictures.path(), "png").is_empty()
+    });
+    // The shot answers at once: its card stands on the floating layer with
+    // the picture it caught, without the studio's bar coming up.
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .is_ok_and(|frame| frame.rgba != desk)
     });
     let kept = kept(pictures.path(), "png");
     assert_eq!(kept.len(), 1, "one press, one picture: {kept:?}");
@@ -159,6 +204,40 @@ fn the_print_key_takes_a_screenshot_without_the_studio_coming_up() {
         ),
         "the whole display, with the bar still down"
     );
+}
+
+#[test]
+fn a_shot_answers_after_the_studio_was_up_and_put_away() {
+    let _settled = ui::motion::testing::settled();
+    // The desk is the frame the card's arrival must change: with the clock
+    // held, a minute turning over cannot pass for it.
+    let _clock = held_clock();
+    let pictures = tempfile::tempdir().unwrap();
+    let mut session = studio_session(pictures.path());
+    settle(&mut session, 4);
+    let print = print_key(&mut session);
+    let desk = quiet_desk(&mut session, "HEADLESS-1");
+
+    // Print brings the studio up, and Escape puts it away again.
+    tap(&mut session, print);
+    bar_up(&mut session, "HEADLESS-1", &desk);
+    tap(&mut session, super::keys::ESCAPE);
+    bar_down(&mut session, "HEADLESS-1", &desk);
+
+    // A shot from the desk afterwards still answers with its card: the
+    // studio having been up once leaves no bar behind to say it instead.
+    key(&mut session, super::keys::LEFT_SHIFT, true);
+    tap(&mut session, print);
+    key(&mut session, super::keys::LEFT_SHIFT, false);
+    pump(&mut session, &mut [], |_, _| {
+        !kept(pictures.path(), "png").is_empty()
+    });
+    pump(&mut session, &mut [], |session, _| {
+        session
+            .compositor()
+            .screenshot("HEADLESS-1")
+            .is_ok_and(|frame| frame.rgba != desk)
+    });
 }
 
 #[test]

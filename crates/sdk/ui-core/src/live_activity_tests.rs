@@ -68,3 +68,46 @@ fn the_pill_rank_puts_a_timer_due_within_a_minute_before_other_timers() {
     assert!(due.pill_rank() < later.pill_rank());
     assert!(later.pill_rank() < Summary::new(Kind::Music, "Song", "").pill_rank());
 }
+
+/// A card headed with a picture keeps its title under it, and one whose
+/// picture is a tile keeps the reading in its hero: what an app says of a
+/// screenshot is not what it says of a song.
+#[test]
+fn a_card_headed_with_a_picture_says_so_in_the_json_it_publishes() {
+    let hero =
+        Summary::new(Kind::Other, "Screenshot", "").with_hero_artwork("data:image/jpeg;base64,AA");
+    let published = serde_json::to_value(&hero).expect("a summary writes");
+    assert_eq!(
+        published.get("art").and_then(serde_json::Value::as_str),
+        Some("hero")
+    );
+    let tile = Summary::new(Kind::Music, "A song", "").with_artwork("data:image/jpeg;base64,AA");
+    assert_eq!(tile.art, Art::Square);
+    // An activity an older app publishes says nothing of its picture, and
+    // stands what it has the way every card did.
+    let old: Summary = serde_json::from_value(serde_json::json!({
+        "id": "song-1",
+        "title": "A song",
+        "artwork": "data:image/jpeg;base64,AA"
+    }))
+    .expect("an activity of an older app reads back");
+    assert_eq!(old.art, Art::Square);
+}
+
+/// A recording's stop ends what runs in the colour that warns, and its pause
+/// stands plainly beside it.
+#[test]
+fn a_recordings_stop_is_the_control_that_warns() {
+    let recording = Summary::new(Kind::Stopwatch, "Screen recording", "0:07")
+        .with_control(Control::new("stop", "Stop", ControlKind::Destructive).with_icon("square"))
+        .with_control(Control::new("pause", "Pause", ControlKind::Secondary).with_icon("pause"))
+        .with_control(Control::new("stop", "Stop", ControlKind::Close));
+    let offered = recording.action_controls();
+    assert_eq!(
+        offered.len(),
+        2,
+        "the close is the card's own, not a row control"
+    );
+    assert_eq!(offered[0].kind, ControlKind::Destructive);
+    assert_eq!(offered[1].kind, ControlKind::Secondary);
+}

@@ -27,7 +27,7 @@ fn enlarged_notification_header_keeps_the_title_readable_and_actions_separate() 
 }
 
 #[test]
-fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
+fn wrapped_header_sizing_preserves_the_complete_row_budget() {
     let theme = Theme::dark().with_text_scale(2.0);
     let metrics = CenterLayout::metrics(&theme, &mut TextRenderer::new());
     for (rows, total) in [(0usize, 0), (3, 3), (7, 18)] {
@@ -45,11 +45,7 @@ fn wrapped_header_sizing_preserves_the_complete_row_and_pager_budget() {
         assert!(layout.title_rect().y0 >= layout.back().y1 + qs::RELATED_GAP);
         assert!(layout.title_rect().y1 + qs::RELATED_GAP <= layout.rows_top());
         if rows > 0 {
-            let bottom = if total > rows {
-                layout.footer().y0 - qs::RELATED_GAP
-            } else {
-                height - qs::PANEL_PAD
-            };
+            let bottom = height - qs::PANEL_PAD;
             assert!((layout.row_in(rows.saturating_sub(1), &shapes).y1 - bottom).abs() < 1e-6);
         }
     }

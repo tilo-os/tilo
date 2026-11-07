@@ -133,7 +133,6 @@ mod questions;
 pub mod quick_settings;
 mod records;
 pub mod recovery;
-mod reminders;
 mod rotation;
 pub mod run;
 mod run_programs;
@@ -145,6 +144,7 @@ pub mod seeded_apps;
 mod service_sessions;
 pub mod session_package;
 mod setup;
+mod shared;
 mod shared_desktop;
 mod shared_displays;
 mod sheets;
@@ -183,9 +183,7 @@ use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{
-    Compositor, DisplayConfig, Error, KeyboardLayout, NestedConfig, OutputConfig, WindowPolicy,
-};
+use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
@@ -238,7 +236,6 @@ use plane::Plane;
 use search::SessionSearch;
 use setup::Setup;
 use tilo_app_launch::Doors as WindowDoors;
-use tilo_sheets::Seat as _;
 use tilo_sheets::directory::DirectorySeat;
 use tilo_sheets::display_confirm::ConfirmSeat;
 use tilo_sheets::file_picker::FilePickerSeat;
@@ -295,11 +292,20 @@ struct Shared {
     /// surface apps it runs, and the bar's status keys open its slot.
     quick_settings: bool,
     /// What the keys asked the panel to show before it ran — the notifications,
-    /// the clipboard opened to paste — waiting for its app to be up.
-    panel_asks: RefCell<Vec<&'static str>>,
+    /// the clipboard opened to paste, the page Escape goes back from — waiting
+    /// for its app to be up.
+    panel_asks: Rc<RefCell<Vec<&'static str>>>,
+    /// The ask the panel goes back on, while it has not answered whether it
+    /// had anywhere to go back to: Escape closes the panel only from its main
+    /// page, and the panel says which page that is.
+    panel_back: Cell<Option<u64>>,
     /// What stands over the windows: its menus, quick settings, the picker
     /// and the rest, and which of them holds the keyboard.
     overlays: Overlays,
+    /// The two stacks the surfaces stand in, as one: what the shell's views
+    /// and the desk's own popovers open through, so one of them closes the
+    /// others.
+    surfaces: crate::desk_resource::Surfaces,
     /// The desk's own overlays, as its reading and its views name them: the
     /// surface up, and Alt+Tab's walk.
     desk_overlays: Rc<overlays::Overlays>,
@@ -316,10 +322,7 @@ struct Shared {
     triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// What the session's own resources read of this device: whether the
-    /// screens are locked, the touchpad is on, the night light is on and how
-    /// far the magnifier zooms. The loop keeps it every pass, and the
-    /// controls' service publishes it.
+    /// What the session's own resources read of this device.
     controls: Rc<RefCell<controls::ControlsReading>>,
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
@@ -328,11 +331,9 @@ struct Shared {
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the desk read it.
     readings: status::Shared,
-    /// The system services, reached for their readings; their actions go
-    /// through the door like every other.
+    /// The system services, reached for their readings.
     services: Rc<RefCell<Services>>,
-    /// The services the session serves its apps and devices itself, kept for
-    /// as long as it runs (`mount::doors::TABLE` says which).
+    /// The services the session serves its apps itself.
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
@@ -368,9 +369,8 @@ struct Shared {
     handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
-    /// What plays, as the desk's music widget shows it: written from the
-    /// machine's reading every pass, the same one the bar and the lock screen
-    /// show.
+    wake_handle: tilo_service::Wake,
+    /// What plays, as the desk's music widget shows it.
     music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
@@ -386,9 +386,9 @@ struct Shared {
     /// What publishes the person's file access list to the Files daemon
     /// while the session runs; `None` where no Files workspace serves.
     fs_authority: Option<fs_authority::Publisher>,
-    /// The workspace's emoji, which workspace settings shows and changes
-    /// through Chat's record of the workspace.
-    workspace_emoji: workspace_settings::EmojiTab,
+    /// The workspace's agents and emoji, which workspace settings shows and
+    /// changes through Chat's record of the workspace.
+    workspace_tabs: workspace_settings::WorkspaceTabs,
     portal: Option<PortalSeat>,
     file_picker: Option<FilePickerSeat>,
     /// The question about a display change, which stands on every display
@@ -448,9 +448,6 @@ struct Shared {
     /// The daemon's notifications on the desktop, as the session publishes
     /// the centre they are kept in.
     notifications: Rc<RefCell<notifications::SessionNotifications>>,
-    /// The reminders the person's workspaces hold for them, as this session
-    /// tells them, whether or not a window of the app that set them is open.
-    reminders: reminders::Reminders,
     /// What the services ask the person, on the sheets.
     asker: questions::Asker,
     /// Who is here: this session's membership of each workspace, when it
@@ -536,204 +533,6 @@ struct Shared {
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
     folder_import: RefCell<Option<import_readiness::Continuation>>,
-}
-
-/// Type with `keyboard`: the compositor's keymap, and the words printed on
-/// the keys of what the session draws (the shortcut guide, the desk's
-/// chords), both follow it.
-pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLayout) {
-    compositor.set_keyboard_layout(keyboard);
-    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
-        &keyboard.layout,
-        &keyboard.variant,
-    ));
-}
-
-impl Shared {
-    /// Show each workspace's shared desktop as the workspace holds it, and
-    /// write back what this device changed there: what every device in a
-    /// workspace sees of its strips and windows
-    /// ([`shared_desktop::SharedDesktops`]).
-    fn follow_shared_desktops(&self) {
-        let Some(engine) = &self.engine else {
-            return;
-        };
-        // Every workspace this device holds has had its record read, and
-        // nothing of the workspaces moved since: there is nothing to read,
-        // lay out or write.
-        if self
-            .desktops
-            .settled(engine.owner().revision(), &self.handle.read(Clone::clone))
-        {
-            return;
-        }
-        // What the records hold, folded into a copy of the desk: what this
-        // device opened or moved since was written first, so the fold comes
-        // back with this device's own change in it and nothing is undone.
-        let mut tree = self.handle.read(Clone::clone);
-        self.desktops.capture(engine, self.sync.as_deref(), &tree);
-        // What the workspace did not take of this desk is on the desk the
-        // person used: they hear it once, naming the workspace and why.
-        if let Some(refusal) = self.desktops.take_refusal() {
-            crate::notices::tell_desk_not_taken(&self.notifications, &tree, refusal);
-        }
-        let device = self
-            .sync
-            .as_ref()
-            .map_or_else(String::new, |sync| sync.publisher().to_string());
-        if self.desktops.follow(engine, &device, &mut tree) {
-            // The tree this device drew is the tree it shows: what the record
-            // holds is already placed, and swapping it in whole keeps the
-            // windows this device shows where its own view left them.
-            self.handle.replace_tree(tree.clone());
-        }
-        // A window the person opens here is this device's to place: the
-        // record lacks it until the next write, and folding keeps it.
-        self.desktops.note_unrecorded(engine, &tree);
-    }
-
-    /// Run what waited for the person to finish their gesture or their
-    /// typing: an arranging action that arrived then, in the order it came.
-    /// The arrangement is the desk, so what the desk did meanwhile needs no
-    /// taking in.
-    fn follow_arrangement(&self, underway: arrangement::Busy) {
-        let mut arrangement = self.arrangement.borrow_mut();
-        if !underway.holds()
-            && arrangement.waiting() > 0
-            && let Err(why) = arrangement.release()
-        {
-            tracing::warn!(why, "an arranging action that waited could not be made");
-        }
-    }
-
-    /// The workspace in front, as its id: where a chosen notification's app
-    /// opens.
-    fn active_workspace_id(&self) -> String {
-        self.handle.read(|tree| {
-            tree.active_workspace()
-                .map(|held| held.id().to_string())
-                .unwrap_or_default()
-        })
-    }
-
-    /// Take up what the workspace's history wrote back and what the person
-    /// opened from it, and tell the apps following it what moved. A window
-    /// that asked, or a change of what the history reads, asks the desk for
-    /// the frame that serves it.
-    fn serve_activity(&self) {
-        if let Some(tree) = self.activity.take_restored() {
-            self.handle.replace_tree(tree);
-        }
-        for (workspace, target) in self.activity.take_openings() {
-            self.open_from_history(&workspace, &target);
-        }
-        self.activity.keep_unlock();
-        self.activity.serve(&self.notifications.borrow());
-        // What the history says its changes were, and the names over the runs
-        // of them, are written into the desk's document as models answer; the
-        // desk draws a frame to read them.
-        let described = self.activity.describe();
-        if self.activity.take_woken() || described {
-            // A window asked the activity model something, or what the
-            // history reads moved: the desk draws a frame, which serves it.
-            self.desktop.with_widgets(WidgetHost::relayout);
-        }
-    }
-
-    /// Open what the person chose in the history: the app that holds it,
-    /// showing it.
-    fn open_from_history(
-        &self,
-        workspace_id: &tilo_desktop_model::WorkspaceId,
-        target: &ui::HistoryResourceTarget,
-    ) {
-        let Some(apps) = &self.launch else {
-            return;
-        };
-        let Some(app) = target.app_id.as_deref() else {
-            return;
-        };
-        let open = if let Some(path) = target.id.strip_prefix("file:") {
-            Some(tilo_app_launch::Open::File(std::path::PathBuf::from(path)))
-        } else if target.id.contains("://") {
-            Some(tilo_app_launch::Open::Uri(target.id.clone()))
-        } else {
-            None
-        };
-        let launch = tilo_app_launch::Launch::Package {
-            app: app.to_owned(),
-            open,
-        };
-        let workspace = apps.workspace_named(&workspace_id.to_string());
-        if let Err(error) = apps.start(&launch, &workspace) {
-            tracing::warn!(%error, %app, "an app is not opened from the history");
-            // The change is still in the history, so the person reads it
-            // there: what they chose did not happen, and why.
-            self.answer_failed(&crate::i18n::t("action-failed-that-change"), &error);
-        }
-    }
-
-    /// The windows this device left open: ask for the next one once the one
-    /// before it came, each into the tab it was in.
-    fn follow_restore(&self) {
-        self.restore
-            .borrow_mut()
-            .follow(&self.desktop, self.launch.as_deref());
-    }
-
-    /// Carry out what the person chose in the sheets.
-    fn follow_sheets(&self, look: &mut tilo_surface_host::Look<'_>) {
-        // What a place can show, as the arrangement published it: an
-        // agent's `find` leads with the resource typing the text would
-        // place, so it reads the same catalogue the canvas places through.
-        let catalog = self.arrangement.borrow().targets();
-        self.session_doors.answer(
-            &self.doors,
-            &self.services,
-            &self.search,
-            &|resource| catalog.borrow().get(resource).is_some(),
-            &self.person,
-            look,
-        );
-        if let Some(power) = &self.power {
-            for effect in power.take_asked() {
-                power.presentation().close();
-                self.power_effect(effect);
-            }
-        }
-
-        workspaces::follow_directory(
-            self.directory.as_ref(),
-            &self.handle,
-            &self.directory_store,
-            &self.notices,
-            &|joined| self.add_joined_workspace(joined),
-        );
-        workspace_settings::follow(
-            self.workspace_settings.as_ref(),
-            &self.workspace_settings_feed(),
-            &self.intents,
-        );
-        workspace_settings::refresh(
-            self.workspace_settings.as_ref(),
-            &self.workspace_settings_feed(),
-        );
-        self.follow_invite();
-        self.refresh_invite();
-        self.follow_boot_join();
-        // A program of this login asking to work as an agent is a question
-        // of the person's: their answer admits it, and the client is served
-        // from the next pass on.
-        if !self.boot_join.borrow().waiting()
-            && let Some(door) = self.agent_door.borrow_mut().as_mut()
-        {
-            door.follow(&self.handle, &self.person);
-        }
-        self.tell_agent_bindings_lost();
-        self.asker.follow();
-        self.shortcut_guide.follow();
-        self.app_sheets.follow(self.downloaded_apps().as_ref());
-    }
 }
 
 /// A running session: the compositor and the desktop it hosts.
@@ -918,6 +717,7 @@ pub struct Session {
     /// The controllers in the room, and how they drive the desktop; `None`
     /// when this session reads none.
     controllers: Option<controllers::Controllers>,
+    connectors: mount::connectors::ConnectorHost,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
@@ -988,6 +788,8 @@ impl Session {
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
+        // The centre opens with what it kept when this session last ended.
+        let notice_history = notifications::restore_history(&notices);
         // What the bar reads of the notifications, and the policy arrivals
         // are judged by: the person may change it at any time.
         let notice_signals = Rc::new(notifications::NoticeSignals::default());
@@ -1108,8 +910,13 @@ impl Session {
         let mut restore = desk_restore::Restore::default();
         match activity.opened_desk() {
             desk_doc::Kept::Desk(kept) => {
+                let mut kept = *kept;
+                // A launch that no window came for is not a window this start
+                // restores, and keeping it would leave one more of them on the
+                // desk with every restart.
+                desk_restore::without_unfilled(&mut kept);
                 restore = desk_restore::Restore::of(&kept);
-                handle.replace_tree(*kept);
+                handle.replace_tree(kept);
             }
             // The person's desk is on disk and this session did not open it:
             // they are looking at a desk that is not theirs, and have to be
@@ -1225,7 +1032,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
-        apply_keyboard(&mut compositor, &options.config.keyboard);
+        controls::apply_keyboard(&mut compositor, &options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
@@ -1256,6 +1063,14 @@ impl Session {
             overlays: Rc::clone(&desk_overlays),
             overview: overview.open_flag(),
         };
+        // The same handle, for the pass that keeps one surface up at a time.
+        let one_surface = surfaces.clone();
+        // What the keys ask the panel's own app, which the surface loop hands
+        // the running app each pass. A device whose desk draws the panel has
+        // one; the shell's own view of the quick settings answers its own keys.
+        let panel_asks: Rc<RefCell<Vec<&'static str>>> = Rc::default();
+        let panel_keys =
+            (surfaces.panel_shows(quick_settings::SURFACE)).then(|| Rc::clone(&panel_asks));
         let desk_door: tilo_surface_host::Shared =
             shell::desk_door(options.shell, desktop.clone(), surfaces.clone());
         doors.add(Rc::clone(&desk_door));
@@ -1572,6 +1387,7 @@ impl Session {
             nearby.as_ref(),
             Rc::clone(&capture_io),
             capture_notes,
+            &live_activities,
         );
 
         // The desktop's own chords win over every app's: the portal's
@@ -1615,6 +1431,7 @@ impl Session {
                     overlays: overlays.clone(),
                     desk: Rc::clone(&desk_overlays),
                     reveals: Rc::clone(&reveals),
+                    panel: panel_keys.clone(),
                 },
                 options.scale,
                 readout_band,
@@ -1749,7 +1566,6 @@ impl Session {
             &options,
             questions.clone(),
             std::sync::Arc::clone(&session_doors),
-            engine.as_ref().map(std::sync::Arc::clone),
             control.door(),
             std::sync::Arc::clone(&seats),
         );
@@ -1882,8 +1698,8 @@ impl Session {
             file_picker.clone(),
             Rc::clone(&services),
         );
-        let workspace_emoji =
-            workspace_settings::EmojiTab::new(cli::data_home(), options.wake.handle());
+        let workspace_tabs =
+            workspace_settings::WorkspaceTabs::new(cli::data_home(), options.wake.handle());
         let directory_store = directory::Store::default();
         let boot_join = boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community = community::Community::for_site(directory::community_site());
@@ -1900,8 +1716,10 @@ impl Session {
             asks,
             intents,
             quick_settings: quick_settings::installed(&options.surfaces),
-            panel_asks: RefCell::new(Vec::new()),
+            panel_asks: Rc::clone(&panel_asks),
+            panel_back: Cell::new(None),
             overlays,
+            surfaces: one_surface,
             desk_overlays,
             switcher,
             doors,
@@ -1925,13 +1743,14 @@ impl Session {
             bluetooth: bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: mount::wake::Wake::new(&options.wake_seams),
+            wake_handle: options.wake.handle(),
             music,
             power,
             workspace_settings,
             ws_settings_fed: Cell::new(None),
             capabilities_fed: Cell::new(None),
             fs_authority: fs_authority::Publisher::for_session(),
-            workspace_emoji,
+            workspace_tabs,
             directory,
             invite,
             invite_made: RefCell::default(),
@@ -1966,12 +1785,8 @@ impl Session {
                 notification_policy,
                 notice_signals,
                 options.power.clone(),
+                notice_history,
             ))),
-            reminders: reminders::Reminders::start(
-                cli::data_home(),
-                &options.person,
-                options.wake.handle(),
-            ),
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,
@@ -2184,9 +1999,11 @@ impl Session {
                 .take()
                 .map(controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
+            connectors: mount::connectors::ConnectorHost::new(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
+        mount::connectors::start_all(&mut session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

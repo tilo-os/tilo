@@ -8,7 +8,7 @@ use so.tilo.session as session
 /// read it. Its text is the session's to replace whole, never edited here: each is a register,
 /// not text to merge.
 type Desk (origin: session.desk) {
-    person: Text merge register (title)
+    person: Text merge register
     /// The surface the person is in: `none` at rest, else one of `surface`'s names.
     here: Text merge register
     /// Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
@@ -72,7 +72,7 @@ type Desk (origin: session.desk) {
 /// it.
 type Run (origin: session.run) {
     key: Text merge register
-    title: Text merge register (title)
+    title: Text merge register
     agent: Text merge register
     phase: Text merge register
     active: Bool
@@ -90,7 +90,7 @@ type RunEntry (origin: session.run_entry) {
     by_agent: Bool
     step: Bool
     /// The words, or the program as it ran.
-    text: Text merge register (title)
+    text: Text merge register
     outcome: Text merge register
     answer: Text merge register
 }
@@ -103,41 +103,41 @@ type EntryRef (origin: session.entry_ref) {
     resource: Text merge register
     app_id: Text merge register
     type_kind: Text merge register
-    label: Text merge register (title)
+    label: Text merge register
     change: Text merge register
 }
 
 /// A workspace on this device.
 type Workspace (origin: session.workspace) {
     key: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
     current: Bool
 }
 
 /// A running application's tray item: what the bar shows, and what a press on it reaches.
 type TrayItem (origin: session.tray_item) {
     key: Text merge register
-    title: Text merge register (title)
+    title: Text merge register
     menu: Bool
 }
 
 /// A task running for the person: an agent's or a script's.
 type Task (origin: session.task) {
     key: Text merge register
-    title: Text merge register (title)
+    title: Text merge register
     state: Text merge register
 }
 
 /// Someone else here in the workspace in front.
 type Person (origin: session.person) {
     key: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
 }
 
 /// A window of the desk: a tab of a strip in the workspace in front.
 type Win (origin: session.window) {
     key: Text merge register
-    title: Text merge register (title)
+    title: Text merge register
     origin_app: Text merge register
     /// The app it shows, shared by two windows of one app: the switcher's app scope crosses
     /// the windows holding it.
@@ -178,7 +178,7 @@ type Win (origin: session.window) {
 /// An agent here for the person, or that acted for them.
 type Agent (origin: session.agent) {
     key: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
     state: Text merge register
     doing: Text merge register
     mark: Text merge register
@@ -191,7 +191,7 @@ type Agent (origin: session.agent) {
 /// A workspace the person is in, as the workspace overview names it.
 type Room (origin: session.room) {
     key: Text merge register
-    name: Text merge register (title)
+    name: Text merge register
     current: Bool
     members: Text merge register
     present: Int
@@ -201,7 +201,7 @@ type Room (origin: session.room) {
 /// A notification in the centre, as its sender or its task named it.
 type Notice (origin: session.notice) {
     key: Text merge register
-    title: Text merge register (title)
+    title: Text merge register
     body: Text merge register
     origin_app: Text merge register
     icon: Text merge register
@@ -215,7 +215,7 @@ type Notice (origin: session.notice) {
 type NoticeAction (origin: session.notice_action) {
     notice: Text merge register
     key: Text merge register
-    label: Text merge register (title)
+    label: Text merge register
 }
 
 root arrangement: Arrangement
@@ -495,8 +495,9 @@ view battery_status() {
 }
 
 /// The notifications: an icon button named with what it shows ("Notifications", how many are
-/// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens or
-/// closes the device's status: the quick settings, or the notifications.
+/// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens
+/// the notification centre, or closes it while it is up: the bell is what it is named for, and
+/// the quick settings are the sound's, the connection's and the battery's own, beside it.
 ///
 /// The count is the button's own (`count:`): it stands on the bell's top trailing corner and
 /// wholly inside the button's face, so the bar's own edge never cuts it and it covers neither
@@ -513,6 +514,6 @@ view bell(d: Desk) {
         role: .bar,
         count: d.unread,
     ) {
-        on press: device.show_surface(device.desk, surface: "quick-settings")
+        on press: device.show_surface(device.desk, surface: "centre")
     }
 }

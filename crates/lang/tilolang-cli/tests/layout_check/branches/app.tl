@@ -1,7 +1,7 @@
 app so.tilo.lang.layoutbranches "Branches" (icon: .layout_grid, category: .utility)
 
 type Sample {
-    name: Text (title)
+    name: Text
     /// A note the sample may hold; the scenario leaves it out.
     note: Option<Text>
 }

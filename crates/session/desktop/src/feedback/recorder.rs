@@ -15,7 +15,7 @@ use tilo_app::feedback::{Error, MaskedScreenshot, Recorded, RecordingScope, Revi
 use tilo_app::tilo_resource;
 use tilo_resource::model::Doc;
 
-use super::transport::Capture;
+use tilo_feedback_transport::Capture;
 
 /// The saved document of `record` of `app` in `workspace`, as the workspace
 /// committed it, when this device holds it.
@@ -162,7 +162,7 @@ mod tests {
                 Ok(blake3::hash(bytes).to_hex().to_string())
             }),
             now_ms: Box::new(|| 1_000_000),
-            pictures: Box::new(super::super::transport::NoCapture),
+            pictures: Box::new(tilo_feedback_transport::NoCapture),
         }
     }
 

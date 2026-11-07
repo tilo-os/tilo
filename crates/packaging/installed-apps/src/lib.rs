@@ -131,6 +131,18 @@ impl InstalledApp {
             .map_or(self.display_name.as_str(), |(_, name)| name.as_str())
     }
 
+    /// The name to show to a person whose interface prefers `locales`, in
+    /// that order: the first language the manifest names this app in, else
+    /// `display_name`.
+    #[must_use]
+    pub fn name_in(&self, locales: &[String]) -> &str {
+        locales
+            .iter()
+            .map(|locale| self.name_for(locale))
+            .find(|name| !name.trim().is_empty() && *name != self.display_name)
+            .unwrap_or(self.display_name.as_str())
+    }
+
     pub fn opens_mime(&self, mime: &str) -> bool {
         desktop_policy::ResourceKind::mime(mime).is_ok_and(|resource| {
             resource
@@ -793,6 +805,39 @@ mod tests {
         let apps = read(&Catalog::at(&user, None)).unwrap();
         let ids: Vec<&str> = apps.iter().map(|app| app.package_id.as_str()).collect();
         assert_eq!(ids, ["com.evil.app"]);
+    }
+
+    #[test]
+    fn an_apps_name_follows_the_interface_language() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = InstalledApp {
+            package_id: "so.tilo.notes".into(),
+            display_name: "Notes".into(),
+            localized_names: BTreeMap::from([
+                ("de".into(), "Notizen".into()),
+                ("fr".into(), "Bloc-notes".into()),
+            ]),
+            keywords: Vec::new(),
+            category: None,
+            version: "1.0.0".into(),
+            manifest_path: tmp.path().join("manifest.toml"),
+            payload_root: tmp.path().into(),
+            has_gui: true,
+            opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
+            opens_secondary: false,
+            opens_resource_kinds: Vec::new(),
+            offers: Vec::new(),
+        };
+        let locales = |tags: &[&str]| tags.iter().map(|tag| (*tag).to_owned()).collect::<Vec<_>>();
+        assert_eq!(app.name_in(&locales(&["de-DE", "de"])), "Notizen");
+        // The first language the manifest names the app in wins, and one it
+        // does not name it in falls through to the next.
+        assert_eq!(app.name_in(&locales(&["fr-FR", "de"])), "Bloc-notes");
+        assert_eq!(app.name_in(&locales(&["es", "de"])), "Notizen");
+        assert_eq!(app.name_in(&locales(&["en-US", "en"])), "Notes");
+        assert_eq!(app.name_in(&[]), "Notes");
     }
 
     #[test]

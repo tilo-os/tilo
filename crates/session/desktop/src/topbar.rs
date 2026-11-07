@@ -196,7 +196,7 @@ struct CacheFingerprint {
 
     /// Every activity the pill names, in the bar's own order: another one
     /// appearing, changing its reading or ending repaints it.
-    activities: Vec<ui::live_activity::Summary>,
+    activities: ui::floating_layer::Pill,
     /// How far the centre's cross-fade between the time and a live activity
     /// has come, in thousandths; `None` at rest.
     center_fade: Option<u16>,
@@ -706,7 +706,7 @@ impl TopBarChrome {
                 .is_some_and(|chrome| chrome.snapshot().overlays.ws_settings),
             focused: self.focused,
             focused_control: self.focused_control.clone(),
-            activities: self.activities(),
+            activities: self.center_pill(),
             center_fade: self.center_fade_key(),
             center_width: self.center_width_key(),
             app_tray_revision: self.app_tray_revision(),
@@ -1320,7 +1320,10 @@ impl Widget for TopBarChrome {
             return;
         }
         self.handle_keyboard(event, ctx.handled);
-        if *ctx.handled || self.handle_app_tray_press(event, ctx.handled) {
+        if *ctx.handled
+            || self.handle_app_tray_press(event, ctx.handled)
+            || self.handle_secondary_press(event, ctx.handled)
+        {
             return;
         }
         if is_left_release(event) {
@@ -1731,8 +1734,8 @@ impl TopBarChrome {
                 self.rect.x0 + f64::from(theme.tokens.spacing.s3),
             ) + f64::from(theme.tokens.spacing.s2);
             self.draw_workspace_pill(scene, transform, theme, text_renderer, center_y, label_x);
-            let center_left =
-                f64::midpoint(self.rect.x0, self.rect.x1) - self.center_band_width(theme) / 2.0;
+            let center_left = f64::midpoint(self.rect.x0, self.rect.x1)
+                - self.center_band_width(theme, text_renderer) / 2.0;
             // The strip shown changes as the person moves between strips: it
             // is one part of the bar, so that change damages where it is
             // painted rather than the whole bar.

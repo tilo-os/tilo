@@ -1,5 +1,5 @@
 //! The tilolang apps a development session starts with (`tilo-session --seed-apps`, honoured by
-//! development builds only): notes, tasks, chat, mail and the YouTube client, loaded from
+//! development builds only): notes, tasks, chat, mail and the video app, loaded from
 //! `apps/tl` into one workspace record, each filled by its first scenario (the seed data its
 //! shots and tests start from), and published as the session publishes a room's records
 //! ([`tilolang_tilo::records_service::RecordService`]): every note, task, channel and mailbox is

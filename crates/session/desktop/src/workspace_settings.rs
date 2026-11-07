@@ -36,8 +36,7 @@ pub mod people;
 mod people_pane;
 
 pub use agents_pane::{
-    AgentPreset, AgentSummary, admit_agent, agent_authority_preset, agent_preset_label,
-    agent_summaries,
+    AgentPreset, AgentSummary, admit_agent, agent_authority_preset, agent_status, agent_summaries,
 };
 
 pub use people_pane::member_row_offers;
@@ -82,7 +81,8 @@ pub struct TitledResource {
     pub title: String,
 }
 
-/// A host with no application catalogue: apps are named by their id.
+/// A host with no application catalogue: an app is named by its id written
+/// as words, never shown as an id.
 pub struct NoAppDirectory;
 
 impl AppDirectory for NoAppDirectory {
@@ -93,7 +93,7 @@ impl AppDirectory for NoAppDirectory {
 
 fn app_display_name(apps: &dyn AppDirectory, app_id: &str) -> String {
     apps.app_display_name(app_id)
-        .unwrap_or_else(|| app_id.to_string())
+        .unwrap_or_else(|| tilo_desktop_search::names::app_name(app_id))
 }
 
 pub use tilo_desktop_model::{
@@ -949,17 +949,6 @@ fn service_member_detail(service: &ServiceMember) -> String {
     )
 }
 
-fn agent_admission_label(kinds: tilo_action_policy::KindSet) -> String {
-    use tilo_action_policy::ActionKind;
-    t(if kinds.contains(ActionKind::Outside) {
-        "workspace-settings-admission-admin"
-    } else if kinds.contains(ActionKind::Undoable) {
-        "workspace-settings-admission-write"
-    } else {
-        "workspace-settings-admission-read"
-    })
-}
-
 /// What a bot says under its name: whether it runs yet, and from which
 /// version. One fact per line, never joined.
 pub fn bot_detail(bot: &tilo_desktop_model::WorkspaceBot) -> String {
@@ -1468,7 +1457,8 @@ mod agents_tests {
             let summaries = agent_summaries(&ws);
             assert_eq!(summaries.len(), 1);
             assert_eq!(summaries[0].agent, AGENT);
-            assert_eq!(summaries[0].badge, t("workspace-settings-badge-agent"));
+            assert!(!summaries[0].service, "an agent, not a service");
+            assert_eq!(summaries[0].detail, agent_status(&ws, AGENT));
             let members = ws.agent_members_at(tilo_clock::unix_now());
             assert_eq!(members.len(), 1, "listed with the workspace's agents");
             assert_eq!(members[0].0, AGENT);
@@ -1662,7 +1652,10 @@ mod permissions_tests {
             assert_eq!(rows.len(), 2);
             for row in &rows {
                 assert_eq!(row.section, SubjectKind::App.section_label());
-                assert_eq!(row.holder, "firefox");
+                assert_eq!(
+                    row.holder, "Firefox",
+                    "an app is named, never shown as its id"
+                );
                 assert!(!row.id.is_empty(), "rows are keyed by capability id");
             }
             assert_ne!(rows[0].id, rows[1].id);

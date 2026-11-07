@@ -96,7 +96,9 @@ impl DesktopChromeSource for FeedChrome {
 
     fn intent(&self, intent: ChromeIntent) -> bool {
         match intent {
-            ChromeIntent::ToggleWorkspaceMenu => self.popover.set(Some(Popover::WorkspaceMenu)),
+            ChromeIntent::ToggleWorkspaceMenu { .. } => {
+                self.popover.set(Some(Popover::WorkspaceMenu));
+            }
             ChromeIntent::ToggleProfile => self.popover.set(Some(Popover::Profile)),
             // The desktop's bar carries no Tilo mark: About is in Settings.
             ChromeIntent::ToggleTiloMenu => return false,
@@ -972,7 +974,11 @@ mod tests {
     #[test]
     fn a_bar_asking_for_its_menu_opens_it_here() {
         let mut surface = hosted("bar");
-        assert!(surface.source.intent(ChromeIntent::ToggleWorkspaceMenu));
+        assert!(
+            surface
+                .source
+                .intent(ChromeIntent::ToggleWorkspaceMenu { at: None })
+        );
         surface.catch_up();
         assert!(surface.menu.is_open());
         assert!(surface.source.intent(ChromeIntent::ToggleOverview));

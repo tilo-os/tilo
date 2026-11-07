@@ -35,6 +35,14 @@ const failed = async (message, tab) => {
     await dump(page.tab, page.name).catch(() => {});
   }
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
+  // What each page's console kept, so the run's own log says why it stopped
+  // without anyone having to open the files it left behind. The page that
+  // failed is said too: one that never arrived never got as far as opening.
+  const said = [...opened.map(page => [page.name, page.tab]), ...(tab && !opened.some(page => page.tab === tab) ? [['the page', tab]] : [])];
+  for (const [name, page] of said) {
+    const lines = (page.log ?? []).slice(-40);
+    if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
+  }
   console.error(`FAIL: ${message}`);
   process.exit(1);
 };
@@ -125,8 +133,17 @@ const until = async (tab, expression, what, timeout = 90_000) => {
     const value = await tab.evaluate(expression).catch(() => false);
     if (value) return value;
     if (Date.now() > deadline) {
+      // Where the page stopped, in the failure line itself: the step it was
+      // in says more than the wait that ran out.
+      const shown = await tab.evaluate(`JSON.stringify({
+        arrival: document.documentElement.dataset.arrival ?? null,
+        door: document.documentElement.dataset.door ?? null,
+        phase: document.documentElement.dataset.phase ?? null,
+        progress: document.documentElement.dataset.arrivalProgress ?? null,
+        status: document.getElementById('status')?.textContent ?? null,
+      })`).catch(() => 'unreadable');
       await dump(tab, `timeout-${what.replace(/[^a-z0-9]+/gi, '-')}`).catch(() => {});
-      failed(`${what} never appeared`);
+      await failed(`${what} never appeared: ${shown}`, tab);
     }
     await sleep(250);
   }
@@ -238,7 +255,7 @@ const open = async name => {
     door: document.documentElement.dataset.door ?? null,
     phase: document.documentElement.dataset.phase ?? null,
   })`));
-  if (arrival.arrival !== 'done') failed(`${name} did not arrive: ${JSON.stringify(arrival)}`);
+  if (arrival.arrival !== 'done') await failed(`${name} did not arrive: ${JSON.stringify(arrival)}`, tab);
   await sleep(2000);
   // What reached the page's outermost key listener, before the desktop's, and
   // what the desktop's own surface was handed.
@@ -305,7 +322,7 @@ try {
   // A opens the Lounge's chat the way a person does — search, the app's name,
   // Enter — and writes in it: the hello lands in B's.
   await search(a.tab, a.command, 'chat', 'Chat');
-  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.label === 'Chat')`,
+  await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => (entry.label ?? '').toLowerCase() === 'chat')`,
     "A's own chat window", 120_000);
   await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('Message composer')`,
     "A's chat composer", 120_000);
@@ -356,9 +373,23 @@ try {
   console.log('ok: each desk shows the other person here');
 
   // Nothing failed in either page.
-  const errors = [...a.tab.log, ...b.tab.log].filter(line => /^EXC/.test(line) || /panic/i.test(line));
+  const both = [...a.tab.log, ...b.tab.log];
+  const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
   report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10)};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
+
+  // The desk one person arranged is the desk the other shows: neither page's
+  // write of the shared desktop was refused.
+  const refused = both.filter(line => /the workspace refused a change/.test(line));
+  report.refused = refused;
+  if (refused.length) failed(`a page's change was refused: ${refused.slice(0, 5).join('; ')}`);
+  // A frame repainted in part must leave no stale pixel. A page built with the
+  // retained-frame check says so where it happens; the check also says when it
+  // could not read its two frames back. Both are reported: the pages' frames
+  // are compared here, so a run that sees them says what it saw rather than
+  // hiding it, and a check that cannot compare on the web is visible too.
+  report.mismatched = both.filter(line => /retained frame differs from a full render/.test(line));
+  report.unreadable = both.filter(line => /could not read a frame back/.test(line));
 
   writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
   console.log(JSON.stringify(report, null, 2));

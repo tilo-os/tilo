@@ -1,7 +1,7 @@
 use super::*;
 use ed25519_dalek::{Signer, SigningKey};
 use std::{cell::RefCell, path::Path, process::Command};
-use tilo_app::feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
+use tilo_feedback::{Composer, Consent, DeliveryState, MemoryStore, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::application::{
     ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
@@ -66,9 +66,8 @@ fn submit_grant(kinds: KindSet, answer: Answer) -> policy::Grant {
 /// action that files a report.
 #[test]
 fn the_feedback_contract_names_what_chat_publishes() {
-    use tilo_app::framework::ResourceApp;
-    use tilo_app::tilo_resource::Resource;
-    assert_eq!(destination::PACKAGE, chat::resource::ChatShell::ID);
+    use tilo_resource::Resource;
+    assert_eq!(destination::PACKAGE, chat::definition().app_id());
     assert_eq!(
         destination::RESOURCE_KIND,
         <chat::resource::Chat as Resource>::KIND
@@ -92,7 +91,7 @@ fn submission() -> Submission {
     Submission {
         id: ID.into(),
         destination: enrollment().destination,
-        feedback: tilo_app::feedback::ReviewedFeedback {
+        feedback: tilo_feedback::ReviewedFeedback {
             text: "The book lost my position".into(),
             context: vec![],
             screenshot: None,
@@ -253,7 +252,7 @@ fn run_child(root: &Path, phase: &str) {
     let status = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "feedback::transport::tests::canonical_owner_process",
+            "transport::tests::canonical_owner_process",
             "--nocapture",
         ])
         .env("TILO_FEEDBACK_PROCESS_FIXTURE", root)
@@ -494,7 +493,7 @@ fn canonical_owner_acknowledges_a_screenshot_only_once_it_keeps_the_bytes() {
     let (records, mut frame) = canonical(root.path());
     let picture = b"masked report picture".to_vec();
     let mut report = submission();
-    report.feedback.screenshot = Some(tilo_app::feedback::ScreenshotRef {
+    report.feedback.screenshot = Some(tilo_feedback::ScreenshotRef {
         hash: blake3::hash(&picture).to_hex().to_string(),
         width: 1,
         height: 1,
@@ -546,7 +545,7 @@ fn canonical_owner_acknowledges_a_recording_only_once_it_keeps_the_bytes() {
     let (records, mut frame) = canonical(root.path());
     let recording = b"a recording of the window".to_vec();
     let mut report = submission();
-    report.feedback.recording = Some(tilo_app::feedback::RecordingRef {
+    report.feedback.recording = Some(tilo_feedback::RecordingRef {
         hash: blake3::hash(&recording).to_hex().to_string(),
         app: "so.tilo.notes".into(),
         app_name: "Notes".into(),
@@ -607,7 +606,7 @@ fn a_picture_report_ends_sent_once_the_owner_keeps_its_picture() {
     let content = ui::content::ContentStore::memory();
     let picture = b"masked report picture".to_vec();
     let mut report = submission();
-    report.feedback.screenshot = Some(tilo_app::feedback::ScreenshotRef {
+    report.feedback.screenshot = Some(tilo_feedback::ScreenshotRef {
         hash: blake3::hash(&picture).to_hex().to_string(),
         width: 1,
         height: 1,
@@ -736,8 +735,11 @@ fn unsigned_wrong_owner_and_wrong_destination_acknowledgments_are_refused() {
     assert!(matches!(host.receipt(&report), Err(Error::ReceiptMismatch)));
 }
 
+///
+/// The custody a desktop installs over a startup is that desktop's own
+/// (`tilo_desktop::feedback::install`): this crate only opens the host.
 #[test]
-fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() {
+fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_a_denied_grant() {
     let mut missing = enrollment();
     missing.permissions = no_member(&hex::encode([12; 32]));
     assert!(missing.authorize().is_err());
@@ -767,27 +769,6 @@ fn startup_admits_a_commenter_and_refuses_a_viewer_a_stranger_and_replacement() 
             .at_unix_time(0);
     assert!(editor.authorize().is_ok());
     assert!(blocked.authorize().is_err());
-    let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
-    let mut slot = None;
-    startup(enrollment())
-        .install(store.clone(), &mut slot)
-        .unwrap();
-    let component = slot
-        .as_ref()
-        .unwrap()
-        .prepare("device", &hex::encode([12; 32]), 42)
-        .unwrap();
-    let frame = FrameHarness::from_component(
-        component,
-        (1000, 700),
-        ComponentRunnerInputs::from_native_process(),
-    )
-    .unwrap();
-    assert!(frame.capture_protected());
-    assert!(matches!(
-        startup(enrollment()).install(store, &mut slot),
-        Err(Error::Conflict)
-    ));
 }
 
 #[test]

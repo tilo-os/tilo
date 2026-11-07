@@ -310,10 +310,9 @@ impl View<'_> {
 
     /// The first non-empty text of the resource at `path` (of `schema`, unless the index holds
     /// another type for it), as stored (a text or rich text, [`crate::reads::text_value`]), and
-    /// the path of the resource holding it: its own texts name it before its items' do, a
-    /// `title` field first and a `body` field's first line next, then the rest by id, and only
-    /// a resource holding no text of its own falls back to its items
-    /// ([`crate::reads::first_text`]).
+    /// the path of the resource holding it: its own texts name it before its items' do, its
+    /// first text field first, and only a resource holding no text of its own falls back to its
+    /// items ([`crate::reads::first_text`]). The text names it by its first non-blank line.
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
@@ -323,20 +322,19 @@ impl View<'_> {
         schema: &TypeSchema,
     ) -> Result<Option<(FieldValue, String)>, IndexError> {
         let schema = self.schema_of(path, &schema.id).unwrap_or(schema);
-        let fields = schema.in_naming_order();
         // Its own texts name it before its items' do: a channel called "design" whose messages
         // hold text is "design", not the first of its messages.
-        for field in &fields {
+        for field in &schema.fields {
             if field.kind.holds_text()
                 && let Some(text) = self
                     .field(path, &field.id)?
                     .and_then(crate::reads::text_value)
                 && !crate::reads::is_empty(&text)
             {
-                return Ok(Some((named_text(&field.role, &text), path.to_owned())));
+                return Ok(Some((first_line(&text), path.to_owned())));
             }
         }
-        for field in fields {
+        for field in &schema.fields {
             if field.kind != MergeKind::Collection {
                 continue;
             }
@@ -564,7 +562,7 @@ pub fn splices(
 /// The index cannot be read or is corrupt.
 pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexError> {
     let mut out = BTreeMap::new();
-    for (doc, ty) in snapshot.docs()? {
+    for (doc, ty, _chunk) in snapshot.docs()? {
         for path in snapshot.inside(&doc)? {
             if let Some(ty) = snapshot.text(&path, TYPE)? {
                 out.insert(path, ty);
@@ -575,12 +573,9 @@ pub fn resources(snapshot: &Snapshot) -> Result<BTreeMap<String, String>, IndexE
     Ok(out)
 }
 
-/// The text that names a resource of the field's role: a `body` field's first non-blank line
-/// and nothing more (a message is called by what it opens with), any other field's whole text.
-fn named_text(role: &crate::schema::FieldRole, text: &FieldValue) -> FieldValue {
-    if *role != crate::schema::FieldRole::Body {
-        return text.clone();
-    }
+/// The text that names a resource: its first non-blank line and nothing more (a record is
+/// called by what it opens with).
+fn first_line(text: &FieldValue) -> FieldValue {
     let first = |whole: &str| {
         whole
             .lines()

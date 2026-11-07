@@ -3,13 +3,15 @@
 //!
 //! The origin ([`crate::origin`]) holds no protocol: it hands a [`Service`] a question and
 //! writes the answer into the package's records. Two are provided: [`Live`] asks YouTube
-//! through the platform's InnerTube client, in the process the system runs for the app (which
-//! holds the network), and a test or a development session can hand its own instead.
+//! through the platform's InnerTube client, in the connector process the system runs for the
+//! app (which holds the network), and a test or a development session can hand its own instead.
 
 use std::sync::Arc;
 
+use serde::{Deserialize, Serialize};
+
 /// A channel, as the service says it is.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelItem {
     pub key: String,
     pub name: String,
@@ -22,7 +24,7 @@ pub struct ChannelItem {
 }
 
 /// A video, as the service says it is.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VideoItem {
     pub key: String,
     pub title: String,
@@ -41,7 +43,7 @@ pub struct VideoItem {
 }
 
 /// A playlist, as the service says it is.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlaylistItem {
     pub key: String,
     pub title: String,
@@ -52,7 +54,7 @@ pub struct PlaylistItem {
 }
 
 /// What a search found.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SearchPage {
     /// The query, as it was asked: what its videos and channels were found for.
     pub query: String,
@@ -62,14 +64,14 @@ pub struct SearchPage {
 }
 
 /// A channel's page and its newest videos.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelPage {
     pub channel: ChannelItem,
     pub videos: Vec<VideoItem>,
 }
 
 /// The videos the service lists as trending.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TrendingPage {
     pub videos: Vec<VideoItem>,
 }

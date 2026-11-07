@@ -129,11 +129,8 @@ fn encode(registry: &Registry, value: &Value) -> Result<Json, String> {
             };
             let mut out = serde_json::Map::new();
             for field in &info.fields {
-                // A derived field is what the store works out; the others are written as what
-                // the value holds, or as what the type declares for a field it does not.
-                if field.derived.is_some() {
-                    continue;
-                }
+                // A field is written as what the value holds, or as what the type declares
+                // for a field it does not.
                 let held = match rec.fields.get(&field.id) {
                     Some(held) => held.clone(),
                     None => {
@@ -323,10 +320,6 @@ impl Reader<'_> {
         };
         let mut held = BTreeMap::new();
         for field in &info.fields {
-            // A derived field is what the store works out from the collection, not text.
-            if field.derived.is_some() {
-                continue;
-            }
             let field_at = format!("{at}.{}", field.name);
             let Some(value) = fields.get(&field.name) else {
                 if matches!(field.ty, Ty::Option(_)) || field.default.is_some() {

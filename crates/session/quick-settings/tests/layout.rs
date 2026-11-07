@@ -38,6 +38,12 @@ fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
     (app, host)
 }
 
+/// The panel's own surface: the card fills the window the desk gives a
+/// popover, so the app's root area is the card's rect.
+fn card(app: &mut HeadlessApp<QuickSettingsApp>) -> Rect {
+    target(app, "BoundComponent[0]/ResourceApp[0]")
+}
+
 fn target(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> Rect {
     let targets = app.harness().targets();
     *targets.get(name).unwrap_or_else(|| {
@@ -72,11 +78,12 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     let wifi = target(&mut app, "qs-tile-wifi");
     let bluetooth = target(&mut app, "qs-tile-bluetooth");
     let vpn = target(&mut app, "qs-tile-vpn");
+    let power_mode = target(&mut app, "qs-tile-power_mode");
     let battery = target(&mut app, "qs-row-battery");
     let notifications = target(&mut app, "qs-row-notifications");
     let power = target(&mut app, "qs-power");
     let account = target(&mut app, "qs-account");
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let card = card(&mut app);
     assert!(
         card.width() <= f64::from(VIEWPORT.0) && card.width() > f64::from(VIEWPORT.0) - 1.0,
         "the panel takes its window and never stands past it: {card:?}"
@@ -88,6 +95,15 @@ fn the_controls_page_has_the_tiles_two_to_a_row_then_the_sliders_then_the_rows_a
     assert!(
         (wifi.y0 - bluetooth.y0).abs() < 1.0 && wifi.x1 <= bluetooth.x0,
         "two tiles to a row: {wifi:?} {bluetooth:?}"
+    );
+    assert!(
+        (wifi.height() - bluetooth.height()).abs() < 1.0,
+        "the two tiles of a row stand the same height: {wifi:?} {bluetooth:?}"
+    );
+    assert!(
+        bluetooth.height() > power_mode.height() + 1.0,
+        "the state line that does not fit its tile breaks onto a second line, \
+         and the tile grows for it: {bluetooth:?} {power_mode:?}"
     );
     assert!(vpn.y0 >= wifi.y1, "the third tile starts the next row");
     assert!(brightness.y0 >= vpn.y1, "the sliders come under the tiles");
@@ -376,13 +392,64 @@ fn what_plays_is_steered_from_the_panel_through_its_effects() {
     ] {
         click(&mut app, name);
     }
+    assert!(
+        has(&mut app, "qs-now-playing-seek"),
+        "the song's point stands as a slider the person drags"
+    );
+    click(&mut app, "qs-now-playing-seek");
+    let mut ran = host.ran();
     assert_eq!(
-        host.ran(),
+        &ran[..3],
         [
             QsEffect::PlayPause,
             QsEffect::NextTrack,
             QsEffect::PreviousTrack,
         ]
+    );
+    let Some(QsEffect::Seek { fraction }) = ran.pop() else {
+        panic!("pressing the slider asks the player to seek: {ran:?}");
+    };
+    assert!(
+        (fraction - 0.5).abs() < 0.02,
+        "the middle of the slider is the middle of the song: {fraction}"
+    );
+    assert_eq!(ran.len(), 3, "one seek, from one press");
+
+    // The bar's ends name where the song stands and what it leaves, as the
+    // card's bar does, and the whole bar belongs to the song's block: it spans
+    // the song's own width, stands under its lines and transport, and keeps
+    // apart from the pickers that follow.
+    let song = target(&mut app, "qs-now-playing");
+    let row = target(&mut app, "qs-now-playing-seek-row");
+    let bar = target(&mut app, "qs-now-playing-seek");
+    let elapsed = target(&mut app, "qs-now-playing-elapsed");
+    let remaining = target(&mut app, "qs-now-playing-remaining");
+    let players = target(&mut app, "qs-now-playing-player");
+    assert!(
+        elapsed.x1 <= bar.x0 + 0.5,
+        "where the song stands stands at the bar's leading end: {elapsed:?} before {bar:?}"
+    );
+    assert!(
+        remaining.x0 >= bar.x1 - 0.5,
+        "what is left stands at its trailing end: {remaining:?} after {bar:?}"
+    );
+    for (name, label) in [("elapsed", elapsed), ("remaining", remaining)] {
+        assert!(
+            (label.center().y - bar.center().y).abs() < 1.0,
+            "the {name} label reads on the bar's line: {label:?} beside {bar:?}"
+        );
+    }
+    assert!(
+        (row.x0 - song.x0).abs() < 0.5 && (row.x1 - song.x1).abs() < 0.5,
+        "the bar spans the song's row: {row:?} beside {song:?}"
+    );
+    assert!(
+        song.y1 <= row.y0 && row.y1 <= players.y0,
+        "the bar stands under the song and above the pickers: {song:?} {row:?} {players:?}"
+    );
+    assert!(
+        row.y0 - song.y1 < players.y0 - row.y1,
+        "the bar stays with the song's block, apart from the pickers: {row:?} under {song:?}, {players:?} below"
     );
 }
 
@@ -669,43 +736,6 @@ fn a_devices_row_says_which_of_its_buttons_was_pressed() {
 }
 
 #[test]
-fn the_notifications_page_groups_by_app_and_says_why_banners_are_held() {
-    let mut app = staged("notifications");
-    assert!(has(&mut app, "qs-notifications-quiet"));
-    let chat = target(&mut app, "qs-notification-1");
-    let calendar = target(&mut app, "qs-notification-3");
-    assert!(chat.y1 <= calendar.y0, "newest group first");
-    assert!(has(&mut app, "qs-notifications-clear"));
-}
-
-/// A kept notification offers the sender's own choices as buttons under
-/// its row, so it can be dealt with without opening it.
-#[test]
-fn a_notification_offers_its_senders_choices_inline() {
-    let (mut app, host) = hosted("notifications");
-    click(&mut app, "qs-notification-3-dismiss");
-    assert_eq!(
-        host.ran(),
-        [QsEffect::RunNotificationAction {
-            notification: 3,
-            action: "dismiss".into(),
-        }]
-    );
-}
-
-#[test]
-fn a_notification_nothing_can_open_is_read_in_full_and_back_returns_to_the_list() {
-    let (mut app, host) = hosted("notifications");
-    click(&mut app, "qs-notification-3");
-    assert!(host.ran().is_empty(), "nothing opens it");
-    assert!(has(&mut app, "qs-notification-body"));
-    click(&mut app, "qs-back");
-    assert!(has(&mut app, "qs-notification-1"));
-    click(&mut app, "qs-notification-1");
-    assert_eq!(host.ran(), [QsEffect::OpenNotification { notification: 1 }]);
-}
-
-#[test]
 fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
@@ -743,24 +773,6 @@ fn an_accessory_moves_to_a_device_in_reach_and_disconnects_from_here() {
     );
 }
 
-/// A kept notification of a desktop an agent works on goes to that agent as
-/// the task it acts on.
-#[test]
-fn a_notification_is_handed_to_the_agent_that_takes_it() {
-    // Where things rest: the motion on the way is its own test.
-    let _settled = ui::motion::testing::settled();
-    let (mut app, host) = hosted("notifications");
-    app.harness()
-        .perform_named("qs-notification-1/action/1", &ui::a11y::Action::Activate)
-        .expect("the notification offers its agent");
-    app.settle();
-    assert_eq!(
-        host.ran(),
-        [QsEffect::HandNotificationToAgent { notification: 1 }],
-        "the row's agent action hands the notification on"
-    );
-}
-
 /// A press the device or the session refuses says why over the page it
 /// belongs to, and stays until the person puts it away.
 #[test]
@@ -772,7 +784,7 @@ fn a_refusal_stands_over_the_page_until_the_person_puts_it_away() {
     app.settle();
     let refusal = target(&mut app, "qs-refusal");
     let tile = target(&mut app, "qs-tile-wifi");
-    let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
+    let card = card(&mut app);
     assert!(refusal.y1 <= tile.y0, "the reason stands over the page");
     assert!(
         refusal.x0 >= card.x0 && refusal.x1 <= card.x1,
@@ -953,10 +965,6 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     panel.back();
     assert_eq!(panel.section, None);
     assert!(!panel.showing().goes_back(), "now Back closes the panel");
-    panel.show_notifications();
-    panel.read_notification(3);
-    panel.back();
-    assert_eq!(panel.page, Page::Notifications);
     panel.paste();
     assert!(
         !panel.showing().goes_back(),
@@ -964,17 +972,31 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     );
 }
 
+/// A panel whose page is taller than the room it is given keeps its footer
+/// on its own bottom edge and scrolls the page behind it, so no control is
+/// lost to the room it was given.
 #[test]
 fn a_panel_taller_than_its_room_scrolls_rather_than_dropping_a_control() {
     // Where things rest: the motion on the way is its own test.
     let _settled = ui::motion::testing::settled();
     let mut app =
         HeadlessApp::<QuickSettingsApp>::capture_at(Some("controls"), (360, 420)).unwrap();
-    assert!(has(&mut app, "qs-power"), "the footer is still on the page");
-    let power = target(&mut app, "qs-power");
+    let card = card(&mut app);
     assert!(
-        power.y0 > 420.0,
-        "below the fold, reached by scrolling: {power:?}"
+        (card.height() - 420.0).abs() < 1.0,
+        "the card is the room it is given: {card:?}"
+    );
+    let power = target(&mut app, "qs-power");
+    assert!(has(&mut app, "qs-power"), "the footer is still on the page");
+    assert!(
+        power.y1 <= card.y1 + 0.5 && power.y1 > card.y1 - 60.0,
+        "the footer stands on the card's bottom edge: {power:?} in {card:?}"
+    );
+    let notifications = target(&mut app, "qs-row-notifications");
+    assert!(
+        notifications.y0 > power.y1,
+        "the page scrolls behind the footer rather than pushing it off: \
+         {notifications:?} against {power:?}"
     );
 }
 
@@ -1036,6 +1058,31 @@ fn row_words(
     ))
 }
 
+/// An output the sound graph names in a paragraph — the card, its mode and
+/// the screen after it — is one line under its slider: the screen and the
+/// port it plays through.
+#[test]
+fn a_screen_output_is_named_by_its_screen_and_port() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("controls");
+    host.update(|state| {
+        if let Some(output) = state.sound_outputs.iter_mut().find(|output| output.current) {
+            output.name = "AD106M High Definition Audio Controller Digitales Stereo (HDMI) \
+                           [LG ULTRAGEAR+]"
+                .into();
+        }
+    });
+    app.settle();
+    let (name, _, _) =
+        row_words(&mut app, "qs-volume-device").expect("the volume row says which output plays");
+    assert_eq!(name.as_deref(), Some("LG ULTRAGEAR+ · HDMI"));
+    let caption = target(&mut app, "qs-volume-device");
+    assert!(
+        caption.height() < 30.0,
+        "the output's name is one line, not the card's paragraph: {caption:?}"
+    );
+}
+
 #[test]
 fn every_scenario_renders() {
     for scenario in scenarios::NAMES {
@@ -1065,31 +1112,71 @@ fn tab_walks_the_controls_from_the_tiles() {
     );
 }
 
-/// Every page fits the panel a laptop's session gives it (800 px of output
-/// less the bar and the panel's margin); the page with a song on it has
-/// more than fits, and scrolls inside the panel instead of standing past
-/// the bottom of the output.
+/// Every page stands in the panel's footprint: the card is the window the
+/// desk gives a popover, whatever the page shows, so the footer stands on
+/// the window's bottom edge and nothing it draws leaves the window.
 #[test]
-fn every_page_fits_the_panel_a_laptop_gives_it_or_scrolls_inside_it() {
+fn every_page_stands_in_the_panels_footprint_or_scrolls_inside_it() {
     for scenario in scenarios::NAMES {
         let mut app =
             HeadlessApp::<QuickSettingsApp>::capture_at(Some(scenario), (380, 760)).unwrap();
-        let window = target(&mut app, "BoundComponent[0]/ResourceApp[0]");
+        let window = card(&mut app);
         assert!(
-            (window.height() - 760.0).abs() < 1.0,
+            (window.height() - 760.0).abs() < 1.0 && (window.width() - 380.0).abs() < 1.0,
             "{scenario} fills the panel's window: {window:?}"
         );
-        let card = target(&mut app, "BoundComponent[0]/ResourceApp[0]/FloatingPanel");
-        if *scenario == "now-playing" {
+        let footer = target(&mut app, "qs-power");
+        assert!(
+            footer.y1 <= window.y1 + 0.5 && footer.y1 > window.y1 - 40.0,
+            "{scenario} keeps its footer on the window's bottom edge: {footer:?} in {window:?}"
+        );
+        for control in ["qs-lock", "qs-settings", "qs-account"] {
+            let rect = target(&mut app, control);
             assert!(
-                card.height() > 760.0,
-                "a song with its transport needs more room than a laptop gives it: {card:?}"
-            );
-        } else {
-            assert!(
-                card.height() <= 760.0,
-                "{scenario} fits the panel whole: {card:?}"
+                rect.x0 >= window.x0 - 0.5
+                    && rect.x1 <= window.x1 + 0.5
+                    && rect.y1 <= window.y1 + 0.5,
+                "{scenario} draws {control} inside the window: {rect:?} in {window:?}"
             );
         }
     }
+}
+
+/// A page change never moves the panel: the footer keeps its edge and the
+/// page under it starts where the page before it did, whatever the two hold.
+#[test]
+fn a_page_change_keeps_the_panels_edges() {
+    let mut app = staged("controls");
+    let footer = target(&mut app, "qs-power");
+    let wifi = target(&mut app, "qs-tile-wifi");
+
+    // An accessory's page, which stands one deep over the controls.
+    app.invoke(QuickSettings::SHOW_ACCESSORY.with("00:1B:66:A1:B2:C3".to_owned()))
+        .unwrap();
+    app.settle();
+    assert!(
+        !has(&mut app, "qs-tile-wifi"),
+        "the page replaced the controls"
+    );
+    assert_eq!(
+        target(&mut app, "qs-power"),
+        footer,
+        "the accessory's page leaves the footer where the controls had it"
+    );
+
+    // Back to the controls, and a section under them.
+    app.invoke(QuickSettings::BACK.invoke()).unwrap();
+    app.settle();
+    open_details(&mut app, "qs-tile-wifi");
+    assert!(has(&mut app, "qs-section-wifi"), "the section shows");
+    assert_eq!(
+        target(&mut app, "qs-power"),
+        footer,
+        "a section stands in the same card as the page it came from"
+    );
+    let section_first = target(&mut app, "qs-section-wifi");
+    assert!(
+        section_first.y0 >= wifi.y0,
+        "and its controls start where the page under it did: {section_first:?} against {wifi:?}"
+    );
 }

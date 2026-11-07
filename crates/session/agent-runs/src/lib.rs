@@ -315,6 +315,9 @@ impl Run {
                 })
                 .collect(),
             question: None,
+            // A run the session keeps is asked from the desk, not from a message
+            // in a conversation.
+            turn: None,
             // A run the session keeps is its own person's ask, never a task agent's: no
             // delegation certifies it.
             delegation: None,

@@ -86,6 +86,28 @@ pub fn remote_origin(
     )))
 }
 
+/// Register the mail origin's client of the mail connector with the platform, so a crate that
+/// keeps a package's records reaches the connector without naming this one
+/// (`tilolang_tilo::origin::remote`).
+pub fn register() {
+    tilolang_tilo::origin::register_remote("imap", CONNECTOR_CLIENT);
+}
+
+/// The client [`register`] hands the platform.
+const CONNECTOR_CLIENT: &Remote = &|stream, wake| {
+    remote_origin(stream, wake)
+        .map(|origin| origin as tilolang_tilo::origin::SharedOrigin)
+        .map_err(|error| format!("the mail connector's connection: {error}"))
+};
+
+/// The client [`register`] hands the platform.
+type Remote = dyn Fn(
+        std::os::unix::net::UnixStream,
+        tilolang_tilo::background::Waker,
+    ) -> Result<tilolang_tilo::origin::SharedOrigin, String>
+    + Send
+    + Sync;
+
 /// Set `reconnected` and wake whenever the device comes online again: what could not reach
 /// its server then is tried again. An event of the platform's network status, never a timer.
 #[cfg(feature = "engine")]

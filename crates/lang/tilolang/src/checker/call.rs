@@ -752,33 +752,6 @@ impl Checker<'_> {
                 );
             }
             given.push(&f.name);
-            if f.role
-                .as_ref()
-                .is_some_and(crate::types::FieldRole::is_previously)
-            {
-                self.err(
-                    "E115",
-                    a.value.span,
-                    format!(
-                        "`{}` is what `{}` held previously: nothing writes it any more; give the value where the type keeps it now",
-                        f.name, key.name
-                    ),
-                );
-                let _ = self.expr(&a.value, None);
-                continue;
-            }
-            if f.derived.is_some() {
-                self.err(
-                    "E119",
-                    a.value.span,
-                    format!(
-                        "`{}.{}` is a derived key: the store works it out from the collection, and nothing writes it. Leave it out of what a `{}` is made with",
-                        key.name, f.name, key.name
-                    ),
-                );
-                let _ = self.expr(&a.value, None);
-                continue;
-            }
             if f.ty.is_container() {
                 self.err(
                     "E033",

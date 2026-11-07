@@ -140,10 +140,11 @@ pub fn unmet_at(provided: Option<&ProvidedInterfaces>, manifest_path: &Path) -> 
 /// The interface name an installed package's recorded format is judged as.
 pub const PACKAGE_INTERFACE: &str = "package";
 
-/// An installed package whose signed record, beside its manifest, is at
-/// another package format than this build reads: it was installed before
-/// the format changed. It is behind like an app built for an older
-/// interface, and its next install replaces it
+/// An installed package whose signed record, beside its manifest, is at a
+/// package format this build does not read
+/// ([`tilo_app_package::tapp::READABLE_FORMATS`]): another Tilo build
+/// installed it. Like an app built for another interface version it is
+/// behind or ahead of this one, and its next install replaces it
 /// ([`crate::integrity::record_current`]).
 fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
     let signed = manifest_path
@@ -151,7 +152,7 @@ fn package_format_unmet(manifest_path: &Path) -> Option<Unmet> {
         .join(crate::layout::SIGNED_ROOT_FILE);
     let bytes = std::fs::read(signed).ok()?;
     let format = tilo_app_package::SignedRoot::format_of(&bytes)?;
-    (format != tilo_app_package::TAPP_FORMAT_VERSION).then(|| Unmet {
+    (!tilo_app_package::tapp::READABLE_FORMATS.contains(&format)).then(|| Unmet {
         requirement: format!("{PACKAGE_INTERFACE}@{format}"),
         provided: Some(tilo_app_package::TAPP_FORMAT_VERSION),
     })
@@ -248,11 +249,13 @@ system = "required@2"
         assert!(unmet_at(Some(&old_os), &dir.path().join("missing.toml")).is_empty());
     }
 
-    /// A package installed before the package format changed is behind,
-    /// like an app built for an older interface: it is updated, never
-    /// refused on every launch.
+    /// An installed package is judged by the formats this build reads, not
+    /// by the one it writes: the store's apps are still published at
+    /// package format 1, and such a record is current. A record at a format
+    /// this build does not read was installed by another Tilo build, and is
+    /// behind or ahead like an app built for another interface version.
     #[test]
-    fn an_installed_record_at_another_package_format_is_behind() {
+    fn an_installed_record_is_judged_by_the_formats_this_build_reads() {
         let dir = tempfile::tempdir().unwrap();
         let manifest = dir.path().join("manifest.toml");
         std::fs::write(&manifest, SETTINGS).unwrap();
@@ -265,17 +268,23 @@ system = "required@2"
             bytes
         };
         let signed = dir.path().join(crate::layout::SIGNED_ROOT_FILE);
-        std::fs::write(&signed, root(tilo_app_package::TAPP_FORMAT_VERSION)).unwrap();
-        assert_eq!(unmet_at(Some(&os), &manifest).len(), current);
-        let older = tilo_app_package::TAPP_FORMAT_VERSION - 1;
-        std::fs::write(&signed, root(older)).unwrap();
+        for format in tilo_app_package::tapp::READABLE_FORMATS {
+            std::fs::write(&signed, root(format)).unwrap();
+            assert_eq!(
+                unmet_at(Some(&os), &manifest).len(),
+                current,
+                "format {format} is read"
+            );
+        }
+        let newer = tilo_app_package::TAPP_FORMAT_VERSION + 1;
+        std::fs::write(&signed, root(newer)).unwrap();
         let unmet = unmet_at(Some(&os), &manifest);
         assert_eq!(unmet.len(), current + 1);
         let format = unmet.last().unwrap();
-        assert_eq!(format.requirement, format!("package@{older}"));
+        assert_eq!(format.requirement, format!("package@{newer}"));
         assert_eq!(
             format.behind(),
-            tilo_app_package::interfaces::Behind::Package
+            tilo_app_package::interfaces::Behind::System
         );
     }
 }

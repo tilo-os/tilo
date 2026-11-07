@@ -168,7 +168,6 @@ impl Session {
             );
         }
         self.follow_text_inputs();
-        self.shared.follow_reminders();
         self.follow_notifications();
         self.shared.open_notifications();
         self.settle()?;
@@ -197,6 +196,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked: self.compositor.locked(),
                 lock_screen_drawn: self.compositor.lock_drawn(),
+                lock: &self.shared.lock,
             },
         );
         self.compositor.mark_pump(pass.elapsed());
@@ -250,6 +250,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked,
                 lock_screen_drawn,
+                lock: &self.shared.lock,
             },
         );
         self.tool_input = answering.elapsed();
@@ -275,6 +276,7 @@ impl Session {
                 seats: &self.shared.seats,
                 locked,
                 lock_screen_drawn,
+                lock: &self.shared.lock,
             },
         );
         self.compositor
@@ -355,7 +357,6 @@ impl Session {
             night_light,
             ambient,
             self.shared.notifications.borrow().next_deadline(),
-            self.shared.reminders.deadline(),
             self.shared
                 .sync
                 .as_ref()

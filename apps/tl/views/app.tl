@@ -10,7 +10,7 @@ use so.tilo.lang.chat as chat
 /// host recorded them, is its code author: what it does with an action asks the person first
 /// unless they trust that author.
 type WrittenView {
-    title: Text (title)
+    title: Text
     /// What was asked, when an agent answered with it.
     question: Text
     /// The view, as its author wrote it.

@@ -874,6 +874,13 @@ impl StripPolicy {
         self.samples = Some(samples);
     }
 
+    /// Name apps with `names`, the session's: the installed package's
+    /// localised name, else the machine's desktop entry, else the registry's.
+    /// A tab opens with the name of its app, never with the app's id.
+    pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
+        self.desk.borrow_mut().policy.reads_app_names(names);
+    }
+
     /// Give `window` its tab, once, and lay the desktop out so its place
     /// is known.
     fn map(&mut self, window: &WindowInfo, outputs: &[LayoutRect]) {

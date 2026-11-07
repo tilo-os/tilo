@@ -1,4 +1,4 @@
-//! The YouTube client as a tilolang app (apps/tl/tube): a canvas query "youtube videos of
+//! The `YouTube` client as a tilolang app (apps/tl/tube): a canvas query "youtube videos of
 //! <creator>" places the Channel, and its page draws.
 //!
 //! The channel is the client's, published under `tl.so.tilo.lang.tube.Channel`; the typed
@@ -8,7 +8,7 @@
 //! draws them beside the channel's name.
 //!
 //! The app is seeded from its scenario, the way a development session seeds it: the fixture is
-//! labelled, and nothing here is invented as if YouTube had answered it.
+//! labelled, and nothing here is invented as if `YouTube` had answered it.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -26,14 +26,14 @@ use tilo_session::Session;
 
 use common::{CANVAS_ENTRY, Repl, on_screen, placed_resources, private_home, until};
 
-/// The YouTube client, as a package names it.
+/// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
 /// The channel the client's scenario seeds, by the name its page shows.
 const CREATOR: &str = "MKBHD";
 /// A video the channel published, by the title its page lists.
 const VIDEO: &str = "The phone that finally lasts a week";
 
-/// The seeded apps with the YouTube client among them: notes, tasks, chat, mail and the
+/// The seeded apps with the `YouTube` client among them: notes, tasks, chat, mail and the
 /// client, each filled by its first scenario, on the canvas.
 fn seeded_session(root: &std::path::Path) -> Session {
     common::seeded_session(root)

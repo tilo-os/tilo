@@ -130,16 +130,17 @@ pub fn record_dir(package: &InstalledPackage) -> PathBuf {
     detached_record_dir(store, &package.id)
 }
 
-/// Whether `package`'s signed record is at the package format this build
-/// reads. One at another format was installed before the format changed:
-/// its next install replaces it whatever its version, and until then it is
-/// behind ([`crate::interfaces::unmet_at`]).
+/// Whether `package`'s signed record is at a package format this build
+/// reads ([`tilo_app_package::tapp::READABLE_FORMATS`]). One at any other
+/// format was installed by another Tilo build: its next install replaces it
+/// whatever its version, and until then it is behind
+/// ([`crate::interfaces::unmet_at`]).
 #[must_use]
 pub fn record_current(package: &InstalledPackage) -> bool {
     std::fs::read(record_dir(package).join(SIGNED_ROOT_FILE))
         .ok()
         .and_then(|bytes| SignedRoot::format_of(&bytes))
-        == Some(tilo_app_package::TAPP_FORMAT_VERSION)
+        .is_some_and(|format| tilo_app_package::tapp::READABLE_FORMATS.contains(&format))
 }
 
 /// A record kept apart from its payload tree, at `<store>/integrity/<app id>`.

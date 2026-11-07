@@ -50,7 +50,16 @@ impl ProfileWorkspace {
         let path = root.join(STANDALONE_WORKSPACE);
         let tree = match read_tree(&path) {
             Ok(tree) => tree,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => bootstrap(),
+            // The desk a profile starts on is kept as soon as it is made: a
+            // later start reads this one instead of making another with fresh
+            // ids, so everything the person opened stays in the workspace it
+            // was opened in.
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let tree = bootstrap();
+                let bytes = serde_json::to_vec_pretty(&tree).map_err(io::Error::other)?;
+                tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)?;
+                tree
+            }
             Err(error) => return Err(error),
         };
         if tree.workspaces.is_empty() {

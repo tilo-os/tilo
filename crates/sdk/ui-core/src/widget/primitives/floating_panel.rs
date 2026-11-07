@@ -234,6 +234,7 @@ pub struct FloatingPanel {
     footer: Option<Box<dyn Widget>>,
     width: Option<f32>,
     fill_width: bool,
+    fill_height: bool,
     rect: Rect,
     header_rect: Rect,
     body_rect: Rect,
@@ -271,6 +272,7 @@ impl FloatingPanel {
             footer: None,
             width: None,
             fill_width: false,
+            fill_height: false,
             rect: Rect::ZERO,
             header_rect: Rect::ZERO,
             body_rect: Rect::ZERO,
@@ -306,6 +308,16 @@ impl FloatingPanel {
     #[must_use]
     pub fn fill_width(mut self) -> Self {
         self.fill_width = true;
+        self
+    }
+
+    /// Take the height of the room it is offered rather than the height of
+    /// its content: a panel whose surface fixes its footprint, so a page that
+    /// shows less never moves the panel's edges and one that shows more
+    /// scrolls inside the body it was given.
+    #[must_use]
+    pub fn fill_height(mut self) -> Self {
+        self.fill_height = true;
         self
     }
 
@@ -409,13 +421,14 @@ impl Widget for FloatingPanel {
     ) -> NodeId {
         let slot = crate::num::f32_of_f64(FloatingPanelFace::slot_inset(theme));
         let inset = crate::num::f32_of_f64(FloatingPanelFace::body_inset(theme));
-        let wrap = |taffy: &mut TaffyTree<()>, child: NodeId, pad: f32| {
+        let wrap = |taffy: &mut TaffyTree<()>, child: NodeId, pad: f32, grow: f32| {
             taffy.parent_node(
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
                     padding: crate::widget::layout::insets_all(pad),
                     flex_shrink: 0.0,
+                    flex_grow: grow,
                     ..Default::default()
                 },
                 &[child],
@@ -424,13 +437,21 @@ impl Widget for FloatingPanel {
         let mut children = Vec::new();
         if let Some(header) = &mut self.header {
             let node = header.build_layout(taffy, theme, node_map);
-            children.push(wrap(taffy, node, slot));
+            children.push(wrap(taffy, node, slot, 0.0));
         }
         let body = self.body.build_layout(taffy, theme, node_map);
-        children.push(wrap(taffy, body, inset));
+        // A panel that takes the height it is offered gives the room its page
+        // does not need to the body, so its footer stands on the panel's
+        // bottom edge.
+        children.push(wrap(
+            taffy,
+            body,
+            inset,
+            if self.fill_height { 1.0 } else { 0.0 },
+        ));
         if let Some(footer) = &mut self.footer {
             let node = footer.build_layout(taffy, theme, node_map);
-            children.push(wrap(taffy, node, slot));
+            children.push(wrap(taffy, node, slot, 0.0));
         }
         let style = Style {
             display: taffy::Display::Flex,
@@ -443,7 +464,11 @@ impl Widget for FloatingPanel {
                     self.width
                         .map_or(taffy::Dimension::auto(), taffy::Dimension::length)
                 },
-                height: taffy::Dimension::auto(),
+                height: if self.fill_height {
+                    taffy::Dimension::percent(1.0)
+                } else {
+                    taffy::Dimension::auto()
+                },
             },
             ..Default::default()
         };

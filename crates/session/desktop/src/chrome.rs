@@ -169,9 +169,9 @@ pub struct DesktopChromeSnapshot {
     pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
-    /// Every activity the bar's pill names, most urgent first as the bar
-    /// orders them.
-    pub activities: Vec<ui::live_activity::Summary>,
+    /// The bar's pill: the activity it names and how many others wait
+    /// behind it, ordered once here rather than at every read.
+    pub activities: ui::floating_layer::Pill,
     pub active_exposures: Vec<ActiveExposure>,
     /// Pages reading this workspace right now. The bar counts them beside
     /// the avatars so an audience is never invisible.
@@ -293,8 +293,10 @@ pub enum ChromeIntent {
     ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
-    /// Bring an activity's card out of the bar's pill, by its id.
+    /// Bring an activity's card out of the bar's pill: the app that shows
+    /// it and its id, which is only its own app's.
     ExpandActivity {
+        app: String,
         activity: String,
     },
     /// Focus the tab another of this person's devices offered, here.
@@ -327,8 +329,13 @@ pub enum ChromeIntent {
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
     ToggleTiloMenu,
     /// Open or close the menu behind the workspace name, under
-    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`].
-    ToggleWorkspaceMenu,
+    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a
+    /// place on the desk a secondary press named, standing there instead:
+    /// the same menu, offering the desk's own commands and kept inside the
+    /// screen at an edge.
+    ToggleWorkspaceMenu {
+        at: Option<(i32, i32)>,
+    },
     /// Open or close the card behind the person's own avatar, under
     /// [`crate::topbar::TopBarChrome::own_avatar_rect`].
     ToggleProfile,

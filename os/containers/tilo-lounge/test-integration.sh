@@ -10,20 +10,23 @@
 # headless Chromium contexts. The programs are the image's own, started as the
 # image's entrypoint starts them, in a jail of the image's files.
 #
-# usage: test-integration.sh IMAGE BUNDLE
+# usage: test-integration.sh IMAGE BUNDLE [WORK]
 # IMAGE is an OCI archive (as tools/ci/publish/oci-build.sh writes it) or a
 # reference buildah pulls (docker://…@sha256:…); BUNDLE is the web desktop
 # bundle (tools/ci/publish/web-desktop-bundle.sh bundle). Both are what
 # publish-site builds, so the gate runs the artifacts it is about to publish.
+# WORK is where it keeps what it found — each page's snapshot and console, the
+# site's and the Lounge's logs — which a failing run hands over as artifacts;
+# by default a directory of its own under the scratch directory.
 # Needs buildah, node, chromium (CHROME or Playwright's cache), openssl and
 # curl. It runs as root in the buildah image in a micro-VM step, without a
 # daemon, and as any user with buildah locally.
 set -euo pipefail
-usage='usage: test-integration.sh IMAGE BUNDLE'
+usage='usage: test-integration.sh IMAGE BUNDLE [WORK]'
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../../tools/ci/publish/lib.sh"
 use_buildah lounge overlay
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-work=$scratch/lounge-integration
+work=${3:-$scratch/lounge-integration}
 rm -rf "$work"
 mkdir -p "$work"
 log=$work/lounge.log

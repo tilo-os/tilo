@@ -139,3 +139,52 @@ pub fn origin_types(meta: &Meta, origin: &str) -> Vec<OriginType> {
 pub fn uses_origin(meta: &Meta, origin: &str) -> bool {
     !origin_types(meta, origin).is_empty()
 }
+
+/// How an origin reaches the connector the session runs for it: the socket the session handed
+/// both ends of, made into the origin's native client (the mail origin's over the mail
+/// connector, the `YouTube` origin's over the `YouTube` one).
+///
+/// An origin's own crate registers one as it loads ([`register_remote`]), so the crate that
+/// keeps a package's records (a session's [`crate::records_service::RecordService`], a tilolang
+/// host's instance) reaches a connector without naming the origin's crate or the service it
+/// speaks.
+pub type Remote =
+    dyn Fn(std::os::unix::net::UnixStream, Waker) -> Result<SharedOrigin, String> + Send + Sync;
+
+static REMOTES: std::sync::Mutex<Vec<(&'static str, &'static Remote)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// Have the origin `name` reached over `remote` from now on: its crate's client of the
+/// connector the session runs for it. A crate registers its own at its start (a `OnceLock`,
+/// so its client lives as long as the process).
+pub fn register_remote(name: &'static str, remote: &'static Remote) {
+    let mut remotes = REMOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    remotes.retain(|(registered, _)| *registered != name);
+    remotes.push((name, remote));
+}
+
+/// The origin `name`'s client of the connector at the far end of `stream`, when a crate
+/// registered one here.
+///
+/// # Errors
+/// No crate registered an origin `name`, or its client could not be made.
+pub fn remote(
+    name: &str,
+    stream: std::os::unix::net::UnixStream,
+    waker: Waker,
+) -> Result<SharedOrigin, String> {
+    let remote = REMOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(registered, _)| *registered == name)
+        .map(|(_, remote)| *remote);
+    let Some(remote) = remote else {
+        return Err(format!(
+            "no crate registered a client for the origin `{name}`: this build has no connector for it"
+        ));
+    };
+    remote(stream, waker)
+}

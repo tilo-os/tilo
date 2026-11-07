@@ -133,7 +133,7 @@ type BarPart {
     /// What the part is; the bar draws it from this, so a part moved is a part the same.
     slot: Slot = .menu
     /// Its name on the bar, and in the settings.
-    title: Text (title)
+    title: Text
     /// Whether it shows on the bar; a part off keeps its place in the record.
     shown: Bool = true
 }
@@ -141,7 +141,7 @@ type BarPart {
 /// One thing on the dock: a pinned app or resource, the launcher, or an app running now.
 type DockItem {
     /// What the item stands for: an app id, or a resource's reference as text.
-    key: Text (title)
+    key: Text
     /// Its name on the dock, and what assistive technology reads.
     title: Text
     /// The glyph it shows, by the platform icon's kebab-case name.
@@ -450,9 +450,26 @@ action move_item(s: Shell, item: DockItem, before: DockItem) (icon: .arrow_up_do
 }
 
 /// Puts a dock item at the place `at`, counted from the leading edge: what a drag that names
-/// a place gives.
+/// a place gives. An item the person's record does not hold yet — an app running on the dock
+/// that they never pinned, which the dock drew from the desk — is pinned where it lands, so
+/// moving an app they already run keeps it on the dock after it closes.
 action place_item(s: Shell, item: DockItem, at: Int) (icon: .arrow_up_down, label: "Move") {
-    s.dock_items.move(item, to: at)
+    if s.dock_items.any(i -> i.key == item.key) {
+        let held = s.dock_items.find(i -> i.key == item.key)
+        if let known = held { s.dock_items.move(known, to: at) }
+    } else {
+        let made = DockItem(
+            key: item.key,
+            title: item.title,
+            icon: item.icon,
+            pinned: true,
+            running: item.running,
+            badge: item.badge,
+            attention: item.attention,
+        )
+        s.dock_items.insert(made)
+        s.dock_items.move(made, to: at)
+    }
 }
 
 /// Pins a resource or an app to the dock, before `next` (or at the end when no neighbour is

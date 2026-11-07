@@ -2,8 +2,8 @@ app so.tilo.lang.richbody "Notebook" (icon: .file_text, category: .office)
 
 /// A note: a title, and a body of rich text.
 type Note {
-    title: Text (title)
-    body: RichText (body)
+    title: Text
+    body: RichText
 }
 
 /// The notebook's notes.

@@ -40,7 +40,7 @@ pub struct Placed {
     target: Rect,
     /// It has been placed once: the first placement rests (first paint shows the resting
     /// state; motion explains changes).
-    placed: bool,
+    settled: bool,
     /// The motion it last drew with, so a departure after the theme changed keeps the person's
     /// reduced motion.
     motion: EffectiveMotion,
@@ -52,7 +52,7 @@ impl Default for Placed {
             presence: Presence::opened(),
             rect: MotionValue::new(Rect::ZERO),
             target: Rect::ZERO,
-            placed: false,
+            settled: false,
             motion: EffectiveMotion::default(),
         }
     }
@@ -94,8 +94,8 @@ impl Placed {
         // The first placement rests where it stands. A surface built up shows at rest (the first
         // paint shows the resting state); one built closed and asked to be up on its first frame
         // comes in, as a window the desk just opened does.
-        if !self.placed {
-            self.placed = true;
+        if !self.settled {
+            self.settled = true;
             self.rect.snap(rect);
             self.target = rect;
             if open && !self.presence.is_open() {
@@ -170,7 +170,7 @@ impl Placed {
 
     /// Jump to `rect` and `open`, at rest: a capture or a test posing a surface where it stands.
     pub fn snap(&mut self, rect: Rect, open: bool) {
-        self.placed = true;
+        self.settled = true;
         self.target = rect;
         self.rect.snap(rect);
         self.presence.snap(open);

@@ -635,10 +635,45 @@ fn a_desk_launch_holds_the_tab_the_apps_window_takes() {
         "the app's place is there from this frame, in the tab the launch names"
     );
     assert_eq!(
+        title_of(&policy, tab),
+        "Notes",
+        "the tab opens with the app's name, never with its id"
+    );
+    assert_eq!(
         policy.layout(),
         Layout::default(),
         "and no window is here before the app's is"
     );
+}
+
+#[test]
+fn a_window_that_names_no_title_is_tabbed_under_its_apps_name() {
+    let (mut driver, mut policy) = mount();
+    policy
+        .handle()
+        .dispatch(ChromeEffect::OpenApp {
+            app: "so.tilo.notes".into(),
+            beside: None,
+            background: None,
+        })
+        .unwrap();
+    settle(&mut driver);
+    let tab = policy.take_launches()[0].tab.expect("a held tab");
+    // A window that has not said what it shows takes the held tab under the
+    // name of its app.
+    policy
+        .map(Window {
+            title: None,
+            ..window(1, "so.tilo.notes")
+        })
+        .unwrap();
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
+    // The toolkit then labels the window with the app's unlocalised name:
+    // the tab keeps the name this desk gives the app.
+    policy.retitle(1, "Notes");
+    settle(&mut driver);
+    assert_eq!(title_of(&policy, tab), "Notes");
 }
 
 #[test]

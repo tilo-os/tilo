@@ -172,6 +172,9 @@ enum HardwareAction {
         action: &'static str,
     },
     Shortcut(ShortcutAction),
+    /// Print: the capture studio, or the capture a modifier on it takes at
+    /// once.
+    Print,
 }
 
 const fn hardware(
@@ -220,6 +223,24 @@ impl Hardware {
         self.app = Some(app);
         self
     }
+}
+
+/// What the Print key asks the capture studio for: the studio itself, the
+/// whole display at once with Shift, or the window in front at once with
+/// Alt. The studio's own action takes the window in front when nothing is
+/// named, and comes up to choose one when nothing is in front.
+fn print_invocation(modifiers: tilo_compositor::KeyModifiers) -> Invocation {
+    if modifiers.shift {
+        return Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "display");
+    }
+    if modifiers.alt {
+        return Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "window");
+    }
+    Invocation::new(CAPTURE_STUDIO, "open").with(
+        "mode",
+        serde_json::to_value(ui::floating_surface::CaptureStudioProtocolMode::Screenshot)
+            .unwrap_or_default(),
+    )
 }
 
 /// The hardware key `keysym` is, if it is one.
@@ -280,9 +301,17 @@ fn classify(keysym: u32) -> Option<Hardware> {
         // The power key works on the lock screen too: a press there that the
         // policy resolves to lock turns the display off instead.
         keysyms::XF86_PowerOff => hardware(SLEEP, "power-key", false, true),
-        // The Print key takes the whole screen, as the studio's own bar
-        // does; the lock screen shows no desktop to take.
-        keysyms::Print => hardware(CAPTURE_STUDIO, "screenshot", false, false),
+        // The Print key opens the capture studio; Shift takes the whole
+        // screen at once and Alt the window in front, as the studio's own
+        // actions take them. The lock screen shows no desktop to take.
+        keysyms::Print => Hardware {
+            action: HardwareAction::Print,
+            repeats: false,
+            while_locked: false,
+            readout: None,
+            shift_all: false,
+            app: None,
+        },
         // F1 names every key the desktop answers. It is the desktop's own
         // key, which nothing may be bound to, so the guide opens whatever
         // modifiers are held with it.
@@ -387,6 +416,10 @@ pub(crate) struct DeskKeys {
     overlays: Overlays,
     /// The desk's own overlays, where Alt+Tab's walk lives.
     switcher: Option<Rc<crate::overlays::Overlays>>,
+    /// What the keys ask the panel's own app, when this device has one and
+    /// draws it: Escape asks it to go back a page, and the panel answers
+    /// whether it had one.
+    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
 }
 
 impl DeskKeys {
@@ -397,6 +430,7 @@ impl DeskKeys {
             fold,
             overlays,
             switcher: None,
+            panel: None,
         }
     }
 
@@ -404,6 +438,14 @@ impl DeskKeys {
     #[must_use]
     pub(crate) fn with_switcher(mut self, switcher: Rc<crate::overlays::Overlays>) -> Self {
         self.switcher = Some(switcher);
+        self
+    }
+
+    /// The same, with the queue the panel's own app is asked through, when
+    /// this device has one and draws it.
+    #[must_use]
+    pub(crate) fn with_panel(mut self, asks: Option<Rc<RefCell<Vec<&'static str>>>>) -> Self {
+        self.panel = asks;
         self
     }
 }
@@ -521,6 +563,8 @@ pub(crate) struct SessionKeys {
     /// The desk's own overlays, where Alt+Tab's walk lives: the keys it
     /// answers while it is up, and the chord that opens it.
     switcher: Option<Rc<crate::overlays::Overlays>>,
+    /// What the keys ask the panel's own app, when this device draws it.
+    panel: Option<Rc<RefCell<Vec<&'static str>>>>,
     /// The shortcut resources whose chords are held down, by key.
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press
@@ -566,6 +610,7 @@ impl SessionKeys {
             fold: desk.fold,
             overlays: desk.overlays,
             switcher: desk.switcher,
+            panel: desk.panel,
             held: RefCell::new(BTreeMap::new()),
             controller,
             controller_keys,
@@ -775,6 +820,7 @@ impl SessionKeys {
             let mut invocation = match hardware.action {
                 HardwareAction::Resource { resource, action } => Invocation::new(resource, action),
                 HardwareAction::Shortcut(action) => Invocation::shortcut(action),
+                HardwareAction::Print => print_invocation(key.modifiers),
             };
             if let Some(app) = hardware.app {
                 invocation = invocation.with("app", app);
@@ -1008,6 +1054,16 @@ impl SurfaceHost for SessionKeys {
             return;
         }
         if let Some(slot) = self.closes_the_top_surface(key) {
+            if slot == Slot::QuickSettings
+                && let Some(asks) = &self.panel
+            {
+                // The panel's own pages are its own: Escape goes back one of
+                // them, and the panel answers whether it had one to go back
+                // to (`Shared::panel_back`). Its main page has none, and the
+                // session closes the panel there.
+                asks.borrow_mut().push("back");
+                return;
+            }
             self.invocations
                 .borrow_mut()
                 .push(Invocation::new(OVERLAYS, "close").with("slot", slot.as_str()));
@@ -1621,6 +1677,50 @@ mod tests {
     }
 
     #[test]
+    fn escape_asks_the_panel_to_go_back_before_it_closes_it() {
+        // The panel's app draws the quick settings on this device: Escape is
+        // its own pages' first, and the session waits for its answer.
+        let asks = Rc::new(RefCell::new(Vec::new()));
+        let overlays = Overlays::new();
+        overlays.open(Slot::QuickSettings, None);
+        let mut keys = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Presses::default(),
+            None,
+            GuideKeys::default(),
+            DeskKeys::new(DeskFold::default(), overlays.clone()).with_panel(Some(Rc::clone(&asks))),
+            None,
+            ControllerKeys::default(),
+            Rc::default(),
+        );
+        let escape = key(keysyms::Escape, None, KeyModifiers::default());
+        keys.key(&escape);
+        assert_eq!(*asks.borrow(), ["back"], "the panel goes back a page");
+        assert!(
+            asked(&keys).is_empty(),
+            "nothing closes until the panel says it has nowhere left to go"
+        );
+
+        // A device whose shell draws the quick settings has no panel app to
+        // ask: Escape closes the surface itself.
+        let mut shell = SessionKeys::new(
+            Rc::new(RefCell::new(ShortcutConfig::default())),
+            Presses::default(),
+            None,
+            GuideKeys::default(),
+            DeskKeys::new(DeskFold::default(), overlays),
+            None,
+            ControllerKeys::default(),
+            Rc::default(),
+        );
+        shell.key(&escape);
+        assert_eq!(
+            asked(&shell),
+            vec![Invocation::new(OVERLAYS, "close").with("slot", "quick-settings")]
+        );
+    }
+
+    #[test]
     fn home_end_and_the_arrows_move_inside_the_walk() {
         let (mut keys, walk) = with_walk();
         walk.walk(Some("workspace"), 1);
@@ -1794,16 +1894,53 @@ mod tests {
     }
 
     #[test]
-    fn the_print_key_takes_a_screenshot_unless_the_screen_is_locked() {
+    fn the_print_key_opens_the_studio_or_takes_what_a_modifier_names() {
         let keys = keys();
         let print = key(keysyms::Print, None, KeyModifiers::default());
+        let studio = Invocation::new(CAPTURE_STUDIO, "open").with(
+            "mode",
+            serde_json::to_value(ui::floating_surface::CaptureStudioProtocolMode::Screenshot)
+                .unwrap_or_default(),
+        );
+        // Print alone asks the studio to come up choosing a screenshot: the
+        // person then picks the screen, a window or a region.
         assert_eq!(
             keys.resolve(&print, false, false),
+            Some((studio, KeyClaim::Take))
+        );
+        // Shift takes the whole display at once, and Alt the window in
+        // front, as the studio's own actions take them.
+        let shift = key(
+            keysyms::Print,
+            None,
+            KeyModifiers {
+                shift: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(
+            keys.resolve(&shift, false, false),
             Some((
-                Invocation::new(CAPTURE_STUDIO, "screenshot"),
+                Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "display"),
                 KeyClaim::Take
             ))
         );
+        let alt = key(
+            keysyms::Print,
+            None,
+            KeyModifiers {
+                alt: true,
+                ..KeyModifiers::default()
+            },
+        );
+        assert_eq!(
+            keys.resolve(&alt, false, false),
+            Some((
+                Invocation::new(CAPTURE_STUDIO, "screenshot").with("source", "window"),
+                KeyClaim::Take
+            ))
+        );
+        // The lock screen shows no desktop to take.
         assert_eq!(keys.resolve(&print, true, false), None);
     }
 

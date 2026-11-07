@@ -20,6 +20,13 @@ path = "src/lib.rs"
 # host's tests link to read the same types.
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# The module the document host runs: its export and the host imports under it. Off, the crate
+# is the record's types alone — what an app links. A wasm app built with it would import the
+# `tilo_model` module a browser has nothing to resolve, so only the module's own build turns
+# it on.
+module = ["dep:tilo-model-guest"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -30,7 +37,7 @@ tilo-resource = { path = "../../crates/sdk/tilo-resource" }
 tilo-actions = { path = "../../crates/collab/actions" }
 tilo-reference = { path = "../../crates/collab/reference" }
 # The module side: the export the host calls and the tree it answers.
-tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest" }
+tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest", optional = true }
 
 # The workspace-hack's native feature set does not build for wasm32, and the
 # browser builds the desktop, and so this model, for it.

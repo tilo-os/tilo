@@ -24,17 +24,9 @@ row_view   = "row" "view" ident "for" type ;
 views      = "views" ident { "," ident } "for" type ;   (* what a window of the type switches between *)
 role       = "primary" | "destructive" | "migration" ;
 
-type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | derived | search } "}" ;
-field      = { doc } ident ":" type [ "merge" merge_kind ]
-             [ "(" ( "title" | "body" | "previously" | "parent" ) ")" ] [ "=" expr ] ;
-derived    = { doc } "derive" ident ":" ( "Bool" | "Int" ) "=" derived_expr ;
-derived_expr = derived_or [ ( "==" | "!=" | "<" | "<=" | ">" | ">=" ) derived_or ] ;
-derived_or  = derived_and { "or" derived_and } ;
-derived_and = derived_operand { "and" derived_operand } ;
-derived_operand = "not" derived_operand | ident | number
-                | "children" "." "count" [ "(" derived_expr ")" ]
-                | "children" "." ( "all" | "any" ) "(" derived_expr ")"
-                | "parent" "." "all" "(" derived_expr ")" | "(" derived_expr ")" ;
+type_decl  = "type" Ident [ "(" "origin" ":" Ident { "." Ident } ")" ] "{" { field | search } "}" ;
+field      = { doc } ident ":" type [ "merge" merge_kind ] [ "=" expr ] ;
+
 merge_kind = "register" | "counter" | "text" ;
 search     = "search" "{" { search_line NL } "}" ;
 search_line = "filter" ident [ string ] [ opts ]

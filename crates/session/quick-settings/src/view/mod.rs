@@ -1,6 +1,7 @@
 //! The panel's views: the controls page and the page each section opens in
-//! its place, the notifications, one accessory's page, the clipboard opened
-//! to paste and the arrangement editor. Built from the toolkit's widgets;
+//! its place, one accessory's page, the clipboard opened to paste and the
+//! arrangement editor. The notifications have no page here: their row opens
+//! the shell's centre, the one list they are read in. Built from the toolkit's widgets;
 //! every control is bound to one of the panel's actions or effects.
 
 mod edit;
@@ -21,6 +22,7 @@ use ui::widget::{
     Scrollable, Section, Spacer, Text,
 };
 
+use crate::QsSection;
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::faces::{self, Item, RowFace, Sliders, TileFace};
@@ -28,7 +30,6 @@ use crate::host::{FixtureHost, PanelHost, Showing};
 use crate::live::Live;
 use crate::readings::Readings;
 use crate::resource::{Page, QuickSettings};
-use crate::{NotificationsView, QsSection};
 
 /// What each part of the panel reads, kept current from the readings: one
 /// projection each, made once for the panel's life.
@@ -38,13 +39,10 @@ pub(crate) struct Parts {
     tiles: LocalState<Vec<TileFace>>,
     rows: LocalState<Vec<RowFace>>,
     sections: Rc<HashMap<QsSection, LocalState<Vec<Item>>>>,
-    notifications: LocalState<NotificationsView>,
     accessory: LocalState<Accessory>,
     arrangement: LocalState<Arrangement>,
     /// What was typed to search the clipboard's copies.
     query: LocalState<String>,
-    /// The app groups folded on the notifications page.
-    folded: LocalState<Vec<String>>,
     /// What plays: the transport's song and playhead, and the choices
     /// around it.
     now_playing: now_playing::Parts,
@@ -101,14 +99,12 @@ impl Parts {
             tiles: readings.project(faces::tiles),
             rows: readings.project(faces::rows),
             sections: Rc::new(sections),
-            notifications: readings.project(|state| state.notifications.clone()),
             accessory: readings.project(|state| Accessory {
                 devices: state.bluetooth.accessories.clone(),
                 targets: state.handoff_targets.clone(),
             }),
             arrangement: readings.project(Arrangement::of),
             query: LocalState::new(String::new()),
-            folded: LocalState::new(Vec::new()),
             now_playing: now_playing::Parts::new(readings),
             refusal: readings.project(|state| state.refusal.clone()),
         }
@@ -163,18 +159,21 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         .with_no_padding()
         .with_inset(Rhythm::Related)
         .with_child(page);
-    // The panel is the floating card every surface of its kind stands on,
-    // sized to what it shows: the window around it is the desktop, not the
-    // panel, so the card never trails an empty band under the last row.
-    let card = FloatingPanel::new(Box::new(body))
-        .footer(root::footer(cx))
-        .fill_width();
-    Box::new(
+    // The panel is the floating card every surface of its kind stands on, and
+    // its footprint is the surface's: the window it stands in is the size the
+    // desk gives a popover, so the card keeps its edges whichever page it
+    // shows — a page with more on it scrolls inside the body, and one with
+    // less leaves the footer where it was.
+    let card = FloatingPanel::new(Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
             .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(card)),
-    ) as Element
+            .with_child(Box::new(body)),
+    ))
+    .footer(root::footer(cx))
+    .fill_width()
+    .fill_height();
+    Box::new(card) as Element
 }
 
 /// `page`, told why the last press did not reach the device when it did not:
@@ -231,8 +230,6 @@ fn page(cx: &ViewCx<QuickSettings>, showing: &Showing, parts: &Parts) -> Element
             Some(section) => sections::page(cx, section, parts),
             None => root::page(cx, parts),
         },
-        Page::Notifications => pages::notifications(cx, parts),
-        Page::Notification => pages::reader(cx, showing.notification, parts),
         Page::Accessory => pages::accessory(cx, &showing.accessory, parts),
     }
 }

@@ -138,6 +138,26 @@ pub fn workspace_resource(workspace: &str) -> TreePath {
     TreePath::workspace(workspace).kind(ROOM_KIND)
 }
 
+/// The node of assigning the named grant set `name` in `workspace`: a grant on
+/// it lets someone assign that one set, and nothing else of the workspace.
+#[must_use]
+pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
+    workspace_resource(workspace)
+        .field("presets")
+        .item(name.trim().to_lowercase())
+        .action("assign")
+}
+
+/// The set and rule a grant id assigns, when it places one of the workspace's
+/// saved grant sets: `preset:<mint>:<set>:<index>` ([`Preset::assign`]).
+#[must_use]
+pub fn preset_assigned(id: &GrantId) -> Option<(&str, usize)> {
+    let rest = id.as_str().strip_prefix("preset:")?;
+    let (_, rest) = rest.split_once(':')?;
+    let (set, index) = rest.rsplit_once(':')?;
+    Some((set, index.parse().ok()?))
+}
+
 #[must_use]
 pub fn governance_action(workspace: &str, action: &str) -> TreePath {
     workspace_resource(workspace).action(action)
@@ -725,17 +745,37 @@ pub mod agent_policy {
     }
 }
 
-/// The delegation a delegated agent `agent` of `person` carries in `workspace`:
-/// the preset of [`agent_policy::ROLE_CAP`]. The agent acts with its person's
-/// grants bounded by it, so it changes what its person may change, never more
-/// than the cap allows, and never the workspace's governance.
+/// The authority an agent's turn carries in `workspace`: the preset of
+/// [`agent_policy::ROLE_CAP`], narrowed by the bound the agent's record keeps
+/// (`bound`; empty follows the default, which is the cap's own). The agent acts
+/// with its person's grants bounded by them, so it changes what its person may
+/// change, never more than the cap allows, never more than its record bounds it
+/// to, and never the workspace's governance.
+///
+/// This is the only place an agent's authority is made: a door or a receiver
+/// hands it the person whose message caused the turn, and the bound it holds
+/// for the agent's record ([`crate::turn::authority`]).
 #[must_use]
-pub fn agent_delegation(workspace: &str, agent: &str, person: &str) -> crate::Bound {
-    crate::Bound::delegation(
-        Subject::Agent(agent.to_owned()),
-        &role_preset(agent_policy::ROLE_CAP, workspace),
-        person,
-    )
+pub fn agent_turn(workspace: &str, agent: &str, person: &str, bound: &[Rule]) -> crate::Bound {
+    let subject = Subject::Agent(agent.to_owned());
+    let granted_by = Subject::Person(person.to_owned());
+    let prefix = format!("turn:agent:{agent}");
+    let mut grants = role_preset(agent_policy::ROLE_CAP, workspace).assign(
+        &prefix,
+        &subject,
+        &granted_by,
+        &Lifetime::UntilRevoked,
+    );
+    grants.extend(bound.iter().enumerate().map(|(index, rule)| Grant {
+        id: GrantId(format!("{prefix}:bound:{index}")),
+        subject: subject.clone(),
+        node: rule.node.clone(),
+        kinds: rule.kinds,
+        answer: rule.answer,
+        lifetime: Lifetime::UntilRevoked,
+        granted_by: granted_by.clone(),
+    }));
+    crate::Bound { subject, grants }
 }
 
 /// What an agent admitted to a workspace may do there on its own: the workspace-level

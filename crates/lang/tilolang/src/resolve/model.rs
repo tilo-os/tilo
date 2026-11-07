@@ -15,11 +15,6 @@ pub struct FieldInfo {
     pub merge: MergeKind,
     pub doc: String,
     pub default: Option<serde_json::Value>,
-    /// What the field is to the platform, from its marker (`(title)`, `(repeats: due)`).
-    pub role: Option<crate::types::FieldRole>,
-    /// What the store derives it from, for a `derive` key ([`crate::derived`]): a value no
-    /// record holds.
-    pub derived: Option<crate::derived::Derived<String>>,
 }
 
 #[derive(Clone, Debug)]
@@ -39,18 +34,15 @@ impl TypeInfo {
         self.fields.iter().find(|f| f.name == name)
     }
 
-    /// The field holding the time of day the day `day` is due at
-    /// (`at: Option<Time> (time of: due)`): the declaration pairs the two, so a value of the
-    /// day carries its time of day wherever it flows, and a list shows them as one fact.
-    pub fn time_of(&self, day: &str) -> Option<&FieldInfo> {
-        self.fields.iter().find(|field| {
-            field.derived.is_none()
-                && field
-                    .role
-                    .as_ref()
-                    .and_then(crate::types::FieldRole::time_of)
-                    == Some(day)
-        })
+    /// The field a record of the type is named by: its first `Text` or `RichText` field that
+    /// merges as text. A register of text is a code or a label, never what the record is
+    /// called. A type with no such field names its records by the type's name and the
+    /// record's `created`.
+    #[must_use]
+    pub fn name_field(&self) -> Option<&FieldInfo> {
+        self.fields
+            .iter()
+            .find(|f| matches!(f.ty, Ty::Text | Ty::RichText) && f.merge != MergeKind::Register)
     }
 
     pub fn field_names(&self) -> String {

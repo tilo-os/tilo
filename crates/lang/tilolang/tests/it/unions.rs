@@ -21,7 +21,7 @@ fn expect(code: &str, body: &str) {
     );
 }
 
-const CHANNELS: &str = "type TextChannel {\n    name: Text (title)\n}\ntype VoiceChannel {\n    name: Text (title)\n    live: Bool = false\n}\ntype Channel = TextChannel | VoiceChannel\ntype Server {\n    channels: Collection<Channel>\n    pinned: Option<Channel> = .none\n}\nroot Server\ndefault view server for Server\nview server(s: Server) {\n    text(\"x\")\n}\n";
+const CHANNELS: &str = "type TextChannel {\n    name: Text\n}\ntype VoiceChannel {\n    name: Text\n    live: Bool = false\n}\ntype Channel = TextChannel | VoiceChannel\ntype Server {\n    channels: Collection<Channel>\n    pinned: Option<Channel> = .none\n}\nroot Server\ndefault view server for Server\nview server(s: Server) {\n    text(\"x\")\n}\n";
 
 #[test]
 fn a_union_holds_any_of_its_types_and_a_match_takes_it_apart_by_type() {
@@ -69,7 +69,7 @@ fn an_alias_is_another_name_for_a_type() {
     );
 }
 
-const NOTES: &str = "type Note {\n    title: Text (title)\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";
+const NOTES: &str = "type Note {\n    title: Text\n    pinned: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot notebook: Notebook\ndefault view notebook for Notebook\nview notebook(nb: Notebook) {\n    std.list(nb.notes) { (n, at) ->\n        ui.ListItem(item: n, presence: at)\n    }\n}\n";
 
 #[test]
 fn a_root_is_a_named_record_holding_its_collection() {

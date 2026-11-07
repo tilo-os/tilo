@@ -2,13 +2,13 @@ app so.tilo.links "Links"
 
 /// A note: what it says.
 type Note {
-    title: Text (title)
-    body: RichText (body)
+    title: Text
+    body: RichText
 }
 
 /// An item about a note, when it is about one.
 type Item {
-    title: Text (title)
+    title: Text
     about: Option<Note> = .none
 }
 

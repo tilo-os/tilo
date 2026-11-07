@@ -54,14 +54,14 @@ view contact_row(c: Contact) {
 - A box bound to a value writes that field when it is pressed, unless the view names what a
   press means: `ui.Checkbox(bind: t.done) { on check: check(t) }` and
   `row(t.title, checkbox: t.done, check: check(t))` show the field and run the app's action,
-  so completing a task completes what is under it in the same step, one undo, and `check` is
-  what history says it did.
+  so completing a task completes what is under it in the same step, one undo, and history
+  records the flag the app's action set.
 - A document's running text is placed like any other component:
   `ui.BlockEditor(bind: doc.body, placeholder: "Write")`. It declares a binding to the field as
   a `RichText` (`rich`, its paragraphs) and to a Markdown `Text` field (`markdown`, the same
   text round-tripped), and edits the one the view bound; a change from elsewhere shows when the
-  person is not typing there. Nothing about a field marked `(body)` changes what a control
-  draws: the role is the document's metadata, and the view places the editor.
+  person is not typing there. The view places the editor; no marker on a field says which
+  control draws it.
 
 Some components *attach*: `ui.ContextMenu`, `ui.HoverToolbar` and `ui.Swipe` draw nothing where
 a view puts them and give the view they stand in a menu, a toolbar shown on hover and focus, or

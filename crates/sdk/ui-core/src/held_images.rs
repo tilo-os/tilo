@@ -237,9 +237,9 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
         (edge / 2, QUALITY),
         (edge / 4, QUALITY),
     ] {
-        let Some(small) = (edge > 0)
-            .then(|| image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle))
-        else {
+        let Some(small) = (edge > 0).then(|| {
+            image::imageops::resize(&square, edge, edge, image::imageops::FilterType::Triangle)
+        }) else {
             continue;
         };
         let mut encoded = Vec::new();
@@ -260,6 +260,59 @@ pub fn cover(picture: &crate::peniko::ImageData, edge: u32) -> String {
 /// picture beside the song under a wire bound, and a base64 `data:` picture
 /// takes four thirds of that room.
 pub const PICTURE_BUDGET: usize = 6 * 1024;
+
+/// The most a hero picture's encoded bytes may cost: the card shows it at
+/// nine sixteenths of its width, so it is worth more bytes than a cover, and
+/// it goes to a session's own floating layer rather than a shared board.
+pub const HERO_BUDGET: usize = 96 * 1024;
+
+/// A whole picture as the `data:` picture a card heads itself with, `width`
+/// wide and as tall as the picture's own shape: no ground around it, so what
+/// it caught fills the card. Empty for a picture that does not encode or
+/// whose smallest encoding costs more than [`HERO_BUDGET`].
+#[must_use]
+pub fn hero(picture: &image::RgbaImage, width: u32) -> String {
+    if width == 0 || picture.width() == 0 || picture.height() == 0 {
+        return String::new();
+    }
+    let fit = f64::from(width) / f64::from(picture.width());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a card's picture is a few hundred pixels wide"
+    )]
+    let (wide, tall) = (
+        width,
+        ((f64::from(picture.height()) * fit).round() as u32).max(1),
+    );
+    let scaled =
+        image::imageops::resize(picture, wide, tall, image::imageops::FilterType::Triangle);
+    for (edge, quality) in [(wide, 82_u8), (wide, 62), (wide / 2, 82), (wide / 4, 82)] {
+        let Some(small) = (edge > 0).then(|| {
+            let tall = (f64::from(tall) * f64::from(edge) / f64::from(wide)).round();
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a card's picture is a few hundred pixels wide"
+            )]
+            let tall = (tall as u32).max(1);
+            image::imageops::resize(&scaled, edge, tall, image::imageops::FilterType::Triangle)
+        }) else {
+            continue;
+        };
+        let mut encoded = Vec::new();
+        if image::codecs::jpeg::JpegEncoder::new_with_quality(&mut encoded, quality)
+            .encode_image(&image::DynamicImage::ImageRgba8(small))
+            .is_err()
+        {
+            return String::new();
+        }
+        if encoded.len() <= HERO_BUDGET {
+            return format!("data:image/jpeg;base64,{}", picture_text(&encoded));
+        }
+    }
+    String::new()
+}
 
 /// [`mosaic`] for pictures already decoded (covers an image store loaded):
 /// a `side` square of up to four, sampled straight into place, so composing

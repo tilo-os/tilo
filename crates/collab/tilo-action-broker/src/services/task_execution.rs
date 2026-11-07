@@ -18,6 +18,11 @@ pub struct NativeTaskBinding {
     /// the agent acting for them. `None` where only a record of an earlier
     /// admission is at hand; the owner's check reads the live approval.
     pub starter: Option<String>,
+    /// The turn the agent acts for: the person's message whose conversation it
+    /// takes part in. Every op the run's agent makes carries it, so the
+    /// receiving device decides it against that message; no turn yet means the
+    /// run was asked before turns carried conversations.
+    pub turn: Option<tilo_action_policy::turn::Turn>,
 }
 
 impl NativeTaskBinding {
@@ -36,6 +41,7 @@ impl NativeTaskBinding {
             crate::collab_app_broker::BrokerActor::agent(format!("agent:{}", self.agent_id))
                 .for_person(starter)
                 .session_delegated()
+                .on_turn(self.turn.clone())
                 .working_on(&self.task_id),
         )
     }
@@ -83,19 +89,24 @@ impl NativeTaskActionRequirement {
             .admitted_workspace()
             .ok_or("tracker action policy unavailable")?;
         let policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
-        self.check_tracker_policy(&policy, workspace, run, now)
+        self.check_tracker_policy(&policy, workspace, run, None, now)
     }
 
     /// [`Self::check_tracker`] for a workspace whose grants are already at hand,
-    /// as the session hosting the run holds them.
+    /// as the session hosting the run holds them, with what the receiving
+    /// device looked up about the turn's cause (`looked`; `None` when its cause
+    /// has not arrived here yet, which holds the op).
     ///
     /// # Errors
-    /// The run's binding, its epoch or the workspace's grants refuse the action.
+    /// The run's binding, its epoch, its turn or the workspace's grants refuse
+    /// the action; a turn waiting for its cause says so
+    /// ([`Self::awaits_cause`]).
     pub fn check_tracker_policy(
         &self,
         policy: &tilo_action_policy::WorkspacePolicy,
         workspace: &str,
         run: &TrackerRun,
+        looked: Option<&tilo_action_policy::turn::Looked>,
         now: std::time::SystemTime,
     ) -> Result<(), String> {
         use tilo_action_policy::{Answer, Authority, Context, roles};
@@ -115,7 +126,7 @@ impl NativeTaskActionRequirement {
         if !run.active || binding.epoch != run.epoch {
             return Err("this run has ended or was replaced".into());
         }
-        let delegation = roles::agent_delegation(workspace, &run.agent, &run.starter);
+        let delegation = self.turn_authority(workspace, run, looked)?;
         let verdict = Authority::person(
             delegation
                 .party(&policy.grants)
@@ -190,11 +201,45 @@ impl NativeTaskActionRequirement {
         Ok(())
     }
 
+    /// The authority the run acts on: the turn its agent takes part in, when
+    /// the run names one, bounded by the starter's grants, the editor preset
+    /// and the agent's own bound ([`tilo_action_policy::turn`]); a run asked
+    /// before turns carried conversations acts on the editor preset alone.
+    fn turn_authority(
+        &self,
+        workspace: &str,
+        run: &TrackerRun,
+        looked: Option<&tilo_action_policy::turn::Looked>,
+    ) -> Result<tilo_action_policy::Bound, String> {
+        use tilo_action_policy::{roles, turn};
+        let Some(cause) = self.binding.turn.as_ref() else {
+            return Ok(roles::agent_turn(workspace, &run.agent, &run.starter, &[]));
+        };
+        turn::authority(workspace, &run.agent, &run.starter, Some(cause), |_| {
+            looked.cloned()
+        })
+        .map_err(|held| {
+            if held.waits() {
+                format!("{}: {}", tilo_actions::draft::AWAITING_CAUSE, held.reason())
+            } else {
+                format!("this run's turn does not authorize it: {}", held.reason())
+            }
+        })
+    }
+
     /// Whether `error`, from [`Self::check_tracker`], says the action waits for the
     /// person's confirmation rather than being refused.
     #[must_use]
     pub fn awaits_confirmation(error: &str) -> bool {
         error.contains(tilo_actions::draft::AWAITING_CONFIRMATION)
+    }
+
+    /// Whether `error`, from [`Self::check_tracker`], says the action waits for
+    /// the message that caused its turn to reach this device rather than being
+    /// refused.
+    #[must_use]
+    pub fn awaits_cause(error: &str) -> bool {
+        error.contains(tilo_actions::draft::AWAITING_CAUSE)
     }
 }
 
@@ -377,6 +422,10 @@ pub struct TrackerRun {
     pub directions: Vec<TrackerDirection>,
     /// What the run asks or last asked its person.
     pub question: Option<TrackerQuestion>,
+    /// The turn the run's agent acts inside: the person's message in a
+    /// conversation it takes part in. Every op the run makes carries it; a
+    /// run whose causing message the receiver does not hold yet waits for it.
+    pub turn: Option<tilo_action_policy::turn::Turn>,
     /// The task delegation the asking device signed for a task agent's run,
     /// encoded (`TaskDelegation::encode`), or why what the run carries is
     /// none; `None` for a collaborator's run, whose membership is its

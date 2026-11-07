@@ -347,12 +347,34 @@ window-move-reason-no-window = die App hat dort kein Fenster geöffnet
 window-move-reason-no-start = die App ist dort nicht gestartet
 window-move-bringing-edits = Das Fenster kommt mit dem zurück, was nach dem Verschieben geschrieben wurde.
 
-## A reminder a workspace holds for the person, shown by the session itself.
-reminder-open = Öffnen
-reminder-late = Verspätet
-
 ## The person's own card in the top bar: what it offers about who they are.
 profile-action-identities = Deine Identitäten
 profile-action-backup = Deine Identität sichern
 profile-action-pair-device = Ein weiteres Gerät koppeln
 profile-name-not-saved = Dein Name wurde nicht gespeichert
+
+## A capture, while the capture studio's bar is down: the card the floating
+## layer and the bar's pill show, and what its controls do.
+capture-recording-title = Bildschirmaufnahme
+capture-recording-stop = Beenden
+capture-recording-pause = Pausieren
+capture-recording-resume = Fortsetzen
+capture-replay-title = Wiederholungspuffer
+capture-replay-save = Speichern
+capture-replay-stop = Beenden
+capture-shot-title = Bildschirmfoto
+capture-shot-copy = Kopieren
+capture-shot-open = Öffnen
+capture-shot-reveal = Im Ordner zeigen
+capture-shot-dismiss = Fertig
+capture-failed-not-saved = Das Bildschirmfoto konnte nicht gespeichert werden
+capture-failed-not-saved-permission = Tilo darf nicht in { $folder } schreiben
+capture-failed-not-saved-no-room = in { $folder } ist kein Platz mehr frei
+capture-failed-not-saved-read-only = { $folder } ist schreibgeschützt
+capture-failed-not-saved-folder = es gibt keinen Ordner { $folder }
+capture-failed-not-saved-other = das System ließ Tilo nicht in { $folder } schreiben
+capture-failed-copy-instead = Stattdessen kopieren
+capture-failed-dismiss = Fertig
+capture-target-display = Der ganze Schreibtisch
+capture-target-window = Ein Fenster
+capture-target-region = Ein Bereich des Schreibtischs

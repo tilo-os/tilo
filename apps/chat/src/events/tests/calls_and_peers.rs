@@ -1094,15 +1094,13 @@ fn a_browser_that_cannot_join_calls_says_so_plainly() {
     assert!(said.contains("browser"), "{said}");
     assert_eq!(app.media_error.as_deref(), Some(said.as_str()));
     let root = app.accessibility().expect("chat semantics");
+    let people = app.call_people_label();
     let status = root
         .children
         .iter()
         .find(|node| {
             matches!(node.role, ui::a11y::Role::StaticText)
-                && node
-                    .name
-                    .as_deref()
-                    .is_some_and(|name| name.ends_with("in call"))
+                && node.name.as_deref() == Some(people.as_str())
         })
         .and_then(|node| node.description.clone());
     assert_eq!(
@@ -1150,25 +1148,128 @@ fn the_docked_call_shows_the_other_person_large_and_follows_who_speaks() {
 }
 
 #[test]
-fn the_call_panel_says_how_many_are_in_the_call_where_it_paints_it() {
+fn the_call_panel_says_who_is_in_the_call_where_it_paints_it() {
     let (mut app, _doc) = app_with_doc();
     service_streams(&mut app, "c_huddle", 1);
     render_frame(&mut app, 1280.0, 800.0);
+    let people = app.call_people_label();
+    assert_eq!(
+        people,
+        app.user_name(&format!("{:064x}", 1)),
+        "the people, not a count and not this person alone"
+    );
     let root = app.accessibility().expect("chat semantics");
-    let count = root
+    let reading = root
         .children
         .iter()
         .find(|node| {
             matches!(node.role, ui::a11y::Role::StaticText)
-                && node.name.as_deref() == Some("2 in call")
+                && node.name.as_deref() == Some(people.as_str())
         })
-        .expect("the call's count is in the semantics tree");
-    let bounds = count.bounds.expect("the count has bounds").to_rect();
+        .expect("the call's reading is in the semantics tree");
+    let bounds = reading.bounds.expect("the reading has bounds").to_rect();
     let panel = app.huddle_panel();
     assert!(
         bounds.width() > 0.0 && panel.contains(bounds.center()),
         "read where the panel paints it: {bounds:?} in {panel:?}"
     );
+}
+
+#[test]
+fn a_call_with_several_people_names_two_and_counts_the_rest() {
+    let (mut app, _doc) = app_with_doc();
+    service_streams(&mut app, "c_huddle", 4);
+    render_frame(&mut app, 1280.0, 800.0);
+    let me = app.me.id.clone();
+    let names: Vec<String> = app
+        .voice_people("c_huddle")
+        .iter()
+        .filter(|user| **user != me)
+        .map(|user| app.user_name(user))
+        .collect();
+    assert_eq!(names.len(), 4);
+    let label = app.call_people_label();
+    let listed: Vec<&String> = names
+        .iter()
+        .filter(|name| label.contains(name.as_str()))
+        .collect();
+    assert_eq!(listed.len(), 2, "two of them are named: {label}");
+    let named_two = |first: &str, second: &str| {
+        crate::i18n::t_args(
+            "chat-call-people-many",
+            &[
+                ("first", first.into()),
+                ("second", second.into()),
+                ("count", 2.into()),
+            ],
+        )
+    };
+    assert!(
+        label == named_two(listed[0], listed[1]) || label == named_two(listed[1], listed[0]),
+        "two names and the people left, so the card's hero stays one line: {label}"
+    );
+}
+
+#[test]
+fn the_card_names_people_briefly_and_the_reading_keeps_their_full_names() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 4);
+    let me = app.me.id.clone();
+    let roster = &mut app.native_voice.snapshot.rosters[0];
+    roster.people = vec![
+        me,
+        "u_aria".into(),
+        "u_milo".into(),
+        "u_sora".into(),
+        "u_devon".into(),
+    ];
+    app.refresh_native_streams();
+    assert_eq!(app.given_name("u_aria"), "Aria");
+    let short = app.call_people_short_label();
+    let full = app.call_people_label();
+    assert!(
+        short.contains("Aria") && short.contains("Milo"),
+        "the card names the two who lead the crowd: {short}"
+    );
+    assert!(
+        !short.contains("Aria Chen"),
+        "a card that also counts the crowd has room for given names, not surnames: {short}"
+    );
+    assert!(
+        full.contains("Aria Chen") && full.contains("Milo Park"),
+        "the call's accessible reading names people in full: {full}"
+    );
+    assert!(
+        short.len() < full.len(),
+        "the card's line is briefer than the reading: {short} / {full}"
+    );
+}
+
+#[test]
+fn a_muted_or_deafened_call_shows_it_on_its_microphone() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    app.call.muted = false;
+    assert!(
+        !app.call_control_engaged(&Hit::CallMute),
+        "a call you can speak in shows a resting microphone"
+    );
+    app.call.muted = true;
+    assert!(
+        app.call_control_engaged(&Hit::CallMute),
+        "muted: the control shows its state"
+    );
+    assert!(!app.call_control_engaged(&Hit::CallCamera));
+    app.call.muted = false;
+    app.call.deafened = true;
+    assert!(
+        app.call_control_engaged(&Hit::CallMute) && app.call_control_engaged(&Hit::CallDeafen),
+        "hearing nothing also means speaking nothing"
+    );
+    app.call.deafened = false;
+    app.call.sharing = true;
+    assert!(app.call_control_engaged(&Hit::CallScreen));
 }
 
 #[test]
@@ -1244,4 +1345,209 @@ fn the_window_bar_names_the_call_while_its_stage_fills_the_window() {
         call,
         "collapsed, the conversation is the place"
     );
+}
+
+#[test]
+fn the_call_cards_own_frame_answers_its_presses() {
+    use ui::presence::PresenceCtx;
+    use ui::text_render::TextRenderer;
+    use ui::theme::Theme;
+    use vello::Scene;
+    use vello::kurbo::{Affine, Rect};
+
+    let (mut app, mut doc) = app_with_doc();
+    app.call.join("c_huddle");
+    render_frame(&mut app, 1200.0, 800.0);
+    ui::widget::FloatingSurfaceWidgetExt::set_floating_surface_bounds(
+        &mut app,
+        Rect::new(0.0, 0.0, 1600.0, 900.0),
+    );
+    // Over the desk the shell gives the call a window of its own, and that
+    // window paints the card.
+    let handle = app
+        .hits
+        .iter()
+        .find_map(|(rect, hit)| matches!(hit, Hit::CallDragHandle).then_some(*rect))
+        .expect("the attached live call exposes its drag handle");
+    let origin = handle.center();
+    feed(&mut app, &mut doc, &cursor_moved(origin.x, origin.y));
+    feed(
+        &mut app,
+        &mut doc,
+        &mouse(ElementState::Pressed, MouseButton::Left),
+    );
+    feed(&mut app, &mut doc, &cursor_moved(1300.0, origin.y + 40.0));
+    feed(
+        &mut app,
+        &mut doc,
+        &mouse(ElementState::Released, MouseButton::Left),
+    );
+    assert!(matches!(
+        app.call.placement.attachment(),
+        ui::floating_surface::Attachment::Desktop { .. }
+    ));
+    let prepared_window = app.huddle_panel().inflate(8.0, 8.0);
+    let prepared_content = app.call_video_rect();
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+        &mut app,
+        &ui::floating_surface::FloatingSurfaceHostMessage::PrepareSurface {
+            id: "chat-call:c_huddle".into(),
+            token: "0123456789abcdef0123456789abcdef".into(),
+            rect: ui::floating_surface::protocol_rect_array(prepared_window),
+            content_rect: ui::floating_surface::protocol_rect_array(prepared_content),
+            transfer_covered: true,
+            coordinate_offset: [0.0, 0.0],
+        },
+    );
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_host_message(
+        &mut app,
+        &ui::floating_surface::FloatingSurfaceHostMessage::Adopted {
+            id: "chat-call:c_huddle".into(),
+            rect: ui::floating_surface::protocol_rect_array(prepared_content),
+        },
+    );
+    assert!(app.call.placement.is_desktop_adopted());
+
+    let mut scene = Scene::new();
+    let mut text_renderer = TextRenderer::new();
+    assert!(ui::widget::FloatingSurfaceWidgetExt::draw_floating_surface(
+        &mut app,
+        "chat-call:c_huddle",
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text_renderer,
+        &Theme::dark(),
+        &PresenceCtx::empty(),
+    ));
+    let mute = app
+        .card_hits
+        .iter()
+        .find_map(|(rect, hit)| matches!(hit, Hit::CallMute).then_some(*rect))
+        .expect("the card's own frame holds its Mute control");
+    assert_eq!(
+        count_hits(&app, |hit| matches!(hit, Hit::CallMute)),
+        1,
+        "the window's frame never claims the card's controls"
+    );
+
+    // The window repaints after the card often enough that a shared hit list
+    // is the window's by the time a press arrives; the source decides.
+    render_frame(&mut app, 1200.0, 800.0);
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(
+        &mut app,
+        Some("chat-call:c_huddle"),
+    );
+    feed(
+        &mut app,
+        &mut doc,
+        &cursor_moved(mute.center().x, mute.center().y),
+    );
+    assert!(
+        matches!(app.call_hovered, Some(Hit::CallMute)),
+        "a press from the card's window resolves against the card's frame"
+    );
+
+    ui::widget::FloatingSurfaceWidgetExt::on_floating_surface_event_source(&mut app, None);
+    feed(
+        &mut app,
+        &mut doc,
+        &cursor_moved(mute.center().x, mute.center().y),
+    );
+    assert!(
+        app.call_hovered.is_none(),
+        "the same point is nothing in the window's frame"
+    );
+}
+
+#[test]
+fn a_live_calls_reading_serves_the_next_second_it_draws() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 1);
+    let first = app
+        .next_wake_deadline()
+        .expect("a live call's card counts its seconds");
+    assert!(
+        app.serve_deadline(first),
+        "the second the card drew is the one it served"
+    );
+    let second = app
+        .next_wake_deadline()
+        .expect("the wake steps the reading on");
+    assert!(
+        second > first,
+        "the same instant cannot be due twice: {first:?} was followed by {second:?}"
+    );
+    let early = first + (second - first) / 2;
+    assert!(
+        !app.serve_deadline(early),
+        "half a second later the card still shows the second it drew"
+    );
+}
+
+#[test]
+fn the_pointer_leaving_the_card_leaves_no_control_hovered() {
+    let (mut app, mut doc) = app_with_doc();
+    app.call.join("c_huddle");
+    service_streams(&mut app, "c_huddle", 1);
+    render_frame(&mut app, 1280.0, 800.0);
+    let control = app
+        .hits
+        .iter()
+        .find_map(|(rect, hit)| matches!(hit, Hit::CallParticipantsToggle).then_some(*rect))
+        .expect("the docked call shows its controls");
+    feed(
+        &mut app,
+        &mut doc,
+        &cursor_moved(control.center().x, control.center().y),
+    );
+    assert_eq!(app.call_hovered, Some(Hit::CallParticipantsToggle));
+    // Over the desk the pointer leaves the app's surface altogether.
+    feed(
+        &mut app,
+        &mut doc,
+        &winit::event::WindowEvent::CursorLeft {
+            device_id: winit::event::DeviceId::dummy(),
+        },
+    );
+    assert!(
+        app.call_hovered.is_none(),
+        "a control the pointer left is no longer hovered"
+    );
+}
+
+#[test]
+fn the_card_names_each_control_on_hover_and_the_microphone_says_its_state() {
+    let (mut app, _doc) = app_with_doc();
+    app.call.join("c_huddle");
+    // The card's row of controls, as the footer pushes it: a pointer over any
+    // of them reads its name, and the microphone's name is its state.
+    let face = |x: f64| Rect::new(x, 0.0, x + 86.0, 28.0);
+    let (mute, camera, leave) = (face(0.0), face(92.0), face(184.0));
+    app.hits = vec![
+        (mute, Hit::CallMute),
+        (camera, Hit::CallCamera),
+        (leave, Hit::CallLeave),
+    ];
+    let tip = |app: &ChatApp, rect: Rect| {
+        app.hover_tooltip_target(rect.center())
+            .map(|(_, label)| label)
+            .expect("a control the card draws names itself on hover")
+    };
+    app.call.muted = false;
+    let resting = tip(&app, mute);
+    app.call.muted = true;
+    let muted = tip(&app, mute);
+    if app.microphone_missing() {
+        assert_eq!(resting, crate::i18n::t("chat-call-no-microphone"));
+    } else {
+        assert_eq!(resting, crate::i18n::t("chat-call-mute"));
+        assert_eq!(muted, crate::i18n::t("chat-call-unmute"));
+        assert_ne!(
+            resting, muted,
+            "the microphone's hover names the state it is in"
+        );
+    }
+    assert_eq!(tip(&app, camera), crate::i18n::t("chat-call-camera-on"));
+    assert_eq!(tip(&app, leave), crate::i18n::t("chat-call-leave-action"));
 }

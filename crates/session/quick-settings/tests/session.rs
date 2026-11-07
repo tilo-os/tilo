@@ -47,29 +47,34 @@ const OPENING: Duration = Duration::from_secs(90);
 /// next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The panel, as the session starts it: below the bar's right end.
+/// The panel, as the desk starts it: below the bar's right end, at the
+/// footprint it gives a popover.
 fn panel() -> Surface {
-    let height = u32::try_from(HEIGHT).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .keyboard(Keyboard::OnDemand)
 }
 
-/// The panel as the session places it on an `output`: `BAR` pixels down from
-/// the output's top edge for the bar, and the popover margin off its right
-/// and bottom edges, so it never runs past the screen.
-fn panel_on_a_laptop(output: (i32, i32)) -> Surface {
+/// The panel as the desk places it on an `output`: `BAR` pixels down from the
+/// output's top edge for the bar, and the popover margin off its right edge,
+/// at the footprint it gives a popover — the output's height does not size it.
+fn panel_on_a_laptop(_output: (i32, i32)) -> Surface {
     const BAR: i32 = 32;
     const MARGIN: i32 = 8;
-    let height = u32::try_from(output.1 - BAR - MARGIN).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .margin((BAR, MARGIN, MARGIN, 0))
         .keyboard(Keyboard::OnDemand)
 }
@@ -113,81 +118,6 @@ fn the_session_starts_the_panel_as_a_trusted_client_on_its_layer() {
 }
 
 #[test]
-fn the_session_asks_the_panel_to_show_the_notifications() {
-    let mut session = session_with(&[]);
-    let desk = drawn_desk(&mut session);
-    session.start_surface(&panel()).expect("the panel starts");
-
-    assert!(
-        session.surfaces().running("quick-settings"),
-        "the session started the panel"
-    );
-
-    // What the panel offers reaches the session as actions, like any app's.
-    // The offer is what the panel's last frame drew, so it fills in as the
-    // panel draws: wait for the page the session is about to run.
-    let deadline = Instant::now() + OPENING;
-    let published = loop {
-        let published = session.surfaces().published("quick-settings");
-        if published
-            .iter()
-            .any(|action| action.action == "show-notifications")
-        {
-            break published;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the panel never offered its notifications page: {:?}",
-            published
-                .iter()
-                .map(|action| action.action.as_str())
-                .collect::<Vec<_>>()
-        );
-        pump(&mut session);
-    };
-    let notifications = published
-        .iter()
-        .find(|action| action.action == "show-notifications")
-        .expect("the panel offers its notifications page");
-    let (resource, action) = (notifications.resource.clone(), notifications.action.clone());
-
-    // The session runs it, as a person's palette or an agent would, and the
-    // panel answers on its own actions socket.
-    let id = session
-        .ask_surface(
-            "quick-settings",
-            &resource,
-            &action,
-            tilo_actions::remote::InvokeArgument::None,
-        )
-        .expect("the panel is running");
-    let mut ended = None;
-    while ended.is_none() {
-        assert!(Instant::now() < deadline, "the panel did not answer");
-        pump(&mut session);
-        if let Some(state) = session.surfaces().outcome(id)
-            && !matches!(
-                state.update,
-                ui::tilo_actions::InvocationUpdate::Accepted { .. }
-            )
-        {
-            ended = Some(state.update.clone());
-        }
-    }
-    assert!(
-        matches!(
-            ended,
-            Some(ui::tilo_actions::InvocationUpdate::Succeeded { .. })
-        ),
-        "the panel ran it: {ended:?}"
-    );
-
-    let frame = drawn(&mut session, &desk);
-    save(&frame, "session-quick-settings-notifications");
-    session.stop_surface("quick-settings");
-}
-
-#[test]
 fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     let mut laptop = session_of_device(&[panel()], Machine::Owned);
     let session = &mut laptop.session;
@@ -219,6 +149,57 @@ fn the_panel_opened_from_the_bar_shows_what_the_services_publish() {
     save(&at_84, "session-quick-settings-battery-84");
 
     session.stop_surface("quick-settings");
+}
+
+/// Escape is the panel's own while a page of it is open: the panel goes back
+/// a page and answers that it did, and only its main page has nowhere left to
+/// go, which is where the session closes it.
+#[test]
+fn the_panel_answers_whether_it_had_a_page_to_go_back_to() {
+    let mut laptop = session_of_device(&[panel()], Machine::Owned);
+    let session = &mut laptop.session;
+    open_the_panel(session);
+    until_ready(session, "toggle-wifi");
+
+    // The controls are the page everything goes back to: nothing is behind
+    // them, so Escape closes the panel there.
+    let handled = went_back(ask_ended(session, "back", None));
+    assert!(!handled, "the controls have nothing behind them");
+
+    // A section's page is the controls' own: Escape returns to them, and the
+    // panel stays up to be closed from there.
+    until_ready(session, "open-section");
+    let opened = ask_ended(session, "open-section", Some(json!({ "section": "wifi" })));
+    assert!(
+        matches!(opened, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the panel opened its networks: {opened:?}"
+    );
+    let handled = went_back(ask_ended(session, "back", None));
+    assert!(handled, "the networks go back to the controls");
+    assert!(
+        session.quick_settings_open(),
+        "the panel is still up after going back a page"
+    );
+    assert!(
+        !went_back(ask_ended(session, "back", None)),
+        "and the controls, reached again, have nothing behind them"
+    );
+
+    session.stop_surface("quick-settings");
+}
+
+/// Whether the panel answered that it went back a page, from what it said
+/// when it ran `back`.
+fn went_back(ended: ui::tilo_actions::InvocationUpdate) -> bool {
+    let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = ended else {
+        panic!("the panel did not answer going back: {ended:?}");
+    };
+    output
+        .value
+        .as_ref()
+        .and_then(|value| value.get("handled"))
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| panic!("the panel says whether it went back: {:?}", output.value))
 }
 
 /// The panel on a laptop's screen, the size a person's session gives it: its
@@ -257,28 +238,6 @@ fn the_panel_on_a_laptops_output_stays_inside_it_over_the_desk() {
             "the panel keeps off the output's bottom edge at {x}"
         );
     }
-}
-
-#[test]
-fn the_notification_key_asks_the_panel_for_the_page_it_shows() {
-    let mut laptop = session_of_device(&[panel()], Machine::Owned);
-    let session = &mut laptop.session;
-    open_the_panel(session);
-    until_ready(session, "toggle-wifi");
-    let controls = settled(session);
-
-    // The notification key opens the panel and asks it for its notifications:
-    // that page is one of the panel's own actions, run in the app, and the
-    // frame it draws moves to the kept notifications.
-    until_ready(session, "show-notifications");
-    let ended = ask_ended(session, "show-notifications", None);
-    assert!(
-        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
-        "the panel showed its notifications: {ended:?}"
-    );
-    let notifications = changed(session, &controls);
-    save(&notifications, "session-quick-settings-notifications");
-    session.stop_surface("quick-settings");
 }
 
 #[test]
@@ -442,6 +401,28 @@ fn the_quiet_tile_is_the_published_centres_switch() {
         assert!(
             Instant::now() < deadline,
             "the centre never held notifications back: {centre:?}"
+        );
+    }
+    // The same switch turned off lets them through again: the one list the
+    // bell opens says so, as the panel does.
+    let ended = ask_ended(session, "set-do-not-disturb", Some(json!({ "on": false })));
+    assert!(
+        matches!(ended, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the tile's press is carried out: {ended:?}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        session.settle_services();
+        pump(session);
+        let centre = session
+            .read(NOTIFICATIONS)
+            .expect("the centre is published");
+        if centre["quiet"].is_null() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the centre never let notifications through: {centre:?}"
         );
     }
     session.stop_surface("quick-settings");
@@ -1103,15 +1084,17 @@ fn session_of_device_prepared_with(
 /// The panel placed as the session places it on an `output` of `logical`
 /// pixels: under the bar, against the trailing edge, keeping off the
 /// bottom edge.
-fn panel_on_an_output(logical: (i32, i32)) -> Surface {
+fn panel_on_an_output(_logical: (i32, i32)) -> Surface {
     const BAR: i32 = 32;
     const MARGIN: i32 = 8;
-    let height = u32::try_from(logical.1 - BAR - MARGIN).unwrap();
     Surface::new("quick-settings", env!("CARGO_BIN_EXE_tilo-quick-settings"))
         .layer(Layer::Top)
         .namespace("tilo-quick-settings")
         .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((tilo_quick_settings::resource::PANEL_WIDTH, height))
+        .size((
+            tilo_quick_settings::resource::PANEL_WIDTH,
+            tilo_quick_settings::resource::PANEL_HEIGHT,
+        ))
         .margin((BAR, MARGIN, MARGIN, 0))
         .keyboard(Keyboard::OnDemand)
 }

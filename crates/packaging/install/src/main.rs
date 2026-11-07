@@ -1646,8 +1646,8 @@ fn update_allowed(
         });
     }
 
-    // A package recorded at another package format was installed before the
-    // format changed: any build the store offers now replaces it.
+    // A package recorded at a format this build does not read was installed
+    // by another Tilo build: any build the store offers now replaces it.
     if !package_store::integrity::record_current(entry) {
         return Ok(None);
     }

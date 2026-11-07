@@ -153,10 +153,16 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
     }})
 }
 
-/// One row per tab of `tree` — where it is, which app shows it, and whether it is the tab in
-/// front of the active workspace's active strip and group. A workspace or strip without a name
-/// is named by its id; `kind` is the tile's variant and `app_id` the app it names, if any.
-pub(super) fn window_rows(tree: &DesktopTree) -> Vec<Json> {
+/// One row per tab of `tree` — where it is, which app shows it, whether it is the tab in
+/// front of the active workspace's active strip and group, and, for a tab a window fills,
+/// that window and where the frame draws it. A workspace or strip without a name is named by
+/// its id; `kind` is the tile's variant and `app_id` the app it names, if any. `rect` is the
+/// window's rectangle in the layout, `[x, y, width, height]`, or null while no window of the
+/// tab is mapped: it is what a tool aims at to press something the row names.
+pub(super) fn window_rows(
+    tree: &DesktopTree,
+    rect_of: impl Fn(u64) -> Option<(i32, i32, i32, i32)>,
+) -> Vec<Json> {
     fn named(name: &str, id: u64) -> Json {
         if name.is_empty() {
             id.into()
@@ -175,21 +181,38 @@ pub(super) fn window_rows(tree: &DesktopTree) -> Vec<Json> {
                 let group_active = strip_active && active_group == Some(&group.id);
                 for tab in &group.tabs {
                     let (kind, app_id) = tile_kind(&tab.tile);
+                    let window = window_of_tile(&tab.tile);
+                    let rect = window
+                        .and_then(&rect_of)
+                        .map_or(Json::Null, |(x, y, width, height)| {
+                            json!([x, y, width, height])
+                        });
                     rows.push(json!({
                         "workspace": named(&workspace.name, workspace.slot.0),
                         "strip": named(&strip.name, strip.id.0),
                         "group": group.id,
                         "tab": tab.id,
+                        "window": window,
                         "kind": kind,
                         "app_id": app_id,
                         "title": tab.title,
                         "active": group_active && group.active_tab == tab.id,
+                        "rect": rect,
                     }));
                 }
             }
         }
     }
     rows
+}
+
+/// The window a tile holds, when a window fills it: a surface this session mapped, or a
+/// window another device hosts.
+pub(super) fn window_of_tile(tile: &tilo_desktop_model::TileContent) -> Option<u64> {
+    match tile {
+        tilo_desktop_model::TileContent::Foreign { surface_id, .. } => Some(*surface_id),
+        _ => None,
+    }
 }
 
 /// A tile's variant name and the `app_id` it carries, as its JSON spells them.

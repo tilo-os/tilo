@@ -4,8 +4,8 @@ use so.tilo.lang.discussion as discussion
 
 /// A note: a title, a body and the tags people gave it.
 type Note {
-    title: Text (title)
-    body: RichText (body)
+    title: Text
+    body: RichText
     pinned: Bool = false
     tags: Set<Text>
 

@@ -295,7 +295,7 @@ pub fn rows(tree: &DesktopTree, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     if renamable {
         rows.push(Row::offered(RENAME, t("window-menu-rename")).theirs(own, held()));
     }
-    if group.tabs.len() >= 2 {
+    if crate::navigation::has_a_second_tab(tree, route) {
         rows.push(Row::offered(SPLIT_RIGHT, t("window-menu-split-right")).theirs(own, held()));
         rows.push(Row::offered(NEW_GROUP, t("window-menu-new-group")).theirs(own, held()));
         rows.push(Row::offered(CLOSE, t("window-menu-close")).theirs(own, held()));

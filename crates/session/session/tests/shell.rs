@@ -1610,7 +1610,8 @@ fn quick_settings_volume_slider_sets_the_published_volume() {
 /// capture that shows it (`TL_SHELL_SHOTS`).
 /// The bar's status opens the panel over the desk, and what draws it is the
 /// panel's own app: the session starts it where the stack placed the slot.
-/// Escape closes the panel, and the app with it, and the desk comes back.
+/// Escape closes the panel, and the desk comes back; the app stays running
+/// for the session's life, hidden, so the next press shows it at once.
 #[test]
 fn the_bars_status_opens_the_panel_as_its_own_app() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -1669,21 +1670,15 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
         session.surfaces().names(),
         session.quick_settings_open()
     );
-    // Escape closes the panel, and the app that draws it.
-    for pressed in [true, false] {
-        session
-            .compositor()
-            .input(InputEvent::Key {
-                keycode: KEY_ESCAPE,
-                pressed,
-            })
-            .expect("the key");
-        session.step(Duration::from_millis(16)).expect("step");
-    }
+    // Escape closes the panel; its app keeps running, hidden, and stands
+    // ready to be shown again.
+    press_escape(&mut session);
     until_settled(&mut session, |session| !session.quick_settings_open());
-    until_settled(&mut session, |session| {
-        !session.surfaces().running(quick_settings::SURFACE)
-    });
+    assert!(
+        session.surfaces().running(quick_settings::SURFACE),
+        "the panel's app stays up between openings: {:?}",
+        session.surfaces().names()
+    );
     // The panel's ground goes with it: the desk shows where it stood.
     let closed = common::wait_for(
         &mut session,
@@ -1698,6 +1693,78 @@ fn the_bars_status_opens_the_panel_as_its_own_app() {
         },
     );
     save(&closed, "quick-settings-closed-again");
+}
+
+/// Escape goes back a page inside the panel before it closes it: with a page
+/// of the panel's own up, Escape leaves it for the controls and the panel
+/// stays open — only the controls, which have nothing behind them, close it.
+#[test]
+fn escape_goes_back_a_page_in_the_panel_before_it_closes_it() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let _settled = ui::motion::testing::settled();
+    let mut session = session_with_the_panel(WIDTH, HEIGHT);
+    until_settled(&mut session, |session| says(session, &desk(session).clock));
+    session
+        .invoke(
+            tilo_surface_host::shell_part::CHROME_RESOURCE,
+            "quick-settings",
+            &serde_json::Map::new(),
+        )
+        .unwrap();
+    until_settled(&mut session, |session| {
+        session.quick_settings_open() && session.surfaces().running(quick_settings::SURFACE)
+    });
+    let controls = drawn(&mut session);
+    // A page of the panel's own, over the controls: what plays on this
+    // machine, which is what the person reads after picking Sound.
+    let page = common::wait_for(&mut session, "the panel's page", |session| {
+        session
+            .surfaces()
+            .published(quick_settings::SURFACE)
+            .into_iter()
+            .find(|offered| offered.action == "open-section")
+    });
+    let mut asked = serde_json::Map::new();
+    asked.insert("section".to_owned(), "sound".into());
+    session
+        .ask_surface(
+            quick_settings::SURFACE,
+            &page.resource,
+            &page.action,
+            ui::tilo_actions::remote::InvokeArgument::Json(asked),
+        )
+        .expect("the panel's app answers the page it publishes");
+    let page = common::wait_for(&mut session, "the page drawn", |session| {
+        let frame = drawn(session);
+        (common::changed(&controls, &frame) > 1000).then_some(frame)
+    });
+    save(&page, "quick-settings-page");
+    // Escape goes back to the controls: the panel answers that it had a page
+    // behind it and stays up to be closed from there.
+    press_escape(&mut session);
+    for _ in 0..30 {
+        session.settle_services();
+        session.step(Duration::from_millis(16)).expect("a frame");
+    }
+    assert!(
+        session.quick_settings_open() && session.surfaces().running(quick_settings::SURFACE),
+        "Escape on a page left the panel up"
+    );
+    save(&drawn(&mut session), "quick-settings-back");
+}
+
+/// Press Escape and let it up again, as the compositor sends it.
+fn press_escape(session: &mut Session) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: KEY_ESCAPE,
+                pressed,
+            })
+            .expect("the key");
+        session.step(Duration::from_millis(16)).expect("step");
+    }
 }
 
 /// The Escape key, as the compositor names it.

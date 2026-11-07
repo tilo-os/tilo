@@ -38,7 +38,6 @@
 pub mod codec;
 pub mod columns;
 pub mod derive;
-pub mod derived;
 pub mod lists;
 pub mod merged;
 pub mod overlay;
@@ -59,9 +58,10 @@ use tilolang_runtime::store::FieldValue;
 
 use self::codec::Corrupt;
 use self::lists::{Dir, Entry, ListEdits, ListSource, Pages};
+use crate::chunk::{ChunkNo, Stamps};
 
 /// The version of what the index holds and how: an index of another is built anew.
-pub const FORMAT: u32 = 9;
+pub const FORMAT: u32 = 10;
 
 /// How much of the file a process keeps in memory, at most: pages read again come from the
 /// system's cache of the file, which is not the process's memory.
@@ -96,7 +96,9 @@ pub const CYCLES: &str = "$cycles";
 
 const META_FORMAT: &str = "format";
 const META_SCHEMA: &str = "schema";
-const META_HEADS: &str = "heads";
+/// The heads the index reflects of chunk `n`, as `heads.<n>`: the record's own log in chunk
+/// [`chunk::FIRST`], and each chunk above it it was built from.
+const META_HEADS: &str = "heads.";
 
 /// What went wrong reading or writing the index.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -251,8 +253,8 @@ impl std::fmt::Debug for Index {
 /// What opening an index found.
 #[derive(Debug)]
 pub enum Opened {
-    /// An index of this format and schema, complete, reflecting these heads.
-    Ready(Index, Vec<ChangeHash>),
+    /// An index of this format and schema, complete, reflecting these heads of each chunk.
+    Ready(Index, Stamps),
     /// Nothing usable (no file, another format or schema, a broken file): an empty index to
     /// build.
     Empty(Index),
@@ -331,6 +333,30 @@ fn decode_heads(sealed: &[u8]) -> Result<Vec<ChangeHash>, Corrupt> {
         .chunks_exact(32)
         .map(|chunk| ChangeHash::try_from(chunk).map_err(|_| Corrupt))
         .collect()
+}
+
+/// The key of the heads the index reflects of `chunk`.
+fn heads_of(chunk: ChunkNo) -> String {
+    format!("{META_HEADS}{chunk}")
+}
+
+/// A record's row: its type, and the chunk that holds it.
+fn encode_doc(ty: &str, chunk: ChunkNo) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(ty.len().saturating_add(8));
+    bytes.extend_from_slice(&chunk.to_le_bytes());
+    bytes.extend_from_slice(ty.as_bytes());
+    codec::seal(bytes)
+}
+
+fn decode_doc(sealed: &[u8]) -> Result<(String, ChunkNo), Corrupt> {
+    let bytes = codec::open(sealed)?;
+    if bytes.len() < 8 {
+        return Err(Corrupt);
+    }
+    let (chunk, ty) = bytes.split_at(8);
+    let chunk = ChunkNo::from_le_bytes(chunk.try_into().map_err(|_| Corrupt)?);
+    let ty = String::from_utf8(ty.to_vec()).map_err(|_| Corrupt)?;
+    Ok((ty, chunk))
 }
 
 impl Index {
@@ -418,9 +444,9 @@ impl Index {
         &self.stats
     }
 
-    /// The heads the index reflects, when it is a complete index of this format and of the
-    /// schema `schema`.
-    fn valid(&self, schema: &str) -> Result<Option<Vec<ChangeHash>>, IndexError> {
+    /// The heads the index reflects, per chunk, when it is a complete index of this format and
+    /// of the schema `schema`.
+    fn valid(&self, schema: &str) -> Result<Option<Stamps>, IndexError> {
         let txn = self.db.begin_read()?;
         let Ok(meta) = txn.open_table(META) else {
             return Ok(None);
@@ -437,10 +463,18 @@ impl Index {
         {
             return Ok(None);
         }
-        meta.get(META_HEADS)?
-            .map(|v| decode_heads(v.value()))
-            .transpose()
-            .map_err(Into::into)
+        let mut heads = Stamps::new();
+        for entry in meta.iter()? {
+            let (key, value) = entry?;
+            let Some(chunk) = key.value().strip_prefix(META_HEADS) else {
+                continue;
+            };
+            let Ok(chunk) = chunk.parse::<ChunkNo>() else {
+                return Ok(None);
+            };
+            heads.insert(chunk, decode_heads(value.value())?);
+        }
+        Ok(Some(heads))
     }
 
     /// Empty the index for a build: no heads, so it is not read until the build commits.
@@ -645,16 +679,17 @@ impl Snapshot {
         self.checked(read)
     }
 
-    /// The package's records and their types.
+    /// The package's records, their types, and the chunk that holds each.
     ///
     /// # Errors
     /// The index cannot be read or is corrupt.
-    pub fn docs(&self) -> Result<Vec<(String, String)>, IndexError> {
+    pub fn docs(&self) -> Result<Vec<(String, String, ChunkNo)>, IndexError> {
         let read = (|| {
             let mut out = Vec::new();
             for entry in self.docs.iter()? {
                 let (doc, ty) = entry?;
-                out.push((doc.value().to_owned(), codec::get_text(ty.value())?));
+                let (ty, chunk) = decode_doc(ty.value())?;
+                out.push((doc.value().to_owned(), ty, chunk));
             }
             Ok(out)
         })();
@@ -766,7 +801,8 @@ impl Snapshot {
 /// how they are cut into pages. Two indexes of the same record hold the same.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Contents {
-    pub docs: std::collections::BTreeMap<String, String>,
+    /// Each record's type, and the chunk that holds it.
+    pub docs: std::collections::BTreeMap<String, (String, ChunkNo)>,
     pub fields: std::collections::BTreeMap<(String, String), String>,
     pub lists: std::collections::BTreeMap<String, Vec<Entry>>,
     pub counts: std::collections::BTreeMap<(String, String), u64>,
@@ -780,8 +816,8 @@ impl Snapshot {
     /// The index cannot be read or is corrupt.
     pub fn contents(&self) -> Result<Contents, IndexError> {
         let mut out = Contents::default();
-        for (doc, ty) in self.docs()? {
-            out.docs.insert(doc, ty);
+        for (doc, ty, chunk) in self.docs()? {
+            out.docs.insert(doc, (ty, chunk));
         }
         for entry in self.fields.iter()? {
             let (key, value) = entry?;
@@ -901,23 +937,37 @@ impl<'t> Writer<'t> {
         Ok(())
     }
 
-    /// Stamp the index with the heads it reflects once this commit is in.
+    /// Stamp the index with the heads it reflects of each chunk, once this commit is in.
     ///
     /// # Errors
     /// The index cannot be written.
-    pub fn set_heads(&mut self, heads: &[ChangeHash]) -> Result<(), IndexError> {
-        self.tables
+    pub fn set_heads(&mut self, heads: &Stamps) -> Result<(), IndexError> {
+        let stale: Vec<String> = self
+            .tables
             .meta
-            .insert(META_HEADS, encode_heads(heads).as_slice())?;
+            .iter()?
+            .filter_map(std::result::Result::ok)
+            .map(|(key, _)| key.value().to_owned())
+            .filter(|key| key.starts_with(META_HEADS))
+            .filter(|key| heads.keys().all(|chunk| key.as_str() != heads_of(*chunk)))
+            .collect();
+        for key in stale {
+            self.tables.meta.remove(key.as_str())?;
+        }
+        for (chunk, of_chunk) in heads {
+            self.tables
+                .meta
+                .insert(heads_of(*chunk).as_str(), encode_heads(of_chunk).as_slice())?;
+        }
         Ok(())
     }
 
     /// # Errors
     /// The index cannot be written.
-    pub fn put_doc(&mut self, doc: &str, ty: &str) -> Result<(), IndexError> {
+    pub fn put_doc(&mut self, doc: &str, ty: &str, chunk: ChunkNo) -> Result<(), IndexError> {
         self.tables
             .docs
-            .insert(doc, codec::put_text(ty).as_slice())?;
+            .insert(doc, encode_doc(ty, chunk).as_slice())?;
         Ok(())
     }
 

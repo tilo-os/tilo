@@ -13,7 +13,7 @@ mod cases {
     const SOURCE: &str = r#"app so.tilo.talk "Talk"
 
 type Message {
-    text: Text (title)
+    text: Text
     pinned: Bool = false
     reactions: Map<List<Principal>>
 }
@@ -82,7 +82,7 @@ view message(m: Message) {
     const REACTED: &str = r#"app so.tilo.talk "Talk"
 
 type Post {
-    text: Text (title)
+    text: Text
     reactions: Map<Set<Principal>>
 }
 

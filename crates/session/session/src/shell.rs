@@ -356,13 +356,13 @@ impl Shell {
         }
         let mut fresh: Vec<(String, String)> = Vec::new();
         if asked || self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-            let mut placed = std::collections::BTreeMap::new();
-            if self.followed.as_ref().map(|(_, was)| was) != Some(arrangement) {
-                placed = tilo_surface_host::shell_part::readings::placed_records(
-                    arrangement,
-                    &services.resources(),
-                );
-            }
+            // Every app a place shows is published with this pass, however this pass was
+            // asked for: a package a view asked for arrives beside them, and none of them
+            // goes with it.
+            let placed = tilo_surface_host::shell_part::readings::placed_records(
+                arrangement,
+                &services.resources(),
+            );
             let mut packages = std::collections::BTreeMap::new();
             let app_of = tilo_surface_host::shell_part::readings::app_of;
             let mut apps: std::collections::BTreeSet<&str> =
@@ -1090,8 +1090,12 @@ impl crate::Session {
         // The shell's views draw the centre over the desk, so while it is up the person is
         // looking at what the notices say: they are read, as they are while the panel's own
         // centre shows them. The bell's count, the centre's header and its rows read the one
-        // set, so they never disagree. It is the same surface the views read (`d.here`).
-        if shell.surface() == crate::overlays::Overlay::Centre.name() {
+        // set, so they never disagree. It is the same surface the views read (`d.here`), and
+        // the one place that knows when it closes: however the person left it, the next
+        // arrival is a banner on the desk again rather than a row behind a page that is gone.
+        let centre = shell.surface() == crate::overlays::Overlay::Centre.name();
+        self.shared.notices.set_shell_centre(centre);
+        if centre {
             self.shared.notices.mark_read();
         }
         let Some(shell) = self.shell.as_mut() else {

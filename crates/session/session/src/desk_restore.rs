@@ -207,6 +207,28 @@ impl Restore {
     }
 }
 
+/// `tree` without the places a launch left on it that no window came for.
+///
+/// A place stands for a launch the session asked for a moment ago. The session
+/// that asked is gone by the next start, so nothing is on its way to those any
+/// more: they are not windows the person had open, and a start that kept them
+/// would show the remains of a launch that ended — one more of them with every
+/// restart, since each is written down with the desk.
+pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
+    let unfilled: Vec<TabId> = tree
+        .workspaces
+        .iter()
+        .flat_map(|workspace| &workspace.strips)
+        .flat_map(|strip| &strip.window_groups)
+        .flat_map(|group| &group.tabs)
+        .filter(|tab| matches!(tab.tile, TileContent::AppPlaceholder { .. }))
+        .map(|tab| tab.id)
+        .collect();
+    for tab in unfilled {
+        tree.close_tab(tab);
+    }
+}
+
 /// The workspace the tab `tab` stands in, which its app is started
 /// into: the app runs where the person opened it, with that workspace's
 /// grants.

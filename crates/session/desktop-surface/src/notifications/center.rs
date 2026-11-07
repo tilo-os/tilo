@@ -1,8 +1,7 @@
 //! The notification centre: retained notifications grouped by verified app,
-//! a keyboard selection, per-row controls, Clear all with Undo, and the
-//! paging that keeps a long history readable in a compact panel. Paint,
-//! pointer hit-testing, keyboard and accessibility all read the rows and the
-//! one [`CenterLayout`] defined here.
+//! one list that scrolls, a keyboard selection, per-row controls, Clear all
+//! with Undo. Paint, pointer hit-testing, keyboard and accessibility all read
+//! the rows and the one [`CenterLayout`] defined here.
 //!
 //! The centre holds only viewer-local state (selection, folded groups, the
 //! scroll position). The host places it in a panel and owns everything it
@@ -31,7 +30,7 @@ use crate::drill_in::{self as qs, DrillInList};
 use crate::i18n::{t, t_args};
 use ui::TextRole;
 
-/// Rows the panel asks room for before it starts paging.
+/// Rows the panel asks room for; the rest scroll rather than page.
 const PREFERRED_ROWS: usize = 7;
 /// Lines of body a row shows before the rest is left to the reader: enough
 /// for a message or a failure's reason, short enough that a list scans.
@@ -102,9 +101,6 @@ pub struct CenterMetrics {
     reader_back_width: f64,
     clear_width: f64,
     undo_width: f64,
-    /// The pager's "Newer" and "Older" faces.
-    newer_width: f64,
-    older_width: f64,
     height: f64,
     /// A notification's own choices: compact, as on its banner, a small
     /// step under its text.
@@ -128,8 +124,6 @@ impl From<(f64, f64)> for CenterMetrics {
             reader_back_width: 3.0 * qs::TARGET,
             clear_width: 2.0 * qs::TARGET,
             undo_width: 2.0 * qs::TARGET,
-            newer_width: 2.0 * qs::TARGET,
-            older_width: 2.0 * qs::TARGET,
             height: qs::TARGET,
             choice_height: qs::TARGET,
             choice_gap: qs::RELATED_GAP,
@@ -154,6 +148,9 @@ pub struct RowShape {
     body_lines: usize,
     choices: usize,
     widths: (f64, f64),
+    /// Whether the row leads with its source line. Rows inside a group do
+    /// not: their header already names the app.
+    source: bool,
 }
 
 impl Default for RowShape {
@@ -163,6 +160,7 @@ impl Default for RowShape {
             body_lines: BODY_LINES,
             choices: 0,
             widths: (f64::INFINITY, f64::INFINITY),
+            source: true,
         }
     }
 }
@@ -175,6 +173,16 @@ impl RowShape {
             body_lines: body_lines.min(BODY_LINES),
             ..Self::default()
         }
+    }
+    /// The same row without the source line above its title.
+    #[must_use]
+    pub fn without_source(mut self) -> Self {
+        self.source = false;
+        self
+    }
+    /// Whether the row shows its source line.
+    pub fn has_source(&self) -> bool {
+        self.source
     }
     /// The same row carrying choices of these widths, secondary first.
     #[must_use]
@@ -215,9 +223,9 @@ pub struct CenterLayout {
 }
 
 impl CenterLayout {
-    /// Space the pager band claims under the last row: a related step, the
+    /// Space the cleared band claims under the last row: a related step, the
     /// band, the panel padding.
-    fn footer_reserve(&self) -> f64 {
+    fn cleared_reserve(&self) -> f64 {
         qs::RELATED_GAP + self.actions.height + qs::PANEL_PAD
     }
 
@@ -334,8 +342,6 @@ impl CenterLayout {
             reader_back_width: back("notification-center-title", text),
             clear_width: width("notification-center-clear-all", ButtonRole::Plain, text),
             undo_width: width("notification-center-undo", ButtonRole::Secondary, text),
-            newer_width: width("notification-center-newer", ButtonRole::Plain, text),
-            older_width: width("notification-center-older", ButtonRole::Plain, text),
             height: ButtonFace::height(ControlSize::Regular, theme),
             choice_height: ui::widget::toast::choice_height(theme),
             choice_gap: ui::widget::toast::choice_gap(theme),
@@ -486,8 +492,8 @@ impl CenterLayout {
         Rect::new(x0, y0, x1, y0 + self.caption_lh)
     }
     /// Top of the first row: one related step under the header. The list
-    /// carries no "2 notifications" line: what fits is plain to see, and a
-    /// list that pages says where it is in its pager.
+    /// carries no "2 notifications" line: what fits is plain to see, and
+    /// the rest scrolls.
     fn rows_top(&self) -> f64 {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
@@ -496,11 +502,15 @@ impl CenterLayout {
     pub fn row_h(&self) -> f64 {
         self.text_extent(&RowShape::default())
     }
-    /// A row's text on the control padding: source/time, title and the
-    /// lines its body wraps to.
+    /// A row's text on the control padding: source/time when it has a
+    /// source line, title and the lines its body wraps to.
     fn text_extent(&self, shape: &RowShape) -> f64 {
         2.0 * qs::CONTROL_PAD
-            + self.caption_lh
+            + if shape.has_source() {
+                self.caption_lh
+            } else {
+                0.0
+            }
             + self.label_lh
             + f64_of_usize(shape.body_lines) * self.caption_lh
     }
@@ -605,7 +615,8 @@ impl CenterLayout {
         }
         count
     }
-    /// The pager band at the panel's foot, on the panel padding.
+    /// The band at the panel's foot, on the panel padding: where the
+    /// cleared status and its Undo stand.
     pub fn footer(&self) -> Rect {
         let p = self.panel;
         Rect::new(
@@ -615,48 +626,18 @@ impl CenterLayout {
             p.y1 - qs::PANEL_PAD,
         )
     }
-    /// The pager's two directions, "Newer" leading and "Older" trailing in
-    /// its band, each as wide as its label; equal halves when both do not
-    /// fit side by side.
-    pub fn pager(&self) -> (Rect, Rect) {
-        let band = self.footer();
-        let (newer, older) = (self.actions.newer_width, self.actions.older_width);
-        if newer + qs::RELATED_GAP + older > band.width() {
-            let middle = band.center().x;
-            let half_gap = qs::RELATED_GAP / 2.0;
-            (
-                Rect::new(band.x0, band.y0, middle - half_gap, band.y1),
-                Rect::new(middle + half_gap, band.y0, band.x1, band.y1),
-            )
-        } else {
-            (
-                Rect::new(band.x0, band.y0, band.x0 + newer, band.y1),
-                Rect::new(band.x1 - older, band.y0, band.x1, band.y1),
-            )
-        }
-    }
     /// Complete rows the panel shows of `total` full-preview rows.
     pub fn visible_rows(&self, total: usize) -> usize {
         self.visible_rows_in(&vec![RowShape::default(); total], 0)
     }
     /// Complete rows the panel shows from `start`, where `shapes` sizes
-    /// every row. A history that fits
-    /// ends on the panel padding and has no pager; only one that overflows
-    /// gives the pager band its workspace — the same rule
-    /// [`Self::preferred_height`] sizes the panel by, so the two never leave
-    /// a blank band or draw the pager over the last row.
+    /// every row. The rest scrolls: a row is never cut at the panel's foot.
     pub fn visible_rows_in(&self, shapes: &[RowShape], start: usize) -> usize {
-        if self.fitting(shapes, qs::PANEL_PAD) >= shapes.len() {
-            return shapes.len().max(1);
-        }
-        self.fitting(
-            shapes.get(start..).unwrap_or_default(),
-            self.footer_reserve(),
-        )
-        .max(1)
+        self.fitting(shapes.get(start..).unwrap_or_default(), qs::PANEL_PAD)
+            .max(1)
     }
     /// The last first row worth scrolling to: from it, the rest of the list
-    /// fills the panel above the pager.
+    /// fills the panel.
     fn max_start(&self, shapes: &[RowShape]) -> usize {
         let total = shapes.len();
         if self.fitting(shapes, qs::PANEL_PAD) >= total {
@@ -664,10 +645,8 @@ impl CenterLayout {
         }
         let mut start = total.saturating_sub(1);
         while let Some(earlier) = start.checked_sub(1)
-            && self.fitting(
-                shapes.get(earlier..).unwrap_or_default(),
-                self.footer_reserve(),
-            ) >= total.saturating_sub(earlier)
+            && self.fitting(shapes.get(earlier..).unwrap_or_default(), qs::PANEL_PAD)
+                >= total.saturating_sub(earlier)
         {
             start = earlier;
         }
@@ -684,26 +663,19 @@ impl CenterLayout {
         }
         first
     }
-    /// The height the centre wants to show `rows` of `total`: the pager band
-    /// is reserved only when there is something to page to. An empty centre
-    /// keeps the drill-in's one-row band for its message.
-    pub fn preferred_height(rows: usize, total: usize, metrics: impl Into<CenterMetrics>) -> f64 {
-        Self::new(Rect::ZERO, metrics).height_showing(&vec![RowShape::default(); rows], total)
+    /// The height the centre wants to show `rows`. An empty centre keeps the
+    /// drill-in's one-row band for its message.
+    pub fn preferred_height(rows: usize, metrics: impl Into<CenterMetrics>) -> f64 {
+        Self::new(Rect::ZERO, metrics).height_showing(&vec![RowShape::default(); rows])
     }
-    /// The height that shows `shown`, the first of `total` rows, from the
-    /// panel's top: the pager band is reserved only when there is something
-    /// to page to.
-    fn height_showing(&self, shown: &[RowShape], total: usize) -> f64 {
+    /// The height that shows `shown` from the panel's top, ending on the
+    /// panel padding under the last row.
+    fn height_showing(&self, shown: &[RowShape]) -> f64 {
         let Some(last) = shown.len().checked_sub(1) else {
             return DrillInList::list_height(self.header_height(), 0)
                 .max(self.rows_top() - self.panel.y0 + self.caption_lh + qs::PANEL_PAD);
         };
-        let foot = if total > shown.len() {
-            self.footer_reserve()
-        } else {
-            qs::PANEL_PAD
-        };
-        self.row_in(last, shown).y1 - self.panel.y0 + foot
+        self.row_in(last, shown).y1 - self.panel.y0 + qs::PANEL_PAD
     }
     /// Where the reader's page scrolls: under the header, on the padding.
     pub(super) fn reading_viewport(&self) -> Rect {
@@ -716,11 +688,22 @@ impl CenterLayout {
     }
 
     /// A row's icon buttons: dismiss in the trailing corner, centred on the
-    /// source/time line it takes the place of while shown, and
-    /// hand-to-agent one related step inboard of it.
-    pub fn row_controls(&self, row: Rect, with_agent: bool) -> (Rect, Option<Rect>) {
+    /// first line it takes the place of while shown (the source/time line,
+    /// or the title of a row without one), and hand-to-agent one related
+    /// step inboard of it.
+    pub fn row_controls(
+        &self,
+        row: Rect,
+        shape: &RowShape,
+        with_agent: bool,
+    ) -> (Rect, Option<Rect>) {
         let size = self.actions.height.min(row.height());
-        let middle = row.y0 + qs::CONTROL_PAD + self.caption_lh / 2.0;
+        let line = if shape.has_source() {
+            self.caption_lh
+        } else {
+            self.label_lh
+        };
+        let middle = row.y0 + qs::CONTROL_PAD + line / 2.0;
         let y0 = (middle - size / 2.0).max(row.y0);
         let x1 = row.x1 - qs::RELATED_GAP;
         let dismiss = Rect::new(x1 - size, y0, x1, y0 + size);
@@ -816,9 +799,6 @@ pub enum CenterOutcome {
 enum ActionFocus {
     Clear,
     Undo,
-    Newer,
-    /// The pager's way to older rows.
-    Older,
 }
 
 /// Viewer-local state of one notification centre.
@@ -828,7 +808,7 @@ pub struct NotificationCenter {
     start: usize,
     /// Touchpad movement not yet amounting to a whole row.
     wheel_remainder: f64,
-    /// Keyboard focus on Clear all, Undo or a pager direction.
+    /// Keyboard focus on Clear all or Undo.
     action_focus: Option<ActionFocus>,
     back_focused: bool,
     /// The keyboard-selected row, by identity so it survives re-derivation.
@@ -935,9 +915,17 @@ impl NotificationCenter {
                             } else {
                                 ""
                             };
-                            RowShape::new(layout.body_lines(body, *grouped)).with_choices(
-                                &layout.choice_widths(&row_actions_of(host, notification)),
-                            )
+                            let shape = RowShape::new(layout.body_lines(body, *grouped))
+                                .with_choices(
+                                    &layout.choice_widths(&row_actions_of(host, notification)),
+                                );
+                            // Inside a group the header names the app; the
+                            // rows beneath it are their own title and body.
+                            if *grouped {
+                                shape.without_source()
+                            } else {
+                                shape
+                            }
                         })
                 }
                 HistoryRow::Group { expanded, .. } => RowShape::new(usize::from(!*expanded)),
@@ -949,16 +937,13 @@ impl NotificationCenter {
     /// up to [`PREFERRED_ROWS`] rows, each as tall as it holds.
     fn preferred_height_in(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> f64 {
         let height = if self.is_reading() {
-            layout.height_showing(&[RowShape::default(); PREFERRED_ROWS], PREFERRED_ROWS)
+            layout.height_showing(&[RowShape::default(); PREFERRED_ROWS])
         } else {
             let shapes = Self::shapes(host, layout, &self.rows(host));
-            layout.height_showing(
-                shapes.get(..PREFERRED_ROWS).unwrap_or(&shapes),
-                shapes.len(),
-            )
+            layout.height_showing(shapes.get(..PREFERRED_ROWS).unwrap_or(&shapes))
         };
         if host.log().can_undo_clear() {
-            height + layout.footer_reserve()
+            height + layout.cleared_reserve()
         } else {
             height
         }
@@ -998,8 +983,7 @@ impl NotificationCenter {
 
     /// [`Self::preferred_height_for_width`] within `max`. A panel too short
     /// for every row it asks for ends under the last whole row that fits,
-    /// above the pager, rather than leaving a blank band where a taller row
-    /// did not fit.
+    /// rather than leaving a blank band where a taller row did not fit.
     pub fn fitted_height(
         &self,
         host: &dyn NotificationHost,
@@ -1021,7 +1005,7 @@ impl NotificationCenter {
         let bottom = layout
             .row_in(last, shapes.get(start..).unwrap_or_default())
             .y1;
-        (bottom + layout.footer_reserve()).min(max)
+        (bottom + qs::PANEL_PAD).min(max)
     }
 
     /// The first visible row, newest first.
@@ -1054,63 +1038,6 @@ impl NotificationCenter {
         let changed = next != self.start;
         self.start = next;
         changed
-    }
-
-    /// Whether the pager shows, and which of its directions lead anywhere:
-    /// `(newer, older)`. While a clear can be undone its band takes the
-    /// pager's place.
-    fn pager_state(
-        &self,
-        host: &dyn NotificationHost,
-        layout: &CenterLayout,
-    ) -> Option<(bool, bool)> {
-        if host.log().can_undo_clear() {
-            return None;
-        }
-        let (rows, shapes, start, shown) = self.window(host, layout);
-        (rows.len() > layout.visible_rows_in(&shapes, start))
-            .then(|| (start > 0, start.saturating_add(shown) < rows.len()))
-    }
-
-    /// Turn a page towards older rows or back towards newer ones. Focus on
-    /// a direction that has reached its end moves to the other, since a
-    /// disabled control holds no focus.
-    fn page(&mut self, host: &dyn NotificationHost, layout: &CenterLayout, older: bool) {
-        let page = isize::try_from(self.visible_rows(host, layout)).unwrap_or(isize::MAX);
-        self.scroll(
-            host,
-            layout,
-            if older { page } else { page.saturating_neg() },
-        );
-        if let Some((newer_on, older_on)) = self.pager_state(host, layout) {
-            match self.action_focus {
-                Some(ActionFocus::Newer) if !newer_on => {
-                    self.action_focus = older_on.then_some(ActionFocus::Older);
-                }
-                Some(ActionFocus::Older) if !older_on => {
-                    self.action_focus = newer_on.then_some(ActionFocus::Newer);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    /// The enabled pager direction under `p`: `Some(true)` for "Older".
-    fn pager_hit(
-        &self,
-        host: &dyn NotificationHost,
-        layout: &CenterLayout,
-        p: Point,
-    ) -> Option<bool> {
-        let (newer_on, older_on) = self.pager_state(host, layout)?;
-        let (newer, older) = layout.pager();
-        if newer_on && newer.contains(p) {
-            Some(false)
-        } else if older_on && older.contains(p) {
-            Some(true)
-        } else {
-            None
-        }
     }
 
     /// Move through the rows newest first. Positive movement reveals older
@@ -1275,8 +1202,8 @@ impl NotificationCenter {
                 continue;
             }
             let with_agent = Self::row_agent(host, row).is_some();
-            let (dismiss, agent) = layout.row_controls(rect, with_agent);
             let shape = bands.get(position).copied().unwrap_or_default();
+            let (dismiss, agent) = layout.row_controls(rect, &shape, with_agent);
             let control = if dismiss.contains(p) {
                 Some(RowControl::Dismiss)
             } else if agent.is_some_and(|agent| agent.contains(p)) {
@@ -1445,12 +1372,6 @@ impl NotificationCenter {
             self.action_focus = Some(ActionFocus::Undo);
             self.selected = None;
             self.row_control = None;
-        } else if let Some(older) = self.pager_hit(host, layout, p) {
-            self.back_focused = false;
-            self.action_focus = None;
-            self.selected = None;
-            self.row_control = None;
-            self.page(host, layout, older);
         } else if let Some((row, control)) = self.row_hit(host, layout, p) {
             // A pointer press acts on the row without leaving a keyboard
             // selection ring behind it.
@@ -1504,75 +1425,12 @@ impl NotificationCenter {
         order
     }
 
-    /// The pager's enabled directions in focus order.
-    fn pager_stops(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> Vec<ActionFocus> {
-        let Some((newer, older)) = self.pager_state(host, layout) else {
-            return Vec::new();
-        };
-        [(newer, ActionFocus::Newer), (older, ActionFocus::Older)]
-            .into_iter()
-            .filter_map(|(on, focus)| on.then_some(focus))
-            .collect()
-    }
-
-    /// Tab within the pager, then out of it: forwards to the row after the
-    /// last one shown, backwards to that last row's final control.
-    fn cycle_pager_focus(
-        &mut self,
-        host: &dyn NotificationHost,
-        layout: &CenterLayout,
-        backwards: bool,
-    ) -> bool {
-        let Some(focus) = self
-            .action_focus
-            .filter(|focus| matches!(focus, ActionFocus::Newer | ActionFocus::Older))
-        else {
-            return false;
-        };
-        let stops = self.pager_stops(host, layout);
-        let at = stops.iter().position(|stop| *stop == focus);
-        let next = at.and_then(|at| {
-            if backwards {
-                at.checked_sub(1)
-            } else {
-                at.checked_add(1)
-            }
-        });
-        if let Some(stop) = next.and_then(|next| stops.get(next)) {
-            self.action_focus = Some(*stop);
-            host.changed();
-            return true;
-        }
-        let rows = self.rows(host);
-        let (_, _, start, shown) = self.window(host, layout);
-        let last_shown = start.saturating_add(shown).saturating_sub(1);
-        self.action_focus = None;
-        if backwards {
-            self.select_row(host, layout, last_shown);
-            self.row_control = rows
-                .get(last_shown)
-                .and_then(|row| Self::row_focus_order(host, row).last().copied())
-                .flatten();
-        } else {
-            let next = last_shown
-                .saturating_add(1)
-                .checked_rem(rows.len())
-                .unwrap_or(0);
-            self.select_row(host, layout, next);
-        }
-        host.changed();
-        true
-    }
-
     fn cycle_row_focus(
         &mut self,
         host: &dyn NotificationHost,
         layout: &CenterLayout,
         backwards: bool,
     ) {
-        if self.cycle_pager_focus(host, layout, backwards) {
-            return;
-        }
         let rows = self.rows(host);
         let Some(index) = self.selected_row(&rows, host.log().history()) else {
             self.select_row(host, layout, self.start);
@@ -1591,20 +1449,8 @@ impl NotificationCenter {
         } else {
             current.checked_add(1).filter(|next| *next < order.len())
         };
-        let (_, _, start, shown) = self.window(host, layout);
-        let last_shown = start.saturating_add(shown).saturating_sub(1);
         if let Some(next) = next {
             self.row_control = order.get(next).copied().flatten();
-        } else if !backwards
-            && index == last_shown
-            && let Some(focus) = self.pager_stops(host, layout).first().copied()
-        {
-            // The pager follows the last row it pages past.
-            self.selected = None;
-            self.row_control = None;
-            self.action_focus = Some(focus);
-            host.changed();
-            return;
         } else {
             let row = if backwards {
                 index
@@ -1664,14 +1510,6 @@ impl NotificationCenter {
                 self.action_focus = Some(ActionFocus::Undo);
                 self.start = 0;
                 self.selected = None;
-            }
-            Key::Named(NamedKey::Enter | NamedKey::Space)
-                if matches!(
-                    self.action_focus,
-                    Some(ActionFocus::Newer | ActionFocus::Older)
-                ) =>
-            {
-                self.page(host, layout, self.action_focus == Some(ActionFocus::Older));
             }
             Key::Named(NamedKey::Enter | NamedKey::Space) if selected.is_some() => {
                 if let Some(index) = selected {
@@ -1764,13 +1602,13 @@ impl NotificationCenter {
             let position = offset.saturating_sub(start);
             let rect = layout.row_in(position, bands);
             let agent = Self::row_agent(host, row);
-            let (dismiss, agent_rect) = layout.row_controls(rect, agent.is_some());
+            let shape = bands.get(position).copied().unwrap_or_default();
+            let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
             out.push((format!("{prefix}notification_row[{offset}]"), rect));
             out.push((format!("{prefix}notification_dismiss[{offset}]"), dismiss));
             if let Some(agent_rect) = agent_rect {
                 out.push((format!("{prefix}notification_agent[{offset}]"), agent_rect));
             }
-            let shape = bands.get(position).copied().unwrap_or_default();
             for (at, action) in layout.row_actions(rect, &shape).iter().enumerate() {
                 out.push((
                     format!("{prefix}notification_action[{offset}][{at}]"),
@@ -1778,33 +1616,17 @@ impl NotificationCenter {
                 ));
             }
         }
-        if self.pager_state(host, layout).is_some() {
-            let (newer, older) = layout.pager();
-            out.push((format!("{prefix}notifications_newer"), newer));
-            out.push((format!("{prefix}notifications_older"), older));
-        }
         out
     }
 
     /// What the centre says about itself: why nothing pops up (the
-    /// header's quiet status line, read first), then which rows show.
-    fn description(
-        host: &dyn NotificationHost,
-        start: usize,
-        shown: usize,
-        total: usize,
-    ) -> String {
+    /// header's quiet status line, read first), then how many rows it
+    /// keeps.
+    fn description(host: &dyn NotificationHost, total: usize) -> String {
         let rows = if total == 0 {
             t("a11y-notifications-none")
         } else {
-            t_args(
-                "a11y-notifications-description",
-                &[
-                    ("first", start.saturating_add(1).into()),
-                    ("last", start.saturating_add(shown).into()),
-                    ("total", total.into()),
-                ],
-            )
+            t_args("a11y-notifications-description", &[("count", total.into())])
         };
         match host.quiet_status() {
             Some(status) => format!("{status}. {rows}"),
@@ -1827,9 +1649,9 @@ impl NotificationCenter {
         {
             return reader.accessibility(&notification, layout);
         }
-        let (rows, _, start, shown) = self.window(host, layout);
+        let (rows, ..) = self.window(host, layout);
         let total = rows.len();
-        let description = Self::description(host, start, shown, total);
+        let description = Self::description(host, total);
         let history = AccessNode::new(Role::List)
             .with_name(t("a11y-notifications-list"))
             .with_children(self.accessibility_rows(host, layout, now));
@@ -1875,36 +1697,6 @@ impl NotificationCenter {
                         .focused(self.back_focused),
                 ),
         );
-        // After Back, so the row, Clear, Undo and Back paths stay stable.
-        if let Some((newer_on, older_on)) = self.pager_state(host, layout) {
-            let (newer, older) = layout.pager();
-            for (key, rect, on, focus) in [
-                (
-                    "a11y-notifications-newer",
-                    newer,
-                    newer_on,
-                    ActionFocus::Newer,
-                ),
-                (
-                    "a11y-notifications-older",
-                    older,
-                    older_on,
-                    ActionFocus::Older,
-                ),
-            ] {
-                children.push(
-                    AccessNode::new(Role::Button)
-                        .with_name(t(key))
-                        .with_bounds(rect)
-                        .with_state(
-                            AccessState::new()
-                                .focusable(on)
-                                .disabled(!on)
-                                .focused(on && self.action_focus == Some(focus)),
-                        ),
-                );
-            }
-        }
         AccessNode::new(Role::Dialog)
             .with_name(t("a11y-notifications"))
             .with_description(description)
@@ -1962,18 +1754,6 @@ impl NotificationCenter {
             }
             [1] if !history_empty => Some(layout.clear()),
             [index] if can_undo && *index == Self::undo_path_index(host) => Some(layout.undo()),
-            [index]
-                if self.pager_state(host, layout).is_some()
-                    && *index == Self::back_path_index(host).saturating_add(1) =>
-            {
-                Some(layout.pager().0)
-            }
-            [index]
-                if self.pager_state(host, layout).is_some()
-                    && *index == Self::back_path_index(host).saturating_add(2) =>
-            {
-                Some(layout.pager().1)
-            }
             _ => None,
         }
     }
@@ -1983,7 +1763,7 @@ impl NotificationCenter {
     pub fn focus_accessibility_path(
         &mut self,
         host: &dyn NotificationHost,
-        layout: &CenterLayout,
+        _layout: &CenterLayout,
         path: &[usize],
     ) -> bool {
         if let Some(reader) = self.reader.as_mut() {
@@ -2033,21 +1813,9 @@ impl NotificationCenter {
             let log = host.log();
             (log.history().is_empty(), log.can_undo_clear())
         };
-        let pager = self.pager_state(host, layout);
-        let back = Self::back_path_index(host);
         let focus = match path {
             [1] if !history_empty => ActionFocus::Clear,
             [index] if can_undo && *index == Self::undo_path_index(host) => ActionFocus::Undo,
-            [index]
-                if pager.is_some_and(|(newer, _)| newer) && *index == back.saturating_add(1) =>
-            {
-                ActionFocus::Newer
-            }
-            [index]
-                if pager.is_some_and(|(_, older)| older) && *index == back.saturating_add(2) =>
-            {
-                ActionFocus::Older
-            }
             _ => return false,
         };
         self.back_focused = false;
@@ -2089,7 +1857,7 @@ impl NotificationCenter {
                         expanded,
                         ..
                     } => {
-                        let (dismiss, _) = layout.row_controls(rect, false);
+                        let (dismiss, _) = layout.row_controls(rect, &RowShape::default(), false);
                         AccessNode::new(Role::ListItem)
                             .with_semantic_key(format!("notification-group:{key}"))
                             .with_name(label.clone())
@@ -2152,7 +1920,7 @@ impl NotificationCenter {
     ) -> AccessNode {
         let row_focused = is_selected && self.row_control.is_none();
         let agent = host.agent_for(notification);
-        let (dismiss, agent_rect) = layout.row_controls(rect, agent.is_some());
+        let (dismiss, agent_rect) = layout.row_controls(rect, &shape, agent.is_some());
         let control_focused = |control| is_selected && self.row_control == Some(control);
         let mut controls = vec![
             AccessNode::new(Role::Button)
@@ -2405,7 +2173,7 @@ impl NotificationCenter {
                             transform,
                             text_renderer,
                             theme,
-                            layout.row_controls(row, false),
+                            layout.row_controls(row, &RowShape::default(), false),
                             (focused_control, cursor),
                         );
                     }
@@ -2422,7 +2190,7 @@ impl NotificationCenter {
                 }
             };
             let agent = host.agent_for(notification);
-            let controls = layout.row_controls(row, agent.is_some());
+            let controls = layout.row_controls(row, &shape, agent.is_some());
             let leading_control = controls.1.unwrap_or(controls.0);
             // A row is a resting Control surface (HIG §9.5): the lift floor
             // with its derived edge, never a ramp-slot wash.
@@ -2447,11 +2215,16 @@ impl NotificationCenter {
             // Source/time, title, body: measured lines on the control
             // padding, inset `s3` like every row glyph in the panel. A
             // grouped notification sits one glyph in, under its header's
-            // label, so the fold reads as a hierarchy.
+            // label, so the fold reads as a hierarchy, and drops the
+            // source line: its header already names the app.
             let x = row.x0 + qs::CONTROL_INSET + if grouped { qs::GLYPH } else { 0.0 };
             let text_right = row.x1 - qs::CONTROL_INSET;
-            let source_y = row.y0 + qs::CONTROL_PAD;
-            let title_y = source_y + layout.caption_lh;
+            let first_y = row.y0 + qs::CONTROL_PAD;
+            let source_y = shape.has_source().then_some(first_y);
+            let title_y = match source_y {
+                Some(source_y) => source_y + layout.caption_lh,
+                None => first_y,
+            };
             let body_y = title_y + layout.label_lh;
             // The icon buttons stand where the time is; a line they reach
             // into stops short of them, shown or not, so nothing reflows
@@ -2471,7 +2244,17 @@ impl NotificationCenter {
                 text_right - f64::from(time_width) - qs::RELATED_GAP
             };
             let caption_line_h = layout.caption_lh;
-            if let Some(source) = source_label(notification) {
+            // The age takes the row's first line: the source line when
+            // the row has one, else the title line beside the title.
+            let time_y = source_y.unwrap_or(title_y);
+            let time_h = if shape.has_source() {
+                caption_line_h
+            } else {
+                layout.label_lh
+            };
+            if let Some(source_y) = source_y
+                && let Some(source) = source_label(notification)
+            {
                 let source_width = (source_right - x).max(0.0);
                 let source = preview_line(
                     text_renderer,
@@ -2479,8 +2262,8 @@ impl NotificationCenter {
                     f32_of_f64(source_width),
                     &caption_style,
                 );
-                // The source line is one shared caption, starting at the row's
-                // inset and elided to the room beside the controls.
+                // The source line is one shared caption, starting at the
+                // row's inset and elided to the room beside the controls.
                 ui::widget::TextLineFace::styled(&source, &caption_style, TextRole::Caption)
                     .start()
                     .paint(
@@ -2496,15 +2279,20 @@ impl NotificationCenter {
                         &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                         Rect::new(
                             text_right - f64::from(time_width),
-                            source_y,
+                            time_y,
                             text_right,
-                            source_y + caption_line_h,
+                            time_y + time_h,
                         ),
                         colors.text_dim,
                     );
             }
             let title_style = label_style.clone().with_weight(TextWeight::Semibold);
-            let title_width = (clear_of(title_y) - x).max(0.0);
+            let title_right = if shape.has_source() {
+                clear_of(title_y)
+            } else {
+                source_right
+            };
+            let title_width = (title_right - x).max(0.0);
             let title = preview_line(
                 text_renderer,
                 &notification.title,
@@ -2583,82 +2371,6 @@ impl NotificationCenter {
                 theme,
                 layout,
                 (cursor, self.action_focus == Some(ActionFocus::Undo)),
-            );
-        } else if rows.len() > visible_rows {
-            Self::draw_pager(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                layout,
-                (start, shown, rows.len()),
-                (cursor, self.action_focus),
-            );
-        }
-    }
-
-    /// The pager band: "Newer" and "Older" are buttons at either end, the
-    /// one the list has reached disabled, with the position between them
-    /// when it fits.
-    fn draw_pager(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        layout: &CenterLayout,
-        (start, shown, total): (usize, usize, usize),
-        (cursor, focus): (Option<Point>, Option<ActionFocus>),
-    ) {
-        let footer = layout.footer();
-        ui::widget::paint_control_row(scene, transform, theme, footer, false, false);
-        let (newer, older) = layout.pager();
-        let newer_on = start > 0;
-        let older_on = start.saturating_add(shown) < total;
-        for (rect, key, on, own) in [
-            (
-                newer,
-                "notification-center-newer",
-                newer_on,
-                ActionFocus::Newer,
-            ),
-            (
-                older,
-                "notification-center-older",
-                older_on,
-                ActionFocus::Older,
-            ),
-        ] {
-            Button::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                &ButtonFace::new(rect, &t(key))
-                    .role(ButtonRole::Plain)
-                    .disabled(!on)
-                    .hovered(on && cursor.is_some_and(|p| rect.contains(p)))
-                    .focused(on && focus == Some(own)),
-            );
-        }
-        // The pager says where the list is, in place of a count line
-        // over a list that fits. Enlarged type keeps the directions and
-        // lets the position go.
-        let caption_style = theme.text(TextRole::Caption);
-        let position = t_args(
-            "notification-center-position",
-            &[
-                ("first", start.saturating_add(1).into()),
-                ("last", start.saturating_add(shown).into()),
-                ("total", total.into()),
-            ],
-        );
-        let (w, _h) = text_renderer.measure_style(&position, None, &caption_style);
-        let workspace = older.x0 - newer.x1 - 2.0 * qs::RELATED_GAP;
-        if f64::from(w) <= workspace {
-            ui::widget::TextLineFace::styled(&position, &caption_style, TextRole::Caption).paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                footer,
-                theme.tokens.colors.text_dim,
             );
         }
     }
@@ -2746,7 +2458,7 @@ impl NotificationCenter {
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let (dismiss, _) = layout.row_controls(row, false);
+        let (dismiss, _) = layout.row_controls(row, &RowShape::default(), false);
         let x = glyph.x1 + qs::RELATED_GAP;
         let age = relative_time(newest, now);
         let (time_width, _) = text_renderer.measure_style(&age, None, &caption_style);
@@ -3079,7 +2791,7 @@ mod tests {
     }
 
     #[test]
-    fn a_history_that_overflows_reserves_the_pager_and_scrolls_by_rows() {
+    fn a_history_that_overflows_scrolls_by_rows() {
         let host = TestHost::default();
         for i in 0..20 {
             host.log
@@ -3097,102 +2809,28 @@ mod tests {
     }
 
     #[test]
-    fn the_pager_turns_pages_and_its_spent_direction_is_disabled() {
+    fn a_grouped_row_drops_the_source_line_its_header_already_carries() {
         let host = TestHost::default();
-        for i in 0..20 {
-            host.log
-                .borrow_mut()
-                .retain(Notification::new(format!("n{i}"), ""));
-        }
+        host.log.borrow_mut().retain(from_app("mail", "one"));
+        host.log.borrow_mut().retain(from_app("mail", "two"));
         let layout = layout();
-        let mut center = NotificationCenter::new();
-        let visible = center.visible_rows(&host, &layout);
-        let (newer, older) = layout.pager();
-        let pager_nodes = |center: &NotificationCenter| {
-            let dialog = center.accessibility(&host, &layout, ui::time::now());
-            let node = |key: &str| {
-                dialog
-                    .children
-                    .iter()
-                    .find(|node| node.name.as_deref() == Some(t(key).as_str()))
-                    .map(|node| (node.role, node.state.focusable, node.state.disabled))
-            };
-            (
-                node("a11y-notifications-newer"),
-                node("a11y-notifications-older"),
-            )
-        };
-
-        // At the newest page "Newer" is disabled: no press, no focus stop.
-        assert_eq!(
-            pager_nodes(&center),
-            (
-                Some((Role::Button, false, true)),
-                Some((Role::Button, true, false))
-            )
-        );
-        assert_eq!(
-            center.click(&host, &layout, newer.center()),
-            CenterOutcome::Ignored
-        );
-        assert_eq!(center.start, 0);
-        let back = NotificationCenter::back_path_index(&host);
-        assert!(!center.focus_accessibility_path(&host, &layout, &[back.saturating_add(1)]));
-
-        // "Older" turns a page.
-        assert_eq!(
-            center.click(&host, &layout, older.center()),
-            CenterOutcome::Handled
-        );
-        assert_eq!(center.start, visible);
-
-        center.key(&host, &layout, &Key::Named(NamedKey::End));
-        let last = center.start;
-        assert!(last > visible);
-        assert_eq!(
-            pager_nodes(&center),
-            (
-                Some((Role::Button, true, false)),
-                Some((Role::Button, false, true))
-            )
-        );
-        assert_eq!(
-            center.click(&host, &layout, older.center()),
-            CenterOutcome::Ignored
-        );
-        assert_eq!(center.start, last);
-        assert!(!center.focus_accessibility_path(&host, &layout, &[back.saturating_add(2)]));
-
-        // Keyboard: "Newer" is a focus stop that pages on Enter, and focus
-        // moves to "Older" once "Newer" has nothing left to show.
-        assert!(center.focus_accessibility_path(&host, &layout, &[back.saturating_add(1)]));
-        for _ in 0..20 {
-            if center.start == 0 {
-                break;
-            }
-            center.key(&host, &layout, &Key::Named(NamedKey::Enter));
+        let rows = NotificationCenter::new().rows(&host);
+        let shapes = NotificationCenter::shapes(&host, &layout, &rows);
+        let grouped = rows
+            .iter()
+            .zip(&shapes)
+            .filter(|(row, _)| matches!(row, HistoryRow::Item { grouped: true, .. }))
+            .count();
+        assert!(grouped > 0, "the app's members sit under its header");
+        for (row, shape) in rows.iter().zip(&shapes) {
+            assert_eq!(
+                shape.has_source(),
+                !matches!(row, HistoryRow::Item { grouped: true, .. }),
+            );
         }
-        assert_eq!(center.start, 0);
-        assert_eq!(center.action_focus, Some(ActionFocus::Older));
-
-        // Tab reaches the pager after the last row shown, skipping the
-        // disabled direction, and moves on to the next row.
-        assert!(center.focus_accessibility_path(&host, &layout, &[0, visible.saturating_sub(1)]));
-        let mut reached = None;
-        for _ in 0..4 {
-            center.key(&host, &layout, &Key::Named(NamedKey::Tab));
-            if center.action_focus.is_some() {
-                reached = center.action_focus;
-                break;
-            }
-        }
-        assert_eq!(reached, Some(ActionFocus::Older));
-        center.key(&host, &layout, &Key::Named(NamedKey::Tab));
-        assert_eq!(center.action_focus, None);
-        assert_eq!(
-            center.selected_row(&center.rows(&host), host.log().history()),
-            Some(visible)
-        );
+        let ungrouped = layout.row_extent(&RowShape::default());
+        let member = layout.row_extent(&RowShape::default().without_source());
+        assert_eq!(member, ungrouped - layout.caption_lh, "one line less");
     }
 
     #[test]
@@ -3245,7 +2883,7 @@ mod tests {
             row.height() > layout.row_h(),
             "the actions get their own band"
         );
-        let plain = CenterLayout::preferred_height(1, 1, layout.actions.clone());
+        let plain = CenterLayout::preferred_height(1, layout.actions.clone());
         assert!(
             (center.preferred_height(&host, layout.actions.clone())
                 - plain

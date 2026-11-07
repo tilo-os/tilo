@@ -45,6 +45,17 @@ fn intersects(a: Rect, b: Rect) -> bool {
     overlap.width() > 0.5 && overlap.height() > 0.5
 }
 
+/// Whether `card` is one the person left loose: the layout only carries the
+/// place it settled at, and the card it came from says it was dragged.
+fn was_loose(card: &Placed, held: &[Card]) -> bool {
+    held.iter().any(|source| {
+        source.app == card.app
+            && source.summary.id == card.summary.id
+            && source.loose.is_some()
+            && !source.rich
+    })
+}
+
 /// Every rule the layer promises, over one staging of the screen.
 fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &Layer) {
     let work = placement.work;
@@ -54,7 +65,7 @@ fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &La
             rect.width() > 0.0 && rect.height() > 0.0,
             "{corner:?} {at}: a card has a size"
         );
-        if card.loose {
+        if was_loose(card, held) {
             // A card the person dragged keeps a strip to grab, and never
             // hides under the bar.
             let inside = rect.intersect(work);
@@ -90,7 +101,7 @@ fn assert_layer(placement: &Placement, corner: Corner, held: &[Card], layer: &La
             );
         }
         for (other_at, other) in layer.cards.iter().enumerate().skip(at + 1) {
-            if other.loose {
+            if was_loose(other, held) {
                 continue;
             }
             assert!(
@@ -235,7 +246,7 @@ fn docked_cards_stand_in_the_chosen_corner_column() {
     assert_eq!(layer.cards.len(), 2);
     let call = &layer.cards[0];
     let tea = &layer.cards[1];
-    assert_eq!(call.activity(), "call", "the call stands first");
+    assert_eq!(call.summary.id, "call", "the call stands first");
     assert!(
         (call.rect.x1 - (placement.work.x1 - EDGE_INSET)).abs() < 0.5,
         "16 px from the right edge"
@@ -333,7 +344,7 @@ fn a_phone_keeps_its_cards_in_the_pill_until_the_person_expands_one() {
     let expanded = place(&placement, Corner::BottomRight, &held, true);
     assert_layer(&placement, Corner::BottomRight, &held, &expanded);
     let card = expanded.cards.first().expect("one card drops");
-    assert_eq!(card.activity(), "call", "the most urgent activity");
+    assert_eq!(card.summary.id, "call", "the most urgent activity");
     assert!(
         (card.rect.width() - (placement.work.width() - 2.0 * EDGE_INSET)).abs() < 0.5,
         "the card is as wide as the work area"
@@ -355,7 +366,7 @@ fn a_phone_stands_the_card_its_app_presents_before_its_window_is_up() {
     held[0].size = Some(Size::new(376.0, 256.0));
     let layer = place(&placement, Corner::BottomRight, &held, false);
     let card = layer.cards.first().expect("the app's card stands");
-    assert_eq!(card.activity(), "call");
+    assert_eq!(card.summary.id, "call");
     assert!(
         (card.rect.width() - (placement.work.width() - 2.0 * EDGE_INSET)).abs() < 0.5,
         "the card is as wide as the work area"
@@ -379,7 +390,12 @@ fn a_card_dragged_loose_stays_where_it_is_left_but_reachable() {
         let layer = place(&placement, Corner::BottomRight, &[loose.clone()], false);
         assert_layer(&placement, Corner::BottomRight, &[loose.clone()], &layer);
         let card = layer.cards.first().expect("a loose card is drawn");
-        assert!(card.loose);
+        assert!(was_loose(card, &[loose.clone()]));
+        assert!(
+            card.rect.x0 >= placement.work.x0 - 0.5 && card.rect.y0 >= placement.work.y0 - 0.5,
+            "{at:?} left it under the bar or off the side: {:?}",
+            card.rect
+        );
     }
     // A card dragged nowhere near an edge lands exactly where it was put.
     let size = card_size(placement.work, &loose.summary);
@@ -388,6 +404,53 @@ fn a_card_dragged_loose_stays_where_it_is_left_but_reachable() {
     assert_eq!(
         layer.cards.first().map(|card| card.rect),
         Some(Rect::from_origin_size((500.0, 300.0), size))
+    );
+}
+
+/// A card its app draws stands in the layer's column: as wide as every other
+/// card there and on the same edge, whatever width its app asked for, and as
+/// tall as its app asked.
+#[test]
+fn a_card_its_app_draws_is_as_wide_as_the_column_and_stands_on_its_edge() {
+    let placement = screen(1280.0, 800.0);
+    let mut call = Card::new("so.tilo.chat", activity(Kind::Call, "call"));
+    call.size = Some(Size::new(110.0, 256.0));
+    call.rich = true;
+    let mut call_again = Card::new("so.tilo.clocks", activity(Kind::Call, "another"));
+    call_again.size = Some(Size::new(110.0, 200.0));
+    call_again.rich = true;
+    let mut route = Card::new("so.tilo.maps", activity(Kind::Navigation, "route"));
+    route.size = Some(Size::new(360.0, 240.0));
+    route.rich = true;
+    let held = vec![call.clone(), call_again.clone(), route.clone()];
+    let layer = place(&placement, Corner::BottomRight, &held, false);
+    assert_layer(&placement, Corner::BottomRight, &held, &layer);
+    let at = |activity: &str| {
+        layer
+            .cards
+            .iter()
+            .find(|card| card.summary.id == activity)
+            .map(|card| card.rect)
+            .expect("every card stands")
+    };
+    let column = card_size(placement.work, &call.summary).width;
+    let call_rect = at("call");
+    let route_rect = at("route");
+    assert!(
+        (call_rect.width() - column).abs() < 0.5 && (route_rect.width() - column).abs() < 0.5,
+        "the cards share the layer's one column width: {call_rect:?} {route_rect:?}"
+    );
+    assert!(
+        (call_rect.x1 - route_rect.x1).abs() < 0.5,
+        "the cards share one right edge"
+    );
+    assert!(
+        (call_rect.height() - 256.0).abs() < 0.5,
+        "the height its app asked for stands"
+    );
+    assert!(
+        (at("another").height() - 200.0).abs() < 0.5,
+        "each card keeps its own height"
     );
 }
 
@@ -405,7 +468,7 @@ fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest
         pill(
             &held
                 .iter()
-                .map(|summary| (*summary).clone())
+                .map(|summary| ("so.tilo.app".to_owned(), (*summary).clone()))
                 .collect::<Vec<_>>(),
         )
     };
@@ -423,18 +486,18 @@ fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest
     assert_eq!(
         of(&[&song, &timer, &soon])
             .heading
-            .map(|summary| summary.id),
+            .map(|named| named.summary.id),
         Some("coffee".to_owned()),
         "the timer that is due within a minute"
     );
     assert_eq!(
-        of(&[&song, &timer]).heading.map(|summary| summary.id),
+        of(&[&song, &timer]).heading.map(|named| named.summary.id),
         Some("tea".to_owned()),
         "a timer before music"
     );
     let music = of(&[&song]);
     assert_eq!(
-        music.heading.map(|summary| summary.id),
+        music.heading.map(|named| named.summary.id),
         Some("song".to_owned())
     );
     assert_eq!(music.more, 0);
@@ -449,7 +512,7 @@ fn the_pill_puts_a_call_before_directions_and_a_nearly_due_timer_before_the_rest
 /// An activity with controls sorts its close last and draws three actions
 /// beside it.
 #[test]
-fn a_summary_draws_three_actions_with_the_close_last() {
+fn a_summary_draws_three_actions_and_its_close_beside_them() {
     let mut summary = activity(Kind::Call, "call");
     for (id, kind) in [
         ("close", ControlKind::Close),
@@ -460,11 +523,15 @@ fn a_summary_draws_three_actions_with_the_close_last() {
         summary = summary.with_control(Control::new(id, id, kind));
     }
     let shown: Vec<&str> = summary
-        .shown_controls()
+        .action_controls()
         .iter()
         .map(|control| control.id.as_str())
         .collect();
-    assert_eq!(shown, ["mute", "video", "more", "close"]);
+    assert_eq!(
+        shown,
+        ["mute", "video", "more"],
+        "three actions, the close beside them"
+    );
     assert_eq!(
         summary.first_control().map(|control| control.id.as_str()),
         Some("mute")
@@ -519,6 +586,61 @@ fn a_cards_parts_fit_the_height_card_size_reserves() {
     }
 }
 
+/// A card that says a line under its reading stacks its controls under it:
+/// the line and the controls never share pixels, and the rows end where
+/// `card_size` put the card's edge.
+#[test]
+fn a_line_under_the_reading_stands_above_the_controls() {
+    let summary = activity(Kind::Stopwatch, "watch")
+        .with_subtitle("The whole desktop")
+        .with_control(Control::new("stop", "Stop", ControlKind::Primary))
+        .with_control(Control::new("pause", "Pause", ControlKind::Secondary));
+    let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
+    let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
+    let parts = card_parts(rect, &summary);
+    let line = parts.subtitle.expect("the line under the reading");
+    let row = parts.controls_row.expect("the controls' row");
+    assert!(
+        line.y1 <= row.y0 + 0.5,
+        "the line {line:?} stands clear of the controls {row:?}"
+    );
+    assert!(
+        (row.y1 - inside.y1).abs() <= 0.5,
+        "the controls end at the card's edge: {row:?} in {inside:?}"
+    );
+    for (id, control) in &parts.controls {
+        assert!(
+            control.y0 >= line.y1 - 0.5,
+            "control {id} {control:?} clears the line {line:?}"
+        );
+    }
+}
+
+/// A song whose player sends no cover leads with its own lines: its subtitle
+/// stands under its hero rather than beside artwork, and the card is as tall
+/// as the rows it draws.
+#[test]
+fn a_card_without_a_cover_holds_the_lines_it_draws() {
+    let summary = Summary::new(Kind::Music, "Glasslight", "3:34")
+        .with_id("song")
+        .with_subtitle("Aurora Skies")
+        .with_progress(0.37)
+        .with_length(215)
+        .with_control(Control::new("play-pause", "Pause", ControlKind::Primary));
+    let size = card_size(work(1280.0, 800.0), &summary);
+    let rect = Rect::from_origin_size((100.0, 100.0), size);
+    let parts = card_parts(rect, &summary);
+    let subtitle = parts.subtitle.expect("the song has a subtitle");
+    assert!(
+        subtitle.y1 <= rect.y1 - CARD_PADDING + 0.5,
+        "the subtitle stands in the card: {subtitle:?} in {rect:?}"
+    );
+    assert_eq!(
+        parts.height, size.height,
+        "the card is as tall as the rows it draws"
+    );
+}
+
 /// A window dragged smaller than a card is no reason to crash the session:
 /// the card is placed as far inside as the work area reaches.
 #[test]
@@ -538,5 +660,78 @@ fn a_work_area_shorter_than_a_card_still_places_it() {
                 );
             }
         }
+    }
+}
+
+/// A screenshot heads its card with the shot itself, at the shape a
+/// screenshot has: nine sixteenths of the card's width, with the title under
+/// it on a heading's line rather than a reading's.
+#[test]
+fn a_shot_heads_its_card_with_the_picture_itself() {
+    let tile = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_artwork("data:image/jpeg;base64,AA");
+    let hero = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_hero_artwork("data:image/jpeg;base64,AA");
+    let work = work(1280.0, 800.0);
+    let size = card_size(work, &hero);
+    let rect = Rect::from_origin_size((100.0, 100.0), size);
+    let inside = rect.inflate(-CARD_PADDING, -CARD_PADDING);
+    let parts = card_parts(rect, &hero);
+    let picture = parts.artwork.expect("the picture heads the card");
+    assert!(
+        (picture.width() - inside.width()).abs() <= 0.5,
+        "the picture is as wide as the card: {picture:?} in {inside:?}"
+    );
+    assert!(
+        (picture.height() - picture.width() * 9.0 / 16.0).abs() <= 0.5,
+        "the picture keeps a screenshot's shape: {picture:?}"
+    );
+    assert!(
+        parts.hero.y0 >= picture.y1,
+        "the title stands under the picture: {:?} under {picture:?}",
+        parts.hero
+    );
+    assert!(
+        size.height > card_size(work, &tile).height,
+        "a card headed with a picture makes room for it"
+    );
+}
+
+/// Each control of a screenshot's card says what it does in its own slot: a
+/// glyph alone leaves the person guessing which one shows the file and which
+/// one copies it.
+#[test]
+fn a_screenshots_controls_are_labelled_in_their_slots() {
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::tokens::TextRole;
+
+    let summary = Summary::new(Kind::Other, "Screenshot", "")
+        .with_id("shot-1")
+        .with_subtitle("Screenshot 2026-07-30 12.00.05.png")
+        .with_hero_artwork("data:image/jpeg;base64,AA")
+        .with_control(Control::new("copy-shot", "Copy", ControlKind::Primary).with_icon("copy"))
+        .with_control(Control::new("open-shot", "Open", ControlKind::Secondary).with_icon("image"))
+        .with_control(
+            Control::new("reveal-shot", "Show in folder", ControlKind::Secondary)
+                .with_icon("folder"),
+        );
+    let rect = Rect::from_origin_size((100.0, 100.0), card_size(work(1280.0, 800.0), &summary));
+    let style = Theme::dark().text(TextRole::Label);
+    let mut text = TextRenderer::new();
+    for (id, slot) in card_parts(rect, &summary).controls {
+        let control = summary
+            .action_controls()
+            .into_iter()
+            .find(|control| control.id == id)
+            .expect("every slot stands for a control it offers");
+        let measured = f64::from(text.measure_style(&control.label, None, &style).0);
+        assert!(
+            measured + 24.0 <= slot.width(),
+            "{} ({measured} wide) fits its slot {slot:?}",
+            control.label
+        );
     }
 }

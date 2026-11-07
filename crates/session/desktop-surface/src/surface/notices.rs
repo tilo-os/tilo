@@ -63,6 +63,9 @@ struct NoticeState {
     /// The host shows the banners elsewhere (an app of their own); the
     /// surface shows only the centre.
     banners_elsewhere: Cell<bool>,
+    /// The notification centre is open: no banner stands over it, and what
+    /// arrives while it is open goes into it rather than onto the desk.
+    centre_open: Cell<bool>,
     /// Told of each outcome as it happens.
     taps: RefCell<Vec<OutcomeTap>>,
     /// Why fresh banners are held right now (Do Not Disturb, a focus
@@ -71,6 +74,16 @@ struct NoticeState {
     /// How many unread notifications each app says it has, by the id the
     /// launcher attributed: what its icon badges.
     badges: RefCell<std::collections::BTreeMap<String, u32>>,
+    /// The shell's own centre stands over the desk, as its reading says. Its
+    /// own state: the shell knows when it closes, the desk's layer when its
+    /// own does.
+    shell_centre: Cell<bool>,
+    /// The agent a kept notification can be handed to, where one is live in
+    /// the workspace it came from: what the centre's rows offer.
+    taking: RefCell<Option<String>>,
+    /// The notifications the person handed to that agent, waiting for the
+    /// loop that asks them.
+    handed: RefCell<Vec<u64>>,
 }
 
 type OutcomeTap = Rc<dyn Fn(&NotificationOutcome)>;
@@ -168,6 +181,12 @@ impl NotificationHost for NoticeState {
             self.touch();
         }
     }
+    fn agent_for(&self, _notification: &Notification) -> Option<String> {
+        self.taking.borrow().clone()
+    }
+    fn hand_to_agent(&self, notification: &Notification) {
+        self.handed.borrow_mut().push(notification.id);
+    }
     fn changed(&self) {
         self.touch();
     }
@@ -218,13 +237,19 @@ pub struct DesktopNotifications {
 
 impl DesktopNotifications {
     /// Show `notification` as a banner; any it pushes off the stack retire
-    /// to the centre. Returns its id.
+    /// to the centre. Returns its id. One that arrives while the centre is
+    /// open goes straight into the centre: the person is reading it, so a
+    /// banner there would cover a row and take the press meant for it.
     pub fn post(&self, notification: Notification) -> u64 {
         let id = notification.id;
         self.log.unread.borrow_mut().insert(id);
-        let evicted = self.log.log.borrow_mut().show(notification);
-        for retired in evicted {
-            self.log.log.borrow_mut().retain(retired);
+        if self.log.centre_open.get() {
+            self.log.log.borrow_mut().retain(notification);
+        } else {
+            let evicted = self.log.log.borrow_mut().show(notification);
+            for retired in evicted {
+                self.log.log.borrow_mut().retain(retired);
+            }
         }
         self.log.touch();
         id
@@ -287,6 +312,81 @@ impl DesktopNotifications {
     #[must_use]
     pub fn quiet(&self) -> bool {
         self.log.quiet.borrow().is_some()
+    }
+
+    /// The centre stands open on the desk: what arrives joins its list, so no
+    /// banner covers it. A banner up when it opens goes into it, since a stack
+    /// over an open centre would take the presses meant for its rows.
+    pub fn set_centre_open(&self, open: bool) {
+        if open && !self.log.centre_open.get() {
+            self.retire_banners();
+        }
+        self.log.centre_open.set(open);
+    }
+
+    /// The shell's centre stands over the desk, or has closed: the shell says
+    /// which, every pass, since it knows every way the person leaves it. What
+    /// arrives joins the list it shows while it is up, and none covers it.
+    pub fn set_shell_centre(&self, open: bool) {
+        if open && !self.log.shell_centre.get() {
+            self.retire_banners();
+        }
+        self.log.shell_centre.set(open);
+    }
+
+    /// Whether the centre is open, on the desk or over it.
+    #[must_use]
+    pub fn centre_open(&self) -> bool {
+        self.log.centre_open.get() || self.log.shell_centre.get()
+    }
+
+    /// Say which agent a kept notification can be handed to, where one is
+    /// live in the workspace it came from.
+    pub fn set_taking_agent(&self, agent: Option<String>) {
+        *self.log.taking.borrow_mut() = agent;
+    }
+
+    /// Hand notification `id` to the agent that takes one here: what the
+    /// centre's agent button does, and what the loop that asks it waits for.
+    pub fn hand_to_agent(&self, id: u64) {
+        self.log.handed.borrow_mut().push(id);
+    }
+
+    /// The notifications handed to that agent since the last look, as the
+    /// agent's name, the title it is told and the body it reads: one no
+    /// longer kept is not handed on.
+    pub fn take_handed(&self) -> Vec<(String, String, String)> {
+        let ids = std::mem::take(&mut *self.log.handed.borrow_mut());
+        let Some(agent) = self.log.taking.borrow().clone() else {
+            return Vec::new();
+        };
+        let log = self.log.log.borrow();
+        ids.into_iter()
+            .filter_map(|id| {
+                let notification = log.history_entry(id)?;
+                Some((
+                    agent.clone(),
+                    notification.title.clone(),
+                    notification.body.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Retire every banner still up into the centre: what a surface opening
+    /// over them does, so none covers it.
+    pub fn retire_banners(&self) {
+        let banners: Vec<u64> = self.log().active().iter().map(|n| n.id).collect();
+        for id in banners {
+            self.log.retire_active(id);
+        }
+    }
+
+    /// Whether the retained history changed since the host last wrote it
+    /// out: a host persisting the centre writes it when this says so.
+    #[must_use]
+    pub fn take_history_dirty(&self) -> bool {
+        self.log.log.borrow_mut().take_history_dirty()
     }
 
     /// How many unread notifications the app with verified id `app_id`
@@ -365,9 +465,15 @@ impl DesktopNotifications {
     }
 
     /// The banners shown now, for a banner surface of the host's own.
+    /// Nothing while the centre is open: a banner there would stand over
+    /// the rows the person is reading.
     #[must_use]
     pub fn feed(&self) -> BannerFeed {
-        BannerFeed::of(self.host())
+        if self.log.centre_open.get() {
+            BannerFeed::default()
+        } else {
+            BannerFeed::of(self.host())
+        }
     }
 
     /// Carry out what the person did on a banner surface of the host's own.
@@ -450,10 +556,7 @@ impl DesktopNotifications {
     /// Clear every notice the desk lists, the banners still up with the ones retired into the
     /// centre: the banners retire into the centre first, so one Undo brings all of them back.
     pub fn clear_all(&self) {
-        let banners: Vec<u64> = self.log().active().iter().map(|n| n.id).collect();
-        for id in banners {
-            self.log.retire_active(id);
-        }
+        self.retire_banners();
         self.host().clear_history();
     }
 
@@ -734,13 +837,16 @@ impl NotificationLayer {
     }
 
     /// Hand the stack the banners shown now: none while the host shows
-    /// them elsewhere.
+    /// them elsewhere, and none while the centre is open — the person is
+    /// reading the centre, so no banner stands over it and takes the press
+    /// meant for a row.
     fn feed_stack(&mut self) {
-        let feed = if self.notifications.log.banners_elsewhere.get() {
-            BannerFeed::default()
-        } else {
-            BannerFeed::of(self.notifications.host())
-        };
+        let feed =
+            if self.notifications.centre_open() || self.notifications.log.banners_elsewhere.get() {
+                BannerFeed::default()
+            } else {
+                BannerFeed::of(self.notifications.host())
+            };
         self.stack.set_feed(feed);
     }
 
@@ -763,13 +869,19 @@ impl NotificationLayer {
     }
 
     /// Open or close the centre. Either way the person has seen what it
-    /// holds: nothing is unread after.
+    /// holds: nothing is unread after. Every close — Escape, a press
+    /// outside, an app opened from a row — comes through here, since the
+    /// arrivals read its state: a centre that only appeared to close would
+    /// keep every later banner off the desk.
     pub fn set_center_open(&mut self, open: bool) {
         if open != self.center.is_some() {
             self.notifications.mark_read();
+            self.notifications.set_centre_open(open);
             self.center =
                 open.then(|| Centre::new(&NOTIFICATION_CENTRE, (), |make, ()| make.make()));
             self.dirty = true;
+            self.notifications.set_centre_open(open);
+            self.feed_stack();
         }
     }
 
@@ -830,10 +942,10 @@ impl NotificationLayer {
         match outcome {
             CenterOutcome::Ignored => return false,
             CenterOutcome::Handled => {}
-            CenterOutcome::Back => self.center = None,
+            CenterOutcome::Back => self.set_center_open(false),
             CenterOutcome::OpenApp { app_id, .. } => {
                 self.open_app = Some(app_id);
-                self.center = None;
+                self.set_center_open(false);
             }
         }
         self.dirty = true;
@@ -904,8 +1016,7 @@ impl NotificationLayer {
                     }
                     // A press outside the open panel closes it and goes no
                     // further, as a popover's does.
-                    self.center = None;
-                    self.dirty = true;
+                    self.set_center_open(false);
                     return true;
                 }
                 false
@@ -1143,6 +1254,8 @@ fn overlay_style() -> ui::taffy::Style {
 mod tests {
     use super::*;
 
+    use crate::notifications::RowShape;
+
     fn layer_with(count: usize) -> (NotificationLayer, DesktopNotifications) {
         let notifications = DesktopNotifications::default();
         for i in 0..count {
@@ -1206,6 +1319,46 @@ mod tests {
         assert_eq!(notifications.unread(), 0, "a withdrawn one is not news");
     }
 
+    /// Escape closes the centre the way a press outside does, and arrivals
+    /// read the same state either way: the one after it is a banner on the
+    /// desk again, not another row behind a centre that is no longer there.
+    #[test]
+    fn escape_closes_the_centre_for_arrivals_too() {
+        let (mut layer, notifications) = layer_with(2);
+        layer.set_center_open(true);
+        assert!(
+            notifications.centre_open(),
+            "the arrivals join the open centre"
+        );
+        let escape = ui::synthetic_input::named_key(ui::winit::keyboard::NamedKey::Escape);
+        assert!(layer.route(&escape, 1.0), "the centre takes the key");
+        assert!(!layer.center_open(), "the centre is gone");
+        assert!(
+            !notifications.centre_open(),
+            "and the next arrival is a banner again"
+        );
+    }
+
+    /// The shell draws its own centre over the desk: a banner up when it
+    /// opens goes into it, what arrives joins it, and once the shell says it
+    /// closed, the desk's own panel is not opened in its place.
+    #[test]
+    fn the_shells_centre_holds_arrivals_without_opening_the_desks_panel() {
+        let (layer, notifications) = layer_with(1);
+        notifications.set_shell_centre(true);
+        assert!(notifications.centre_open());
+        assert!(
+            notifications.log().active().is_empty(),
+            "the banner up went into it rather than covering it"
+        );
+        notifications.set_shell_centre(false);
+        assert!(!notifications.centre_open());
+        assert!(
+            !layer.center_open(),
+            "the shell's centre never stands the desk's panel up"
+        );
+    }
+
     #[test]
     fn banners_retire_into_the_centre_and_it_closes_on_an_outside_press() {
         let (mut layer, notifications) = layer_with(2);
@@ -1219,6 +1372,10 @@ mod tests {
         assert_eq!(node.children.len(), 1, "the centre's dialog is exposed");
         assert!(press(&mut layer, Point::new(10.0, 700.0)));
         assert!(!layer.center_open());
+        assert!(
+            !notifications.centre_open(),
+            "a centre closed by a press outside no longer holds arrivals: the next one is a banner"
+        );
         assert!(
             notifications.take_outcomes().is_empty(),
             "closing a banner answers nobody"
@@ -1249,6 +1406,52 @@ mod tests {
         notifications.open_center();
         Widget::update(&mut layer, &(), &());
         assert!(layer.center_open(), "the centre opens on the host's word");
+    }
+
+    /// The person opened the centre to read what it holds: no banner stands
+    /// over the rows it covers, wherever the host draws the banners, what
+    /// arrives meanwhile goes into the centre, and the ones that came before
+    /// are back on the desk once it closes.
+    #[test]
+    fn a_banner_never_stands_over_the_open_centre() {
+        let (mut layer, notifications) = layer_with(2);
+        notifications.show_banners_elsewhere();
+        layer.feed_stack();
+        assert_eq!(
+            notifications.feed().banners.len(),
+            2,
+            "the host's own surface shows the banners"
+        );
+        layer.set_center_open(true);
+        assert_eq!(
+            notifications.feed().banners.len(),
+            0,
+            "nothing stands over the centre"
+        );
+        assert_eq!(layer.stack.feed().banners.len(), 0);
+        // One arriving now belongs to the rows the person is reading.
+        notifications.post(Notification::new("Kaffee ist fertig", ""));
+        assert_eq!(
+            notifications.feed().banners.len(),
+            0,
+            "it does not become a banner"
+        );
+        assert!(
+            notifications
+                .log()
+                .history()
+                .iter()
+                .any(|notification| notification.title == "Kaffee ist fertig"),
+            "it is a row of the centre"
+        );
+        layer.set_center_open(false);
+        layer.feed_stack();
+        assert_eq!(
+            notifications.feed().banners.len(),
+            2,
+            "the desk's banners come back"
+        );
+        assert_eq!(layer.stack.feed().banners.len(), 2);
     }
 
     #[test]
@@ -1287,9 +1490,13 @@ mod tests {
             if interrupted {
                 assert!(
                     outcomes.is_empty(),
-                    "foreground history cancels the armed banner"
+                    "a banner the centre retired answers nobody"
                 );
-                assert_eq!(notifications.counts(), (1, 0));
+                assert_eq!(
+                    notifications.counts(),
+                    (0, 1),
+                    "a banner up when the centre opens goes into it"
+                );
                 assert!(layer.center_open());
             } else {
                 assert!(
@@ -1328,15 +1535,34 @@ mod tests {
             notifications.host().activate_history(quiet),
             HistoryActivation::OpenApp { ref app_id, .. } if app_id == "so.tilo.clocks"
         ));
+        let banner = notifications.log().active()[0].id;
         layer.set_center_open(true);
+        // Opening the centre retired the banner still up into it, in the same
+        // app's group: one row for the app, and dismissing it takes both.
+        assert_eq!(
+            notifications.log().history().len(),
+            2,
+            "the retired banner and the kept one"
+        );
         let layout = layer.layout().unwrap();
-        let (dismiss, _) = layout.row_controls(layout.row(0), false);
+        let (dismiss, _) = layout.row_controls(layout.row(0), &RowShape::default(), false);
         assert!(press(&mut layer, dismiss.center()));
         assert_eq!(notifications.log().history().len(), 0);
-        assert!(matches!(
-            &notifications.take_outcomes()[..],
-            [NotificationOutcome::Dismissed { id }] if *id == quiet
-        ));
+        // Both rows the app's one row held go: the banner retirement put in
+        // the centre, and the one kept there all along.
+        let gone: Vec<u64> = notifications
+            .take_outcomes()
+            .into_iter()
+            .filter_map(|outcome| match outcome {
+                NotificationOutcome::Dismissed { id } => Some(id),
+                NotificationOutcome::Activated { .. } => None,
+            })
+            .collect();
+        assert_eq!(gone.len(), 2, "one dismissal per row the app's row held");
+        assert!(
+            gone.contains(&banner) && gone.contains(&quiet),
+            "the retired banner and the kept notification are dismissed with their app's row: {gone:?}"
+        );
     }
 
     #[derive(Default)]

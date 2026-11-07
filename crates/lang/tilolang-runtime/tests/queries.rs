@@ -17,7 +17,7 @@ mod cases {
 
 /// Something to do.
 type Task {
-    title: Text (title)
+    title: Text
     done: Bool = false
     due: Option<Date> = .none
     status: Status
@@ -44,7 +44,7 @@ enum Status {
 
 /// A message in a mailbox.
 type Message {
-    subject: Text (title)
+    subject: Text
     from: std.Identifier = std.Identifier("tel:+10")
     unread: Bool = true
     received: Time = Time("2026-01-01T00:00:00Z")

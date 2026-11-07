@@ -98,6 +98,7 @@ fn slider_row(cx: &ViewCx<QuickSettings>, face: &SliderFace, sliders: &Sliders) 
         track = track.push(Box::new(
             Text::new(device)
                 .with_role(TextRole::Caption)
+                .with_truncate(true)
                 .with_id(format!("{}-device", face.id)),
         ));
     }
@@ -193,7 +194,12 @@ fn tile_grid(cx: &ViewCx<QuickSettings>, tiles: &[TileFace]) -> Element {
         .with_no_padding()
         .with_rhythm(Rhythm::Sibling);
     for pair in tiles.chunks(2) {
-        let mut row = Row::new().no_wrap().with_rhythm(Rhythm::Sibling);
+        // The row is as tall as the tile whose state line needs the second
+        // line, and both tiles take that height: two to a row, one shape.
+        let mut row = Row::new()
+            .no_wrap()
+            .with_align_items(ui::taffy::AlignItems::Stretch)
+            .with_rhythm(Rhythm::Sibling);
         for face in pair {
             row = row.push(tile(cx, face));
         }
@@ -213,6 +219,9 @@ fn tile(cx: &ViewCx<QuickSettings>, face: &TileFace) -> Element {
     let mut tile = QuickTile::new(&id, face.icon, &face.label)
         .detail(&face.detail)
         .on(face.on)
+        // Two to a row: the tile is as tall as the state line it will have
+        // in half the page's width.
+        .share(0.5)
         .enabled(face.switch.is_some());
     let actions = cx.actions();
     if let Some(binding) = face
@@ -259,7 +268,8 @@ fn root_row(cx: &ViewCx<QuickSettings>, face: &crate::faces::RowFace) -> Element
         )
     } else {
         debug_assert_eq!(face.row, RootRow::Notifications);
-        actions.bind_invocation(row.disclosure(), QuickSettings::SHOW_NOTIFICATIONS.invoke())
+        // The one list is the shell's centre, opened over the desk.
+        actions.bind_effect_invocation(row.disclosure(), &QsEffect::ShowCentre)
     })
 }
 

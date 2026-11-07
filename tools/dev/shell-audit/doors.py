@@ -291,7 +291,7 @@ class Doors:
             names = {"wifi": "wifi", "network": "wifi", "bluetooth": "bluetooth",
                      "sound": "sound", "clipboard": "clipboard"}
             if section == "notifications":
-                return self.tail_contains("show-notifications")
+                return self.tail_contains("show-centre")
             if section == "controls":
                 return self.tail_contains("show-controls")
             return self.tail_contains("open-section", args={"section": names[section]})

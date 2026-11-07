@@ -129,23 +129,14 @@ impl Core {
             Err(error) => return Err(error.into()),
         };
         let runs = self.seen_runs(&viewer.0);
-        // The field marked `title` of the items' type, which a removed item's row shows.
+        // The field the items' type is named by, which a removed item's row shows.
         let title = {
             let registry = self.registry.borrow();
-            registry.type_info(&coll.item).and_then(|(pkg, info)| {
-                let ty = pkg.meta.types.iter().find(|t| t.id == info.id)?;
-                let field = ty.fields.iter().find(|f| {
-                    f.role
-                        .as_ref()
-                        .is_some_and(crate::meta::FieldRole::is_title)
-                })?;
-                info.fields
-                    .iter()
-                    .find(|f| f.id == field.id)
-                    .map(|f| FieldSpec {
-                        id: f.id.clone(),
-                        kind: f.kind,
-                    })
+            registry.type_info(&coll.item).and_then(|(_, info)| {
+                info.name_field().map(|f| FieldSpec {
+                    id: f.id.clone(),
+                    kind: f.kind,
+                })
             })
         };
         let mut rows = Vec::new();

@@ -524,25 +524,23 @@ search-window-verb-share = share show unshare stop
 # Notifications: banner stack and notification centre
 drill-in-back = Back
 a11y-notifications-none = No retained notifications.
-a11y-notifications-description = Showing newest rows { $first } through { $last } of { $total }, grouped by app. Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest retained notification. Enter opens the selected notification or folds its app group, and Delete dismisses it.
+a11y-notifications-description = { $count ->
+    [one] { $count } retained notification, grouped by app.
+   *[other] { $count } retained notifications, grouped by app.
+} Use Up and Down to select a notification, Page Up and Page Down to move a screen, and Home or End to jump to the newest or oldest one. Enter opens the selected notification or folds its app group, and Delete dismisses it.
 a11y-notifications-list = Retained notifications
 a11y-notifications-clear = Clear all notifications
 a11y-notifications-clear-description = Delete this session's retained notification history. An Undo action remains available for eight seconds.
 a11y-notifications-cleared = Notifications cleared
 a11y-notifications-undo = Undo clear notifications
 a11y-notifications-undo-description = Restore the cleared notifications in their original order. Press Enter or Space.
-a11y-notifications-newer = Newer notifications
-a11y-notifications-older = Older notifications
 a11y-notifications = Notifications
 notification-center-title = Notifications
 notification-center-empty = No recent notifications
 notification-center-cleared = Notifications cleared
 notification-center-clear-all = Clear all
-notification-center-position = { $first }–{ $last } of { $total }
 notification-center-close = Close notifications
 notification-center-back-to-list = Back to notifications
-notification-center-newer = Newer
-notification-center-older = Older
 history-severity-info = Information
 history-severity-warning = Warning
 history-severity-error = Error
@@ -572,6 +570,7 @@ notification-lock-count = { $count ->
    *[other] { $count } notifications
 }
 notification-more = { $count } more
+notification-more-from = +{ $count } more from { $app }
 notification-stack-a11y = Notifications
 notification-group-system = System
 notification-center-undo = Undo
@@ -769,14 +768,6 @@ workspace-settings-grant-remote-control = Remote control
 workspace-settings-grant-network = Network access
 workspace-settings-grant-read-files = Read workspace files
 workspace-settings-grant-edit-files = Edit workspace files
-workspace-settings-preset-observer = Observer
-workspace-settings-preset-contributor = Contributor
-workspace-settings-preset-operator = Operator
-workspace-settings-preset-custom = Custom
-workspace-settings-preset-observer-hint = Read only on surfaces you select
-workspace-settings-preset-contributor-hint = Read/write only on surfaces you select
-workspace-settings-preset-operator-hint = Run only approved app actions
-workspace-settings-preset-custom-hint = Review every scoped permission
 workspace-settings-members-count = { $count ->
     [one] 1 person shares this workspace
    *[other] { $count } people share this workspace
@@ -801,7 +792,7 @@ workspace-settings-agents-count = { $count ->
     [one] 1 agent collaborator
    *[other] { $count } agent collaborators
 }
-workspace-settings-agents-help = Agents are visibly non-human collaborators. Admission grants no ambient workspace power.
+workspace-settings-agents-help = Agents work alongside you here. They only do what you allow.
 workspace-settings-add-agent = Add agent
 workspace-settings-agents-empty-title = No agents have access
 workspace-settings-agents-empty-detail = Start with a safe profile, then review each exact surface.
@@ -826,27 +817,28 @@ workspace-settings-service-ends-soon = access ends within a minute
 workspace-settings-service-ends-minutes = access ends in { $minutes } min
 workspace-settings-service-ends-hours = access ends in { $hours } h
 workspace-settings-badge-service = Service
-workspace-settings-badge-agent = Agent
-workspace-settings-agent-detail = { $count ->
-    [0] { $admission } · No permissions yet, review needed
-    [one] { $admission } · { $profile }, 1 permission
-   *[other] { $admission } · { $profile }, { $count } permissions
-}
-workspace-settings-admitted = Admitted
+workspace-settings-retire-agent = Retire
+workspace-settings-agent-name = Name a new agent
+workspace-settings-agent-name-number = Agent { $number }
+workspace-settings-agent-yours = Yours
+workspace-settings-agent-status-observer = Can read what is here, nothing more
+workspace-settings-agent-status-contributor = Can read and comment, asks before changing
+workspace-settings-agent-status-operator = Can read and change, asks before acting outside
+workspace-settings-agent-status-custom = Its permissions are set one by one
+workspace-settings-agent-model-line = Model: { $model }
+workspace-settings-agent-detail-none = No access in this workspace yet
+workspace-settings-agents-unavailable = The workspace's agents cannot be read on this device
+workspace-settings-agent-name-needed = Name the agent first
 workspace-settings-review-access = Review access
 workspace-settings-agent-access-back = All agents
 workspace-settings-agent-access-note = Choose what this agent may do in each app. Sending, publishing and deleting for good still ask you first, unless you chose Always allow for that action.
 workspace-settings-agent-access-read = Reading
 workspace-settings-agent-access-change = Changes
 workspace-settings-agent-access-outside = Outside effects
-workspace-settings-agent-access-summary-part = { $kind }: { $answer }
-workspace-settings-agent-access-custom = Custom
-workspace-settings-agent-access-custom-detail = Set for this agent
-workspace-settings-agent-access-inherited = Follows its admission
-workspace-settings-agent-access-set-here = set here
-workspace-settings-agent-access-default = default
+workspace-settings-agent-access-set-here = Set here
 workspace-settings-agent-access-reset = Use defaults
 workspace-settings-agent-access-always = Always allowed · { $count }
+workspace-settings-agent-exception = { $action } in { $app }
 workspace-settings-agent-access-stop = Ask again
 workspace-settings-agent-model = Model
 workspace-settings-agent-model-default = The default: { $model }
@@ -854,15 +846,13 @@ workspace-settings-agent-model-none = No model chosen in Settings
 workspace-settings-agent-model-use = Use
 workspace-settings-agent-model-option = { $model } from { $provider }
 workspace-settings-agent-model-in-use = In use
+workspace-settings-agent-model-keeper = Only { $name } chooses the model it runs on their devices
+workspace-settings-agent-model-keeper-you = You choose the model it runs on your devices
 workspace-settings-agent-access-empty = No apps in this workspace yet.
 workspace-settings-answer-allow = Allow
 workspace-settings-answer-ask = Ask first
 workspace-settings-answer-deny = Deny
 workspace-settings-revoke = Revoke
-workspace-settings-admission-admin = Admin admission
-workspace-settings-admission-write = Write admission
-workspace-settings-admission-comment = Comment admission
-workspace-settings-admission-read = Read admission
 workspace-settings-unavailable-app = Unavailable app
 workspace-settings-apps-empty-title = No file handlers installed
 workspace-settings-apps-empty-detail = No app declares a supported file type yet.
@@ -1163,7 +1153,7 @@ answer-why-cannot-start = Apps cannot be started right now.
 # rather than doing nothing.
 answer-capture-not-in-browser = Screenshots and recordings run in Tilo on a computer
 answer-why-capture-not-in-browser = It needs the whole screen, which a browser page does not have.
-answer-guide-not-in-browser = The shortcut guide runs in Tilo on a computer
+answer-guide-not-in-browser = Keyboard shortcuts are listed in Tilo on a computer
 answer-why-guide-not-in-browser = It opens over the whole system, which a browser page is not.
 answer-remote-not-in-browser = Remote control runs in Tilo on a computer
 answer-why-remote-not-in-browser = Nothing here is under someone else's control.
@@ -1456,6 +1446,7 @@ window-menu-new-tab = New tab of this app
 window-menu-not-yours-to-open = Watching only
 window-menu-no-app = No app here
 window-menu-split-right = Split right
+window-menu-split-one-tab = Nothing to split: this window has one tab
 window-menu-new-group = Move to a new window
 window-menu-close = Close
 window-menu-close-window = Close this window

@@ -17189,8 +17189,8 @@ dependencies = [
  "tilo-clock",
  "tilo-content",
  "tilo-crypto",
- "tilo-desktop",
  "tilo-desktop-model",
+ "tilo-feedback-transport",
  "tilo-lock",
  "tilo-model-gateway",
  "tilo-net",
@@ -17288,6 +17288,7 @@ dependencies = [
  "tilo-search",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
  "workspace-hack",
@@ -17841,6 +17842,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-desktop-surface",
+ "tilo-feedback-transport",
  "tilo-files",
  "tilo-live",
  "tilo-lock",
@@ -18358,6 +18360,7 @@ dependencies = [
  "tilo-desktop-search",
  "tilo-desktop-surface",
  "tilo-emoji-catalogue",
+ "tilo-feedback-transport",
  "tilo-resource",
  "tilo-sort",
  "tilo-surface-host",
@@ -18852,6 +18855,29 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.21",
  "tilo-sort",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-feedback-transport"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "chat",
+ "durable-store",
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-actions",
+ "tilo-app-state",
+ "tilo-automerge-fork",
+ "tilo-clock",
+ "tilo-feedback",
+ "tilo-resource",
+ "tilo-test-env",
+ "tilo-ui",
  "workspace-hack",
 ]
 
@@ -20333,6 +20359,7 @@ dependencies = [
  "neighbour-wire",
  "parking_lot",
  "postcard",
+ "proptest",
  "rand_core 0.10.0",
  "registry-types",
  "serde",
@@ -21438,8 +21465,10 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilolang-host",
+ "tilolang-mail",
  "tilolang-runtime",
  "tilolang-tilo",
+ "tilolang-youtube",
  "tokio",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
@@ -22312,6 +22341,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -22620,6 +22650,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-workspace-agent"
+version = "0.1.0"
+dependencies = [
+ "collab-types",
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-automerge-fork",
+ "tilo-files",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-directory"
 version = "0.1.0"
 dependencies = [
@@ -22895,8 +22940,11 @@ dependencies = [
 name = "tilolang-youtube"
 version = "0.1.0"
 dependencies = [
+ "runtime-portal",
  "rustypipe",
+ "serde",
  "serde_json",
+ "tempfile",
  "tilo-app",
  "tilo-innertube",
  "tilo-net",

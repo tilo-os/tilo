@@ -35,6 +35,7 @@ use ui::presence::PresenceKey;
 use ui::reorder::{DropPlacement, ReorderDrop};
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{ListModel, ListRow, TreeMarks, TreeRow, VirtualList};
+use ui::window_toolbar::ToolbarAction;
 
 use crate::model::{PageId, Workspace};
 use crate::notebook::{self, Notebook};
@@ -234,18 +235,113 @@ pub(crate) mod menu_row {
     pub const DELETE: usize = 7;
 }
 
+/// One page command, declared once: the id the window's bar sends back when
+/// its row is chosen, the icon set's name, the message it reads by, its row
+/// in [`menu_row`], and whether it ends something.
+struct NoteCommand {
+    id: &'static str,
+    icon: &'static str,
+    message: &'static str,
+    row: usize,
+    destructive: bool,
+}
+
+/// The page commands, in [`menu_row`] order.
+fn note_commands() -> Vec<NoteCommand> {
+    vec![
+        NoteCommand {
+            id: "notes-menu-new-child",
+            icon: "file-plus",
+            message: "notes-menu-new-child",
+            row: menu_row::NEW_CHILD,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-rename",
+            icon: "pencil",
+            message: "notes-menu-rename",
+            row: menu_row::RENAME,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-duplicate",
+            icon: "copy",
+            message: "notes-menu-duplicate",
+            row: menu_row::DUPLICATE,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-copy-link",
+            icon: "external-link",
+            message: "notes-menu-copy-link",
+            row: menu_row::COPY_LINK,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-export",
+            icon: "download",
+            message: "notes-menu-export",
+            row: menu_row::EXPORT,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-insert-image",
+            icon: "image",
+            message: "notes-menu-insert-image",
+            row: menu_row::INSERT_IMAGE,
+            destructive: false,
+        },
+        NoteCommand {
+            id: "notes-menu-delete",
+            icon: "trash-2",
+            message: "notes-menu-delete",
+            row: menu_row::DELETE,
+            destructive: true,
+        },
+    ]
+}
+
 /// The page actions, in [`menu_row`] order (a separator before Delete).
 pub(crate) fn note_menu_items() -> Vec<MenuItem> {
-    vec![
-        MenuItem::icon_action(Icon::FilePlus, ui::i18n!("notes-menu-new-child"), || {}),
-        MenuItem::icon_action(Icon::Pencil, ui::i18n!("notes-menu-rename"), || {}),
-        MenuItem::icon_action(Icon::Copy, ui::i18n!("notes-menu-duplicate"), || {}),
-        MenuItem::icon_action(Icon::ExternalLink, ui::i18n!("notes-menu-copy-link"), || {}),
-        MenuItem::icon_action(Icon::Download, ui::i18n!("notes-menu-export"), || {}),
-        MenuItem::icon_action(Icon::Image, ui::i18n!("notes-menu-insert-image"), || {}),
-        MenuItem::separator(),
-        MenuItem::destructive_action(ui::i18n!("notes-menu-delete"), || {}).with_icon(Icon::Trash2),
-    ]
+    let mut items = Vec::new();
+    for command in note_commands() {
+        if command.row == menu_row::DELETE {
+            items.push(MenuItem::separator());
+        }
+        let label = ui::i18n!(command.message);
+        let Some(icon) = Icon::from_name(command.icon) else {
+            continue;
+        };
+        items.push(if command.destructive {
+            MenuItem::destructive_action(label, || {}).with_icon(icon)
+        } else {
+            MenuItem::icon_action(icon, label, || {})
+        });
+    }
+    items
+}
+
+/// The page commands as the window's bar declares them: the same rows, in
+/// the same order, behind the one "More" menu a window bar has instead of an
+/// ellipsis of the app's own beside it.
+pub(crate) fn note_menu_commands() -> Vec<ToolbarAction> {
+    note_commands()
+        .into_iter()
+        .map(|command| {
+            ToolbarAction::new(command.id, command.icon, ui::i18n!(command.message))
+                .in_menu()
+                .destructive_if(command.destructive)
+        })
+        .collect()
+}
+
+/// The row [`menu_row`] position of the page command `id` names, when the
+/// window's bar sends one: the row the page menu holds it in.
+pub(crate) fn note_command_row(id: &str) -> Option<usize> {
+    note_commands()
+        .into_iter()
+        .find(|command| command.id == id)
+        .map(|command| command.row)
 }
 
 pub(crate) fn note_context_menu() -> ContextMenu {
@@ -873,6 +969,53 @@ mod tests {
     use vello::kurbo::{Point, Rect};
     use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
+
+    /// One declared command drives both of the note's menus: the page menu's
+    /// rows, in [`menu_row`] order with a separator before Delete, and the
+    /// rows the window's bar offers in its one "More" menu.
+    #[test]
+    fn the_bars_rows_are_the_page_menus_rows() {
+        let commands = note_commands();
+        assert_eq!(
+            commands
+                .iter()
+                .map(|command| command.row)
+                .collect::<Vec<_>>(),
+            vec![
+                menu_row::NEW_CHILD,
+                menu_row::RENAME,
+                menu_row::DUPLICATE,
+                menu_row::COPY_LINK,
+                menu_row::EXPORT,
+                menu_row::INSERT_IMAGE,
+                menu_row::DELETE,
+            ]
+        );
+        for command in &commands {
+            assert_eq!(note_command_row(command.id), Some(command.row));
+        }
+        assert_eq!(
+            note_menu_items().len(),
+            commands.len() + 1,
+            "the page menu holds the same rows and one separator before Delete"
+        );
+        let declared = note_menu_commands();
+        assert_eq!(declared.len(), commands.len());
+        assert!(
+            declared.iter().all(|action| action.menu),
+            "every one of them stands in the window's More menu, not in its row"
+        );
+        assert_eq!(
+            declared
+                .iter()
+                .map(|action| action.name.clone())
+                .collect::<Vec<_>>(),
+            commands
+                .iter()
+                .map(|command| ui::i18n!(command.message))
+                .collect::<Vec<_>>()
+        );
+    }
 
     /// Lay the sidebar out at `rect` the way the drawer host does, over the frames a
     /// host takes to settle it: a row measures itself only once it has the theme.

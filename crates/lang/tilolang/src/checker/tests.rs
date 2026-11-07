@@ -223,7 +223,7 @@ fn a_type_with_a_row_view_lists_without_an_item_block() {
 fn a_mark_and_a_chip_read_the_tone_their_cases_name() {
     let (m, _) = lower(
         "enum Priority {\n    low\n    high (icon: .flag, tone: .warning)\n    urgent (icon: .triangle_alert, tone: .danger)\n}\n\
-type Task {\n    title: Text (title)\n    priority: Priority = .low\n}\n\
+type Task {\n    title: Text\n    priority: Priority = .low\n}\n\
 type Board {\n    tasks: Collection<Task>\n}\n\
 root Board\ndefault view board for Board\n\
 row view task_row for Task\n\
@@ -257,7 +257,7 @@ view board(b: Board) {\n    list(b.tasks)\n}",
         assert!(tones.contains(&want.to_string()), "{want} in {tones:?}");
     }
     let wrong = diagnostics(
-        "enum Priority {\n    high\n}\ntype Task {\n    title: Text (title)\n    priority: Priority = .high\n}\nview task(t: Task) {\n    stack {\n        ui.Chip(t.title, tone: t.title)\n    }\n}",
+        "enum Priority {\n    high\n}\ntype Task {\n    title: Text\n    priority: Priority = .high\n}\nview task(t: Task) {\n    stack {\n        ui.Chip(t.title, tone: t.title)\n    }\n}",
     );
     assert!(wrong.iter().any(|d| d.code == "E065"), "{wrong:#?}");
 
@@ -265,7 +265,7 @@ view board(b: Board) {\n    list(b.tasks)\n}",
     // reaches the row.
     let (m, _) = lower(
         "enum Priority {\n    low (icon: .pin)\n    high (icon: .flag, tone: .warning)\n}\n\
-type Task {\n    title: Text (title)\n    priority: Priority = .low\n}\n\
+type Task {\n    title: Text\n    priority: Priority = .low\n}\n\
 row view task_row for Task\n\
 view task_row(t: Task) {\n    row(t.title, mark: t.priority)\n}",
     );
@@ -275,49 +275,6 @@ view task_row(t: Task) {\n    row(t.title, mark: t.priority)\n}",
         !marks.contains(&"pin".to_string()),
         "a case that reads in no tone draws no mark: {marks:?}"
     );
-}
-
-#[test]
-fn a_day_on_a_row_reads_with_the_time_of_that_day() {
-    let (m, _) = lower(
-        "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
-row view task_row for Task\n\
-view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
-    );
-    let row = ui_calls(func(&m, "task_row"));
-    assert!(has(&row, "prop meta"), "the day the item is due: {row:#?}");
-    assert!(has(&row, "prop meta:as"), "{row:#?}");
-    assert!(
-        has(&row, "prop meta:time"),
-        "the time of day it is due at: {row:#?}"
-    );
-    assert!(
-        !has(&row, "prop meta:time:as"),
-        "a companion is read beside the prop it completes, and says nothing of its own kind: \
-         {row:#?}"
-    );
-    // A day read into a local carries its time of day with it, through the branches an `if`
-    // takes.
-    let (m, _) = lower(
-        "type Task {\n    title: Text (title)\n    done: Bool = false\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
-row view task_row for Task\n\
-view task_row(t: Task) {\n    let due: Option<Date> = if t.done { .none } else { t.due }\n    row(t.title, meta: due)\n}",
-    );
-    let row = ui_calls(func(&m, "task_row"));
-    assert!(has(&row, "prop meta"), "{row:#?}");
-    assert!(
-        has(&row, "prop meta:time"),
-        "the time of day the local carries: {row:#?}"
-    );
-    // A day its type pairs no time of day with is the whole fact.
-    let (m, _) = lower(
-        "type Task {\n    title: Text (title)\n    due: Option<Date> = .none\n}\n\
-row view task_row for Task\n\
-view task_row(t: Task) {\n    row(t.title, meta: t.due)\n}",
-    );
-    let row = ui_calls(func(&m, "task_row"));
-    assert!(has(&row, "prop meta"), "{row:#?}");
-    assert!(!has(&row, "prop meta:time"), "{row:#?}");
 }
 
 /// A prop the checker sets on a described component that the component does not declare is the
@@ -375,83 +332,9 @@ fn a_prop_a_component_does_not_declare_fails_the_compile() {
     assert!(diags[0].message.contains("meta:tmie"), "{diags:#?}");
 }
 
-#[test]
-fn a_date_field_bound_to_a_days_date_offers_the_time_of_that_day() {
-    let (m, _) = lower(
-        "type Task {\n    due: Option<Date> = .none\n    at: Option<Time> (time of: due) = .none\n}\n\
-view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, optional: true)\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "task"));
-    let day = calls
-        .iter()
-        .position(|c| c == "node ui.DateField")
-        .unwrap_or_else(|| panic!("the day's field in {calls:#?}"));
-    let time = calls
-        .iter()
-        .position(|c| c == "node ui.TimeField")
-        .unwrap_or_else(|| panic!("the time of the day, in its own popover: {calls:#?}"));
-    assert!(day < time, "the time stands in the day's row: {calls:#?}");
-    assert_eq!(count(&calls, "bind"), 2, "the day and its time: {calls:#?}");
-    assert!(
-        has(&calls, "node slot"),
-        "the day's `time` slot: {calls:#?}"
-    );
-    assert!(has(&calls, "prop name"), "the slot is named: {calls:#?}");
-    assert!(has(&calls, "prop at"), "the chip says the time: {calls:#?}");
-    let names = strings(func(&m, "task"));
-    assert!(
-        names.contains(&"time".to_string()),
-        "the slot's name: {names:?}"
-    );
-    // A day the type pairs no time with is picked by its field alone.
-    let (m, _) = lower(
-        "type Task {\n    due: Option<Date> = .none\n}\n\
-view task(t: Task) {\n    field(\"Due\") {\n        ui.DateField(bind: t.due, optional: true)\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "task"));
-    assert!(!has(&calls, "node ui.TimePicker"), "{calls:#?}");
-}
-
 /// An item's page opens on what the item is: its title is the document's own title, in place
 /// and in its large type, and it takes the width the done checkbox leaves so a long one wraps
 /// beside it — never a small field of a form.
-#[test]
-fn a_page_opens_on_its_title_as_the_documents() {
-    let (m, _) = lower(
-        "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n}\n\
-view task(t: Task) {\n    std.document(t) {\n        opening(t)\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "task"));
-    assert!(has(&calls, "node ui.TextInput"), "{calls:#?}");
-    assert!(
-        has(&calls, "prop title"),
-        "the item's title is the document's: {calls:#?}"
-    );
-    assert!(has(&calls, "prop fill"), "{calls:#?}");
-    assert!(has(&calls, "node ui.Checkbox"), "{calls:#?}");
-}
-
-#[test]
-fn a_page_opens_with_what_its_block_draws_under_the_title() {
-    let (m, _) = lower(
-        "type Task {\n    title: Text (title)\n    notes: RichText (body)\n}\n\
-view task(t: Task) {\n    std.document(t) {\n        opening(t) {\n            ui.Text(\"From\")\n        }\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "task"));
-    let at = |needle: &str| {
-        calls
-            .iter()
-            .position(|call| call == needle)
-            .unwrap_or_else(|| panic!("no `{needle}` in {calls:#?}"))
-    };
-    let title = at("node ui.TextInput");
-    let line = at("node ui.Text");
-    let notes = at("node ui.BlockEditor");
-    assert!(
-        title < line && line < notes,
-        "what the block draws stands under the title and over the notes: {calls:#?}"
-    );
-}
 
 #[test]
 fn a_button_for_a_declared_action_takes_its_label_icon_and_role() {
@@ -649,7 +532,7 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
 #[test]
 fn a_callers_block_reads_its_names_in_the_callers_scope() {
     let got = diagnostics(
-        "type Note {\n    title: Text (title)\n}\ntype Notes {\n    items: Collection<Note>\n}\n\
+        "type Note {\n    title: Text\n}\ntype Notes {\n    items: Collection<Note>\n}\n\
          template view frame<T>(items: List<T>, row: (T, Int) -> View) {\n\
              ui.VirtualList {\n        for x in items {\n            row(x, 0)\n        }\n    }\n}\n\
          view notes(ns: Notes) {\n    frame(ns.items) { (x, at) ->\n        row(x.title)\n    }\n}",
@@ -707,7 +590,7 @@ fn a_condition_reading_an_argument_inside_a_lambda_waits_for_it() {
 
 #[test]
 fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
-    const FILTERS: &str = "type Task {\n    title: Text (title)\n    done: Bool (done) = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text (title)\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
+    const FILTERS: &str = "type Task {\n    title: Text\n    done: Bool = false\n    project: Option<Project> = .none\n    search {\n        filter \"Inbox\" = not done (icon: .inbox)\n        filter \"Done\" = done\n        filter project\n    }\n}\ntype Project {\n    name: Text\n}\ntype Board {\n    tasks: Collection<Task>\n    projects: Collection<Project>\n}\n";
     let view = "view board(b: Board) {\n    state place: Filter<Task> = Task.inbox\n    ui.NavList(selected: place) {\n        for f in filters(Task).filter(f -> f.toggle) {\n            ui.NavItem(f, f.label) {\n                on select: set(place, f)\n            }\n        }\n        for p in b.projects {\n            ui.NavItem(Task.project(p), p.name, icon: .folder) {\n                on select: set(place, Task.project(p))\n            }\n        }\n    }\n    for t in b.tasks.matching(place) {\n        text(t.title)\n    }\n}";
     let (m, ids) = lower(&format!("{FILTERS}{view}"));
     let task = ids.get("Task").expect("id").to_string();
@@ -770,62 +653,9 @@ fn a_filter_named_by_its_type_is_the_value_a_query_and_a_sidebar_take() {
 }
 
 #[test]
-fn only_a_control_that_draws_a_title_is_told_it_binds_one() {
-    // A field marked `(title)` bound by a text field is the document's title; bound by code to
-    // read, it is the text alone, and the code is never sent a prop it does not declare.
-    let (m, _) = lower(
-        "type Step {\n    program: Text (title)\n}\nroot Step\ndefault view step for Step\nview step(s: Step) {\n    ui.TextInput(value: s.program)\n    ui.CodeEditor(value: s.program, read_only: true)\n}",
-    );
-    let calls = ui_calls(func(&m, "step"));
-    let editor = calls
-        .iter()
-        .position(|c| c == "node ui.CodeEditor")
-        .expect("the code");
-    let titles: Vec<usize> = calls
-        .iter()
-        .enumerate()
-        .filter(|(_, c)| *c == "prop title")
-        .map(|(at, _)| at)
-        .collect();
-    assert_eq!(titles.len(), 1, "{calls:#?}");
-    assert!(titles.iter().all(|at| *at < editor), "{calls:#?}");
-}
-
-#[test]
-fn a_body_held_as_rich_text_binds_like_any_field() {
-    // A body is a rich text field a view places as the block editor and binds: the editor
-    // carries the binding, and the document's shell draws the title field as its title.
-    let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n    body: RichText (body)\n}\nroot Note\ndefault view note for Note\nview note(n: Note) {\n    std.document(n) {\n        ui.TextInput(value: n.title)\n        ui.BlockEditor(bind: n.body, placeholder: \"Write\")\n    }\n}",
-    );
-    let calls = ui_calls(func(&m, "note"));
-    let at = |want: &str| {
-        calls
-            .iter()
-            .position(|call| call == want)
-            .unwrap_or_else(|| panic!("{want} in {calls:#?}"))
-    };
-    let from =
-        |after: usize, want: &str| match calls.iter().skip(after).position(|call| call == want) {
-            Some(at) => at.saturating_add(after),
-            None => panic!("{want} after {after} in {calls:#?}"),
-        };
-    let input = at("node ui.TextInput");
-    let block = at("node ui.BlockEditor");
-    assert!(
-        from(input, "prop title") < block,
-        "the title field is drawn as the title: {calls:#?}"
-    );
-    assert!(
-        from(block, "bind") < from(block, "prop placeholder"),
-        "the body binds to the field: {calls:#?}"
-    );
-}
-
-#[test]
 fn a_document_page_and_transcript_are_shells_of_the_library() {
     let (m, _) = lower(
-        "type Person {\n    name: Text (title)\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
+        "type Person {\n    name: Text\n    vip: Bool = false\n    owner: Principal\n}\nenum Tab {\n    about\n    notes\n}\nroot Person\ndefault view person for Person\nview person(p: Person) {\n    state tab: Tab = .about\n    std.document(p) {\n        choice(bind: tab)\n        avatar(p.owner)\n        section(\"About\") {\n            facts(p)\n            form {\n                field(\"Name\") {\n                    input(bind: p.name)\n                }\n            }\n            toggle(\"VIP\", bind: p.vip)\n            ui.Card(item: p, title: meta(p).title) {\n                text(p.name, role: .caption)\n            }\n        }\n    }\n}",
     );
     let calls = ui_calls(func(&m, "person"));
     for want in [
@@ -865,7 +695,7 @@ fn a_document_page_and_transcript_are_shells_of_the_library() {
 #[test]
 fn an_event_that_carries_its_value_passes_it_to_the_action_as_it_is() {
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n    done: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot Notebook\ndefault view notebook for Notebook\naction check(n: Note, done: Bool) {\n    n.done = done\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false)\n    }\n}\nview note(n: Note) {\n    ui.ListRow(title: n.title) {\n        on activate: open(n)\n    }\n}",
+        "type Note {\n    title: Text\n    done: Bool = false\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nroot Notebook\ndefault view notebook for Notebook\naction check(n: Note, done: Bool) {\n    n.done = done\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(n, front: false)\n    }\n}\nview note(n: Note) {\n    ui.ListRow(title: n.title) {\n        on activate: open(n)\n    }\n}",
     );
     let mut placed = 0;
     visit(func(&m, "notebook"), &mut |e| {
@@ -875,7 +705,7 @@ fn an_event_that_carries_its_value_passes_it_to_the_action_as_it_is() {
     });
     assert_eq!(placed, 1, "the action holds the event's value in its place");
     let wrong = diagnostics(
-        "type Note {\n    title: Text (title)\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(nb.notes.first().unwrap_or(n))\n    }\n    ui.Button(\"Go\") {\n        on press(x: Note): open(x)\n    }\n}",
+        "type Note {\n    title: Text\n}\ntype Notebook {\n    notes: Collection<Note>\n}\nview notebook(nb: Notebook) {\n    ui.VirtualList {\n        on select(n: Note): open(nb.notes.first().unwrap_or(n))\n    }\n    ui.Button(\"Go\") {\n        on press(x: Note): open(x)\n    }\n}",
     );
     let codes: Vec<&str> = wrong.iter().map(|d| d.code.as_str()).collect();
     assert!(
@@ -887,7 +717,7 @@ fn an_event_that_carries_its_value_passes_it_to_the_action_as_it_is() {
 #[test]
 fn lenses_and_meta_are_values_a_view_reads() {
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n}\nview note(n: Note) {\n    let here = lenses(n)\n    stack {\n        text(meta(n).title)\n        text(meta(Note).noun)\n        text(\"{here.len()}\")\n    }\n}",
+        "type Note {\n    title: Text\n}\nview note(n: Note) {\n    let here = lenses(n)\n    stack {\n        text(meta(n).title)\n        text(meta(Note).noun)\n        text(\"{here.len()}\")\n    }\n}",
     );
     let mut imports = Vec::new();
     for f in &m.funcs {
@@ -1135,7 +965,7 @@ fn an_apps_view_named_as_the_libraries_expands_the_libraries() {
 #[test]
 fn a_time_shows_as_the_toolkits_relative_time() {
     let (m, _) = lower(
-        "type Note {\n    title: Text (title)\n    seen: Time\n}\n\
+        "type Note {\n    title: Text\n    seen: Time\n}\n\
          view when(n: Note) {\n    ui.Time(n.seen, secondary: true)\n}\n",
     );
     let calls = ui_calls(func(&m, "when"));
@@ -1153,8 +983,8 @@ fn a_views_list_of_filters_is_a_list_of_filters() {
     let (m, _) = lower(
         r#"
 type Task {
-    title: Text (title)
-    done: Bool (done) = false
+    title: Text
+    done: Bool = false
     search {
         filter "Inbox" = not done (icon: .inbox)
         filter "Done" = done

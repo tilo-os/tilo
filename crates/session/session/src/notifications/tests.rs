@@ -63,6 +63,11 @@ struct Rig {
 }
 
 fn rig() -> Rig {
+    rig_at(None)
+}
+
+/// A rig whose centre is kept at `history`, so a next session can open it.
+fn rig_at(history: Option<std::path::PathBuf>) -> Rig {
     let daemon = Notifications::new();
     let heard = Arc::new(Heard::default());
     let tap = Arc::clone(&heard);
@@ -97,6 +102,7 @@ fn rig() -> Rig {
         Arc::clone(&policy),
         Rc::clone(&signals),
         Some(power.clone()),
+        history,
     )));
     Rig {
         daemon,
@@ -225,6 +231,29 @@ fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     );
     assert_eq!(named.addressed, Some(Addressed::IncomingCall));
     assert!(!named.bypass_dnd, "an app never pierces Do Not Disturb");
+}
+
+/// A program the session proved with no installed app behind it is named by
+/// the name it gives itself, and by its file's words when it gives none: a
+/// banner and the centre never show the path it runs from.
+#[test]
+fn a_program_is_named_by_itself_never_by_its_path() {
+    let mut program = sent(6);
+    program.app_name = "/usr/bin/notify-send".into();
+    let named = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0);
+    assert_eq!(
+        named.app_name.as_deref(),
+        Some("Notify Send"),
+        "a program that names itself by its path is named by its file"
+    );
+
+    program.app_name = "Notes".into();
+    let says = shown(from_app(program, "/usr/bin/notify-send"), 0);
+    assert_eq!(
+        says.app_name.as_deref(),
+        Some("Notes"),
+        "the program's own name is what the person reads"
+    );
 }
 
 #[test]
@@ -391,32 +420,86 @@ fn read_in_full_moves_it_to_the_centre() {
     assert_eq!(rig.history(), ["New mail"]);
 }
 
+/// Opening the centre is the person reading it: the bar's bell stops
+/// counting, and what the centre keeps stays kept.
 #[test]
-fn the_centre_lists_what_arrived_named_after_its_app() {
+fn opening_the_centre_reads_what_it_keeps() {
     let rig = rig();
     let id = rig.daemon.alloc_id();
-    let mut message = sent(id);
-    message.caller = Some(Caller {
-        app_id: "so.tilo.mail".into(),
-        workspace: None,
-    });
-    rig.daemon.push(message);
+    rig.daemon.push(sent(id));
     rig.step();
-    // The person reads it in full: it leaves the banner for the centre.
-    rig.ask(Ask::Read(rig.banner().id));
+    assert_eq!(rig.signals.unread(), 1, "the bell counts it unread");
+
+    rig.desktop.mark_read();
     rig.step();
-    let view = rig.bridge.borrow().centre();
-    assert_eq!(view.rows.len(), 1, "the centre lists it");
-    assert_eq!(view.rows[0].title, "New mail");
+    assert_eq!(rig.signals.unread(), 0, "opening the centre reads it");
     assert_eq!(
-        view.rows[0].app, "Mail",
-        "named by the app's own name, never its id"
+        rig.feed().banners.len(),
+        1,
+        "reading it does not take it off the screen"
     );
-    assert!(view.rows[0].opens, "it can be opened");
-    assert_eq!(view.quiet, None, "it is not held by quiet");
 }
 
-/// The centre's own resource is what the panel reads and invokes: the rows
+/// A banner over an open centre would take the presses meant for its rows:
+/// an arrival while the centre is open goes straight into it, and banners
+/// come back once it closes.
+#[test]
+fn an_open_centre_holds_new_banners_until_it_closes() {
+    let rig = rig();
+    rig.bridge.borrow().desktop().set_centre_open(true);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert!(
+        rig.feed().banners.is_empty(),
+        "no banner over the centre's rows"
+    );
+    assert_eq!(
+        rig.history(),
+        ["New mail"],
+        "it waits in the centre instead"
+    );
+
+    rig.bridge.borrow().desktop().set_centre_open(false);
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(sent(id));
+    rig.step();
+    assert_eq!(rig.feed().banners.len(), 1, "and shows again after");
+}
+
+/// What the centre kept is written where this person's state lives, and the
+/// next session opens the centre the last one left.
+#[test]
+fn the_centre_opens_with_what_the_last_session_kept() {
+    let path = tilo_paths::memory_temp_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(format!("tilo-notifications-{}.json", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let rig = rig_at(Some(path.clone()));
+    let id = rig.daemon.alloc_id();
+    rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+    rig.step();
+    rig.ask(Ask::Read(rig.banner().id));
+    rig.step();
+    assert!(path.is_file(), "the centre was written");
+
+    let reopened = DesktopNotifications::default();
+    super::restore_kept(&reopened, &path);
+    let next = SessionNotifications::new(
+        None,
+        reopened,
+        Link::new(),
+        Arc::clone(&rig.policy),
+        Rc::new(NoticeSignals::default()),
+        None,
+        Some(path.clone()),
+    );
+    let centre = next.centre();
+    assert_eq!(centre.count, 1, "the next session opens the centre it had");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// The centre's own resource is what the desk reads and invokes: how many
 /// it keeps, and the verbs that dismiss, run, clear and bring back. What
 /// people said to this person is personal, so only a caller the workspace
 /// grants reads it.
@@ -450,24 +533,21 @@ fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
         "what people said to this person is personal"
     );
     assert!(served.poll(), "what the centre keeps is a reading");
-    let centre = centre_of(&served);
-    assert_eq!(centre.count, 2, "the root page counts them");
-    let newest = centre.rows[0].clone();
-    assert_eq!(
-        newest.app, "Mail",
-        "named by the app's own name, never its id"
-    );
-    assert_eq!(
-        newest.actions,
-        [("open".to_owned(), "Open".to_owned())],
-        "the panel offers the sender's actions"
-    );
+    assert_eq!(centre_of(&served).count, 2, "the centre counts them");
+    let newest = rig
+        .desktop
+        .log()
+        .history()
+        .iter()
+        .find(|notification| notification.app_id.as_deref() == Some("so.tilo.mail"))
+        .map(|notification| notification.id)
+        .expect("the mail is kept");
 
     // The person runs the notification's own action from its row.
     invoke(
         &mut served,
         "act",
-        serde_json::json!({ "notification": newest.id, "action": "open" }),
+        serde_json::json!({ "notification": newest, "action": "open" }),
     );
     rig.step();
     assert_eq!(
@@ -476,23 +556,19 @@ fn the_centre_publishes_what_it_keeps_and_the_verbs_that_change_it() {
         "the action reached the app that sent it"
     );
 
-    // Dismissing it takes it out of the centre the panel lists.
+    // Dismissing it takes it out of the centre.
     invoke(
         &mut served,
         "dismiss",
-        serde_json::json!({ "notification": newest.id }),
+        serde_json::json!({ "notification": newest }),
     );
     assert!(served.poll(), "the centre moved");
-    let centre = centre_of(&served);
-    assert_eq!(centre.count, 1, "it is no longer listed");
-    assert!(!centre.rows.iter().any(|row| row.id == newest.id));
+    assert_eq!(centre_of(&served).count, 1, "it is no longer kept");
 
     // Clearing the rest can be brought back.
     invoke(&mut served, "clear", serde_json::json!({}));
     assert!(served.poll());
-    let cleared = centre_of(&served);
-    assert_eq!(cleared.count, 0, "the centre is empty");
-    assert!(cleared.can_undo, "and the person can bring it back");
+    assert_eq!(centre_of(&served).count, 0, "the centre is empty");
     invoke(&mut served, "undo-clear", serde_json::json!({}));
     assert!(served.poll());
     assert_eq!(centre_of(&served).count, 1, "what was cleared is back");
@@ -544,8 +620,9 @@ fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
     invoke(&mut served, "set-quiet", serde_json::json!({ "on": true }));
     assert!(served.poll(), "the switch changed the centre's reading");
     assert_eq!(
-        centre_of(&served).quiet.as_deref(),
+        rig.bridge.borrow().quiet_status().as_deref(),
         Some(notifications::quiet_label(&QuietReason::DoNotDisturb).as_str()),
+        "the centre's header says why banners are held"
     );
 
     let id = rig.daemon.alloc_id();
@@ -560,7 +637,7 @@ fn the_do_not_disturb_switch_is_a_verb_of_the_centre() {
     rig.daemon.push(sent(id));
     rig.step();
     assert_eq!(rig.feed().banners.len(), 1, "banners come back");
-    assert!(centre_of(&served).quiet.is_none());
+    assert!(rig.bridge.borrow().quiet_status().is_none());
 }
 
 /// While an app presents it holds the machine from going idle, which is how
@@ -585,7 +662,7 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
     );
     let label = notifications::quiet_label(&QuietReason::Presenting);
     assert_eq!(
-        rig.bridge.borrow().centre().quiet.as_deref(),
+        rig.bridge.borrow().quiet_status().as_deref(),
         Some(label.as_str()),
         "the bar and the centre say the person is presenting"
     );
@@ -610,7 +687,7 @@ fn presenting_holds_the_banner_and_silences_it_without_touching_do_not_disturb()
         "it shows again once the hold is gone"
     );
     assert!(!rig.signals.quiet());
-    assert_eq!(rig.bridge.borrow().centre().quiet, None);
+    assert!(rig.bridge.borrow().quiet_status().is_none());
     assert!(
         should_play(
             SystemSoundEvent::Notification,

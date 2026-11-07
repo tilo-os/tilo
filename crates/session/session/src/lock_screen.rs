@@ -321,6 +321,9 @@ impl crate::Session {
             // always ask for it.
             keyboard: true,
             power: !self.shared.hosted,
+            // What waits behind the unlock, as the bar's bell counts it: a
+            // locked machine still says the person has news.
+            notifications: self.shared.notifications.borrow().desktop().unread(),
         }
     }
 
@@ -367,7 +370,7 @@ impl crate::Session {
                     Some((layout, variant)) => (layout.to_owned(), variant.to_owned()),
                     None => (source, String::new()),
                 };
-                crate::apply_keyboard(
+                crate::controls::apply_keyboard(
                     &mut self.compositor,
                     &tilo_compositor::KeyboardLayout {
                         layout,

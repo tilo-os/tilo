@@ -16,7 +16,6 @@ de-DE activity-resume-context glyph
 de-DE search-window-close-group-detail glyph
 de-DE search-window-close-tab-detail glyph
 de-DE workspace-settings-agent-access-always glyph
-de-DE workspace-settings-agent-detail glyph
 de-DE workspace-settings-permission-detail glyph
 de-DE workspace-settings-service-member glyph
 en-US activity-agent-task-people glyph
@@ -35,6 +34,5 @@ en-US activity-resume-context glyph
 en-US search-window-close-group-detail glyph
 en-US search-window-close-tab-detail glyph
 en-US workspace-settings-agent-access-always glyph
-en-US workspace-settings-agent-detail glyph
 en-US workspace-settings-permission-detail glyph
 en-US workspace-settings-service-member glyph

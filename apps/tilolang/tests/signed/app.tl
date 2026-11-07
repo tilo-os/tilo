@@ -2,7 +2,7 @@ app so.tilo.lang.signed "Signed" (icon: .file_text, category: .office)
 
 /// A page: its title, and who changed it last.
 type Page {
-    title: Text (title)
+    title: Text
 }
 
 root page: Page

@@ -38,7 +38,7 @@ use crate::paint::{elide, line_in, line_of, text, width_of};
     clippy::struct_excessive_bools,
     reason = "independent facts about one participant (talking, muted, deafened, audio only, sharing), each read on its own"
 )]
-struct Participant {
+pub(crate) struct Participant {
     user: String,
     /// The call hears them now: their face rings.
     talking: bool,
@@ -79,8 +79,8 @@ pub(crate) enum CallStage {
 
 /// One expanded-overlay control button, as laid out by
 /// [`ChatApp::overlay_controls_layout`]:
-/// `(label, active, danger, enabled, hit, rect)`.
-type OverlayButton = (String, bool, bool, bool, Hit, Rect);
+/// `(label, danger, enabled, hit, rect)`.
+type OverlayButton = (String, bool, bool, Hit, Rect);
 
 /// Catalogue keys of every label the controls bar can show, both halves of
 /// each toggle pair included, so the measurement covers a label before the
@@ -250,7 +250,7 @@ impl ChatApp {
 
     /// The local listening panel followed by authenticated remote audio streams.
     /// This is not a complete participant or listener roster.
-    fn call_participants(&self) -> Vec<Participant> {
+    pub(crate) fn call_participants(&self) -> Vec<Participant> {
         let members: &[VoiceMember] = self.voice_in(&self.call.channel);
         let mut out: Vec<Participant> = Vec::new();
         // Host = this peer.
@@ -593,14 +593,52 @@ impl ChatApp {
         Rect::new(v.x0 - left, v.y0 - top, v.x1 + right, v.y1 + bottom)
     }
 
-    /// How many are in the call, as its panel says it ("2 in call"). A call
-    /// that ended for a reason counts only who is still in it.
-    pub(crate) fn call_count_label(&self) -> String {
-        let n = self
-            .call_participants()
-            .len()
-            .saturating_sub(usize::from(!self.in_call()));
-        crate::i18n::t_args("chat-call-count", &[("count", n.into())])
+    /// Who the call is with, as the call's own accessibility reading names
+    /// them: the other people in it, never the channel's slug and never this
+    /// person's own name alone.
+    pub(crate) fn call_people_label(&self) -> String {
+        Self::people_line(&self.call_people(|id| self.user_name(id)))
+    }
+
+    /// The same people as a narrow line names them — the card's hero and the
+    /// panel's title bar: given names, because a line that carries three
+    /// names, a count and a run time has room for a first name and not for a
+    /// surname, and a surname cut in half says nothing.
+    pub(crate) fn call_people_short_label(&self) -> String {
+        Self::people_line(&self.call_people(|id| self.given_name(id)))
+    }
+
+    /// Who is in the call beside this person, each named by `name`. The
+    /// participants that matter are the others: a call is never only its
+    /// reader, so this person's own name is left out of every line.
+    fn call_people(&self, name: impl Fn(&str) -> String) -> Vec<String> {
+        self.call_participants()
+            .iter()
+            .filter(|p| !self.is_me(&p.user))
+            .map(|p| name(&p.user))
+            .collect()
+    }
+
+    fn people_line(names: &[String]) -> String {
+        match names {
+            [] => crate::i18n::t("chat-call-only-you"),
+            [only] => only.clone(),
+            [first, second] => crate::i18n::t_args(
+                "chat-call-people-two",
+                &[
+                    ("first", first.clone().into()),
+                    ("second", second.clone().into()),
+                ],
+            ),
+            [first, second, others @ ..] => crate::i18n::t_args(
+                "chat-call-people-many",
+                &[
+                    ("first", first.clone().into()),
+                    ("second", second.clone().into()),
+                    ("count", others.len().into()),
+                ],
+            ),
+        }
     }
 
     /// How the call is connected, as its status line says it.
@@ -650,19 +688,19 @@ impl ChatApp {
             .map_or_else(|| crate::i18n::t("chat-call-untitled"), |c| c.name.clone());
         ui::surface::floating_drag_grip(scene, tf, panel, local.text_dim);
         let sp = &theme.tokens.spacing;
-        let count = self.call_count_label();
-        let count_style = local.text(TextRole::Caption).numeric();
-        let count_w = width_of(tr, &count, &count_style);
+        let people = self.call_people_short_label();
+        let people_style = local.text(TextRole::Caption).numeric();
+        let people_w = width_of(tr, &people, &people_style);
         let inset = f64::from(sp.s4);
         let mut ctx = PaintCtx::new(scene, tf, tr, &local);
         line_in(
             &mut ctx,
-            &count,
-            &count_style,
+            &people,
+            &people_style,
             local.text_dim,
-            title_bar.x1 - inset - count_w,
+            title_bar.x1 - inset - people_w,
             title_bar,
-            count_w + 1.0,
+            people_w + 1.0,
         );
         line_in(
             &mut ctx,
@@ -671,7 +709,7 @@ impl ChatApp {
             local.text_primary,
             title_bar.x0 + inset,
             title_bar,
-            title_bar.width() - 3.0 * inset - count_w,
+            title_bar.width() - 3.0 * inset - people_w,
         );
         ChatApp::push_hit(hits, title_bar, Hit::CallDragHandle);
     }
@@ -901,20 +939,18 @@ impl ChatApp {
         // Sibling controls sit an `s2` apart, like the expanded bar's.
         let gap = f64::from(theme.tokens.spacing.s2);
         // The microphone and leaving are the window bar's.
-        let mut ctrls: Vec<(String, Icon, ButtonRole, Hit)> = vec![
+        let mut ctrls: Vec<(String, ButtonRole, Hit)> = vec![
             (
                 crate::i18n::t(if self.call.audio_only {
                     "chat-call-camera-on"
                 } else {
                     "chat-call-camera-off"
                 }),
-                Icon::Video,
                 ButtonRole::Secondary,
                 Hit::CallCamera,
             ),
             (
                 crate::i18n::t("chat-call-expand"),
-                Icon::Maximize2,
                 ButtonRole::Secondary,
                 Hit::CallExpand,
             ),
@@ -934,31 +970,271 @@ impl ChatApp {
             }
         }
         let cw = share(ctrls.len());
-        let fits = ctrls.iter().all(|(label, icon, ..)| {
+        let fits = ctrls.iter().all(|(label, .., hit)| {
             ButtonFace::new(Rect::ZERO, label)
-                .icon(*icon)
+                .icon(control_icon(hit, self.call.muted))
                 .control_size(ControlSize::Small)
                 .intrinsic_width(tr, theme)
                 <= cw
         });
         let mut x = panel.x0 + pad;
-        for (label, icon, role, hit) in ctrls {
+        for (label, role, hit) in ctrls {
             let r = Rect::new(x, cy, x + cw, cy + bh);
-            let hovered = self.call_control_is_hovered(&hit);
-            let face = if fits {
-                ButtonFace::new(r, &label).icon(icon)
-            } else {
-                ButtonFace::icon_only(r, icon, &label)
-            };
             Button::paint(
                 scene,
                 tf,
                 tr,
                 theme,
-                &face
-                    .role(role)
-                    .control_size(ControlSize::Small)
-                    .hovered(hovered),
+                &self
+                    .call_control_face(r, &label, &hit, role, fits)
+                    .control_size(ControlSize::Small),
+            );
+            ChatApp::push_hit(hits, r, hit);
+            x = r.x1 + gap;
+        }
+    }
+
+    /// The call as the shell's floating layer places it, over the desk: the
+    /// card's body at the width the layer's column gives it. Who is in the
+    /// call leads — their faces stacked, their names and the run time beside
+    /// them — then how the call is connected, then what the person does from
+    /// here: mute, camera, leave. The header takes the call back into the
+    /// window that draws it.
+    pub(crate) fn draw_call_card(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let c = &self.chrome;
+        let pad = c.call_inset;
+        let panel = self.call_video_rect();
+        let local = theme.on_ground(ui::chrome::panel_ground(theme));
+        // A floating Panel: its shadow, material and edge.
+        ui::widget::floating_surface::paint(scene, tf, panel, theme);
+        let head = Rect::new(
+            panel.x0 + pad,
+            panel.y0 + pad,
+            panel.x1 - pad,
+            panel.y0 + pad + c.call_title_h,
+        );
+        self.draw_call_card_head(scene, tf, tr, theme, &local, head, hits);
+        let hero = Rect::new(
+            head.x0,
+            head.y1 + c.call_gap,
+            head.x1,
+            head.y1 + c.call_gap + c.call_card_hero_h,
+        );
+        self.draw_call_card_people(scene, tf, tr, &local, hero);
+        let status = Rect::new(
+            hero.x0,
+            hero.y1 + c.call_gap,
+            hero.x1,
+            hero.y1 + c.call_gap + c.call_status_h,
+        );
+        self.draw_call_card_status(scene, tf, tr, theme, &local, status);
+        self.draw_call_card_footer(scene, tf, tr, theme, panel, hits);
+    }
+
+    /// The card's header: what it is, and the way back into the window that
+    /// draws the call as a call.
+    fn draw_call_card_head(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        local: &Theme,
+        head: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let sp = &theme.tokens.spacing;
+        let icon = f64::from(theme.tokens.metrics.icon_lg);
+        let open_label = crate::i18n::t("chat-call-open-window");
+        let open = Rect::from_center_size(
+            Point::new(head.x1 - icon / 2.0, head.center().y),
+            (icon + 2.0 * f64::from(sp.s2), self.chrome.call_title_h),
+        );
+        let head_room = open.x0 - head.x0 - f64::from(sp.s2);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &crate::i18n::t("chat-call-untitled"),
+            &local.text(TextRole::Label).strong(),
+            local.text_primary,
+            head.x0,
+            head,
+            head_room,
+        );
+        let face = ButtonFace::icon_only(open, Icon::Maximize2, &open_label)
+            .hovered(self.call_control_is_hovered(&Hit::CallOpenWindow));
+        Button::paint(scene, tf, tr, theme, &face);
+        ChatApp::push_hit(hits, head, Hit::CallOpenWindow);
+        ChatApp::push_hit(hits, open, Hit::CallOpenWindow);
+    }
+
+    /// Who the call is with, on one line: their faces stacked, their names
+    /// beside them and how long the call runs at its trailing edge. The faces
+    /// stay the size of a list row so the names keep the card's width, and a
+    /// crowd is counted in the names rather than given a row each.
+    fn draw_call_card_people(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        local: &Theme,
+        hero: Rect,
+    ) {
+        let sp = &local.tokens.spacing;
+        let cy = hero.center().y;
+        let run = crate::live::elapsed(&self.call, ui::time::now());
+        let run_style = local.text(TextRole::Label).numeric();
+        let run_w = width_of(tr, &run, &run_style);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &run,
+            &run_style,
+            local.text_dim,
+            hero.x1 - run_w,
+            hero,
+            run_w + 1.0,
+        );
+
+        // The people beside this one, in the order the call names them: their
+        // faces stack a third behind each other, and the names say who they
+        // are without the stack growing with the headcount.
+        let others: Vec<String> = self
+            .call_participants()
+            .iter()
+            .filter(|p| !self.is_me(&p.user))
+            .map(|p| p.user.clone())
+            .collect();
+        let face = self.chrome.call_card_face_h;
+        let step = face * crate::geometry::CALL_CARD_STACK_STEP;
+        let stacked = others.len().min(crate::geometry::CALL_CARD_FACES);
+        for (index, user) in others.iter().take(stacked).enumerate() {
+            self.paint_call_face(
+                &mut PaintCtx::new(scene, tf, tr, local),
+                Rect::from_center_size(
+                    Point::new(
+                        hero.x0 + face / 2.0 + ui::num::f64_of_usize(index) * step,
+                        cy,
+                    ),
+                    (face, face),
+                ),
+                user,
+            );
+        }
+        let name_x = if stacked == 0 {
+            hero.x0
+        } else {
+            hero.x0 + face + ui::num::f64_of_usize(stacked - 1) * step + f64::from(sp.s2)
+        };
+        let room = (hero.x1 - run_w - f64::from(sp.s3) - name_x).max(0.0);
+        let style = local.text(TextRole::Heading);
+        let names = elide(tr, &self.call_people_short_label(), &style, room);
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &names,
+            &style,
+            local.text_primary,
+            name_x,
+            Rect::new(name_x, hero.y0, name_x + room, hero.y1),
+            room + 1.0,
+        );
+    }
+
+    /// How the call is connected, or what stands in its way.
+    fn draw_call_card_status(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        local: &Theme,
+        status: Rect,
+    ) {
+        let (status_text, status_ink) = match self
+            .media_error
+            .as_ref()
+            .filter(|_| !self.native_voice.ended_for_a_reason())
+        {
+            Some(error) => (error.clone(), theme.tokens.colors.media.ink),
+            None => (self.call_connection_label(), local.text_dim),
+        };
+        line_in(
+            &mut PaintCtx::new(scene, tf, tr, local),
+            &status_text,
+            &local.text(TextRole::Caption),
+            status_ink,
+            status.x0,
+            status,
+            status.width(),
+        );
+    }
+
+    /// The row the person acts in: mute, camera, leave.
+    fn draw_call_card_footer(
+        &self,
+        scene: &mut Scene,
+        tf: Affine,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        panel: Rect,
+        hits: &mut Vec<(Rect, Hit)>,
+    ) {
+        let muted = self.call.muted || self.call.deafened;
+        let controls: Vec<(String, ButtonRole, Hit)> = vec![
+            (
+                crate::i18n::t(if muted {
+                    "chat-call-unmute"
+                } else {
+                    "chat-call-mute"
+                }),
+                ButtonRole::Secondary,
+                Hit::CallMute,
+            ),
+            (
+                crate::i18n::t(if self.call.audio_only {
+                    "chat-call-camera-on"
+                } else {
+                    "chat-call-camera-off"
+                }),
+                ButtonRole::Secondary,
+                Hit::CallCamera,
+            ),
+            (
+                crate::i18n::t("chat-call-leave"),
+                ButtonRole::Destructive,
+                Hit::CallLeave,
+            ),
+        ];
+        let sp = &theme.tokens.spacing;
+        let bh = self.chrome.call_controls_h;
+        let gap = f64::from(sp.s2);
+        let count = ui::num::f64_of_usize(controls.len());
+        let cw =
+            ((panel.width() - 2.0 * self.chrome.call_inset - (count - 1.0) * gap) / count).max(0.0);
+        let fits = controls.iter().all(|(label, .., hit)| {
+            ButtonFace::new(Rect::ZERO, label)
+                .icon(control_icon(hit, self.call.muted))
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+                <= cw
+        });
+        let cy = panel.y1 - self.chrome.call_inset - bh;
+        let mut x = panel.x0 + self.chrome.call_inset;
+        for (label, role, hit) in controls {
+            let r = Rect::new(x, cy, x + cw, cy + bh);
+            Button::paint(
+                scene,
+                tf,
+                tr,
+                theme,
+                &self
+                    .call_control_face(r, &label, &hit, role, fits)
+                    .control_size(ControlSize::Small),
             );
             ChatApp::push_hit(hits, r, hit);
             x = r.x1 + gap;
@@ -1140,16 +1416,14 @@ impl ChatApp {
         ui::surface::shadow(scene, tf, bar, radius, &theme.tokens.elevation.floating);
         ui::surface::panel(scene, tf, bar, radius, theme);
         let local = theme.on_ground(ui::chrome::panel_ground(theme));
-        for (label_txt, _on, danger, enabled, hit, r) in buttons {
-            let hovered = self.call_control_is_hovered(&hit);
-            let face = ButtonFace::new(r, &label_txt)
-                .icon(control_icon(&hit, self.call.muted))
-                .role(if danger {
-                    ButtonRole::Destructive
-                } else {
-                    ButtonRole::Secondary
-                })
-                .hovered(hovered)
+        for (label_txt, danger, enabled, hit, r) in buttons {
+            let role = if danger {
+                ButtonRole::Destructive
+            } else {
+                ButtonRole::Secondary
+            };
+            let face = self
+                .call_control_face(r, &label_txt, &hit, role, true)
                 .disabled(!enabled);
             Button::paint(scene, tf, tr, &local, &face);
             if enabled {
@@ -1245,11 +1519,11 @@ impl ChatApp {
     }
 
     /// The expanded overlay's controls in bar order:
-    /// `(label, active, danger, enabled, hit)`. One source for the layout
-    /// (which sizes buttons from these labels) and the pre-paint measurement
-    /// (which measures exactly these labels), so a toggled label — Mute →
-    /// Unmute — is measured the frame it appears.
-    fn overlay_control_specs(&self) -> [(String, bool, bool, bool, Hit); 4] {
+    /// `(label, danger, enabled, hit)`. One source for the layout (which
+    /// sizes buttons from these labels) and the pre-paint measurement (which
+    /// measures exactly these labels), so a toggled label — Mute → Unmute —
+    /// is measured the frame it appears.
+    fn overlay_control_specs(&self) -> [(String, bool, bool, Hit); 4] {
         let t = crate::i18n::t;
         let speak = self.call_allows(crate::call::CallAction::Speak);
         // The microphone and leaving are the window bar's, wherever the call
@@ -1261,7 +1535,6 @@ impl ChatApp {
                 } else {
                     "chat-call-deafen"
                 }),
-                self.call.deafened,
                 false,
                 true,
                 Hit::CallDeafen,
@@ -1272,7 +1545,6 @@ impl ChatApp {
                 } else {
                     "chat-call-camera-off"
                 }),
-                !self.call.audio_only,
                 false,
                 speak,
                 Hit::CallCamera,
@@ -1283,12 +1555,11 @@ impl ChatApp {
                 } else {
                     "chat-call-share-screen"
                 }),
-                self.call.sharing,
                 false,
                 speak,
                 Hit::CallScreen,
             ),
-            (t("chat-call-collapse"), false, false, true, Hit::CallExpand),
+            (t("chat-call-collapse"), false, true, Hit::CallExpand),
         ]
     }
 
@@ -1337,8 +1608,8 @@ impl ChatApp {
                     continue;
                 };
                 let r = Rect::new(x, ry, x + w, ry + bh);
-                let (label_txt, on, danger, enabled, hit) = spec;
-                out.push((label_txt.clone(), *on, *danger, *enabled, hit.clone(), r));
+                let (label_txt, danger, enabled, hit) = spec;
+                out.push((label_txt.clone(), *danger, *enabled, hit.clone(), r));
                 x += w + gap;
             }
             ry += bh + gap;
@@ -1514,6 +1785,44 @@ impl ChatApp {
         self.call_hovered
             .as_ref()
             .is_some_and(|hovered| std::mem::discriminant(hovered) == std::mem::discriminant(hit))
+    }
+
+    /// Whether a call control's feature is on in a way the person needs to see
+    /// at a glance: the microphone off, the sound off, the screen shared. The
+    /// camera's on is how a call starts, so its name carries its state.
+    pub(crate) fn call_control_engaged(&self, hit: &Hit) -> bool {
+        match hit {
+            Hit::CallMute => self.call.muted || self.call.deafened,
+            Hit::CallDeafen => self.call.deafened,
+            Hit::CallScreen => self.call.sharing,
+            _ => false,
+        }
+    }
+
+    /// A call control's face, the same on every surface that shows the call —
+    /// the card, the window's call and the expanded call: its glyph, its name
+    /// and, while its engaged state holds, the accent's fill so an engaged
+    /// control never reads like a resting one.
+    fn call_control_face<'a>(
+        &self,
+        r: Rect,
+        label: &'a str,
+        hit: &Hit,
+        role: ButtonRole,
+        with_label: bool,
+    ) -> ButtonFace<'a> {
+        let icon = control_icon(hit, self.call.muted);
+        let face = if with_label {
+            ButtonFace::new(r, label).icon(icon)
+        } else {
+            ButtonFace::icon_only(r, icon, label)
+        };
+        face.role(if self.call_control_engaged(hit) {
+            ButtonRole::Primary
+        } else {
+            role
+        })
+        .hovered(self.call_control_is_hovered(hit))
     }
 
     /// The toolkit's shared emoji picker beside its anchor. Its emoji and

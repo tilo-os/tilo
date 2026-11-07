@@ -12,11 +12,11 @@ const APP: &str = "so.tilo.lang.pins";
 const PINS: &str = r#"app so.tilo.lang.pins "Pins"
 
 type Note {
-    text: Text (title)
+    text: Text
 }
 
 type Link {
-    url: Text (title)
+    url: Text
     visits: Int merge counter
 }
 

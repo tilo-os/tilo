@@ -90,10 +90,11 @@ fn current<'peer, P: Policy>(
         .delegate
         .as_ref()
         .map(|row| match &row.delegation.delegate {
-            Delegate::Agent { agent_id } => tilo_action_policy::roles::agent_delegation(
+            Delegate::Agent { agent_id } => tilo_action_policy::roles::agent_turn(
                 &peer.workspace,
                 agent_id,
                 person.as_str(),
+                &[],
             ),
             Delegate::Bot { installation } => tilo_action_policy::bot::bound(installation),
         });

@@ -69,6 +69,11 @@ tilo-automerge-isolate.workspace = true
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the desk's
 # action vocabulary.
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The outside origins the session's own services keep records in step with: the mail and
+# YouTube connectors' clients, and the registry that makes an origin's connector reachable
+# (`tilolang_tilo::origin::remote`).
+tilolang-mail = { path = "../../platform/tilolang-mail", default-features = false }
+tilolang-youtube = { path = "../../platform/tilolang-youtube" }
 # The toolkit's words, which what a package the session runs publishes reads through.
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-resource = { path = "../../sdk/tilo-resource" }

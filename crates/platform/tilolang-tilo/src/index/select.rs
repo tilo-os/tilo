@@ -13,7 +13,6 @@ use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
-use tilolang::pred::{CmpOp, Operand};
 use tilolang_runtime::query::Order;
 use tilolang_runtime::store::{FieldRead, Listing, Lit, Pred, StoreError, lit_of, ordered_cmp};
 
@@ -134,51 +133,7 @@ fn run_bounds(
     Ok(bounds(pages, run))
 }
 
-/// Whether `residual` is the type's done test, `not done`: the items a place leaves out of its
-/// count and draws only in its foot. `not done` reads as the flag set, negated, or as the flag
-/// compared with `false`.
-fn is_open_test(schema: &TypeSchema, residual: &Pred) -> bool {
-    let Some(done) = schema.done() else {
-        return false;
-    };
-    let set = |field: &FieldRead, value: bool| value && field.spec.id == done;
-    match residual {
-        Pred::Not(inner) => match inner.as_ref() {
-            Pred::Cmp(CmpOp::Eq, Operand::Field(field), Operand::Lit(Lit::Bool(value))) => {
-                set(field, *value)
-            }
-            _ => false,
-        },
-        Pred::Cmp(CmpOp::Eq, Operand::Field(field), Operand::Lit(Lit::Bool(false))) => {
-            field.spec.id == done
-        }
-        _ => false,
-    }
-}
-
 impl View<'_> {
-    /// How many of the run `run` of the column `column` are open, from the counts of
-    /// [`columns::open_list`]: `None` when the column's entries are not counted apart.
-    fn open_count(
-        &self,
-        (resource, field): (&str, &str),
-        schema: &crate::schema::TypeSchema,
-        column: &crate::schema::ColumnSchema,
-        run: &(String, String),
-    ) -> Result<Option<usize>, StoreError> {
-        if !columns::open_split(column, schema.done()) {
-            return Ok(None);
-        }
-        let list = columns::open_list(&scope_list(resource, field, &column.name));
-        let mut open = 0usize;
-        for (value, count) in self.snapshot.counts(&list).map_err(index_error)? {
-            if columns::holds_value(&value, run) {
-                open = open.saturating_add(usize::try_from(count).unwrap_or(usize::MAX));
-            }
-        }
-        Ok(Some(open))
-    }
-
     /// The items of the collection `field` of `resource` (of the type `schema`) that `pred`
     /// holds of (all of them for none), in `order` (the collection's for none).
     ///
@@ -330,7 +285,6 @@ impl View<'_> {
         if !in_order {
             return Ok(None);
         }
-        let counted_run = run.clone();
         let run = self.run_as_written(
             (resource, field),
             schema,
@@ -343,16 +297,6 @@ impl View<'_> {
         let Some(residual) = rest(conj, Some(at)) else {
             return Ok(Some(Listing::paged(Rc::new(run.locating(locate)))));
         };
-        // A run narrowed to the items open: how many it holds is the column's open counts,
-        // read from the index before any of its entries is checked. The open writes are not in
-        // those counts yet, so a run one changed keeps the most it can have.
-        let mut known = None;
-        if touched.is_empty()
-            && is_open_test(schema, &residual)
-            && let Some(column) = column
-        {
-            known = self.open_count((resource, field), schema, column, &counted_run)?;
-        }
         // The listing outlives this read, so it holds the snapshot and the schema itself: a
         // check of the run reads the index's fields, which hold the open writes too.
         let Some(keep_schema) = crate::schema::lookup(&schema.id) else {
@@ -374,10 +318,6 @@ impl View<'_> {
         // The most the listing can hold: the run's own count, or the count of a narrower
         // conjunct of the predicate, which the run is read against item by item.
         let filtered = Filtered::new(run, keep).locating(locate).bounded(bound);
-        let filtered = match known {
-            Some(open) => filtered.known(open),
-            None => filtered,
-        };
         Ok(Some(Listing::paged(Rc::new(filtered))))
     }
 
