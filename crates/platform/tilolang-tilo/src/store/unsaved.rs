@@ -222,6 +222,34 @@ impl Inner {
         }
     }
 
+    /// Re-read which resources the chunk `chunk` has, and only those: what [`super::scan`] found
+    /// in it now ([`Self::rescan`] reads every document the store holds). What the chunk held
+    /// before and does not any more leaves, unless the record's manifest places it in another
+    /// chunk, which the store reads when that chunk arrives. An origin's derived resources are
+    /// not the record's and stay where they are.
+    pub(super) fn scan_chunk(
+        &mut self,
+        chunk: ChunkNo,
+        now: BTreeMap<DocId, (AppId, TypeId)>,
+        before: Vec<DocId>,
+    ) {
+        for doc in before {
+            if now.contains_key(&doc) {
+                continue;
+            }
+            let derived = self
+                .index
+                .get(&doc)
+                .is_some_and(|(_, ty)| lookup(ty).is_some_and(crate::schema::TypeSchema::derived));
+            if !derived && self.chunks.chunk(&doc) == chunk {
+                self.index.remove(&doc);
+            }
+        }
+        for (doc, held) in now {
+            self.index.insert(doc, held);
+        }
+    }
+
     /// Drop the store's writes from the `start`th on (the caller applies the rest again).
     /// Returns the collection items they added, removed or moved.
     pub(super) fn drop_local_from(&mut self, start: usize) -> ItemTouches {

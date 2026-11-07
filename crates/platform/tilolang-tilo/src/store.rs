@@ -1599,31 +1599,55 @@ fn scan_of(chunks: &Chunks) -> BTreeMap<DocId, (AppId, TypeId)> {
     out
 }
 
-/// The versions the changes of each chunk since its `stamps` made, together: what an index
-/// stamped with those heads takes in. `None` when a stamped chunk is not held.
-fn ends_since(
-    chunks: &Chunks,
-    stamps: &Stamps,
-    docs: &BTreeMap<DocId, (AppId, TypeId)>,
-) -> Option<Ends> {
-    let mut ends = Ends::new();
-    for (chunk, heads) in stamps {
-        let doc = chunks.mirror(*chunk)?;
-        let since = doc.committed_document().get_changes(heads);
-        ends.extend(idx::reflect::ends_of(&since, doc, docs));
-    }
-    Some(ends)
+/// Whether the stamps `from` reflect every chunk the store holds: what a change's versions and
+/// placements take in, so an index stamped with them has nothing else to read.
+fn reflects_held(chunks: &Chunks, from: &Stamps) -> bool {
+    chunks
+        .docs()
+        .all(|(chunk, doc)| from.get(&chunk) == Some(&doc.committed_document().get_heads()))
 }
 
-/// Where the changes of each chunk since its `stamps` placed the items they placed: what the
-/// items that left a collection are written from when the index never held them.
-fn placed_since(chunks: &Chunks, stamps: &Stamps) -> idx::reflect::Placed {
-    let mut placed = idx::reflect::Placed::new();
-    for (chunk, heads) in stamps {
+/// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
+/// and the stamps of the chunks it was not sent, which its index still reflects.
+fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
+    let mut now = from.clone();
+    for (chunk, doc) in chunks.docs() {
+        now.insert(chunk, doc.committed_document().get_heads());
+    }
+    now
+}
+
+/// The versions the changes of the chunks `moved` since their stamps `from` made: what an
+/// index stamped with those heads takes in.
+fn ends_of_chunks(
+    chunks: &Chunks,
+    from: &Stamps,
+    moved: &[ChunkNo],
+    docs: &BTreeMap<DocId, (AppId, TypeId)>,
+) -> Ends {
+    let mut ends = Ends::new();
+    for chunk in moved {
         if let Some(doc) = chunks.mirror(*chunk) {
-            placed.extend(idx::reflect::placed_by(
-                &doc.committed_document().get_changes(heads),
-            ));
+            let since = doc
+                .committed_document()
+                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
+            ends.extend(idx::reflect::ends_of(&since, doc, docs));
+        }
+    }
+    ends
+}
+
+/// Where the changes of the chunks `moved` since their stamps `from` placed the items they
+/// placed: what the items that left a collection are written from when the index never held
+/// them.
+fn placed_of_chunks(chunks: &Chunks, from: &Stamps, moved: &[ChunkNo]) -> idx::reflect::Placed {
+    let mut placed = idx::reflect::Placed::new();
+    for chunk in moved {
+        if let Some(doc) = chunks.mirror(*chunk) {
+            let since = doc
+                .committed_document()
+                .get_changes(from.get(chunk).map_or(&[], Vec::as_slice));
+            placed.extend(idx::reflect::placed_by(&since));
         }
     }
     placed
@@ -1718,21 +1742,27 @@ impl Inner {
                 continue;
             };
             let index = Arc::clone(&held.index);
-            let seen = self.chunks.heads();
+            let seen = stamps_after(&self.chunks, &held.heads);
             let own;
             let docs = &self.index;
             let own_placed;
             let (ends, placed) = match since {
-                Some((from, ends, placed)) if held.heads == *from => (ends, placed),
+                // The index reflects every chunk the store held before the change: what the
+                // change made is all it has to take in.
+                Some((from, ends, placed)) if reflects_held(&self.chunks, from) => (ends, placed),
                 _ => {
-                    if !self.chunks.holds(&held.heads) {
-                        self.rebuild(&app);
-                        continue;
-                    }
                     // The versions of what changed since the index's heads, and where it put
-                    // the items it placed.
-                    own = ends_since(&self.chunks, &held.heads, docs).unwrap_or_default();
-                    own_placed = placed_since(&self.chunks, &held.heads);
+                    // the items it placed: the chunks it does not reflect yet, and only those.
+                    let moved: Vec<ChunkNo> = self
+                        .chunks
+                        .docs()
+                        .filter(|(chunk, doc)| {
+                            held.heads.get(chunk) != Some(&doc.committed_document().get_heads())
+                        })
+                        .map(|(chunk, _)| chunk)
+                        .collect();
+                    own = ends_of_chunks(&self.chunks, &held.heads, &moved, docs);
+                    own_placed = placed_of_chunks(&self.chunks, &held.heads, &moved);
                     (&own, &own_placed)
                 }
             };
