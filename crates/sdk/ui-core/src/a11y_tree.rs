@@ -1703,7 +1703,10 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         let id = SemanticId::synthetic_of(&parent.id, index, access);
         let level = Level {
             id,
-            durable: access.semantic_key.is_some() && parent.durable,
+            // The same test `synthetic_of` gives a keyed id: a keyed control
+            // is the same one across a rebuild, so what it publishes stays
+            // reachable.
+            durable: access.is_keyed() && parent.durable,
             owner: parent.owner,
             children: Vec::new(),
         };

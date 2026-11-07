@@ -446,6 +446,13 @@ impl AccessNode {
         self
     }
 
+    /// Whether this node's id stays the same control across a rebuild: it
+    /// carries a semantic key of its own, or the key it hashed, rather than
+    /// its place among its siblings.
+    pub(crate) fn is_keyed(&self) -> bool {
+        self.semantic_key.is_some() || self.key.is_some()
+    }
+
     /// Attach an opaque, widget-local target for actions on this synthetic
     /// node. Prefer stable model keys over visible indices.
     pub fn with_action_target(self, target: impl Into<String>) -> Self {
