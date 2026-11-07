@@ -215,6 +215,7 @@ shortcut-name-toggle-maximize = Maximize or restore window
 shortcut-name-maximize-window = Maximize window
 shortcut-name-restore-window = Restore window
 shortcut-name-detach-tab = Move tab to new group
+shortcut-name-toggle-float = Float the window over the desk
 shortcut-name-attach-tab-left = Move tab into group on left
 shortcut-name-attach-tab-right = Move tab into group on right
 shortcut-name-move-group-left = Move group left

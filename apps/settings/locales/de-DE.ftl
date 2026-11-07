@@ -215,6 +215,7 @@ shortcut-name-toggle-maximize = Fenster maximieren oder wiederherstellen
 shortcut-name-maximize-window = Fenster maximieren
 shortcut-name-restore-window = Fenster wiederherstellen
 shortcut-name-detach-tab = Tab in neue Gruppe verschieben
+shortcut-name-toggle-float = Fenster über den Schreibtisch schweben lassen
 shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
 shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
 shortcut-name-move-group-left = Gruppe nach links verschieben
