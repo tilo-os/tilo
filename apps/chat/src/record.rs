@@ -1308,6 +1308,11 @@ impl Chat {
 
     /// Whether the conversation `id` takes messages now: a text channel of
     /// the record, or a direct conversation between members it knows.
+    ///
+    /// An agent is a member by being named as one: its id is its identity,
+    /// and the workspace's own record of its agents is what says it exists —
+    /// the chat does not list them a second time, so a conversation with an
+    /// agent the workspace just made takes the person's first message.
     #[must_use]
     pub fn takes_messages(&self, id: &Id) -> bool {
         if let Some(channel) = self.channels.get(id) {
@@ -1317,9 +1322,11 @@ impl Chat {
             return false;
         };
         participants.iter().all(|participant| {
-            self.people
-                .iter()
-                .any(|person| person.id.0 == participant.id())
+            participant.is_agent()
+                || self
+                    .people
+                    .iter()
+                    .any(|person| person.id.0 == participant.id())
         })
     }
 

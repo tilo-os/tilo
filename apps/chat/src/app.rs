@@ -1348,6 +1348,18 @@ impl ChatApp {
     pub(crate) fn channel(&self, id: &str) -> Option<&Channel> {
         self.channels.iter().find(|c| c.id == id)
     }
+
+    /// Whether `id` is a conversation this window can show: a channel the
+    /// record lists, or a direct one, with a person or an agent — which
+    /// exists by naming its participants, whether or not the record lists it
+    /// as a row yet.
+    pub(crate) fn is_conversation(&self, id: &str) -> bool {
+        self.channel(id).is_some()
+            || crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
+                id.to_owned(),
+            ))
+            .is_some()
+    }
     pub(crate) fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id)
     }
@@ -1431,7 +1443,7 @@ impl ChatApp {
     /// refreshes).
     pub(crate) fn ensure_selection(&mut self) -> bool {
         let channel_changed =
-            !self.active_channel.is_empty() && self.channel(&self.active_channel).is_none();
+            !self.active_channel.is_empty() && !self.is_conversation(&self.active_channel);
         if channel_changed {
             self.active_channel.clear();
         }

@@ -68,14 +68,7 @@ impl Shared {
         if resolved.is_empty() {
             return Err("a message needs someone to go to".into());
         }
-        let to = serde_json::to_value(&resolved).map_err(|error| error.to_string())?;
-        let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
-        let target = Target::Invoke(Box::new(
-            InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
-                .with_argument("to", to)
-                .with_argument("attached", attached)
-                .with_argument("text", text),
-        ));
+        let target = send_target(workspace, &resolved, attached, text)?;
         self.search
             .perform(workspace, target, &mut |own| {
                 self.doors
@@ -93,5 +86,63 @@ impl Shared {
     /// lists them: found by the one search every part of the desk shares.
     pub(crate) fn recipients(&self, query: &str) -> Vec<Recipient> {
         self.search.recipients(query)
+    }
+}
+
+/// The one action a send is: Chat's `send` in `workspace`, carrying whom the
+/// message goes to, what it carries and its words. Everything else a send
+/// does — making an agent, opening where the message landed — is Chat's part
+/// of that same action, never a second invocation.
+fn send_target(
+    workspace: &str,
+    to: &[Recipient],
+    attached: &[tilo_reference::Attached],
+    text: &str,
+) -> Result<Target, String> {
+    let to = serde_json::to_value(to).map_err(|error| error.to_string())?;
+    let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
+    Ok(Target::Invoke(Box::new(
+        InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
+            .with_argument("to", to)
+            .with_argument("attached", attached)
+            .with_argument("text", text),
+    )))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_reference::Attached;
+
+    /// What a box holds reaches Chat as one action naming the recipients, what
+    /// the message carries and its words: the app opens the conversation and
+    /// posts there from that one action, nothing else.
+    #[test]
+    fn a_send_is_one_action_for_the_chat_naming_who_what_and_the_words() {
+        let ada =
+            Recipient::found(RecipientKind::Person, "ad".repeat(32), "Ada").with_detail("online");
+        let carried = Attached::Text {
+            text: "issue 42".into(),
+            from: None,
+        };
+        let Target::Invoke(target) =
+            send_target("ws", &[ada.clone()], &[carried.clone()], "look").expect("a send builds")
+        else {
+            panic!("a send invokes the chat");
+        };
+        assert_eq!(target.app, CHAT);
+        assert_eq!(target.workspace, "ws");
+        assert_eq!(target.address.resource, CHAT_WORKSPACE);
+        assert_eq!(target.address.action, SEND);
+        assert_eq!(
+            target.arguments.get("text"),
+            Some(&serde_json::Value::String("look".into()))
+        );
+        let to: Vec<Recipient> =
+            serde_json::from_value(target.arguments["to"].clone()).expect("the recipients");
+        assert_eq!(to, [ada]);
+        let attached: Vec<Attached> =
+            serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
+        assert_eq!(attached, [carried]);
     }
 }

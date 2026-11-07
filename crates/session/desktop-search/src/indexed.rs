@@ -676,7 +676,14 @@ impl IndexedContent {
             }
             IndexKind::Person => {
                 let person = who?;
-                if person.identity == self.person {
+                // The identity as the app that keeps the person spells it,
+                // without the prefix the index adds to say what it is.
+                let id = person
+                    .identity
+                    .strip_prefix("agent:")
+                    .or_else(|| person.identity.strip_prefix("person:"))
+                    .unwrap_or(&person.identity);
+                if id == self.person {
                     return None;
                 }
                 let kind = if person.agent {
@@ -684,10 +691,6 @@ impl IndexedContent {
                 } else {
                     RecipientKind::Person
                 };
-                let id = person
-                    .identity
-                    .strip_prefix("agent:")
-                    .unwrap_or(&person.identity);
                 Recipient::found(kind, id, &entry.title)
                     .with_detail(entry.subtitle.clone().unwrap_or_default())
             }
@@ -1016,6 +1019,111 @@ mod tests {
         assert_eq!(names, ["Aria", "Ada"]);
         assert!(row.faces[1].is_agent);
         assert_eq!(row.avatar, None);
+    }
+
+    /// A box's recipients are what the workspace's apps publish of their
+    /// agents, people and conversations: never a message, never the person
+    /// asking, each once — and an empty query opens on what is there, the
+    /// most recent first.
+    #[test]
+    fn a_box_finds_agents_people_and_conversations_never_messages_or_itself() {
+        use ui::floating_surface::RecipientKind;
+
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut agent = shaped(
+            note("chat.agent/agents/a_ada", "Ada", false),
+            IndexKind::Agent,
+            vec![person(
+                "Ada",
+                "agent:a_ada",
+                "chat.agent/agents/a_ada",
+                true,
+            )],
+        );
+        agent.keeper = Some(person("Me", "u_me", "", false));
+        agent.when = Some(20);
+        let mut conversation = shaped(
+            note("chat.workspace/channels/c_ada", "Ada", false),
+            IndexKind::Conversation,
+            vec![
+                person("Me", "person:u_me", "", false),
+                person("Ada", "agent:a_ada", "", true),
+            ],
+        );
+        conversation.when = Some(30);
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![
+                agent,
+                conversation,
+                shaped(
+                    note("chat.workspace/people/u_me", "Me", false),
+                    IndexKind::Person,
+                    vec![person(
+                        "Me",
+                        "person:u_me",
+                        "chat.workspace/people/u_me",
+                        false,
+                    )],
+                ),
+                shaped(
+                    note("chat.workspace/people/u_ada", "Ada", false),
+                    IndexKind::Person,
+                    vec![person(
+                        "Ada",
+                        "person:u_ada",
+                        "chat.workspace/people/u_ada",
+                        false,
+                    )],
+                ),
+                shaped(
+                    note("chat.workspace/messages/m_ada", "Ada, can you look?", false),
+                    IndexKind::Message,
+                    vec![person("Ada", "person:u_ada", "", false)],
+                ),
+            ],
+        );
+        let content = IndexedContent::new(index, str::to_owned, "u_me");
+
+        // Typing a name: what it names, never the message that mentions it
+        // and never the person typing.
+        let found = content.recipients("ada");
+        let listed: Vec<(RecipientKind, &str)> = found
+            .iter()
+            .map(|recipient| (recipient.kind, recipient.id.as_str()))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                (RecipientKind::Conversation, "c_ada"),
+                (RecipientKind::Agent, "a_ada"),
+                (RecipientKind::Person, "u_ada"),
+            ],
+            "the conversation is the most recent, and nobody is listed twice"
+        );
+        assert_eq!(
+            found[1].detail.as_deref(),
+            Some("you"),
+            "the agent says this person keeps it"
+        );
+
+        // Before anything is typed, what the workspace holds, most recent
+        // first.
+        let held = content.recipients("  ");
+        let all: Vec<(RecipientKind, &str)> = held
+            .iter()
+            .map(|recipient| (recipient.kind, recipient.id.as_str()))
+            .collect();
+        assert_eq!(
+            all,
+            [
+                (RecipientKind::Conversation, "c_ada"),
+                (RecipientKind::Agent, "a_ada"),
+                (RecipientKind::Person, "u_ada"),
+            ]
+        );
     }
 
     #[test]

@@ -71,9 +71,11 @@ impl ChatApp {
         for category in &mut self.categories {
             category.collapsed = self.collapsed.contains(&category.id);
         }
-        // Keep the active channel valid (e.g. after it was deleted).
-        if self.direct_person().is_none()
-            && self.channel(&self.active_channel).is_none()
+        // Keep the active channel valid (e.g. after it was deleted). A
+        // conversation the record need not list as a channel — any direct one,
+        // with a person or with an agent — is valid by its id.
+        if !self.active_channel.is_empty()
+            && !self.is_conversation(&self.active_channel)
             && let Some(first) = self
                 .ws_channels()
                 .into_iter()
