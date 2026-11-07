@@ -145,6 +145,7 @@ mod seats;
 pub mod seeded_apps;
 mod send_to;
 mod service_sessions;
+mod session_actions;
 pub mod session_package;
 mod setup;
 mod shared;
@@ -567,6 +568,9 @@ pub struct Session {
     /// The workspace in front, as this pass last read it: a change is a
     /// switch to time.
     active_workspace: Option<u64>,
+    /// Where the session's own actions stood when every agent following the catalogue was last
+    /// handed them: a change of what it offers is a new catalogue.
+    session_actions_seen: std::cell::Cell<Option<u64>>,
     /// When the desk's own bookkeeping last read it.
     kept_at: Instant,
     /// What the desk's input a tool handed the loop cost this pass, read with
@@ -1291,6 +1295,12 @@ impl Session {
         let task_programs = Some(std::sync::Arc::new(task_programs::TaskPrograms::new(
             std::sync::Arc::clone(&session_doors),
         )));
+        // The session's own actions, offered to a turn's agent as the broker's steps: the
+        // arrangement, its undo, the windows and the notices, which the REPL already calls.
+        // Each is answered on the loop's pass, where the arrangement is.
+        let session_actions = std::sync::Arc::new(session_actions::SessionActions::new(
+            std::sync::Arc::clone(&session_doors),
+        ));
         // The agents the person admits at its door, as the desk and the bar show them.
         let seats = agent_door::Seats::new();
         let desk = || desk_resource::Desk {
@@ -1531,6 +1541,7 @@ impl Session {
                 records: record_index,
                 fanout: std::sync::Arc::clone(&channels_fanout),
                 task_programs,
+                session_actions: Some(std::sync::Arc::clone(&session_actions)),
                 nearby: nearby.as_ref().map(std::sync::Arc::clone),
             },
         )?;
@@ -2034,6 +2045,7 @@ impl Session {
             ended: false,
             first_frame: false,
             active_workspace: None,
+            session_actions_seen: std::cell::Cell::default(),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
             magnifier: (
@@ -2706,6 +2718,41 @@ impl Session {
             return;
         };
         self.shared.notes.read(&broker.state().window_records());
+    }
+
+    /// Hand every agent following the catalogue the session's own actions again when what it
+    /// offers moved: a place made, a place closed, a window opened, a notice put up. The rows
+    /// are the same the REPL lists, so an agent arranging the screen sees what the person's own
+    /// door publishes (shell.md §8.1, "Any action").
+    fn follow_session_actions(&self) {
+        let Some(plane) = &self.action_plane else {
+            return;
+        };
+        let Some(broker) = plane.action_broker() else {
+            return;
+        };
+        // Where what the session offers stands, as the same reading the door's own listing
+        // takes: a surface that cannot tell names its rows itself, so a listing that moved is
+        // always a new revision.
+        let revision = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::hash::DefaultHasher::new();
+            match self.shared.doors.revision() {
+                Some(revision) => revision.hash(&mut hasher),
+                None => {
+                    for descriptor in tilo_actions::door::survey(&self.shared.doors.resources()) {
+                        descriptor.address.resource.hash(&mut hasher);
+                        descriptor.address.action.hash(&mut hasher);
+                    }
+                }
+            }
+            hasher.finish()
+        };
+        if self.session_actions_seen.get() == Some(revision) {
+            return;
+        }
+        self.session_actions_seen.set(Some(revision));
+        broker.state().host_steps_changed();
     }
 
     /// Keep the workspaces this session takes part in current with the

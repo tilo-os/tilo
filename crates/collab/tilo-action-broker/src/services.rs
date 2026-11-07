@@ -1054,6 +1054,20 @@ pub trait HostStepServices: Send + Sync {
     fn app_id(&self) -> &str;
     /// Every step, described.
     fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor>;
+    /// Every step as the row it stands in: the resource of the level above
+    /// it, and whether its own resource holds rows below it, so a caller
+    /// that lists a level at a time finds what a step hangs under. By
+    /// default every step is a top-level row.
+    fn rows(&self) -> Vec<tilo_actions::door::PlacedAction> {
+        self.descriptors()
+            .into_iter()
+            .map(|action| tilo_actions::door::PlacedAction {
+                parent: String::new(),
+                has_children: false,
+                action,
+            })
+            .collect()
+    }
     /// Whether its steps are steps a task agent takes in its run (a task's
     /// programs): offered in a task agent's catalogue and admitted by its
     /// run. No other host step is a task agent's.

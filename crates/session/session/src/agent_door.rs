@@ -34,11 +34,12 @@
 //! account of the peer (this account, these namespaces) is still checked
 //! first; it says the client is the person's, never that they consented.
 //!
-//! **What it is served.** The broker's catalogue, and beside it the session's
-//! own doors (its desk, arrangement, windows and notices) under
-//! [`SESSION_PROVIDER`]: a person-admitted client reaches all of them as the
-//! person does; an agent only those that read. Its `tilo` programs run in a
-//! task host of the connection's own ([`TaskHosts`]), each as its author.
+//! **What it is served.** The broker's catalogue, the session's own actions among them: its
+//! arrangement, its undo, the windows and the notices are published under the session's own
+//! provider ([`tilo_actions::remote::SESSION_ACTIONS_PROVIDER`]) like any other publisher's,
+//! so a person-admitted client arranges the screen as the person does and an agent as the turn
+//! its person's message caused lets it. Its `tilo` programs run in a task host of the
+//! connection's own ([`TaskHosts`]), each as its author.
 //!
 //! "Allow for this session" and "Always allow" remember that this client is
 //! that agent, by the executable the kernel names and the name the client
@@ -59,13 +60,13 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use tilo_action_broker::collab_app_broker::AppBrokerState;
 use tilo_actions::remote::{
-    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
-    ConfirmedInvocation, ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ActionHost, ActionHostError, Caller, CataloguePage, CatalogueQuery, ConfirmedInvocation,
+    ContentPuts, InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
 use tilo_compositor::ReadableWatch;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_lock::MutexRecover as _;
-use tilo_runtime::session_door::{Consent, Hello, SESSION_PROVIDER};
+use tilo_runtime::session_door::{Consent, Hello};
 use tilo_service::{Answer, Asked, Question, Questions, Wake};
 use tilo_sheets::{word, words};
 
@@ -1210,8 +1211,10 @@ fn refuse_control(mut stream: UnixStream, message: &str) {
 /// What a connection asks of the session's own doors: answered on the loop's
 /// pass, the only place that may touch them.
 enum DoorAsk {
-    /// Everything they publish now, and the revision it stands at.
-    Resources(tilo_actions::remote::Completer<Offered>),
+    /// Everything they publish now as the rows a catalogue lists, in the
+    /// level each stands in: what the broker offers under the session's own
+    /// provider, so an agent arranging the screen lists it as the REPL does.
+    Steps(tilo_actions::remote::Completer<Steps>),
     /// What the session's one search finds by `needle`: the same search the
     /// palette and text typed on the canvas run, answered here because the
     /// search lives on the loop's thread.
@@ -1219,16 +1222,15 @@ enum DoorAsk {
         needle: String,
         done: crate::search::FoundSearch,
     },
-    /// Run one of their actions as `actor`; `reads_only` refuses one that
-    /// changes anything.
-    Invoke {
+    /// Run one of their actions as a step of an agent's turn, already decided
+    /// by the broker where it lands: `slot` is its arguments in their slot
+    /// form, as the broker carries them. No `reads_only`: the broker decided
+    /// the step.
+    Step {
         actor: String,
-        reads_only: bool,
         address: tilo_actions::ActionAddress,
-        arguments: serde_json::Map<String, serde_json::Value>,
-        done: tilo_actions::remote::Completer<
-            Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError>,
-        >,
+        slot: Option<String>,
+        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
     },
     /// The record of the package the session runs itself, by its app (`so.tilo.shell`): its
     /// document and the packages a program reading it loads, or `None` for one no service keeps
@@ -1257,6 +1259,22 @@ enum DoorAsk {
 struct Offered {
     resources: Vec<tilo_actions::ResourceSpec>,
     revision: String,
+}
+
+/// What the session's own doors offer now as catalogue rows, in the level
+/// each stands in: the arrangement's loose verbs at the top, and every place,
+/// strip and row beneath the arrangement it belongs to.
+#[derive(Clone, Default)]
+pub(crate) struct Steps {
+    pub(crate) rows: Vec<tilo_actions::door::PlacedAction>,
+}
+
+impl Steps {
+    fn of(offered: &Offered) -> Self {
+        Self {
+            rows: tilo_actions::door::survey_placed(&offered.resources),
+        }
+    }
 }
 
 impl Offered {
@@ -1295,6 +1313,8 @@ pub(crate) struct SessionDoors {
 /// change, the modules): the loop answers each pass, so this is only a bound on a frozen
 /// session rather than a wait that should ever reach it.
 const WAIT: Duration = Duration::from_secs(30);
+/// See [`WAIT`]: what a step the broker decided waits for the pass that runs it.
+pub(crate) const STEP_WAIT: Duration = WAIT;
 
 /// A session that did not answer within [`WAIT`]: it is frozen, and nothing is done elsewhere
 /// in its place.
@@ -1332,10 +1352,34 @@ impl SessionDoors {
         self.ask(DoorAsk::Find { needle, done });
     }
 
+    /// Everything the session's own doors publish now, as the rows a catalogue
+    /// lists, answered on the loop's pass.
+    pub(crate) fn steps(&self, done: tilo_actions::remote::Completer<Steps>) {
+        self.ask(DoorAsk::Steps(done));
+    }
+
+    /// Run the session's own action `address` as `actor` with `slot` (its
+    /// arguments in the slot form the broker carries), as a step of an agent's
+    /// turn the broker already decided: answered on the loop's pass, which is
+    /// where the arrangement and the windows are.
+    pub(crate) fn invoke_step(
+        &self,
+        actor: String,
+        address: tilo_actions::ActionAddress,
+        slot: Option<String>,
+        done: tilo_actions::remote::Completer<Result<Option<serde_json::Value>, String>>,
+    ) {
+        self.ask(DoorAsk::Step {
+            actor,
+            address,
+            slot,
+            done,
+        });
+    }
+
     /// Answer what the connections asked since the last pass, from `doors`,
     /// the `services` the session runs, and the one `search`; `shows` names
-    /// the resources a place can show, as the arrangement holds them, and
-    /// `person` is whose calls are their own, not someone's for them.
+    /// the resources a place can show, as the arrangement holds them.
     ///
     /// The services are borrowed briefly, one ask at a time: a change they carry out is the
     /// published action's own, so a run never needs the services held across a turn of the
@@ -1346,13 +1390,12 @@ impl SessionDoors {
         services: &std::rc::Rc<std::cell::RefCell<tilo_service::Services>>,
         search: &crate::search::SessionSearch,
         shows: &dyn Fn(&str) -> bool,
-        person: &str,
         look: &mut tilo_surface_host::Look<'_>,
     ) {
         let asked = std::mem::take(&mut *self.asks.lock_recover());
         for ask in asked {
             match ask {
-                DoorAsk::Resources(done) => done.complete(Offered::of(doors)),
+                DoorAsk::Steps(done) => done.complete(Steps::of(&Offered::of(doors))),
                 DoorAsk::Find { needle, done } => {
                     done.complete(crate::search::found_all(
                         &needle,
@@ -1360,28 +1403,26 @@ impl SessionDoors {
                         shows,
                     ));
                 }
-                DoorAsk::Invoke {
+                DoorAsk::Step {
                     actor,
-                    reads_only,
                     address,
-                    arguments,
+                    slot,
                     done,
                 } => {
-                    let reads = tilo_actions::door::survey(&doors.resources())
-                        .into_iter()
-                        .find(|descriptor| descriptor.address == address)
-                        .is_some_and(|descriptor| {
-                            descriptor.kind == tilo_actions::OperationKind::View
-                        });
-                    let ran = if reads_only && !reads {
-                        Err(tilo_actions::DoorError::Unavailable {
-                            code: "not_permitted".into(),
-                            reason: word("agent-door-session-reads-only"),
-                        })
-                    } else if actor == person {
-                        doors.invoke(&address, &arguments, look)
-                    } else {
-                        doors.invoke_as(&actor, &address, &arguments, look)
+                    let ran = match arguments_of(slot.as_deref()) {
+                        Ok(arguments) => doors
+                            .invoke_as(&actor, &address, &arguments, look)
+                            .map(|started| match started {
+                                ui::host_operation::ResourceOperationStart::Completed(output) => {
+                                    Some(serde_json::json!({
+                                        "value": output.value,
+                                        "resources": output.resources,
+                                    }))
+                                }
+                                ui::host_operation::ResourceOperationStart::Accepted => None,
+                            })
+                            .map_err(|error| error.to_string()),
+                        Err(why) => Err(why),
                     };
                     done.complete(ran);
                 }
@@ -1399,6 +1440,18 @@ impl SessionDoors {
             }
         }
     }
+}
+
+/// The typed arguments a step's slot carries: none for none. A slot that is not a typed object
+/// names no argument of a session action, which all take their arguments by name.
+fn arguments_of(slot: Option<&str>) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    let Some(slot) = slot else {
+        return Ok(serde_json::Map::new());
+    };
+    let json = slot
+        .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+        .ok_or("a session action takes its arguments by name")?;
+    serde_json::from_str(json).map_err(|error| format!("the step's arguments do not read: {error}"))
 }
 
 /// Run the change `change` of a record `services` keep for a package the session runs itself
@@ -1448,33 +1501,22 @@ fn change_through(
     })
 }
 
-/// What the session's own actions answered, by invocation, for a later look.
-type Answered =
-    std::collections::VecDeque<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate)>;
-
-/// How many answered session actions a connection remembers.
-const ANSWERED_KEPT: usize = 256;
-
-/// The broker as an admitted client's door, with the session's own doors
-/// beside it: every call passes the gate as the agent or person and workspace the
-/// connection was admitted for.
+/// The broker as an admitted client's door: every call passes the gate as the agent or person
+/// and workspace the connection was admitted for, and the session's own actions are among what
+/// the same broker publishes.
 #[derive(Clone)]
 pub(crate) struct Host {
-    /// The session's broker, once it starts one. Without it (a session in a
-    /// window of another desktop) the session's own doors are all it offers.
+    /// The session's broker, once it starts one.
     state: Option<Arc<AppBrokerState>>,
+    /// What a connection asks the session on its pass: the one search, and the records a
+    /// package the session runs itself keeps.
     session: Arc<SessionDoors>,
-    answered: Arc<std::sync::Mutex<Answered>>,
 }
 
 impl Host {
-    /// The door over `state`, with `session` beside it.
+    /// The door over `state`, whose search and records a connection reaches through `session`.
     pub(crate) fn new(state: Option<Arc<AppBrokerState>>, session: Arc<SessionDoors>) -> Self {
-        Self {
-            state,
-            session,
-            answered: Arc::default(),
-        }
+        Self { state, session }
     }
 
     /// An invocation the person at this seat made through the seat's own control doors: the
@@ -1497,166 +1539,41 @@ impl Host {
     }
 
     /// The broker's answer to `request` for `caller`, at the seat or as the caller itself.
+    ///
+    /// The session's own actions (its arrangement, its undo, the windows and the notices) are
+    /// the broker's like any other publisher's: it lists and decides them under
+    /// [`SESSION_PROVIDER`](tilo_actions::remote::SESSION_ACTIONS_PROVIDER), and every
+    /// connection reaches the same catalogue whichever door admitted it.
     fn invoke_within(
         &self,
         caller: &Caller,
         request: InvokeRequest,
         at_seat: bool,
     ) -> Pending<Result<InvocationReceipt, ActionHostError>> {
-        if request.target.provider != SESSION_PROVIDER {
-            return match &self.state {
-                Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
-                Some(state) => state.action_invoke(caller, None, None, &request),
-                None => Pending::ready(Err(ActionHostError::Unavailable {
-                    reason: "this desktop's apps are not running here".to_owned(),
-                })),
-            };
+        match &self.state {
+            Some(state) if at_seat => state.action_invoke_local_person(caller, &request),
+            Some(state) => state.action_invoke(caller, None, None, &request),
+            None => Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "this desktop's apps are not running here".to_owned(),
+            })),
         }
-        let (actor, reads_only) = Self::at_session(caller);
-        let arguments = match request.argument {
-            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments,
-            tilo_actions::remote::InvokeArgument::Text(_)
-            | tilo_actions::remote::InvokeArgument::None => serde_json::Map::new(),
-        };
-        let invocation = request.invocation;
-        let (done, ran) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Invoke {
-            actor,
-            reads_only,
-            address: request.target.address,
-            arguments,
-            done,
-        });
-        let answered = Arc::clone(&self.answered);
-        ran.map(move |ran| {
-            use tilo_actions::remote::ReceiptStatus;
-            let status = match ran {
-                Ok(ui::host_operation::ResourceOperationStart::Completed(output)) => {
-                    ReceiptStatus::Completed { output }
-                }
-                Ok(ui::host_operation::ResourceOperationStart::Accepted) => ReceiptStatus::Accepted,
-                Err(error) => ReceiptStatus::Rejected {
-                    error: crate::surfaces::refusal(&error),
-                },
-            };
-            if let Some(update) = crate::surfaces::outcome(invocation, &status) {
-                let mut answered = answered.lock_recover();
-                if answered.len() >= ANSWERED_KEPT {
-                    answered.pop_front();
-                }
-                answered.push_back((invocation, update));
-            }
-            Ok(InvocationReceipt { invocation, status })
-        })
-    }
-
-    /// Who `caller` acts as at the session's doors, and whether it may only
-    /// read there: an agent reads them; the person does all they offer, as
-    /// their own input does.
-    fn at_session(caller: &Caller) -> (String, bool) {
-        use tilo_actions::remote::CallerPrincipal;
-        match caller.principal() {
-            CallerPrincipal::Person(person) => (person.clone(), false),
-            CallerPrincipal::Agent(agent) => (format!("agent:{agent}"), true),
-            other => (format!("{other:?}"), true),
-        }
-    }
-
-    /// The session's own rows `caller` is offered, as a page of `query`: the
-    /// page's cursor reads on to the next, as for any other provider.
-    ///
-    /// A resource's rows stand at its parent's level, as in any other
-    /// published directory: what the session offers is the tree it publishes,
-    /// read a level at a time, so a listing names the tree's roots and never
-    /// the whole of it (which no page holds).
-    fn session_page(&self, caller: &Caller, query: &CatalogueQuery) -> Pending<CataloguePage> {
-        let (_, reads_only) = Self::at_session(caller);
-        let (done, offered) = tilo_actions::remote::pending();
-        self.session.ask(DoorAsk::Resources(done));
-        let query = query.clone();
-        offered.map(
-            move |Offered {
-                      resources,
-                      revision,
-                  }| {
-                let rows: Vec<_> = tilo_actions::door::survey_placed(&resources)
-                    .into_iter()
-                    .filter(|placed| {
-                        !reads_only || placed.action.kind == tilo_actions::OperationKind::View
-                    })
-                    .map(|placed| {
-                        tilo_actions::remote::CatalogueRow::for_placed_action(
-                            SESSION_PROVIDER,
-                            SESSION_PROVIDER,
-                            placed,
-                        )
-                    })
-                    .collect();
-                CataloguePage::from_rows(revision, rows, &query)
-            },
-        )
     }
 }
 
 impl ActionHost for Host {
+    /// The broker's catalogue, the session's own actions among every other publisher's: the
+    /// session lists its arrangement, its undo, the windows and the notices under its own
+    /// provider, so it alone decides who is offered them.
     fn query(
         &self,
         caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let workspace = caller.workspace().unwrap_or_default().to_owned();
-        let session_provider = CatalogueProvider {
-            provider: SESSION_PROVIDER.to_owned(),
-            app_id: SESSION_PROVIDER.to_owned(),
-            workspace,
-            record_id: String::new(),
-            browsable: true,
-        };
-        match query.provider.as_deref() {
-            Some(SESSION_PROVIDER) => self.session_page(caller, &query).map(Ok),
-            Some(_) => match &self.state {
-                Some(state) => state.action_query(caller, &query),
-                None => Pending::ready(Err(ActionHostError::Unavailable {
-                    reason: "this desktop's actions are not running here".to_owned(),
-                })),
-            },
-            None => {
-                let Some(state) = &self.state else {
-                    // A cursor this host never printed is nobody's page here.
-                    if !query.cursor.is_empty() || query.revision.is_some() {
-                        return Pending::ready(Err(ActionHostError::StaleRevision));
-                    }
-                    let session = self.session_page(caller, &query);
-                    return session.map(move |page| {
-                        Ok(CataloguePage {
-                            providers: vec![session_provider],
-                            ..page
-                        })
-                    });
-                };
-                // A page asked for by cursor is a page of the listing it was cut from, which
-                // the broker alone knows; the session's rows stand in its first page only.
-                if !query.cursor.is_empty() || query.revision.is_some() {
-                    return state.action_query(caller, &query);
-                }
-                // The broker's page, with the session's own first page beside
-                // it: a cursor of the broker's pages the broker alone.
-                let session = self.session_page(caller, &query).map(|page| page.rows);
-                let (done, merged) = tilo_actions::remote::pending();
-                state.action_query(caller, &query).then(move |page| {
-                    let Some(page) = page else {
-                        return;
-                    };
-                    session.then(move |rows| {
-                        done.complete(page.map(|mut page| {
-                            page.rows.extend(rows.unwrap_or_default());
-                            page.providers.push(session_provider);
-                            page
-                        }));
-                    });
-                });
-                merged
-            }
+        match &self.state {
+            Some(state) => state.action_query(caller, &query),
+            None => Pending::ready(Err(ActionHostError::Unavailable {
+                reason: "this desktop's actions are not running here".to_owned(),
+            })),
         }
     }
 
@@ -1672,18 +1589,9 @@ impl ActionHost for Host {
     }
 
     fn observe(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<InvocationState> {
-        let ours = self
-            .answered
-            .lock_recover()
-            .iter()
-            .rev()
-            .find(|(invocation, _)| invocation == id)
-            .map(|(_, update)| InvocationState::new(*id, update.clone()));
-        ours.or_else(|| {
-            self.state
-                .as_ref()
-                .and_then(|state| state.action_observe(caller, id))
-        })
+        self.state
+            .as_ref()
+            .and_then(|state| state.action_observe(caller, id))
     }
 
     fn next_change(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<Pending<()>> {

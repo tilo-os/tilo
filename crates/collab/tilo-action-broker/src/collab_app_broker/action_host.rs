@@ -1350,27 +1350,27 @@ impl AppBrokerState {
         let start = rows.len();
         rows.extend(
             steps
-                .descriptors()
+                .rows()
                 .into_iter()
-                .filter(|descriptor| {
+                .filter(|placed| {
                     Self::offered(
                         workspace,
                         actor,
                         now,
                         steps.app_id(),
                         (
-                            &descriptor.resource_kind,
-                            &descriptor.address.resource,
-                            &descriptor.address.action,
+                            &placed.action.resource_kind,
+                            &placed.action.address.resource,
+                            &placed.action.address.action,
                         ),
-                        &descriptor.contract,
+                        &placed.action.contract,
                     )
                 })
-                .map(|descriptor| {
-                    CatalogueRow::for_action(
+                .map(|placed| {
+                    CatalogueRow::for_placed_action(
                         steps.provider().to_owned(),
                         steps.app_id(),
-                        descriptor,
+                        placed,
                     )
                 }),
         );

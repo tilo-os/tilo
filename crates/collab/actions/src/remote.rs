@@ -50,6 +50,7 @@ mod pending;
 mod providers;
 mod record_read;
 mod search;
+pub mod session_actions;
 mod shared_host;
 pub mod task_programs;
 #[cfg(any(test, feature = "test-support"))]
@@ -58,6 +59,8 @@ mod wait;
 mod window_actions;
 mod within;
 pub mod workspace_activity;
+
+pub use session_actions::PROVIDER as SESSION_ACTIONS_PROVIDER;
 
 pub use application::{
     APPLICATION_PROVIDER, ApplicationLaunch, application_action_target, application_open_target,

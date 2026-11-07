@@ -130,6 +130,7 @@ impl Session {
         // What each window shows, as its app holds the record: the note this
         // pass's desk, layout and arrangement are read from.
         self.read_window_notes();
+        self.follow_session_actions();
         self.shared.follow_arrangement(underway);
         self.follow_controllers()?;
         self.follow_displays()?;

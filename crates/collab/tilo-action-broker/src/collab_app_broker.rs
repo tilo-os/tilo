@@ -5352,6 +5352,13 @@ impl AppBrokerState {
         self.publish_action_catalogue();
     }
 
+    /// The host's own steps changed what they offer (the session's
+    /// arrangement gained a place, a window opened): every connection
+    /// following the catalogue is handed it again.
+    pub fn host_steps_changed(&self) {
+        self.publish_action_catalogue();
+    }
+
     fn publish_action_catalogue(&self) {
         let subscribers = self
             .action_catalogue_subscribers
