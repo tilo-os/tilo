@@ -937,12 +937,6 @@ impl Runtime {
         *self.core.web.borrow_mut() = Some(Box::new(transport));
     }
 
-    /// Where `notify` reaches: the host's notification path, the one it shows the person their
-    /// news in. Until it is set, a package's notification is dropped.
-    pub fn set_notify(&self, host: impl crate::notify::NotifyHost + 'static) {
-        *self.core.notify.borrow_mut() = Some(Box::new(host));
-    }
-
     /// Where `model_call` goes.
     pub fn set_model_host(&self, host: impl ModelHost + 'static) {
         *self.core.models.borrow_mut() = Some(Box::new(host));

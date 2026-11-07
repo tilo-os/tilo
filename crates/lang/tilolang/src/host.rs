@@ -10,6 +10,18 @@ use crate::types::MergeKind;
 pub const HOST_APP: &str = "tilo.host";
 /// The id of the `Invocation` type.
 pub const INVOCATION_TYPE: &str = "host-invocation";
+/// The id of the `Notice` type: what `notify` writes for the person it names.
+pub const NOTICE_TYPE: &str = "host-notice";
+/// Where a `Notice` holds the person it is addressed to.
+pub const NOTICE_TO: &str = "notice-to";
+/// Where a `Notice` holds what it shows above the line.
+pub const NOTICE_TITLE: &str = "notice-title";
+/// Where a `Notice` holds what it shows below it.
+pub const NOTICE_BODY: &str = "notice-body";
+/// Where a `Notice` holds the resource choosing it opens.
+pub const NOTICE_OPENS: &str = "notice-opens";
+/// Where a `Notice` holds whether the person has opened or dismissed it.
+pub const NOTICE_SEEN: &str = "notice-seen";
 /// The id of `LinkHow`, the enum a `host.Link`'s `how` holds.
 pub const LINK_HOW_TYPE: &str = "host-link-how";
 
@@ -544,6 +556,18 @@ fn field(name: &str, ty: &str, doc: &str) -> FieldMeta {
     }
 }
 
+/// A field of the `Notice` type.
+fn notice_field(id: &str, name: &str, ty: &str, merge: MergeKind, doc: &str) -> FieldMeta {
+    FieldMeta {
+        id: id.to_string(),
+        name: name.to_string(),
+        ty: ty.to_string(),
+        merge,
+        doc: doc.to_string(),
+        default: None,
+    }
+}
+
 /// The metadata of the host's package.
 pub fn host_meta() -> PackageMeta {
     PackageMeta {
@@ -589,6 +613,20 @@ pub fn host_meta() -> PackageMeta {
             name: RESOURCE_TYPE_NAME.to_owned(),
             doc: "Any resource of the workspace, of whichever app: what `find` and `grep` answer across apps. `.of(T)` keeps those of one type.".to_owned(),
             fields: Vec::new(),
+            search: crate::meta::SearchMeta::default(),
+            origin: None,
+        }))
+        .chain(std::iter::once(TypeMeta {
+            id: NOTICE_TYPE.to_string(),
+            name: "Notice".to_string(),
+            doc: "Something a person is told: the record `notify` writes in the change that tells them, addressed to them alone, and kept until they have seen it. Every device of theirs shows it through its notifications; one of them dismissing or opening it marks it seen for all.".to_string(),
+            fields: vec![
+                notice_field(NOTICE_TO, "to", "Principal", MergeKind::Register, "The person told."),
+                notice_field(NOTICE_TITLE, "title", "Text", MergeKind::Text, "What the notification shows: a line."),
+                notice_field(NOTICE_BODY, "body", "Text", MergeKind::Text, "What it shows below that line, empty for nothing."),
+                notice_field(NOTICE_OPENS, "opens", "Resource", MergeKind::Register, "The resource choosing the notification opens."),
+                notice_field(NOTICE_SEEN, "seen", "Bool", MergeKind::Register, "Whether the person has opened or dismissed it."),
+            ],
             search: crate::meta::SearchMeta::default(),
             origin: None,
         }))

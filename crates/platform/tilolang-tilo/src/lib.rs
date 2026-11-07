@@ -29,6 +29,7 @@ pub mod members;
 pub mod meta;
 pub mod names;
 pub mod native;
+pub mod notices;
 pub mod origin;
 pub mod personal;
 pub mod platform_apps;

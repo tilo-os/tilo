@@ -92,9 +92,6 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
-    /// Where `notify` reaches (`Runtime::set_notify`): the host's notification path, the one
-    /// it shows the person their news in. Until the host sets one, nothing is shown.
-    pub notify: RefCell<Option<Box<dyn crate::notify::NotifyHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -256,7 +253,6 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
-            notify: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),

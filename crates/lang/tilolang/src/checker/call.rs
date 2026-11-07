@@ -1229,8 +1229,17 @@ impl Checker<'_> {
             };
             match named.name.as_str() {
                 "to" => to = Some(self.expr_as(&arg.value, &Ty::Principal)),
-                "title" => title = Some(self.expr_as(&arg.value, &Ty::Text)),
-                "body" => body = Some(self.expr_as(&arg.value, &Ty::Text)),
+                "title" | "body" => {
+                    // What the notification shows is words a person reads: its literal is a
+                    // message of the action, as the text of a component is one of the view.
+                    self.mark_shown(&arg.value);
+                    let said = self.expr_as(&arg.value, &Ty::Text);
+                    if named.name == "title" {
+                        title = Some(said);
+                    } else {
+                        body = Some(said);
+                    }
+                }
                 "opens" => {
                     let r = self.expr(&arg.value, None);
                     match r.ty.clone() {

@@ -1156,6 +1156,26 @@ pub trait Store {
         ))
     }
 
+    /// Create the document `id` inside the open transaction `txn`: what the action makes of it
+    /// is the action's own change, committed with the rest of what it wrote and taken back with
+    /// it when it fails. It is what `notify` writes ([`crate::notify`]): the notice is part of
+    /// the change that told the person, not a change of its own.
+    ///
+    /// # Errors
+    ///
+    /// `Invalid` when the document exists or the store makes no document inside a transaction.
+    fn create_in(
+        &mut self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        let _ = (txn, record, id);
+        Err(StoreError::Invalid(
+            "this store makes no document inside a transaction".into(),
+        ))
+    }
+
     /// The type id stored at this resource.
     ///
     /// # Errors

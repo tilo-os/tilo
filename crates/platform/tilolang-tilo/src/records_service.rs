@@ -53,12 +53,18 @@ pub struct RecordService {
     /// this service takes in to publish what they wrote.
     shared_records:
         std::collections::BTreeMap<String, std::rc::Rc<std::cell::RefCell<tilo_resource::Doc>>>,
+    /// The notices this device shows its person, and what it told already
+    /// ([`crate::notices::Notices`]).
+    notices: crate::notices::Notices,
+    /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
+    tell: Option<Box<dyn crate::notices::Tell>>,
 }
 
 impl RecordService {
     /// The records `host` runs over `record`, its packages loaded, published for `person`.
     #[must_use]
     pub fn new(record: tilo_resource::Doc, host: Host, person: impl Into<String>) -> Self {
+        let person: String = person.into();
         host.sync_from(&record);
         let planner: Arc<dyn Planner> = Arc::new(host.handle());
         let mut publications = Publications::new(&host);
@@ -71,7 +77,9 @@ impl RecordService {
             planner,
             publications,
             watch,
-            person: person.into(),
+            notices: crate::notices::Notices::new(person.clone()),
+            tell: None,
+            person,
             clock: Box::new(crate::host::system_time),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
@@ -212,6 +220,8 @@ impl RecordService {
             .merge_incoming(other)
             .map_err(|error| error.to_string())?;
         self.host.sync_from(&self.record);
+        // What reached it of the person's notices, told as it arrives.
+        self.told();
         Ok(())
     }
 
@@ -399,6 +409,7 @@ impl RecordService {
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
+        self.told();
         let made = self
             .host
             .take_returned(&planned.action_id)
@@ -453,16 +464,25 @@ impl RecordService {
         }
         // What a trigger did is the app's own change, committed as its invocation says: the same
         // commit as an action from the workspace, as the run's principal.
-        for committed in self.host.take_committed() {
-            let invoker = tilo_actions::ActionInvoker::actor(
-                crate::authority::trigger_principal(&committed.action.app).0,
-            );
-            if let Err(error) = self.commit(&committed.action, &invoker) {
-                tracing::warn!(%error, "a trigger's change did not reach the workspace");
-            }
-        }
+        self.flush();
         self.moved_unsaid = true;
         true
+    }
+
+    /// Commit what the packages committed on their own — a trigger's change, a notice marked
+    /// seen — each as the step its authorship names.
+    fn flush(&mut self) {
+        for committed in self.host.take_committed() {
+            let actor = if committed.action.authorship.invoker.is_empty() {
+                crate::authority::trigger_principal(&committed.action.app).0
+            } else {
+                committed.action.authorship.invoker.clone()
+            };
+            let invoker = tilo_actions::ActionInvoker::actor(actor);
+            if let Err(error) = self.commit(&committed.action, &invoker) {
+                tracing::warn!(%error, "a change made on its own did not reach the workspace");
+            }
+        }
     }
 
     /// How long until what the packages have due next: the service's next poll runs it then, so
@@ -476,10 +496,48 @@ impl RecordService {
         ))
     }
 
-    /// Where a package's `notify` reaches: the host's notification path, so a trigger running
-    /// here with no window of its app open tells the person the way their shell does.
-    pub fn set_notify(&mut self, host: impl tilolang_runtime::notify::NotifyHost + 'static) {
-        self.host.set_notify(host);
+    /// Where the notices the workspace holds for this device's person are shown: the session's
+    /// notifications, the ones every app's notification goes through.
+    pub fn set_tell(&mut self, tell: impl crate::notices::Tell + 'static) {
+        self.tell = Some(Box::new(tell));
+    }
+
+    /// What this device's person has told, to keep across restarts: the notices it shows no
+    /// more ([`crate::notices::Notices::kept`]).
+    #[must_use]
+    pub fn told_kept(&self) -> Vec<String> {
+        self.notices.kept()
+    }
+
+    /// Take up what this device told before it restarted: none of those notices is told again.
+    pub fn take_up_told(&mut self, kept: impl IntoIterator<Item = String>) {
+        self.notices.remember(kept);
+    }
+
+    /// The person at this device saw the notice `id` — they opened or dismissed what it showed —
+    /// so it is marked seen for every device of theirs, and its notification here is taken back.
+    pub fn notice_seen(&mut self, id: &str) {
+        if let Err(error) = self.notices.seen(&self.host, id) {
+            tracing::warn!(%error, notice = id, "a notice was not marked seen");
+            return;
+        }
+        self.flush();
+        self.told();
+    }
+
+    /// Show the notices this device's person has not seen, and take back the ones they have
+    /// seen since the last look, here or on another device of theirs.
+    fn told(&mut self) {
+        let Some(tell) = &self.tell else {
+            return;
+        };
+        let told = self.notices.step(&self.host);
+        for notice in &told.show {
+            tell.show(notice);
+        }
+        for tag in &told.withdraw {
+            tell.withdraw(tag);
+        }
     }
 
     /// What `now` reads: this device's clock, or what a test fixes.
@@ -553,6 +611,9 @@ impl Service for RecordService {
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
         let ran = self.trigger();
+        // What the workspace holds for this device's person, as the record reached it since the
+        // last look.
+        self.told();
         self.watched() || !touched.is_empty() || ran
     }
 

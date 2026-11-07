@@ -65,6 +65,9 @@ struct Subscription {
 #[derive(Default)]
 struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The documents it made: a transaction that is rolled back takes them out of the store
+    /// again, and one that is committed adds them.
+    created: Vec<DocId>,
     /// Each document it touched, as it was before the transaction's first operation on it: what
     /// an open run keeps of a document it writes, to take it back if the run fails.
     before: BTreeMap<DocId, AutoCommit>,
@@ -770,6 +773,22 @@ fn commit_with_note(doc: &mut AutoCommit, note: &ChangeNote) -> Result<(), Store
     Ok(())
 }
 
+/// The document of `record`, as it starts: its type, the app that keeps it, its items, and
+/// each field of it as its kind has it.
+fn new_doc(record: &NewRecord) -> Result<AutoCommit, StoreError> {
+    let mut doc = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
+    doc.put(&ROOT, TYPE_KEY, record.ty.as_str())
+        .map_err(backend)?;
+    doc.put(&ROOT, APP_KEY, record.app.as_str())
+        .map_err(backend)?;
+    doc.put_object(&ROOT, OUTBOX_KEY, ObjType::Map)
+        .map_err(backend)?;
+    doc.put_object(&ROOT, ITEMS_KEY, ObjType::Map)
+        .map_err(backend)?;
+    init_fields(&mut doc, &ROOT, &record.fields)?;
+    Ok(doc)
+}
+
 impl Store for AmStore {
     fn fresh_id(&mut self, prefix: &str) -> String {
         self.inner.borrow_mut().fresh(prefix)
@@ -786,16 +805,7 @@ impl Store for AmStore {
             return Err(StoreError::Invalid(format!("resource {id} exists")));
         }
         let id = id.to_owned();
-        let mut doc = AutoCommit::new_with_encoding(TextEncoding::UnicodeCodePoint);
-        doc.put(&ROOT, TYPE_KEY, record.ty.as_str())
-            .map_err(backend)?;
-        doc.put(&ROOT, APP_KEY, record.app.as_str())
-            .map_err(backend)?;
-        doc.put_object(&ROOT, OUTBOX_KEY, ObjType::Map)
-            .map_err(backend)?;
-        doc.put_object(&ROOT, ITEMS_KEY, ObjType::Map)
-            .map_err(backend)?;
-        init_fields(&mut doc, &ROOT, &record.fields)?;
+        let mut doc = new_doc(record)?;
         commit_with_note(
             &mut doc,
             &ChangeNote {
@@ -812,6 +822,29 @@ impl Store for AmStore {
         )?;
         inner.docs.insert(id.clone(), doc);
         inner.forget(&id);
+        Ok(ResourceRef::root(id, record.ty.clone()))
+    }
+
+    fn create_in(
+        &mut self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        let mut inner = self.inner.borrow_mut();
+        if inner.docs.contains_key(id) {
+            return Err(StoreError::Invalid(format!("resource {id} exists")));
+        }
+        if !inner.txns.contains_key(&txn.0) {
+            return Err(StoreError::Invalid("the transaction is closed".into()));
+        }
+        // The document is the transaction's: its change commits with the change the
+        // transaction becomes, and its rollback takes it out of the store again.
+        inner.docs.insert(id.to_owned(), new_doc(record)?);
+        if let Some(state) = inner.txns.get_mut(&txn.0) {
+            state.touched.entry(id.to_owned()).or_default();
+            state.created.push(id.to_owned());
+        }
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
 
@@ -979,6 +1012,10 @@ impl Store for AmStore {
                 doc.rollback();
             }
             inner.forget(id);
+        }
+        for id in state.created {
+            inner.docs.remove(&id);
+            inner.forget(&id);
         }
     }
 

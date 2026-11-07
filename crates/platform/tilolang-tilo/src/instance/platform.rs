@@ -103,13 +103,6 @@ pub trait Platform {
         WebReply::failed("this host reaches no services")
     }
 
-    /// Tell the person `notice` names something, on their devices, and open `notice.opens`
-    /// when they choose it: the host's own notification path, the one its shell shows the
-    /// person their news in. A platform that shows none drops it.
-    fn notify(&self, notice: &tilolang_runtime::notify::Notice) {
-        let _ = notice;
-    }
-
     /// What wakes the instance when work it waits for is ready (an index read off the frame).
     fn waker(&self) -> Waker;
 
@@ -128,16 +121,6 @@ pub struct PlatformWeb(pub(super) Rc<dyn Platform>);
 impl tilolang_runtime::web::WebTransport for PlatformWeb {
     fn fetch(&self, request: &WebRequest) -> WebReply {
         self.0.web(request)
-    }
-}
-
-/// Where an instance's `notify` reaches: the host's notification path, as the platform running
-/// the instance answers it.
-pub struct PlatformNotify(pub(super) Rc<dyn Platform>);
-
-impl tilolang_runtime::notify::NotifyHost for PlatformNotify {
-    fn notify(&self, notice: &tilolang_runtime::notify::Notice) {
-        self.0.notify(notice);
     }
 }
 

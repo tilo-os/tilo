@@ -39,6 +39,7 @@ mod links;
 mod make_from;
 mod marks;
 mod naming;
+mod notices;
 mod outbox;
 mod outcomes;
 mod policy;

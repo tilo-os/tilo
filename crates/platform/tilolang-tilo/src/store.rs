@@ -105,6 +105,9 @@ struct TxnState {
     touched: BTreeMap<DocId, BTreeSet<FieldKey>>,
     /// The collections whose items joined, left or moved, by the document that holds them.
     collections: BTreeMap<DocId, BTreeSet<FieldKey>>,
+    /// The records the transaction made ([`Inner::create_in`]): a transaction that is rolled
+    /// back takes them out of the index again.
+    created: Vec<String>,
     /// How the collections it changed changed, in order.
     listings: Vec<ListingChange>,
     /// The resources it wrote that are saved to the record, and those their origin derives
@@ -1161,6 +1164,64 @@ impl TiloStore {
         Ok(crate::action::migrated(mirror, &obj, migration))
     }
 
+    /// Mark the notice `doc` seen, as `person`'s change: what a device writes when its person
+    /// dismisses or opens one, so every device of theirs takes the notification back. The
+    /// change sets the notice's `seen` flag, as a bound control's edit of a field does, and
+    /// waits for the host to commit it (`Host::take_committed`).
+    ///
+    /// # Errors
+    /// The workspace record cannot be had, holds no such notice, or the change cannot be written.
+    pub fn see(&self, doc: &str, person: &str) -> Result<(), StoreError> {
+        self.load_record()?;
+        let mut inner = self.mutate();
+        let Some((app, ty)) = inner.index.get(doc).cloned() else {
+            return Err(not_found(format!("resource {doc}")));
+        };
+        if ty != tilolang::NOTICE_TYPE {
+            return Err(invalid(format!("resource {doc} is no notice")));
+        }
+        let Some(schema) = lookup(&ty) else {
+            return Err(not_found(format!("type {ty}")));
+        };
+        let at = ResourceRef::root(doc.to_owned(), ty.clone());
+        let mutation = Mutation::SetRegister {
+            field: tilolang::NOTICE_SEEN.to_owned(),
+            value: Scalar::Bool(true),
+        };
+        let Planned {
+            edit,
+            touched,
+            items,
+            placed,
+            ..
+        } = inner.plan(&at, &mutation)?;
+        let seed = inner.fresh("seen:").into_bytes();
+        inner.write(&app, edit.clone(), seed, touched, (items, placed))?;
+        let action = DynAction {
+            app: app.clone(),
+            kind: format!("tl.{app}.{}", schema.name),
+            action_id: crate::notices::SEEN_ACTION.to_owned(),
+            args: Json::Object(
+                [
+                    (
+                        "field".to_owned(),
+                        Json::String(tilolang::NOTICE_SEEN.to_owned()),
+                    ),
+                    ("value".to_owned(), Json::Bool(true)),
+                ]
+                .into_iter()
+                .collect(),
+            ),
+            authorship: Authorship {
+                invoker: person.to_owned(),
+                ..Authorship::default()
+            },
+            edits: vec![edit],
+        };
+        inner.enqueue(action);
+        Ok(())
+    }
+
     /// The ids of the resources of the type `ty` of `app`, in id order.
     #[must_use]
     pub fn resources_of(&self, app: &str, ty: &str) -> Vec<DocId> {
@@ -1437,6 +1498,72 @@ impl TiloStore {
             };
             inner.enqueue(action);
         }
+        Ok(ResourceRef::root(id, record.ty.clone()))
+    }
+
+    /// Create the record `id` inside the open transaction `txn`: what makes it is the change of
+    /// the action that did, committed with the rest of it and taken back when it fails. What
+    /// creates it writes nothing of an app's own — `notify` writes a notice of the host's
+    /// ([`crate::notify`]) — so the change keeps the app and kind of what else the action wrote.
+    ///
+    /// # Errors
+    /// The type is not registered, the resource already exists, no transaction is open, or the
+    /// record cannot be had.
+    pub fn create_in(
+        &self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        self.load_record()?;
+        let mut inner = self.mutate();
+        if !inner.txns.contains_key(&txn.0) {
+            return Err(invalid("no such transaction"));
+        }
+        if inner.index.contains_key(id) {
+            return Err(invalid(format!("resource {id} exists")));
+        }
+        let schema = lookup(&record.ty)
+            .ok_or_else(|| not_found(format!("type {} is not registered", record.ty)))?;
+        let empty = DynRecord::empty(schema).map_err(backend)?;
+        let edit = DynEdit::Create {
+            id: id.to_owned(),
+            record: empty.to_json(),
+        };
+        let touched = vec![FieldKey {
+            resource: id.to_owned(),
+            field: ANY_FIELD.to_owned(),
+        }];
+        inner
+            .index
+            .insert(id.to_owned(), (record.app.clone(), record.ty.clone()));
+        let written = inner.write(
+            &record.app,
+            edit.clone(),
+            id.as_bytes().to_vec(),
+            touched.clone(),
+            (Vec::new(), Vec::new()),
+        );
+        if let Err(error) = written {
+            inner.index.remove(id);
+            return Err(error);
+        }
+        let state = inner
+            .txns
+            .get_mut(&txn.0)
+            .ok_or_else(|| invalid("no such transaction"))?;
+        if state.app.is_none() {
+            state.app = Some(record.app.clone());
+            state.kind = Some(format!("tl.{}.{}", record.app, schema.name));
+        }
+        state.saved = state.saved.saturating_add(1);
+        state.edits.push(edit);
+        state.created.push(id.to_owned());
+        state
+            .touched
+            .entry(id.to_owned())
+            .or_default()
+            .extend(touched);
         Ok(ResourceRef::root(id, record.ty.clone()))
     }
 }
@@ -2082,6 +2209,15 @@ impl Store for TiloStore {
         Self::create_with_id(self, record, id)
     }
 
+    fn create_in(
+        &mut self,
+        txn: Txn,
+        record: &NewRecord,
+        id: &str,
+    ) -> Result<ResourceRef, StoreError> {
+        Self::create_in(self, txn, record, id)
+    }
+
     fn type_of(&self, at: &ResourceRef) -> Result<TypeId, StoreError> {
         let inner = self.held();
         let (app, ty) = inner.locate(at)?;
@@ -2185,11 +2321,22 @@ impl Store for TiloStore {
             .txns
             .get_mut(&txn.0)
             .ok_or_else(|| invalid("no such transaction"))?;
-        if state.app.as_deref().is_some_and(|held| held != app) {
+        // A change writes one app's resources. The host's are the workspace's own — a notice
+        // rides in the change that told the person, whichever app's action it was
+        // ([`crate::notices`]) — so they join any app's change; the change takes the app of
+        // what else it wrote, and the host's only when that is all it wrote.
+        let own = app.as_str() == tilolang::HOST_APP;
+        if state
+            .app
+            .as_deref()
+            .is_some_and(|held| held != app && held != tilolang::HOST_APP && !own)
+        {
             return Err(invalid("a transaction cannot write resources of two apps"));
         }
-        state.app = Some(app);
-        if state.kind.is_none() {
+        let joining =
+            state.app.is_none() || (state.app.as_deref() == Some(tilolang::HOST_APP) && !own);
+        if joining {
+            state.app = Some(app);
             state.kind = kind;
         }
         // What its origin derives lives in the store's unsaved layer; the rest is the record's.
@@ -2234,8 +2381,13 @@ impl Store for TiloStore {
         });
         // A migration or a trigger that changed nothing still ran: its mark is a change of the
         // record like any other, and the next open or wake reads it instead of asking again.
+        // A trigger whose own record is not among what it wrote — one that only told someone
+        // something, say — ran too, and records it, so it runs no second time for that instant.
+        let own = triggering
+            .as_ref()
+            .is_some_and(|triggering| !state.touched.contains_key(&triggering.doc));
         let mut marked = false;
-        if state.edits.is_empty()
+        if (state.edits.is_empty() || own)
             && let Some((doc, edit)) = mark_of(migration.as_ref(), triggering.as_ref())
         {
             if !inner.mark(&mut state, txn, &doc, edit)? {
@@ -2272,6 +2424,17 @@ impl Store for TiloStore {
         }
         let versioned = app.clone();
         let (action_id, args) = published_name(note);
+        // A change is one app's, and the record stores each edit under the app its resource is
+        // of: what the change wrote of another — a notice of the host's, riding in the change
+        // that told its person — is addressed to that app, as the store that wrote it read it.
+        let edits: Vec<DynEdit> = state
+            .edits
+            .into_iter()
+            .map(|edit| match inner.index.get(edit.resource()) {
+                Some((held, _)) if *held != app => edit.in_app(held),
+                _ => edit,
+            })
+            .collect();
         let action = DynAction {
             app,
             kind,
@@ -2287,7 +2450,7 @@ impl Store for TiloStore {
                 count: note.count.max(1),
                 invocation: note.invocation.clone(),
             },
-            edits: state.edits,
+            edits,
         };
         let made = action.made();
         inner.enqueue(action);
@@ -2311,6 +2474,11 @@ impl Store for TiloStore {
         if let Some(state) = inner.txns.remove(&txn.0) {
             inner.drop_local_from(state.start);
             inner.reapply();
+            // What it made is not in the record the mirror was put back to, and the index is not
+            // rebuilt from the mirror: it is taken out here.
+            for id in &state.created {
+                inner.index.remove(id);
+            }
             inner.rebuild_overlay();
             inner.changed();
         }

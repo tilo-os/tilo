@@ -204,6 +204,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         if let Some(did) = &action.did {
             attribute(&mut out, "did", &pattern(did));
         }
+        // What it tells a person, as a notification shows it (`notify`'s title and body).
+        for word in meta.words.iter().filter(|word| word.view == action.id) {
+            attribute(&mut out, &word.key, &pattern(&word.text));
+        }
     }
     // A view's doc comment says how it draws, for its author; a person sees its label.
     // The words it shows as written are its attributes (i18n.md §2).

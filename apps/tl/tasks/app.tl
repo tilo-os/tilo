@@ -233,9 +233,9 @@ action remind_at(t: Task, after: Option<Duration>) uses time (
     t.remind = if let d = after { .some(now + d) } else { .none }
 }
 
-/// Tells whoever is doing a task, or the one who made it, that its moment has come, and opens
-/// the task when they choose the notice. A task already done is not told of. A reminder is told
-/// once: the moment it named is cleared as it is told.
+/// Tells whoever is doing a task, or the one who made it, what the task is and when it is due
+/// or which project it is in, and opens the task when they choose the notice. A task already
+/// done is not told of. A reminder is told once: the moment it named is cleared as it is told.
 action remind(t: Task) uses notify {
     t.remind = .none
     if t.done {
@@ -245,7 +245,12 @@ action remind(t: Task) uses notify {
         .some(a)
     } else if let made = created(t) { .some(made.who) } else { .none }
     if let w = who {
-        notify(to: w, title: t.title, body: "Its moment has come.", opens: t)
+        notify(
+            to: w,
+            title: t.title,
+            body: if let d = t.due { "Due {d}" } else if let p = t.project { p.name } else { "" },
+            opens: t,
+        )
     }
 }
 

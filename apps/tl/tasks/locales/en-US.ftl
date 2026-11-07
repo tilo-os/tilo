@@ -137,7 +137,8 @@ d-3qq23ybf = Remind me
     .doc = Sets when to remind whoever is doing a task of it, counted from now, or clears the reminder.
 
 d-7vjyuy7c = Remind
-    .doc = Tells whoever is doing a task, or the one who made it, that its moment has come, and opens the task when they choose the notice.
+    .doc = Tells whoever is doing a task, or the one who made it, what the task is and when it is due or which project it is in, and opens the task when they choose the notice.
+    .w-due = Due { $d }
 
 d-w43ij7uu = No priority
     .doc = Sets how much a task matters.

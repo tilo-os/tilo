@@ -127,48 +127,42 @@ pub fn seeded(person: &str) -> Result<RecordService, String> {
         commit(&host, &mut record, person)?;
     }
     let mut service = RecordService::new(record, host, person);
-    service.set_notify(SessionNotices {
+    service.set_tell(SessionNotices {
         notifier: ui::notify::system(Some("so.tilo.session")),
-        person: person.to_owned(),
     });
     tilo_service::Service::settle(&mut service);
     Ok(service)
 }
 
-/// Where a seeded app's `notify` reaches with no window of it open: the person's notifications,
+/// Where a seeded app's notice reaches with no window of it open: the person's notifications,
 /// through the daemon this session serves, so the banner, the centre and what choosing it opens
-/// are the ones every app's notification has.
+/// are the ones every app's notification has. Only the notices addressed to the person at this
+/// device reach it; the ones of anyone else are theirs to show.
 struct SessionNotices {
     notifier: std::sync::Arc<dyn ui::notify::Notifier>,
-    /// The person at this device: a notice for someone else is theirs to show.
-    person: String,
 }
 
-impl tilolang_tilo::runtime::notify::NotifyHost for SessionNotices {
-    fn notify(&self, notice: &tilolang_tilo::runtime::notify::Notice) {
-        if notice.to.0 != self.person {
-            return;
-        }
-        // What it opens is the resource it names, of the app whose type it is: the same place a
-        // mention opens, so the desk opens it the one way it opens a person's own record.
-        let Some(place) = notice.opens.as_ref().and_then(|opens| {
-            let schema = tilolang_tilo::schema::lookup(&opens.ty)?;
-            Some(ui::mentions::Place {
-                app: schema.app.clone(),
-                record: String::new(),
-                resource: tilolang_tilo::publish::resource_id(&schema.app, &opens.id_string()),
-            })
-        }) else {
-            return;
+impl tilolang_tilo::notices::Tell for SessionNotices {
+    fn show(&self, notice: &tilolang_tilo::notices::Notice) {
+        let place = ui::mentions::Place {
+            app: notice.opens.app.clone(),
+            record: notice.opens.record.clone(),
+            resource: notice.opens.resource.clone(),
         };
-        let told = ui::mentions::Notice {
-            tag: place.tag(&self.person),
+        let shown = ui::mentions::Notice {
+            tag: notice.tag.clone(),
             title: notice.title.clone(),
             body: notice.body.clone(),
             place,
         };
-        if let Err(error) = self.notifier.show(&told.notification()) {
+        if let Err(error) = self.notifier.show(&shown.notification()) {
             tracing::warn!(%error, "a package's notice was not shown");
+        }
+    }
+
+    fn withdraw(&self, tag: &str) {
+        if let Err(error) = self.notifier.withdraw(tag) {
+            tracing::warn!(%error, "a notice was not taken back");
         }
     }
 }

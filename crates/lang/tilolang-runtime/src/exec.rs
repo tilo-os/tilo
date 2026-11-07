@@ -2398,14 +2398,16 @@ impl Core {
         crate::run::WebResponse::of(reply)
     }
 
-    /// `notify(to, title, body, opens)`: tell the person `to` something, once. The run's
-    /// journal answers a run that replays, so it tells them no more than the first run did.
+    /// `notify(to, title, body, opens)`: tell the person `to` something, once. The notice is a
+    /// record written in this action's own change ([`crate::notify`]), so every device of theirs
+    /// reads it. The run's journal answers a run that replays, so it tells them no more than the
+    /// first run did.
     fn notify_import(&self, to: i32, title: i32, body: i32, opens: i32) -> HResult<Option<Wasm>> {
         let to = self.principal_arg(to)?;
         let title = self.text(title)?;
         let body = self.text(body)?;
         let opens = match self.val(opens)? {
-            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+            Value::Ref(r) => ResourceRef::clone(&r.target),
             other => {
                 return trap(format!(
                     "notify: expected the resource it opens, got {}",
@@ -2419,6 +2421,7 @@ impl Core {
             body,
             opens,
         };
+        let mut txn = None;
         {
             let mut frames = self.frames.borrow_mut();
             let Some(run) = frames.run_mut() else {
@@ -2434,11 +2437,81 @@ impl Core {
                 return ret_void();
             }
         }
-        if let Some(host) = self.notify.borrow().as_ref() {
-            host.notify(&notice);
+        if let Ok(frame) = self.frames.borrow().top()
+            && let FrameKind::Action(state) = &frame.kind
+        {
+            txn = Some(state.txn);
         }
+        let Some(txn) = txn else {
+            return trap("a notification is only sent in an action");
+        };
+        self.write_notice(txn, &notice)?;
         self.journal_push(crate::run::JournalEntry::Notified)?;
         ret_void()
+    }
+
+    /// Write the notice `notice` as a record of this action's change, in the transaction
+    /// `txn`: creating a resource writes nothing of the app's own, so the change takes its app
+    /// and kind from what else the action wrote.
+    fn write_notice(&self, txn: crate::store::Txn, notice: &crate::notify::Notice) -> HResult<()> {
+        use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
+
+        let record = self
+            .registry
+            .borrow()
+            .new_record(NOTICE_TYPE)
+            .ok_or_else(|| HostFail::Trap("the host keeps no notice type".into()))?;
+        let mut store = self.store.borrow_mut();
+        let id = store.fresh_id("notice");
+        let at = store
+            .create_in(txn, &record, &id)
+            .map_err(|error| HostFail::Trap(error.to_string()))?;
+        let scalar = |value: &Value, ty: &crate::meta::Ty| {
+            crate::host_res::to_scalar(value, ty)
+                .map_err(|error| HostFail::Trap(format!("notify: {error}")))
+        };
+        let writes = [
+            (
+                NOTICE_TO.to_owned(),
+                crate::store::Mutation::SetRegister {
+                    field: NOTICE_TO.to_owned(),
+                    value: scalar(
+                        &Value::Principal(notice.to.clone()),
+                        &crate::meta::Ty::Principal,
+                    )?,
+                },
+            ),
+            (
+                NOTICE_TITLE.to_owned(),
+                crate::store::Mutation::SetText {
+                    field: NOTICE_TITLE.to_owned(),
+                    text: notice.title.clone(),
+                },
+            ),
+            (
+                NOTICE_BODY.to_owned(),
+                crate::store::Mutation::SetText {
+                    field: NOTICE_BODY.to_owned(),
+                    text: notice.body.clone(),
+                },
+            ),
+            (
+                NOTICE_OPENS.to_owned(),
+                crate::store::Mutation::SetRegister {
+                    field: NOTICE_OPENS.to_owned(),
+                    value: scalar(
+                        &Value::resource(&notice.opens),
+                        &crate::meta::Ty::Record(tilolang::resource_key()),
+                    )?,
+                },
+            ),
+        ];
+        for (field, write) in writes {
+            store
+                .apply(txn, &at, &write)
+                .map_err(|error| HostFail::Trap(format!("notify: {field}: {error}")))?;
+        }
+        Ok(())
     }
 
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
