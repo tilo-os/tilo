@@ -29,11 +29,6 @@ pub(crate) mod replay;
 pub(crate) mod resume;
 #[doc(hidden)]
 pub mod retained;
-/// The seam this store drives native shell replay selection through. The
-/// selection itself, and the retention authority behind a
-/// [`shell_selection::ShellBinding`], belong to the embedder's
-/// adapter (`tilo-relay-shell` for the desktop).
-pub use tilo_relay_store::shell as shell_selection;
 #[cfg(test)]
 pub(crate) use tilo_relay_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]
@@ -52,8 +47,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use shell_selection::ShellBinding;
-use tilo_relay_store::tail_cache::SharedTailCache;
 
 #[cfg(test)]
 pub(crate) use tilo_relay_store::thread_fsyncs;
@@ -71,10 +64,6 @@ pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
 /// Retained bootstrap checkpoints and the incremental tails after them.
 pub const RETAINED_DIR: &str = "retained";
-/// Durable personal-mesh compute route bindings and lifecycle state.
-pub const COMPUTE_DIR: &str = "compute";
-/// Dedicated queue for the versioned personal-compute protocol.
-pub const COMPUTE_PENDING_DIR: &str = "compute-pending";
 
 /// Root-signed device revocations enforced during relay authentication.
 pub const REVOCATIONS_FILE: &str = "revocations.json";
@@ -208,17 +197,19 @@ impl CommitRecord {
     }
 }
 
+/// What one retained write did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RetainOutcome {
+    /// Bytes written.
+    pub written: u64,
+}
+
 /// On-disk manager for one workspace's state.
 #[derive(Clone)]
 pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
-    /// The shell retention authority the embedder's adapter bound; the store
-    /// only steps what it hands out.
-    shell_binding: Option<Arc<dyn ShellBinding>>,
-    /// Shared by every handle on `root`; see `tilo_relay_store::tail_cache`.
-    tail_cache: SharedTailCache,
     /// Shared by every handle on `root`: the captures whose retained frames
     /// are listed but not yet pinned, and the collections that wait for
     /// them ([`replay::CaptureLeases`]).
@@ -327,8 +318,6 @@ impl WorkspaceStore {
         fs::create_dir_all(&root)?;
         fs::create_dir_all(root.join("pending"))?;
         fs::create_dir_all(root.join(RETAINED_DIR))?;
-        fs::create_dir_all(root.join(COMPUTE_DIR))?;
-        fs::create_dir_all(root.join(COMPUTE_PENDING_DIR))?;
         remove_legacy_delta_log(&root);
         // The store's directory and its own entries are durable from here on.
         for directory in root.ancestors().take(3) {
@@ -336,12 +325,10 @@ impl WorkspaceStore {
         }
         retained::journal::recover(&root.join(RETAINED_DIR).join("v2"))?;
         Ok(Self {
-            tail_cache: SharedTailCache::for_root(&root),
             capture_leases: replay::CaptureLeases::for_root(&root),
             root,
             workspace_id,
             pinned,
-            shell_binding: None,
             payloads,
         })
     }
@@ -358,70 +345,6 @@ impl WorkspaceStore {
 
     pub fn workspace_id(&self) -> u64 {
         self.workspace_id
-    }
-
-    /// Bind the locally supplied shell retention `authority` (the injected
-    /// adapter's serialised form) before handing this store to the ordered
-    /// persistence owner. The adapter this store was opened with
-    /// ([`crate::payloads::ShellPayloads::replay`]) checks it, persists it as
-    /// a conflict fence and installs it; persisted bytes are never an
-    /// independent source of trust, so `open` stays unbound until this call.
-    ///
-    /// # Errors
-    ///
-    /// Returns `StoreError` when the adapter has no shell replay, or refuses
-    /// `authority`: it names another workspace or conflicts with a prior
-    /// binding.
-    pub fn bind_shell(&mut self, authority: &serde_json::Value) -> Result<(), StoreError> {
-        let payloads = self.payloads.clone();
-        let replay = payloads.replay().ok_or_else(|| {
-            StoreError::Io(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "this host's shell adapter has no shell replay",
-            ))
-        })?;
-        replay.bind(self, authority)
-    }
-
-    /// The bound shell retention authority, absent for generic workspace
-    /// stores.
-    pub fn shell_binding(&self) -> Option<&Arc<dyn ShellBinding>> {
-        self.shell_binding.as_ref()
-    }
-
-    /// A reader of the committed selected shell basis; `None` while no
-    /// authority is bound, whatever the disk holds.
-    pub(crate) fn selected_read(
-        &self,
-    ) -> Result<Option<Box<dyn shell_selection::SelectedReplay>>, StoreError> {
-        match &self.shell_binding {
-            Some(binding) => binding.selected_read(self),
-            None => Ok(None),
-        }
-    }
-
-    /// The tail cache's cursor for the retained tail `bytes`, when bound.
-    pub(crate) fn checkout_tail(
-        &self,
-        bytes: &[u8],
-    ) -> Result<Option<Box<dyn shell_selection::ShellTail>>, StoreError> {
-        match &self.shell_binding {
-            Some(binding) => binding.checkout_tail(self, bytes),
-            None => Ok(None),
-        }
-    }
-
-    /// A shell selection of this store's retained history, staged under
-    /// `scratch`; `None` while no authority is bound.
-    pub(crate) fn shell_selection(
-        &self,
-        scratch: PathBuf,
-        incoming: Option<[u8; 32]>,
-    ) -> Result<Option<Box<dyn shell_selection::ShellSelection>>, StoreError> {
-        match &self.shell_binding {
-            Some(binding) => binding.selection(self, scratch, incoming).map(Some),
-            None => Ok(None),
-        }
     }
 
     /// Whether this workspace is pinned (holds a persistent CRDT
@@ -549,193 +472,6 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))?;
         atomic_write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(bytes)
-    }
-
-    /// Claim a compute job identifier durably before routing it, keeping
-    /// `record` as the job's record. Returns the existing record when the
-    /// identifier was already claimed so callers can distinguish an
-    /// idempotent replay from a conflicting request. The store keeps the
-    /// record and knows nothing of what it says.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the record cannot be encoded, created, synced, or
-    /// an existing record cannot be decoded.
-    pub fn claim_compute_record<T: Serialize + serde::de::DeserializeOwned>(
-        &self,
-        job_id: &[u8; 16],
-        record: &T,
-    ) -> Result<Option<T>, StoreError> {
-        let path = self.compute_job_path(job_id);
-        let bytes =
-            serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                file.write_all(&bytes)?;
-                fsync(&file)?;
-                Ok(None)
-            }
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-                self.load_compute_record(job_id)
-            }
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    /// Load one durable compute job record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the record cannot be read or decoded.
-    pub fn load_compute_record<T: serde::de::DeserializeOwned>(
-        &self,
-        job_id: &[u8; 16],
-    ) -> Result<Option<T>, StoreError> {
-        let path = self.compute_job_path(job_id);
-        if !path.exists() {
-            return Ok(None);
-        }
-        serde_json::from_slice(&fs::read(path)?)
-            .map(Some)
-            .map_err(|error| StoreError::Json(error.to_string()))
-    }
-
-    /// Atomically replace one previously claimed compute job record.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the record is unknown, cannot be encoded, or the
-    /// crash-safe replacement fails.
-    pub fn save_compute_record<T: Serialize>(
-        &self,
-        job_id: &[u8; 16],
-        record: &T,
-    ) -> Result<(), StoreError> {
-        let path = self.compute_job_path(job_id);
-        if !path.exists() {
-            return Err(StoreError::Io(io::Error::new(
-                io::ErrorKind::NotFound,
-                "compute job was not claimed",
-            )));
-        }
-        let bytes =
-            serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_write(&path, &bytes)?;
-        Ok(())
-    }
-
-    /// Every durable compute job record of this workspace. A record that no
-    /// longer decodes is skipped with a warning rather than hiding the rest.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the job directory cannot be enumerated or a
-    /// record cannot be read.
-    pub fn load_compute_records<T: serde::de::DeserializeOwned>(
-        &self,
-    ) -> Result<Vec<T>, StoreError> {
-        let directory = self.root.join(COMPUTE_DIR);
-        if !directory.exists() {
-            return Ok(Vec::new());
-        }
-        let mut jobs = Vec::new();
-        for entry in fs::read_dir(directory)? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
-            }
-            match serde_json::from_slice(&fs::read(&path)?) {
-                Ok(job) => jobs.push(job),
-                Err(error) => {
-                    tracing::warn!(path = %path.display(), %error, "skipping an unreadable compute record");
-                }
-            }
-        }
-        Ok(jobs)
-    }
-
-    fn compute_job_path(&self, job_id: &[u8; 16]) -> PathBuf {
-        self.root
-            .join(COMPUTE_DIR)
-            .join(format!("{}.json", hex::encode(job_id)))
-    }
-
-    /// Queue one encoded personal-compute envelope for an offline exact
-    /// target. This queue is intentionally separate from frozen relay-v1
-    /// envelopes so postcard enum evolution cannot corrupt either protocol.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the target directory or crash-safe file cannot be
-    /// created.
-    pub fn enqueue_compute_pending(
-        &self,
-        device: &[u8; 32],
-        sequence: u64,
-        bytes: &[u8],
-    ) -> Result<PathBuf, StoreError> {
-        let directory = self
-            .root
-            .join(COMPUTE_PENDING_DIR)
-            .join(hex::encode(device));
-        fs::create_dir_all(&directory)?;
-        let path = directory.join(format!("{sequence:016x}.compute"));
-        atomic_write(&path, bytes)?;
-        Ok(path)
-    }
-
-    /// Load compute envelopes without acknowledging them. A session removes
-    /// each returned path only after the matching frame reaches the wire.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the queue cannot be enumerated or read.
-    pub fn load_compute_pending(&self, device: &[u8; 32]) -> Result<Vec<PendingEntry>, StoreError> {
-        let directory = self
-            .root
-            .join(COMPUTE_PENDING_DIR)
-            .join(hex::encode(device));
-        if !directory.exists() {
-            return Ok(Vec::new());
-        }
-        let mut entries = fs::read_dir(directory)?
-            .filter_map(Result::ok)
-            .filter(|entry| entry.file_name().to_string_lossy().ends_with(".compute"))
-            .collect::<Vec<_>>();
-        entries.sort_by_key(fs::DirEntry::file_name);
-        entries
-            .into_iter()
-            .map(|entry| {
-                let path = entry.path();
-                Ok(PendingEntry {
-                    bytes: fs::read(&path)?,
-                    path,
-                })
-            })
-            .collect()
-    }
-
-    /// Acknowledge one delivered compute envelope for the exact target.
-    /// Missing entries are treated as an idempotent repeated acknowledgement.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if an existing queue entry cannot be removed.
-    pub fn ack_compute_pending(&self, device: &[u8; 32], sequence: u64) -> Result<(), StoreError> {
-        let path = self
-            .root
-            .join(COMPUTE_PENDING_DIR)
-            .join(hex::encode(device))
-            .join(format!("{sequence:016x}.compute"));
-        match fs::remove_file(path) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
     }
 
     /// Enqueue a delta for later delivery to `device_pubkey`. Each
@@ -939,28 +675,6 @@ impl WorkspaceStore {
 
     fn pending_dir_for(&self, device_pubkey: &[u8; 32]) -> PathBuf {
         self.root.join("pending").join(hex::encode(device_pubkey))
-    }
-}
-
-impl shell_selection::ShellStore for WorkspaceStore {
-    fn root(&self) -> &Path {
-        &self.root
-    }
-    fn workspace_id(&self) -> u64 {
-        self.workspace_id
-    }
-    fn tail_cache(&self) -> &SharedTailCache {
-        &self.tail_cache
-    }
-    fn shell_binding(&self) -> Option<&Arc<dyn ShellBinding>> {
-        self.shell_binding.as_ref()
-    }
-    fn install_shell_binding(&mut self, binding: Arc<dyn ShellBinding>) {
-        self.shell_binding = Some(binding);
-        self.tail_cache.invalidate();
-    }
-    fn handle(&self) -> Arc<dyn shell_selection::ShellStore> {
-        Arc::new(self.clone())
     }
 }
 

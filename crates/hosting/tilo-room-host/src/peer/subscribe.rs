@@ -175,7 +175,6 @@ pub(super) async fn handle_subscribe(
 
     let rx = owner
         .submit_replay_resumable_wait(
-            true,
             1,
             async { Ok(()) },
             move |state, _| {

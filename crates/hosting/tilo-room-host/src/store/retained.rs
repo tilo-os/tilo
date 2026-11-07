@@ -568,18 +568,6 @@ pub struct RetainBuild {
     staged_append: bool,
     survivors: u64,
     written: u64,
-    shell_store: Option<WorkspaceStore>,
-    // Boxed, as `fast` is: inline they made a build 54 KB, and the build
-    // moves through the blocking pool on every quantum of the edit it serves.
-    selected_read: Option<Box<dyn super::shell_selection::SelectedReplay>>,
-    selection: Option<Box<dyn super::shell_selection::ShellSelection>>,
-    publication: Option<super::shell_selection::Publication>,
-    /// A plain route tail the in-process tail cache can publish without a
-    /// selection; `fast_admitted` once the selected snapshot found it safe.
-    fast: Option<Box<dyn super::shell_selection::ShellTail>>,
-    fast_admitted: bool,
-    selected_obsolete: bool,
-    staged_only: bool,
     store: WorkspaceStore,
     /// A delta's active generation, stamped when the build began.
     stamp: Option<tail_index::Stamp>,
@@ -627,11 +615,6 @@ impl FreshCheckpoint {
             }
         }
     }
-}
-/// A checkpoint staged as a projected lineage generation, promoted with the
-/// batch it belongs to.
-pub struct CheckpointStage {
-    build: RetainBuild,
 }
 pub(crate) struct CheckpointDiscard {
     root: PathBuf,
@@ -688,130 +671,23 @@ impl CheckpointDiscard {
         Ok(Step::More)
     }
 }
-impl CheckpointStage {
-    /// The generation this stage projects for its lineage.
-    pub fn projected_generation(&self) -> &Path {
-        self.build.staged.as_deref().unwrap_or(&self.build.active)
-    }
-    /// The lineage directory's name.
-    pub fn lineage_name(&self) -> Result<&std::ffi::OsStr, StoreError> {
-        self.build
-            .lineage
-            .file_name()
-            .ok_or_else(|| invalid("retained lineage has no name"))
-    }
-    /// One quantum of staging; done with whether the projected generation
-    /// may be promoted with its batch.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the lineage cannot be read or staged.
-    pub fn step(
-        &mut self,
-        limit: super::bounded::WorkLimit,
-    ) -> Result<super::bounded::Step<bool>, StoreError> {
-        use super::bounded::Step;
-        if matches!(
-            self.build.phase,
-            RetainPhase::Commit | RetainPhase::Collect(_) | RetainPhase::Done
-        ) {
-            return Ok(Step::Done(
-                self.build.duplicate || self.build.staged.is_some(),
-            ));
-        }
-        match self.build.step(limit)? {
-            Step::More => Ok(Step::More),
-            Step::Done(_) => Ok(Step::Done(
-                self.build.duplicate || self.build.staged.is_some(),
-            )),
-        }
-    }
-    /// Publish only the lineage CURRENT. Selection CURRENT must be durable
-    /// before `finish_gc` may retire any prior generation.
-    /// Make the projected generation the lineage's `CURRENT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `CURRENT` cannot be switched durably.
-    pub fn promote(&mut self) -> Result<(), StoreError> {
-        if matches!(self.build.phase, RetainPhase::Commit) {
-            self.build.store.forget_lineage_listing(&self.build.lineage);
-            let staged = self
-                .build
-                .staged
-                .as_ref()
-                .invariant("staged missing")?
-                .clone();
-            tail_index::forget(&self.build.lineage);
-            sync_dir(&staged)?;
-            durable_write(
-                &self.build.lineage.join("CURRENT"),
-                staged
-                    .file_name()
-                    .invariant("staged missing")?
-                    .as_encoded_bytes(),
-            )?;
-            self.build.written = self.build.bytes.len() as u64;
-            self.build.phase = self.build.collect(false)?;
-        }
-        Ok(())
-    }
-    /// Collect what the promotion replaced.
-    pub fn finish_gc(
-        &mut self,
-        limit: super::bounded::WorkLimit,
-    ) -> Result<super::bounded::Step<()>, StoreError> {
-        use super::bounded::Step;
-        #[cfg(test)]
-        super::test_barrier::check(&self.build.lineage, "checkpoint-stage-finish-gc")?;
-        match &mut self.build.phase {
-            RetainPhase::Collect(gc) => {
-                if gc.step(limit)? == Step::Done(()) {
-                    self.build.phase = RetainPhase::Done;
-                    Ok(Step::Done(()))
-                } else {
-                    Ok(Step::More)
-                }
-            }
-            RetainPhase::Done => Ok(Step::Done(())),
-            _ => Err(invalid("checkpoint stage was not promoted")),
-        }
-    }
-}
 impl RetainBuild {
     pub(crate) fn scratch(&self) -> &Path {
         &self.scratch
     }
 
     /// Whether this build made its scratch directory: a checkpoint's ordered
-    /// pass and a shell selection do; a plain delta never does, so its owner
-    /// has nothing to dispose of afterwards.
+    /// pass does; a plain delta never does, so its owner has nothing to
+    /// dispose of afterwards.
     pub(crate) fn holds_scratch(&self) -> bool {
-        self.checkpoint || self.selection.is_some()
-    }
-    /// What may already be visible after a failed [`Self::step`].
-    pub fn publication_on_error(&self) -> Option<super::shell_selection::Publication> {
-        self.selection
-            .as_deref()
-            .and_then(super::shell_selection::ShellSelection::publication_on_error)
+        self.checkpoint
     }
     #[cfg(test)]
     pub(crate) fn stats(&self) -> &super::bounded::WorkStats {
-        self.selection
-            .as_ref()
-            .map_or(&self.sorter.stats, |s| s.stats())
+        &self.sorter.stats
     }
     pub fn retention_stats(&self) -> &super::bounded::WorkStats {
         &self.sorter.stats
-    }
-    /// The shell selection's work, when one ran.
-    pub fn selection_stats(&self) -> Option<&super::bounded::WorkStats> {
-        self.selection
-            .as_deref()
-            .map(super::shell_selection::ShellSelection::stats)
-    }
-    pub(crate) fn selected_obsolete(&self) -> bool {
-        self.selected_obsolete
     }
     /// Collect the generations the lineage's CURRENT no longer names; done
     /// at once while a capture is leased, which collects them later
@@ -841,11 +717,7 @@ impl RetainBuild {
             sync_dir_once(parent)?;
         }
         if self.duplicate {
-            self.phase = if self.staged_only {
-                RetainPhase::Done
-            } else {
-                self.collect(false)?
-            };
+            self.phase = self.collect(false)?;
         } else if stage_checkpoint {
             let name = hex::encode(rand::random::<[u8; 16]>());
             let staged = self.lineage.join(&name);
@@ -869,19 +741,6 @@ impl RetainBuild {
             self.staged_synced = true;
             #[cfg(test)]
             super::test_barrier::check(&self.lineage, "checkpoint-stage-after-allocation")?;
-            self.phase = RetainPhase::Stage(fs::File::open(
-                self.sorted.as_ref().invariant("sorted missing")?,
-            )?);
-        } else if self.staged_only {
-            // Preserve opaque/unproved history exactly in an
-            // inactive generation. The live generation is not
-            // mutated until the caller promotes this stage.
-            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
-            create_dir(&staged)?;
-            self.staged = Some(staged);
-            #[cfg(test)]
-            super::test_barrier::check(&self.lineage, "checkpoint-stage-after-allocation")?;
-            self.staged_append = true;
             self.phase = RetainPhase::Stage(fs::File::open(
                 self.sorted.as_ref().invariant("sorted missing")?,
             )?);
@@ -956,13 +815,11 @@ impl RetainBuild {
     ///
     /// # Errors
     ///
-    /// Returns an error when the lineage cannot be read or written, or the
-    /// shell selection fails; [`Self::publication_on_error`] then says what
-    /// may already be visible.
+    /// Returns an error when the lineage cannot be read or written.
     pub fn step(
         &mut self,
         limit: super::bounded::WorkLimit,
-    ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
+    ) -> Result<super::bounded::Step<super::RetainOutcome>, StoreError> {
         // Where a commit's turn goes, by the phase each quantum began in
         // (`crate::timing`).
         let phase = match self.phase {
@@ -984,41 +841,9 @@ impl RetainBuild {
     fn step_phase(
         &mut self,
         limit: super::bounded::WorkLimit,
-    ) -> Result<super::bounded::Step<super::shell_selection::RetainOutcome>, StoreError> {
+    ) -> Result<super::bounded::Step<super::RetainOutcome>, StoreError> {
         use super::bounded::{Meta, Step, increment, read_meta};
         let limit = limit.checked()?;
-        if let Some(fast) = &self.fast
-            && !self.fast_admitted
-        {
-            use super::shell_selection::Admission;
-            match fast.admission(&self.bytes, self.workspace) {
-                Admission::Obsolete => {
-                    self.publication = Some(super::shell_selection::Publication::Suppress);
-                    self.phase = RetainPhase::Done;
-                    self.selected_obsolete = true;
-                    let fast = self.fast.take().invariant("fast tail missing")?;
-                    fast.finish(&self.store.tail_cache);
-                }
-                Admission::Tail => self.fast_admitted = true,
-                Admission::Select => {
-                    self.fast = None;
-                    self.store.tail_cache.invalidate();
-                    self.selected_read = self.store.selected_read()?;
-                }
-            }
-            return Ok(Step::More);
-        }
-        if let Some(reader) = &mut self.selected_read {
-            if reader.step()? == Step::Done(()) {
-                if reader.obsolete(&self.bytes)? {
-                    self.publication = Some(super::shell_selection::Publication::Suppress);
-                    self.phase = RetainPhase::Done;
-                    self.selected_obsolete = true;
-                }
-                self.selected_read = None;
-            }
-            return Ok(Step::More);
-        }
         self.sorter.stats.last_step_work = 0;
         #[cfg(test)]
         if matches!(self.phase, RetainPhase::Sort)
@@ -1227,63 +1052,8 @@ impl RetainBuild {
                 }
             }
             RetainPhase::Done => {
-                if self.publication.is_none()
-                    && let Some(mut fast) = self.fast.take()
-                    && !self.duplicate
-                    && fast.append(&self.bytes, self.workspace)
-                {
-                    // The selection this skips would publish this tail as an
-                    // original and change nothing but its listed tails.
-                    fast.finish(&self.store.tail_cache);
-                    self.publication = Some(super::shell_selection::Publication::Original);
-                }
-                if self.publication.is_none() {
-                    if let Some(store) = &self.shell_store {
-                        if self.selection.is_none() {
-                            // A selection lists retained history: every
-                            // record it may read is under its name first.
-                            if let Some(group) = &self.group {
-                                group.flush()?;
-                            }
-                            let incoming = tilo_relay_store::frames::incoming_identity(
-                                &self.bytes,
-                                self.workspace,
-                            );
-                            let binding =
-                                store.shell_binding().invariant("shell binding missing")?;
-                            let mut selection =
-                                binding.selection(store, self.scratch.clone(), incoming)?;
-                            if !self.checkpoint
-                                && let Some(key) =
-                                    binding.incoming_route(&self.bytes, self.workspace)
-                            {
-                                selection.want_route(key);
-                            }
-                            self.selection = Some(selection);
-                        }
-                        match self.selection.as_mut().invariant("selection missing")?.step(limit)? {
-                            Step::More => return Ok(Step::More),
-                            Step::Done(super::shell_selection::SelectionOutcome::Published(
-                                publication,
-                            )) => self.publication = Some(publication),
-                            Step::Done(
-                                super::shell_selection::SelectionOutcome::BatchPublished { .. },
-                            ) => return Err(invalid("single retain returned batch selection")),
-                            Step::Done(
-                                super::shell_selection::SelectionOutcome::UnresolvedTailDependencies,
-                            ) => {
-                                return Err(invalid(
-                                    "unresolved shell tail floor or dependencies prevent coherent selection",
-                                ));
-                            }
-                        }
-                    } else {
-                        self.publication = Some(super::shell_selection::Publication::Original);
-                    }
-                }
-                return Ok(Step::Done(super::shell_selection::RetainOutcome {
+                return Ok(Step::Done(super::RetainOutcome {
                     written: self.written,
-                    publication: self.publication.clone().invariant("publication missing")?,
                 }));
             }
         }
@@ -1291,6 +1061,16 @@ impl RetainBuild {
     }
 }
 impl WorkspaceStore {
+    /// Whether `author`'s lineage on `channel` has a generation: one stat,
+    /// for a caller deciding whether a checkpoint may start it.
+    pub(crate) fn lineage_has_generation(&self, author: &[u8; 32], channel: &[u8; 32]) -> bool {
+        self.root
+            .join(RETAINED_DIR)
+            .join("v2")
+            .join(format!("{}-{}", hex::encode(author), hex::encode(channel)))
+            .join("CURRENT")
+            .exists()
+    }
     /// Begin retaining `bytes` on `channel`: a delta at `seq`, or a
     /// checkpoint.
     ///
@@ -1305,50 +1085,6 @@ impl WorkspaceStore {
         bytes: Vec<u8>,
     ) -> Result<RetainBuild, StoreError> {
         self.start_retain_at(channel, seq, bytes, None)
-    }
-    /// Stage the checkpoint `bytes` on `channel` as a projected generation
-    /// under `scratch`, without switching `CURRENT`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when `bytes` is not a checkpoint of this channel or
-    /// the lineage cannot be prepared.
-    pub fn start_staged_checkpoint(
-        &self,
-        channel: &[u8; 32],
-        bytes: Vec<u8>,
-        scratch: PathBuf,
-    ) -> Result<CheckpointStage, StoreError> {
-        let (author, actual_channel, checkpoint) = identity(&bytes, self.workspace_id)
-            .ok_or_else(|| invalid("invalid retained envelope"))?;
-        if actual_channel != *channel || !checkpoint {
-            return Err(invalid("retained envelope channel or kind mismatch"));
-        }
-        let lineage = self.root.join(RETAINED_DIR).join("v2").join(format!(
-            "{}-{}",
-            hex::encode(author),
-            hex::encode(channel)
-        ));
-        if current(&lineage)?.is_none() {
-            return Err(invalid(
-                "checkpoint projection requires an existing lineage",
-            ));
-        }
-        let mut build = self.start_retain_at(channel, None, bytes, Some(scratch))?;
-        build.shell_store = None;
-        build.selected_read = None;
-        build.staged_only = true;
-        Ok(CheckpointStage { build })
-    }
-    /// Whether `author`'s lineage on `channel` has a generation: one stat,
-    /// for a caller deciding whether a checkpoint may start it.
-    pub(crate) fn lineage_has_generation(&self, author: &[u8; 32], channel: &[u8; 32]) -> bool {
-        self.root
-            .join(RETAINED_DIR)
-            .join("v2")
-            .join(format!("{}-{}", hex::encode(author), hex::encode(channel)))
-            .join("CURRENT")
-            .exists()
     }
     /// Stage the checkpoint `bytes` on `channel` as the next generation of
     /// its lineage, and make the stage durable, all outside the workspace's
@@ -1538,8 +1274,6 @@ impl WorkspaceStore {
         if !intact {
             return Ok(Err((fresh, bytes)));
         }
-        // As any write but a delta the tail cache admits.
-        self.tail_cache.invalidate();
         let scratch = self.root.join("store-work-v1").join(format!(
             "retain-{}",
             hex::encode(rand::random::<[u8; 16]>())
@@ -1569,14 +1303,6 @@ impl WorkspaceStore {
             staged_append: false,
             survivors: 0,
             written: 0,
-            shell_store: self.shell_binding().map(|_| self.clone()),
-            selected_read: self.selected_read()?,
-            selection: None,
-            publication: None,
-            fast: None,
-            fast_admitted: false,
-            selected_obsolete: false,
-            staged_only: false,
             store: self.clone(),
             stamp: None,
             indexed: false,
@@ -1588,7 +1314,7 @@ impl WorkspaceStore {
     /// ordered pass. Only a checkpoint's ordered pass spills metadata to
     /// scratch. A delta's scan compares sizes and cached digests and its
     /// append names the next ordinal, so it creates no directory to remove
-    /// afterwards; a shell selection creates the scratch it needs itself.
+    /// afterwards.
     fn retain_scratch(
         &self,
         scratch: Option<PathBuf>,
@@ -1624,16 +1350,6 @@ impl WorkspaceStore {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
         self.learn_retained_record(channel, &bytes);
-        let fast = if checkpoint {
-            None
-        } else {
-            self.checkout_tail(&bytes)?
-        };
-        if fast.is_none() {
-            // Every other write changes retained history the cached cursors
-            // were computed from; the next clean selection seeds them again.
-            self.tail_cache.invalidate();
-        }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
         let lineage = v2.join(format!("{}-{}", hex::encode(author), hex::encode(channel)));
@@ -1691,18 +1407,6 @@ impl WorkspaceStore {
             staged_append: false,
             survivors: 0,
             written: 0,
-            shell_store: self.shell_binding().map(|_| self.clone()),
-            selected_read: if fast.is_some() {
-                None
-            } else {
-                self.selected_read()?
-            },
-            selection: None,
-            publication: None,
-            fast,
-            fast_admitted: false,
-            selected_obsolete: false,
-            staged_only: false,
             store: self.clone(),
             collected: stamp
                 .filter(|_| indexed.is_none())
@@ -1752,21 +1456,6 @@ impl WorkspaceStore {
             entries: 8192,
         };
         let mut out = Vec::new();
-        let selection = self.root.join(super::shell_selection::DIRECTORY);
-        budget.selection(&selection)?;
-        if let Some(selected) = current(&selection)? {
-            budget.barrier(&selected.join("basis.manifest"))?;
-            let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
-            while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
-                budget.entry()?;
-                // Selected basis records can span channels; their ciphertext is
-                // conservatively charged to the same read budget before routing.
-                let bytes = budget.read(&self.root.join(meta.source))?;
-                if view_channel_matches(&bytes, self.workspace_id, channel) {
-                    out.push(bytes);
-                }
-            }
-        }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         if !v2.exists() {
             return Ok(out);
@@ -1814,25 +1503,13 @@ impl WorkspaceStore {
         Ok(out)
     }
 
-    /// Every retained frame a compatibility or admin read sees, the
-    /// committed shell selection first.
+    /// Every retained frame a compatibility or admin read sees.
     ///
     /// # Errors
     ///
     /// Returns an error when a retained file cannot be read.
     pub fn load_shared(&self) -> Result<Vec<Vec<u8>>, StoreError> {
         let mut out = Vec::new();
-        // Compatibility/admin reads do not grant proof or GC authority, but
-        // must retain visibility of a previously committed local selection.
-        let selection = self.root.join(super::shell_selection::DIRECTORY);
-        out.extend(read_current(&selection, |selected| {
-            let mut manifest = fs::File::open(selected.join("basis.manifest"))?;
-            let mut frames = Vec::new();
-            while let Some(meta) = super::bounded::read_meta(&mut manifest)? {
-                frames.push(fs::read(self.root.join(meta.source))?);
-            }
-            Ok(frames)
-        })?);
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         if !v2.exists() {
             return Ok(out);
@@ -2006,13 +1683,10 @@ pub(super) mod tests {
         let size = size_of::<RetainBuild>();
         assert!(
             size <= 2048,
-            "a RetainBuild is {size} bytes inline: store {}, sorter {}, phase {}, \
-             publication {}, fast {}, stamp {}",
+            "a RetainBuild is {size} bytes inline: store {}, sorter {}, phase {}, stamp {}",
             size_of::<WorkspaceStore>(),
             size_of::<super::super::bounded::Sorter>(),
             size_of::<RetainPhase>(),
-            size_of::<Option<super::super::shell_selection::Publication>>(),
-            size_of::<Option<Box<dyn super::super::shell_selection::ShellTail>>>(),
             size_of::<Option<tail_index::Stamp>>(),
         );
     }

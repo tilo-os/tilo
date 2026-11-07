@@ -3,10 +3,9 @@
 //! checkpoint batch publish through the same steps.
 
 use super::{
-    Arc, Envelope, FanoutStamp, HashMap, Invariant, LiveEnvelope, ReplayCatchup,
-    SelectedPublication, SessionLives, StateCommit, StateDelivery, StateSession, StateSource, Step,
-    Subscriber, WorkspaceOperation, captured_live_current, gated_checkpoint_channel, live_audience,
-    mpsc, workspace_access,
+    Arc, Envelope, FanoutStamp, HashMap, Invariant, ReplayCatchup, StateDelivery, StateSession,
+    StateSource, Subscriber, WorkspaceOperation, gated_checkpoint_channel, live_audience, mpsc,
+    workspace_access,
 };
 
 /// A live frame's share of the relay's live-byte budget: `Ok(None)` for a
@@ -14,82 +13,9 @@ use super::{
 pub(super) type LiveBudget =
     Result<Option<Arc<tokio::sync::OwnedSemaphorePermit>>, crate::store::StoreError>;
 
-/// How a commit's publication treats the sessions it captured.
-#[derive(Clone, Copy)]
-pub(super) struct PublicationScope {
-    /// A selected basis or a recovery scope is published: a recipient that
-    /// misses a frame must be fenced rather than left behind.
-    pub(super) activating: bool,
-    /// Only sessions whose captured lease is still current are served.
-    pub(super) recovering: bool,
-}
-
-impl PublicationScope {
-    pub(super) fn of(commit: &StateCommit) -> Self {
-        Self {
-            activating: commit.selected.is_some() || commit.recovery_scope,
-            recovering: commit.recovery_scope
-                || matches!(commit.selected, Some(SelectedPublication::Recovery(_))),
-        }
-    }
-}
-
-/// The frames a commit publishes, in order: its selected basis, read one
-/// output budget at a time on the owner's workers, or else its original
-/// envelope.
-pub(super) struct PublicationFrames {
-    cursor: Option<crate::store::replay::PublicationCursor>,
-    original: Option<Arc<Envelope>>,
-    workers: Arc<tokio::sync::Semaphore>,
-}
-
-impl PublicationFrames {
-    pub(super) async fn open(
-        selected: Option<SelectedPublication>,
-        envelope: &Arc<Envelope>,
-        workers: Arc<tokio::sync::Semaphore>,
-    ) -> Result<Self, crate::store::StoreError> {
-        let cursor = if let Some(path) = selected {
-            Some(crate::persistence::blocking(workers.clone(), move || path.open()).await??)
-        } else {
-            None
-        };
-        let original = cursor.is_none().then(|| envelope.clone());
-        Ok(Self {
-            cursor,
-            original,
-            workers,
-        })
-    }
-
-    /// The next frame to publish; `None` once the publication is complete.
-    pub(super) async fn next(&mut self) -> Result<Option<LiveEnvelope>, crate::store::StoreError> {
-        while let Some(mut selected) = self.cursor.take() {
-            let (next, result) = crate::persistence::blocking(self.workers.clone(), move || {
-                let result = selected.step(crate::persistence::output_budget());
-                (selected, result)
-            })
-            .await?;
-            self.cursor = Some(next);
-            match result? {
-                Step::More => {}
-                Step::Done(None) => return Ok(None),
-                Step::Done(Some(batch)) => {
-                    return Ok(Some(LiveEnvelope::Selected(Arc::new(batch))));
-                }
-            }
-        }
-        Ok(self.original.take().map(LiveEnvelope::Original))
-    }
-}
-
-/// Charge `envelope` to the live-byte budget, which only an original frame
-/// draws on.
-pub(super) fn live_budget(envelope: &LiveEnvelope) -> LiveBudget {
-    let LiveEnvelope::Original(original) = envelope else {
-        return Ok(None);
-    };
-    let bytes = match &**original {
+/// Charge `envelope` to the live-byte budget.
+pub(super) fn live_budget(envelope: &Envelope) -> LiveBudget {
+    let bytes = match envelope {
         Envelope::Delta { delta, .. } => delta.len().saturating_add(256),
         _ => 1,
     };
@@ -100,7 +26,7 @@ pub(super) fn live_budget(envelope: &LiveEnvelope) -> LiveBudget {
 /// It borrows the frame and its budget, which the publisher holds past the
 /// workspace's lock, so their last references never drop under it.
 pub(super) struct LiveFrame<'a> {
-    envelope: &'a LiveEnvelope,
+    envelope: &'a Arc<Envelope>,
     budget: &'a LiveBudget,
     fanned: Option<FanoutStamp>,
     checkpoint_channel: Option<[u8; 32]>,
@@ -112,7 +38,7 @@ pub(super) struct LiveFrame<'a> {
 impl<'a> LiveFrame<'a> {
     pub(super) fn new(
         runtime: &crate::workspace::WorkspaceRuntime,
-        envelope: &'a LiveEnvelope,
+        envelope: &'a Arc<Envelope>,
         budget: &'a LiveBudget,
         fanned: Option<FanoutStamp>,
         source: Option<&StateSource>,
@@ -142,14 +68,11 @@ impl<'a> LiveFrame<'a> {
 /// whose record is on-demand reaches only the devices that hold it.
 fn record_reach(
     runtime: &crate::workspace::WorkspaceRuntime,
-    envelope: &LiveEnvelope,
+    envelope: &Arc<Envelope>,
 ) -> crate::store::record_sync::Reach {
     use crate::coedit::CoeditPayload;
     use crate::store::record_sync::Reach;
-    let LiveEnvelope::Original(original) = envelope else {
-        return Reach::Everyone;
-    };
-    let Envelope::Delta { delta, .. } = &**original else {
+    let Envelope::Delta { delta, .. } = &**envelope else {
         return Reach::Everyone;
     };
     match CoeditPayload::decode(delta) {
@@ -166,8 +89,6 @@ pub(super) struct LiveFanout<'a> {
     pub(super) frame: &'a LiveFrame<'a>,
     /// The frame's source; `None` for a host-authored frame.
     pub(super) source: Option<&'a StateSource>,
-    pub(super) scope: PublicationScope,
-    pub(super) session_lives: &'a SessionLives,
     /// Log each publication under correlated diagnostics.
     pub(super) trace_recipients: bool,
 }
@@ -196,11 +117,6 @@ impl LiveFanout<'_> {
         recipient: &[u8; 32],
         original: &mpsc::Sender<Envelope>,
     ) -> Option<(&'r Subscriber, &'r StateSession)> {
-        if self.scope.recovering
-            && !captured_live_current(self.session_lives, runtime, recipient, original)
-        {
-            return None;
-        }
         let sub = runtime.subscribers.get(recipient)?;
         if !sub.tx.same_channel(original) {
             return None;
@@ -277,11 +193,6 @@ impl LiveFanout<'_> {
         // the shared live-byte budget is full, leave that coverage
         // for replay/anti-entropy without fencing a healthy wire.
         let Ok(budget) = self.frame.budget else {
-            if self.scope.activating {
-                return Err(crate::persistence::error(
-                    "activation delivery byte backpressure",
-                ));
-            }
             target.fall_behind(sub, replay_phase, runtime.store.workspace_id());
             return Ok(());
         };
@@ -318,17 +229,9 @@ impl LiveFanout<'_> {
                 }
             }
             // Ordinary live traffic retains replay coverage under
-            // backpressure. A selected activation is a multi-frame
-            // basis whose exact retry is suppressed after CURRENT;
-            // a partial recipient must reconnect to recover it.
-            Err(mpsc::error::TrySendError::Full(delivery)) => {
-                if self.scope.activating || matches!(&delivery.envelope, LiveEnvelope::Selected(_))
-                {
-                    let _ = sub.disconnect.try_send(());
-                    runtime.remove_subscriber_session(recipient, original);
-                } else {
-                    target.fall_behind(sub, replay_phase, runtime.store.workspace_id());
-                }
+            // backpressure: the recipient catches up by replay.
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                target.fall_behind(sub, replay_phase, runtime.store.workspace_id());
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 let _ = sub.disconnect.try_send(());

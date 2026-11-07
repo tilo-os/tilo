@@ -8,8 +8,8 @@ use super::{
 };
 use crate::transport::Envelope;
 
-pub use super::replay::{PublicationCursor, ReplayBudget, ReplayId, ReplayLimits, ReplaySnapshot};
-pub use super::retained::{CheckpointStage, RetainBuild};
+pub use super::replay::{ReplayBudget, ReplayId, ReplayLimits, ReplaySnapshot};
+pub use super::retained::RetainBuild;
 pub use crate::persistence::output_budget;
 
 fn finish<T>(mut step: impl FnMut() -> Step<T>) -> T {

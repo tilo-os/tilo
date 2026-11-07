@@ -2259,9 +2259,7 @@ fn access_request_frame(fixture: &Fixture, authored_at_ns: u64) -> Envelope {
 fn delivered_times(fixture: &mut Fixture) -> Vec<u64> {
     let mut times = Vec::new();
     while let Ok(delivery) = fixture.recipient_rx.try_recv() {
-        if let LiveEnvelope::Original(envelope) = &delivery.envelope
-            && let Envelope::Delta { authored_at_ns, .. } = &**envelope
-        {
+        if let Envelope::Delta { authored_at_ns, .. } = &*delivery.envelope {
             times.push(*authored_at_ns);
         }
     }
