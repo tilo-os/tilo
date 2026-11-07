@@ -82,7 +82,10 @@ fn the_box_stands_beside_its_menu_and_never_leaves_the_window() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     // Room on its trailing side: it keeps the menu's top.
     let room = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
-    assert_eq!(room.rect().x0, 212.0 + f64::from(GAP));
+    assert_eq!(
+        room.rect().x0,
+        212.0 + f64::from(Theme::dark().tokens.spacing.s2)
+    );
     assert_eq!(room.rect().y0, 120.0, "level with what opened it");
 
     // Near the window's right edge: it takes the leading side instead.
