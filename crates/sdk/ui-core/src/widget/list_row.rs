@@ -157,46 +157,6 @@ impl RowStatus<'_> {
 /// than a selection.
 const CHANGE_WASH: f32 = 0.07;
 
-/// A change someone else made to what the row shows and the person has not seen yet
-/// (task-legibility §3): their face on the row's trailing edge, their colour faintly under it,
-/// at the row's own height.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RowChange<'a> {
-    /// Their presence identity, which picks their colour.
-    pub identity: &'a str,
-    /// What the room calls them: their face's initials.
-    pub name: &'a str,
-    /// What assistive technology says of it: who, and in which run.
-    pub spoken: &'a str,
-}
-
-impl RowChange<'_> {
-    fn colour(self, theme: &Theme) -> Color {
-        theme
-            .tokens
-            .colors
-            .presence
-            .hue(PresenceHue::of_identity(self.identity))
-    }
-}
-
-/// One of a row's hover actions: an icon button that names what it does.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RowAction<'a> {
-    pub icon: Icon,
-    pub label: &'a str,
-}
-
-/// The action a swipe reveals under the row's trailing edge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SwipeAction<'a> {
-    pub icon: Icon,
-    pub label: &'a str,
-    /// Deleting, archiving away, revoking: the revealed area is the danger
-    /// status colour, because the completed swipe is the confirmation.
-    pub destructive: bool,
-}
-
 /// How prominent a row's trailing value is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowValue {
@@ -416,6 +376,9 @@ enum RowMark {
 #[derive(Clone, Debug)]
 pub struct ListRowFace<'a> {
     title: &'a str,
+    /// The item of its app's collection the row shows
+    /// ([`ListRow::item`](crate::widget::ListRow::item)).
+    item: Option<&'a str>,
     /// A quiet word before the title, on its line.
     prefix: Option<&'a str>,
     title_lines: u8,
@@ -492,10 +455,19 @@ pub struct ListRowFace<'a> {
 }
 
 impl<'a> ListRowFace<'a> {
+    /// Say which item of its collection the row shows
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
+    #[must_use]
+    pub fn item(mut self, item: Option<&'a str>) -> Self {
+        self.item = item;
+        self
+    }
+
     #[must_use]
     pub fn new(title: &'a str) -> Self {
         Self {
             title,
+            item: None,
             prefix: None,
             title_lines: 1,
             title_family: None,
@@ -1026,6 +998,9 @@ impl<'a> ListRowFace<'a> {
             .with_action_target(target.clone())
             .with_bounds(rect)
             .with_state(state);
+        if let Some(item) = self.item {
+            node = node.with_item(item);
+        }
         if !value.is_empty() {
             node = node.with_value(value.join(", "));
         }
@@ -1193,36 +1168,13 @@ struct Changed {
     show: Option<Box<dyn FnMut()>>,
 }
 
-/// One of a row's own pressable controls.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowPart {
-    /// The hover action at this index.
-    Action(usize),
-    /// The leading checkbox.
-    Check,
-    /// The face of an unseen change: shows what was done.
-    Change,
-}
-
-impl RowPart {
-    /// What names the control across a rebuild: the row's id and which
-    /// control of the row it is.
-    fn key(self, row: &str) -> String {
-        if row.is_empty() {
-            return String::new();
-        }
-        match self {
-            Self::Action(index) => format!("{row}/action/{index}"),
-            Self::Check => format!("{row}/check"),
-            Self::Change => format!("{row}/change"),
-        }
-    }
-}
-
 /// A retained list row. Construct with a stable id and a title; press
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
     title: String,
+    /// The item of its app's collection the row shows, when it shows one: the
+    /// identity an action naming the item is found by, unlike its title.
+    item: Option<String>,
     /// A quiet word before the title, on its line: where an item came from.
     prefix: Option<String>,
     /// Whether a layout pass has built the row.
@@ -1350,6 +1302,7 @@ impl ListRow {
     fn new_owned(id: String, title: String) -> Self {
         Self {
             title,
+            item: None,
             prefix: None,
             laid_out: false,
             title_elided: false,
@@ -1554,6 +1507,16 @@ impl ListRow {
             .iter()
             .map(|(text, tone)| ((*text).to_owned(), *tone))
             .collect();
+        self
+    }
+
+    /// Say which item of its collection the row shows
+    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)): a task's issue,
+    /// a note's block. An action naming that item is drawn on this row.
+    #[must_use]
+    pub fn item(mut self, item: impl Into<String>) -> Self {
+        self.item = Some(item.into()).filter(|item| !item.is_empty());
+        self.dirty = true;
         self
     }
 
@@ -2271,6 +2234,7 @@ impl ListRow {
         // acts answers hover.
         interaction.hovered &= self.environment.supports_hover() && self.answers_pointer();
         let mut face = ListRowFace::new(&self.title)
+            .item(self.item.as_deref())
             .emphasized(self.emphasized)
             .selected(self.selected)
             .joined(self.join)
@@ -3474,6 +3438,12 @@ use kept::KeptRow;
 mod geometry;
 
 mod leading;
+
+mod part;
+use part::RowPart;
+
+mod edge;
+pub use edge::{RowAction, RowChange, SwipeAction};
 
 mod paint;
 pub(crate) use paint::paint_code_badge;

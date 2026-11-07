@@ -22,6 +22,8 @@ use crate::{Filter, Nav, reference, tr};
 struct Row {
     /// Its place in the list, which is what the rows are addressed by.
     key: u64,
+    /// The issue it shows, which is what actions naming the issue are drawn on.
+    issue: Id,
     label: String,
     /// The row it stands under, where it is a sub-issue.
     parent: Option<u64>,
@@ -80,6 +82,7 @@ fn collect(
         let key = u64::try_from(ids.len()).unwrap_or(u64::MAX);
         out.push(Row {
             key,
+            issue: id.clone(),
             label: label(issue),
             parent: parent_key,
             number: issue.number,
@@ -245,6 +248,7 @@ fn row(
     let closed = row.status.closed();
     Box::new(
         ListRow::new(format!("key:{key}"), row.label.as_str())
+            .item(row.issue.as_str())
             .depth(depths.depth(&key))
             .checkbox(closed, toggle)
             .checked(closed)

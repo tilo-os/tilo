@@ -252,9 +252,7 @@ fn item_bounds(
     }
     let mut only = None;
     for node in tree.nodes_showing_item(item) {
-        let Some(bounds) = node.bounds else {
-            return None;
-        };
+        let bounds = node.bounds?;
         if only.is_some_and(|seen| seen != bounds) {
             // Two nodes claim the same item: the view cannot say which.
             return None;

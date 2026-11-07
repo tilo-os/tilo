@@ -178,7 +178,10 @@ fn anchor_of(
     // An item published as its own resource (`<kind>/<field>/<item>`) is what
     // its actions act on, and the view draws it as a row.
     if let Some(item) = item_of_resource(&resource.id, &resource.kind)
-        && !action.params.iter().any(|param| param.is_place())
+        && !action
+            .params
+            .iter()
+            .any(tilo_actions::ActionParam::is_place)
     {
         return InteractionAnchor::ListItems { ids: vec![item] };
     }
@@ -236,15 +239,14 @@ fn anchor_of(
     }
 }
 
-/// The item a resource is, when it is one (`<kind>/<field>/<item>`, as apps
-/// publish the items of a collection).
+/// The item a resource is, when it is one: `<kind>/<field>/<item>` of kind
+/// `<kind>.<field>`, as apps publish the items of a collection. An id and a
+/// kind that do not agree that way name no item.
 fn item_of_resource(resource: &str, kind: &str) -> Option<String> {
-    let rest = resource
-        .strip_prefix(kind)?
-        .strip_prefix('/')?
-        .split_once('/')?;
-    let (field, item) = rest;
-    (!field.is_empty() && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
+    let (record, field) = kind.rsplit_once('.')?;
+    let rest = resource.strip_prefix(record)?.strip_prefix('/')?;
+    let (named, item) = rest.split_once('/')?;
+    (named == field && !item.is_empty() && !item.contains('/')).then(|| item.to_owned())
 }
 
 impl ShownActor {
@@ -448,5 +450,191 @@ impl ActivityBus {
             address: target.address.clone(),
             status,
         }));
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+    use tilo_actions::{ActionParam, ParamType};
+
+    /// `action` on `resource` of `kind`, declaring `params`.
+    fn published(
+        resource: &str,
+        kind: &str,
+        action: &str,
+        params: Vec<ActionParam>,
+    ) -> (PublishedAction, tilo_actions::ActionResource) {
+        let published = PublishedAction {
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            resource: resource.into(),
+            action: action.into(),
+            resource_kind: kind.into(),
+            resource_label: "Label".into(),
+            action_label: "Action".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Undoable,
+                ..Default::default()
+            },
+            input: crate::collab_app_broker::PublishedInput::None,
+            view: None,
+        };
+        let resource = tilo_actions::ActionResource {
+            id: published.resource.clone(),
+            kind: published.resource_kind.clone(),
+            label: published.resource_label.clone(),
+        };
+        (published, resource)
+    }
+
+    /// The argument slot an invocation carries for `arguments`.
+    fn slot(arguments: serde_json::Value) -> String {
+        tilo_actions::remote::InvokeArgument::Json(
+            arguments.as_object().cloned().unwrap_or_default(),
+        )
+        .to_slot()
+        .expect("a typed argument has a slot")
+    }
+
+    fn text_range(anchor: &tilo_actions::InteractionAnchor) -> (String, String, u64, u64) {
+        let tilo_actions::InteractionAnchor::Text { region, ranges } = anchor else {
+            panic!("a text edit names a text range, not {anchor:?}");
+        };
+        let [range] = ranges.as_slice() else {
+            panic!("one place names one range");
+        };
+        (region.clone(), range.block.clone(), range.start, range.end)
+    }
+
+    #[test]
+    fn an_item_action_names_the_item_it_acts_on() {
+        // An item is published as its own resource (`<kind>/<field>/<item>`):
+        // a verb on it acts on that item, which the view draws as a row.
+        let (action, resource) = published(
+            "so.tilo.tasks/issues/7d2b",
+            "so.tilo.tasks.issues",
+            "set-done",
+            vec![ActionParam::required_owned(
+                "done",
+                ParamType::Boolean,
+                "Whether it is done",
+            )],
+        );
+        let typed = slot(serde_json::json!({ "done": true }));
+        for argument in [None, Some("true"), Some(typed.as_str())] {
+            assert_eq!(
+                anchor_of(&action, &resource, argument),
+                tilo_actions::InteractionAnchor::ListItems {
+                    ids: vec!["7d2b".into()]
+                },
+                "the item the verb acts on, whatever it was told",
+            );
+        }
+        // A resource that is no item of a collection is the resource.
+        let (action, resource) = published(
+            "so.tilo.tasks/issues",
+            "so.tilo.tasks",
+            "create-issue",
+            Vec::new(),
+        );
+        assert_eq!(
+            anchor_of(&action, &resource, None),
+            tilo_actions::InteractionAnchor::Resource
+        );
+    }
+
+    #[test]
+    fn a_place_names_the_characters_a_text_edit_writes() {
+        // `replace-range`: the characters it writes replace the range it was
+        // given, and are what the view highlights.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        let replaced = slot(serde_json::json!({
+            "at": { "item": "b1", "start": 4, "end": 9 },
+            "text": "hello",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))),
+            ("text".into(), "b1".into(), 4, 9),
+            "the characters it wrote, not the place it wrote them at",
+        );
+        // At a caret, the written characters are inserted there.
+        let inserted = slot(serde_json::json!({
+            "at": { "item": "b1", "at": 12 },
+            "text": "héllo",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&inserted))),
+            ("text".into(), "b1".into(), 12, 17),
+            "characters, as the place counts them, not bytes",
+        );
+        // A deletion writes nothing: the characters it removed are the change.
+        let deleted = slot(serde_json::json!({
+            "at": { "item": "b1", "start": 3, "end": 11 },
+            "text": "",
+        }));
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&deleted))),
+            ("text".into(), "b1".into(), 3, 11),
+        );
+        // A place naming its collection says which region its blocks sit in.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place_in("blocks"),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        assert_eq!(
+            text_range(&anchor_of(&action, &resource, Some(&replaced))).0,
+            "blocks",
+        );
+        // No place parameter, or no place argument: the resource.
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "retitle",
+            vec![ActionParam::required_owned(
+                "title",
+                ParamType::Text,
+                "The new title",
+            )],
+        );
+        assert_eq!(
+            anchor_of(
+                &action,
+                &resource,
+                Some(&slot(serde_json::json!({ "title": "x" })))
+            ),
+            tilo_actions::InteractionAnchor::Resource,
+        );
+        let (action, resource) = published(
+            "so.tilo.notes/pages/1",
+            "so.tilo.notes.page",
+            "replace-range",
+            vec![
+                ActionParam::required_owned("at", ParamType::Object, "Where").as_place(),
+                ActionParam::required_owned("text", ParamType::Text, "What to write"),
+            ],
+        );
+        assert_eq!(
+            anchor_of(&action, &resource, None),
+            tilo_actions::InteractionAnchor::Resource,
+        );
     }
 }

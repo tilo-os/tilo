@@ -198,6 +198,17 @@ impl PresenceCtx {
             .collect()
     }
 
+    /// How strongly an interaction still shows, from when its current phase
+    /// arrived: what the text it wrote fades by. `None` when it is no longer
+    /// shown, or its mark has faded out.
+    pub fn interaction_fade(&self, invocation: InvocationId, now: Instant) -> Option<f32> {
+        let entry = self.interactions.get(&invocation)?;
+        if !entry.visible_at(now) {
+            return None;
+        }
+        crate::motion::Trace::alpha(now.saturating_duration_since(entry.received_at))
+    }
+
     /// All currently visible interactions in deterministic display order.
     /// The host uses this read-only view to resolve generic semantic-control
     /// anchors against the current accessibility tree before falling back to

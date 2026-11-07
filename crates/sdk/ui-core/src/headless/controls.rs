@@ -600,7 +600,7 @@ pub(super) fn is_control_operation(spec: &tilo_actions::ActionSpec) -> bool {
 mod locus_tests {
     use super::*;
     use crate::state::State;
-    use crate::widget::{Button, Column, Container, resource_actions};
+    use crate::widget::{Button, Column, Container, ListRow, resource_actions};
     use std::cell::Cell;
     use std::rc::Rc;
 
@@ -746,12 +746,7 @@ mod locus_tests {
 
     #[test]
     fn agent_marker_full_size_render_evidence() {
-        let out = crate::env::var_os("TILO_UI_AGENT_MARKER_SHOTS")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("../../../target/agent-marker")
-            });
+        let out = crate::headless::agent_marker_shots();
         for (name, theme) in [
             ("dark", crate::theme::Theme::dark()),
             ("light", crate::theme::Theme::light()),
@@ -818,8 +813,14 @@ mod locus_tests {
             None,
             "another resource's node is not this target"
         );
-        event.anchor = tilo_actions::InteractionAnchor::ListItems {
-            ids: vec!["first".into()],
+        event.anchor = tilo_actions::InteractionAnchor::Grid {
+            sheet: "sheet".into(),
+            ranges: vec![tilo_actions::InteractionGridRange {
+                start_col: 1,
+                start_row: 1,
+                end_col: 1,
+                end_row: 1,
+            }],
         };
         assert_eq!(
             frame.semantic_locus(&event),
@@ -827,6 +828,83 @@ mod locus_tests {
             "unsupported domain geometry remains missing"
         );
         assert_eq!(calls.get(), 0);
+    }
+
+    /// The capture a reviewer reads: an agent's item action marked on the row
+    /// that shows the item, beside the row it did not act on.
+    #[test]
+    fn agent_item_marker_render_evidence() {
+        let root = Column::new()
+            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
+            .push(Box::new(ListRow::new("b", "Second task").item("issue-b")));
+        let mut frame = FrameHarness::new(State::new(), Box::new(root), (480, 240));
+        frame.relayout();
+        let out = crate::headless::agent_marker_shots();
+        std::fs::create_dir_all(&out).unwrap();
+        frame.render_png(&out.join("tasks-before.png"));
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.actor.id = "scribe".into();
+        event.actor.kind = tilo_actions::ActorKind::Agent;
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        frame.update_presence(|presence| {
+            presence
+                .apply_interaction_at(event.clone(), crate::time::now())
+                .expect("a well-formed interaction applies")
+        });
+        assert!(frame.poll_frame().unwrap());
+        frame.render_png(&out.join("tasks-agent-checks-second.png"));
+        assert!(
+            std::fs::metadata(out.join("tasks-agent-checks-second.png"))
+                .unwrap()
+                .len()
+                > 0
+        );
+    }
+
+    /// What an agent acts on is the item it names: the marker lands on the
+    /// row showing that item, whichever row the action happens to be bound
+    /// to, and an item no row shows has no place on screen.
+    #[test]
+    fn an_item_anchor_lands_on_the_row_showing_that_item() {
+        let root = Column::new()
+            .push(Box::new(ListRow::new("a", "First task").item("issue-a")))
+            .push(Box::new(ListRow::new("b", "Second task").item("issue-b")));
+        let frame = FrameHarness::new(State::new(), Box::new(root), (400, 240));
+        let row = |name: &str| {
+            frame
+                .semantic_tree()
+                .find_by_name(name)
+                .and_then(|node| node.bounds)
+                .expect("a laid out row has bounds")
+        };
+        let mut event = interaction("so.tilo.tasks/issues");
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-b".into()],
+        };
+        assert_eq!(frame.semantic_locus(&event), Some(row("Second task")));
+        assert_ne!(
+            frame.semantic_locus(&event),
+            Some(row("First task")),
+            "the marker never lands on a neighbouring row"
+        );
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-missing".into()],
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "an item no row shows is not guessed onto a row"
+        );
+        event.anchor = tilo_actions::InteractionAnchor::ListItems {
+            ids: vec!["issue-a".into(), "issue-b".into()],
+        };
+        assert_eq!(
+            frame.semantic_locus(&event),
+            None,
+            "two items have no single place"
+        );
     }
 
     #[test]

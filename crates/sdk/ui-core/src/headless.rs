@@ -13404,6 +13404,18 @@ mod ordinary_confirmation_owner_tests {
     }
 }
 
+/// Where a test writes the captures a reviewer reads: the build's target
+/// directory, so a remote build can hand them back (`--fetch`), or the
+/// default target beside the source tree.
+#[cfg(test)]
+pub(crate) fn agent_marker_shots() -> std::path::PathBuf {
+    match crate::env::var_os("CARGO_TARGET_DIR") {
+        Some(dir) => std::path::PathBuf::from(dir).join("agent-marker"),
+        None => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../target/agent-marker"),
+    }
+}
+
 #[cfg(test)]
 mod portable_host_tests;
 
