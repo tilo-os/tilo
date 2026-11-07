@@ -10,8 +10,8 @@
 //!
 //! Run:  `cargo run -p ui-examples --example ui-shots -- window_chrome [OUT_DIR]`
 //! Out:  `OUT_DIR` (default `/tmp/window_chrome`): `modal-<theme>.png`,
-//!       `popover-<theme>.png`, `toast-<theme>.png`, `sheet-<theme>.png`,
-//!       `status-<theme>.png`, `video-<theme>.png`.
+//!       `popover-<theme>.png`, `app-menu-<theme>.png`, `toast-<theme>.png`,
+//!       `sheet-<theme>.png`, `status-<theme>.png`, `video-<theme>.png`.
 
 use std::path::{Path, PathBuf};
 
@@ -43,6 +43,7 @@ pub fn run(args: &[String]) {
     for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
         modal(&out, name, &theme);
         popover(&out, name, &theme);
+        app_menu(&out, name, &theme);
         toast(&out, name, &theme);
         sheet(&out, name, &theme);
         status(&out, name, &theme);
@@ -113,6 +114,29 @@ fn popover(out: &Path, name: &str, theme: &Theme) {
     capture(
         out,
         &format!("popover-{name}.png"),
+        Box::new(root),
+        theme,
+        false,
+    );
+}
+
+/// The option menus two apps open from a button: the camera chooser (devices,
+/// the one in use checked) and the calendar's repeat-scope question.
+fn app_menu(out: &Path, name: &str, theme: &Theme) {
+    let mut camera = Popover::new().with_label("Camera").with_items([
+        "Built-in camera",
+        "Logitech BRIO",
+        "Continuity Camera",
+    ]);
+    camera.open_at(Rect::new(24.0, 150.0, 244.0, 182.0), Some(1));
+    let mut repeat = Popover::new()
+        .with_label("Change repeat")
+        .with_items(["Only this event", "All future events"]);
+    repeat.open_at(Rect::new(560.0, 150.0, 700.0, 182.0), Some(1));
+    let root = page().push(Box::new(camera)).push(Box::new(repeat));
+    capture(
+        out,
+        &format!("app-menu-{name}.png"),
         Box::new(root),
         theme,
         false,
