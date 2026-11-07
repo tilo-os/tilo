@@ -203,11 +203,11 @@ fn rows(session: &Session) -> Value {
 /// between two groups is no choice to draw.
 fn draws_every_row(session: &Session, rows: &Value) -> bool {
     rows.as_array().into_iter().flatten().all(|row| {
-        row["separator"].as_bool() != Some(true)
-            && row["label"]
+        let drawn = row["separator"].as_bool() == Some(true)
+            || row["label"]
                 .as_str()
-                .is_some_and(|label| session.slot_control("window-menu", label).is_some())
-            && draws_every_row(session, &row["children"])
+                .is_some_and(|label| session.slot_control("window-menu", label).is_some());
+        drawn && draws_every_row(session, &row["children"])
     })
 }
 
@@ -513,11 +513,11 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
                 .is_some_and(|reading| reading.get("tab").is_some_and(Value::is_null))
         },
     );
-    assert!(
-        session
-            .slot_control("window-menu", "Close the menu")
-            .is_none(),
-        "and the view went with the menu it drew"
+    let namespace = tilo_session::surfaces::namespace(tilo_session::mount::shell::WINDOW_MENU_SLOT);
+    assert_eq!(
+        session.compositor().layer_shown(&namespace),
+        Some(false),
+        "and the view it drew stands hidden until a menu opens again"
     );
 }
 
