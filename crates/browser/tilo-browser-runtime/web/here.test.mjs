@@ -1,22 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {createHere, liveMembers, PAIR_WAIT_MS, POST_EVERY_MS, TICK_MS, WATCHING_EVERY_MS} from './here.mjs';
+import {createHere, PAIR_WAIT_MS, POST_EVERY_MS, TICK_MS, WATCHING_EVERY_MS} from './here.mjs';
 
 function fakeLayer(members = []) {
-  const handlers = {presence: new Set(), member: new Set(), state: new Set()};
-  const on = kind => handler => { handlers[kind].add(handler); return () => handlers[kind].delete(handler); };
   return {
     available: true,
     publisherId: 'me',
     members: () => [...members],
-    remoteState: () => [],
-    onPresence: on('presence'),
-    onMember: on('member'),
-    onState: on('state'),
-    presence(publisher, frame) { for (const handler of handlers.presence) handler({publisher, frame}); },
-    join(publisher) { members.push(publisher); for (const handler of handlers.member) handler({publisher, active: true}); },
-    handlers,
+    join(publisher) { members.push(publisher); },
   };
 }
 
@@ -51,20 +43,6 @@ function harness({actions = [], window = 'a1', share = true} = {}) {
 
 const settle = () => new Promise(resolve => setImmediate(resolve));
 
-test('live members carry an agent\'s record and activity, everyone\'s focus and a person\'s strip', () => {
-  const seen = new Map([
-    ['bot', {participant: {kind: 'agent', label: 'Scribe', color: '#010203', activity: 'Reading'}, focus: {app: 'a', record: 'r'}, place: '7'}],
-    ['ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'a', record: 'r'}, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}, following: 'b0b'}],
-  ]);
-  const layer = {available: true, members: () => ['bot', 'ann', 'new']};
-  assert.deepEqual(liveMembers(layer, seen), [
-    {publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'a', record: 'r'}, activity: 'Reading', place: null, wave: null, layout: null, following: null},
-    {publisher: 'ann', kind: 'person', label: 'Ann', focus: {app: 'a', record: 'r'}, activity: null, place: '7', wave: {seq: 2, target: 'b0b'}, layout: {size: [10, 10], windows: []}, following: 'b0b'},
-    {publisher: 'new', kind: 'person', label: '', focus: null, activity: null, place: null, wave: null, layout: null, following: null},
-  ]);
-  assert.equal(liveMembers({available: false}, seen), null, 'no live layer: the host lines decide');
-});
-
 test('the page posts its window and steps, pushes everyone\'s lines and the watching count', async () => {
   const h = harness({actions: [{id: '01', action: 'Edited the text', resource: 'Welcome', app: 'Notes', at_ms: 1}]});
   const layer = fakeLayer(['bob']);
@@ -75,10 +53,7 @@ test('the page posts its window and steps, pushes everyone\'s lines and the watc
   assert.deepEqual(h.calls.find(([kind]) => kind === 'here')[1], [{device: 'me', status: 'Working on Notes'}]);
   assert.deepEqual(h.calls.find(([kind]) => kind === 'watching'), ['watching', 2]);
   assert.deepEqual(h.fetches, ['https://rooms.example/presence']);
-  const people = h.calls.find(([kind]) => kind === 'people')[1];
-  // With its person, so the desktop counts the person's other tabs as them.
-  assert.deepEqual(people.own, {publisher: 'me', kind: 'person', label: 'Ann', user: 'ab'.repeat(32)});
-  assert.deepEqual(people.members.map(m => m.publisher), ['bob']);
+  assert.equal(h.calls.filter(([kind]) => kind === 'people').length, 0, 'members come from the board, not from here');
   assert.equal(h.timers.at(-1).ms, TICK_MS);
   here.stop();
 });
@@ -104,30 +79,20 @@ test('nothing new: no post until the refresh interval; a changed window posts at
   assert.equal(h.fetches.length, 0, 'no room service, no watching count');
 });
 
-test('a hidden page neither posts nor reads; a member\'s name reaches the runtime as it arrives', async () => {
+test('a hidden page neither posts nor reads', async () => {
   const h = harness();
-  const layer = fakeLayer();
-  const here = createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
+  const here = createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => fakeLayer(), peer: h.peer,
     fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => false});
   await settle();
   assert.equal(h.posts.length, 0);
   assert.equal(h.calls.filter(([kind]) => kind === 'tick').length, 0);
-  layer.join('bot');
-  layer.presence('bot', {participant: {kind: 'agent', label: 'Scribe', activity: 'Summarising'}, focus: {app: 'x', record: 'y'}});
-  const last = h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
-  assert.deepEqual(last.members, [{publisher: 'bot', kind: 'agent', label: 'Scribe', focus: {app: 'x', record: 'y'}, activity: 'Summarising', place: null, wave: null, layout: null, following: null}]);
-  // A person's focus reaches the runtime too: in a workspace whose layout is
-  // personal no window here is theirs, and the app they focus is all that
-  // says where they are ("In Chat").
-  layer.join('ann');
-  layer.presence('ann', {participant: {kind: 'person', label: 'Ann'}, focus: {app: 'so.tilo.chat', record: 'lounge'}, place: '3'});
-  const ann = h.calls.filter(([kind]) => kind === 'people').at(-1)[1].members.find(member => member.publisher === 'ann');
-  assert.deepEqual(ann.focus, {app: 'so.tilo.chat', record: 'lounge'});
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 0, 'still nothing while hidden');
   here.stop();
-  assert.equal(layer.handlers.presence.size, 0, 'stopping lets go of the layer');
 });
 
-test('someone arriving is paired with their person at once, so their face is never drawn in a guessed colour', async () => {
+test('a new here is paired with their person at the next tick, until the host names them', async () => {
   const h = harness();
   let known = [{device: 'me', user: 'ab'.repeat(32)}];
   h.peer.here = async (win, list) => { h.posts.push({window: win, actions: list}); return known; };
@@ -136,10 +101,11 @@ test('someone arriving is paired with their person at once, so their face is nev
     fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
   await settle();
   assert.equal(h.posts.length, 1);
-  // Bob arrives: the page asks the host now, not at its next refresh.
+  // Bob is here: the page asks the host, not only at its next refresh.
   layer.join('bob');
-  await settle();
-  assert.equal(h.posts.length, 2, 'asked at once');
+  h.advance(TICK_MS);
+  await h.runTimer();
+  assert.equal(h.posts.length, 2, 'asked as soon as it is noticed');
   // His page has not posted yet: ask again each tick until it has.
   h.advance(TICK_MS);
   await h.runTimer();
@@ -154,7 +120,8 @@ test('someone arriving is paired with their person at once, so their face is nev
   assert.equal(h.posts.length, 4, 'paired: back to the usual refresh');
   // A page that never posts is not asked about for ever.
   layer.join('quiet');
-  await settle();
+  h.advance(TICK_MS);
+  await h.runTimer();
   const asked = h.posts.length;
   h.advance(PAIR_WAIT_MS);
   await h.runTimer();
@@ -163,30 +130,30 @@ test('someone arriving is paired with their person at once, so their face is nev
   assert.ok(h.posts.length <= asked + 1, 'gave up waiting for its line');
 });
 
-test('someone arriving while the page is asking is asked about as soon as that answer is in', async () => {
+test('asked to check while the page is asking, it checks again as soon as that answer is in', async () => {
   const h = harness();
   let release;
-  let known = [{device: 'me', user: 'ab'.repeat(32)}];
+  const known = [{device: 'me', user: 'ab'.repeat(32)}];
   h.peer.here = (win, list) => {
     h.posts.push({window: win, actions: list});
     return new Promise(resolve => { release = () => resolve(known); });
   };
   const layer = fakeLayer();
-  createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
+  const here = createHere({runtime: h.runtime, mountId: () => 1, active: () => true, layer: () => layer, peer: h.peer,
     fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
   assert.equal(h.posts.length, 1, 'the first post is in flight');
-  // That answer was made before Bob came: it does not know him.
+  // Bob is here while that post is out: asking again immediately would be
+  // lost, so the page checks once the answer is in.
   layer.join('bob');
+  here.wake();
   release();
   await settle();
   assert.equal(h.timers.at(-1).ms, 0, 'checks again at once, not in a tick');
-  known = [...known, {device: 'bob', user: 'cd'.repeat(32)}];
   const ran = h.runTimer();
   await settle();
   assert.equal(h.posts.length, 2);
   release();
   await ran;
-  assert.deepEqual(h.calls.filter(([kind]) => kind === 'here').at(-1)[1], known);
 });
 
 test('a post that failed is tried again on the next tick, not at the next refresh', async () => {
@@ -228,21 +195,7 @@ test('their own words go on their presence once, and again only when they change
   here.stop();
 });
 
-test('a browser that cannot join live says so where the members would be', async () => {
-  const h = harness();
-  h.peer.liveNote = () => 'this browser cannot join live';
-  const layer = fakeLayer();
-  layer.available = false;
-  const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => layer, peer: h.peer,
-    fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer, visible: () => true});
-  await settle();
-  const people = h.calls.find(([kind]) => kind === 'people')[1];
-  assert.equal(people.members, null);
-  assert.equal(people.unavailable, 'this browser cannot join live');
-  here.stop();
-});
-
-test('a plane that cannot be reached is said where the members would be, and once in the log', async () => {
+test('a plane that cannot be reached is said once in the log, and joining is said when it comes back', async () => {
   const h = harness();
   const said = [];
   const warn = console.warn;
@@ -252,17 +205,14 @@ test('a plane that cannot be reached is said where the members would be, and onc
   try {
     let note = null;
     h.peer.liveNote = () => note;
-    const lastPeople = () => h.calls.filter(([kind]) => kind === 'people').at(-1)[1];
     const here = createHere({runtime: h.runtime, mountId: () => 7, active: () => true, layer: () => fakeLayer(),
       peer: h.peer, fetch: h.fetch, now: h.now, setTimer: h.setTimer, clearTimer: h.clearTimer,
       visible: () => true});
     await settle();
-    assert.equal(lastPeople().unavailable, null);
     assert.deepEqual(said, []);
     note = 'this page cannot reach live presence';
     h.advance(TICK_MS);
     await h.runTimer();
-    assert.equal(lastPeople().unavailable, 'this page cannot reach live presence');
     assert.deepEqual(said, [['warn', 'live: this page cannot reach live presence']]);
     h.advance(TICK_MS);
     await h.runTimer();
@@ -270,7 +220,6 @@ test('a plane that cannot be reached is said where the members would be, and onc
     note = null;
     h.advance(TICK_MS);
     await h.runTimer();
-    assert.equal(lastPeople().unavailable, null);
     assert.deepEqual(said.at(-1), ['info', 'live: presence joined']);
     here.stop();
   } finally {

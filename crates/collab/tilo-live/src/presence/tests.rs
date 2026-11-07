@@ -197,3 +197,107 @@ fn a_wave_is_a_new_wave_each_time_and_an_apps_word_lives_under_its_key() {
     assert!(board.depart([1; 32]));
     assert!(!board.depart([1; 32]), "gone once");
 }
+
+#[test]
+fn a_shell_says_itself_whole_and_only_when_it_changed() {
+    use collab_types::presence::{ShellPresence, ShellWindow};
+    let view = |label: &str| {
+        Box::new(ShellPresence {
+            seq: 0,
+            sent_at_ms: 0,
+            label: label.into(),
+            agent: false,
+            colour: "#38b8f6".into(),
+            activity: None,
+            place: Some("2".into()),
+            size: [1440, 852],
+            windows: vec![ShellWindow {
+                app: "so.tilo.notes".into(),
+                record: [7; 8],
+                rect: [0, 0, 5000, 5000],
+                focused: true,
+            }],
+            selection: None,
+            chat: None,
+            reaction: None,
+        })
+    };
+    let mut board = board();
+    board.say(&Own {
+        label: "Quinten".into(),
+        shell: Some(view("Quinten")),
+        ..Own::default()
+    });
+    let first = board.flush(0.0);
+    assert!(
+        first.iter().any(
+            |(_, frame)| matches!(&frame.payload, Payload::Shell(shell) if shell.label == "Quinten")
+        ),
+        "the shell leaves with the first word"
+    );
+    // A repeat of the same view says nothing, whatever its clock.
+    let mut same = view("Quinten");
+    same.sent_at_ms = 99;
+    board.say(&Own {
+        label: "Quinten".into(),
+        shell: Some(same),
+        ..Own::default()
+    });
+    assert!(board.due(MIN_INTERVAL_MS).is_none(), "an unchanged view");
+    // A different view is one frame with a sequence of its own.
+    board.say(&Own {
+        label: "Quinten".into(),
+        shell: Some(view("Quinten W.")),
+        ..Own::default()
+    });
+    let said = board.due(1_000.0).expect("the new view leaves");
+    let shell = said
+        .iter()
+        .find_map(|(_, frame)| match &frame.payload {
+            Payload::Shell(shell) => Some(shell.clone()),
+            _ => None,
+        })
+        .expect("a shell frame");
+    assert_eq!(shell.label, "Quinten W.");
+    assert!(shell.seq > 1, "a higher sequence than the first view");
+}
+
+#[test]
+fn stopping_following_is_said_so_nobody_keeps_showing_it() {
+    let mut board = board();
+    board.say(&Own {
+        following: Some("ada".into()),
+        ..Own::default()
+    });
+    let _ = board.flush(0.0);
+    board.say(&Own::default());
+    let said = board.due(1_000.0).expect("stopping leaves");
+    assert!(
+        said.iter().any(|(_, frame)| matches!(
+            &frame.payload,
+            Payload::Following { target } if target.is_none()
+        )),
+        "a member who stops following says so"
+    );
+}
+
+#[test]
+fn a_member_who_comes_back_is_a_stay_of_its_own() {
+    let mut board = board();
+    board.hear([1; 32], &said(Payload::Arrived), 0.0);
+    let first = board.member([1; 32]).expect("here").epoch;
+    assert!(board.here().any(|member| member.publisher == [1; 32]));
+    board.hear([1; 32], &said(Payload::Arrived), 1.0);
+    assert_eq!(
+        board.member([1; 32]).expect("here").epoch,
+        first,
+        "a restated arrival is the same stay"
+    );
+    board.hear([1; 32], &said(Payload::Left), 2.0);
+    assert!(!board.here().any(|member| member.publisher == [1; 32]));
+    board.hear([1; 32], &said(Payload::Arrived), 3.0);
+    assert!(
+        board.member([1; 32]).expect("here").epoch > first,
+        "coming back begins a new stay, never the one before"
+    );
+}

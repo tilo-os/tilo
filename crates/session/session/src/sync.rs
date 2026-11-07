@@ -101,6 +101,7 @@ impl OwnPresence {
             following: self.following.clone(),
             wave,
             pointer: None,
+            shell: None,
         }
     }
 }

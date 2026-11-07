@@ -26,7 +26,6 @@ import {resolveResourceReference, openResourceReference} from './resource-refere
 import {createAgents} from './agents.mjs';
 import {openChannelVault} from './channel-vault.mjs';
 import {createMembership, createWorkspaces} from './membership.mjs';
-import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
 import {backoffDelay} from './reconnect.mjs';
 import {createSpeakers} from './live-speakers.mjs';
 import {createPeerVoice} from './voice-peer.mjs';
@@ -48,10 +47,6 @@ export {
 export {joinViaHost, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const CERTIFICATE = 'certificate';
-/** Per record, how many unread preview ops a member's stream may leave: a
- * frame reads and drops them, so this only bounds a page that stopped
- * drawing while a peer kept typing. */
-const MAX_PENDING_PREVIEWS = 256;
 /**
  * The stored `{cert, hostCert}` JSON with the peer's start fields (the
  * person's name, whether it only watches) added, edited as text: certificate
@@ -227,173 +222,80 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
 
 /** The most presence frames this page publishes a second: input arrives at
  * display rate, and the members' interpolation only needs a steady stream. */
-export const PRESENCE_SEND_INTERVAL_MS = 50;
-
 /**
- * The live layer of one workspace — the interface the desktop mount consumes.
- * `peer` is the wasm `WasmPeer`. `participant` (`{kind, label, color,
- * activity}`) is published with this device's presence.
+ * The live layer of one workspace: this page's presence on the workspace's
+ * board, and the members' ephemeral previews.
  *
- * Presence rides the workspace's session: this page is one member device
- * beside every other, and what it says of itself — its face, its pointer, its
- * wave, who it follows, its shell — travels as the presence every device's
- * does (`peer.announcePresence`, `peer.publishPresence`). What the members
- * published since the last frame is taken on [`pump`]
- * (`peer.takeLiveEvents`), and previews leave as live frames of the same
- * session (`peer.publishPreview`).
+ * The board is the peer's (`peer.sayPresence`, `peer.presenceDue`,
+ * `peer.presenceMembers`): it keeps what this page says of itself — its face,
+ * its pointer, its wave, who it follows — and says what changed on one
+ * schedule, the rate and the repeats and the keepalives every device's
+ * presence keeps; it merges what the members say into each of them. This
+ * layer hands it each change, arms one timer for the next thing it owes, and
+ * reads back who is here. The mount draws them, through the same path a
+ * native desktop does.
  */
 export function createLiveLayer(peer, runtime, workspace, {
   participant, ready = Promise.resolve(),
-  now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 } = {}) {
-  const remotes = new Map();
-  const participants = new Map();
-  const previews = new Map();
-  /** What each member last said of itself, merged: the presence frame its
-   * messages add up to. */
-  const said = new Map();
-  /** The parts of that frame a shell message carries whole: who the member
-   * is, the window they work in, their caret, their place, chat, reaction and
-   * windows. A shell message that does not name one is one they no longer
-   * have (their caret left the channel with the call), never the part their
-   * previous message left behind. What other messages carry — their pointer,
-   * their wave, who they follow — is theirs to keep saying. */
-  const SHELL_SAID = ['focus', 'selection', 'participant', 'place', 'chat', 'reaction', 'layout'];
-  const members = new Set();
-  const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
+  const listeners = {preview: new Set(), durable: new Set(), state: new Set()};
   const emit = (kind, value) => { for (const listener of [...listeners[kind]]) { try { listener(value); } catch {} } };
   const on = kind => listener => { listeners[kind].add(listener); return () => listeners[kind].delete(listener); };
-  const encoder = new TextEncoder();
   let publisherId = peer.deviceKey?.();
   let state = 'connecting';
   let stopped = false;
   let lastPublishError = null;
+  let timer;
   const previewSeq = new Map();
-
-  const publisher = createPresencePublisher({
-    encode: value => encoder.encode(JSON.stringify(value)),
-    send: (bytes, value) => {
-      if (stopped) return false;
-      try { peer.publishPresence(workspace, JSON.stringify(value)); lastPublishError = null; } catch (error) { lastPublishError = String(error?.message ?? error); return false; }
-      return true;
-    },
-    now,
-    wallNow,
-    setTimer,
-    clearTimer,
-    onPublish: value => emit('publish', value),
-    minIntervalMs: PRESENCE_SEND_INTERVAL_MS,
-  });
+  /** What this page says of itself: the value the board publishes. */
+  const value = {};
 
   const setState = next => { if (state !== next) { state = next; emit('state', {state}); } };
+  const clear = () => { if (timer !== undefined) clearTimer(timer); timer = undefined; };
+  /** Arm the one timer for when the board next has something to say. */
+  function arm(next) {
+    clear();
+    if (stopped || !(next > 0)) return;
+    timer = setTimer(() => {
+      timer = undefined;
+      if (stopped) return;
+      try { arm(peer.presenceDue(workspace)); } catch (error) { lastPublishError = String(error?.message ?? error); }
+    }, Math.max(0, next - Date.now()));
+  }
+  function say() {
+    if (stopped) return;
+    try { arm(peer.sayPresence(workspace, JSON.stringify(value))); lastPublishError = null; } catch (error) { lastPublishError = String(error?.message ?? error); }
+  }
 
-  /** One message of `publisher`, merged into what it has said: a frame with a
-   * sequence of its own, so the receiver orders them. */
-  function heard(publisher, patch, receivedAtMs) {
-    let frame = said.get(publisher);
-    if (!frame) { frame = {seq: 0, sentAtMs: 0}; said.set(publisher, frame); }
-    frame.seq += 1;
-    frame.sentAtMs = patch.sentAtMs && patch.sentAtMs > 0 ? patch.sentAtMs : Math.round(wallNow());
-    delete patch.sentAtMs;
-    Object.assign(frame, patch);
-    let remote = remotes.get(publisher);
-    if (!remote) { remote = createRemotePresence(); remotes.set(publisher, remote); }
-    if (!remote.accept({...frame}, receivedAtMs)) return;
-    const named = frame.participant;
-    const renamed = named && participants.get(publisher)?.label !== named.label;
-    if (named) participants.set(publisher, named);
-    if (frame.focus) watchRecord(frame.focus);
-    emit('presence', {publisher, frame: {...frame}, receivedAtMs});
-    // A member's name arrives with its presence, after the member itself.
-    if (renamed) emit('member', {publisher, active: true});
-    if (renamed && named.kind === 'agent') {
-      emit('agentActivity', {publisher, agentId: named.label, name: named.label, expired: false});
-    }
-  }
-  function member(publisher, active) {
-    if (active) {
-      if (members.has(publisher)) return;
-      members.add(publisher);
-    } else {
-      if (!members.delete(publisher)) return;
-      said.delete(publisher);
-      participants.delete(publisher);
-      remotes.delete(publisher);
-      previews.delete(publisher);
-    }
-    emit('member', {publisher, active});
-  }
-  const watched = new Map();
-  function watchRecord(record) {
-    watched.set(`${record.app}\u0000${record.record}`, record);
-  }
   function preview(publisher, record, seq, ops) {
-    const perRecord = previews.get(publisher) ?? new Map();
-    previews.set(publisher, perRecord);
-    const key = `${record.app}\u0000${record.record}`;
-    if (ops) {
-      // A keystroke arrives as its own preview op, so a record's list grows
-      // in place; each frame reads its tail and drops what it applied
-      // (`appliedPreview`). Copying the whole list per op was quadratic, and
-      // a member that typed without stopping grew it without bound.
-      const pending = perRecord.get(key) ?? [];
-      if (!perRecord.has(key)) perRecord.set(key, pending);
-      for (const op of ops) pending.push(op);
-      if (pending.length > MAX_PENDING_PREVIEWS) pending.splice(0, pending.length - MAX_PENDING_PREVIEWS);
-      emit('preview', {publisher, record, seq, ops});
-    } else {
-      perRecord.delete(key);
-      if (!perRecord.size) previews.delete(publisher);
-      emit('preview', {publisher, record, seq: null, ops: []});
-    }
+    emit('preview', {publisher, record, seq: ops ? seq : null, ops: ops ?? []});
   }
 
   function durableChanged(record) {
-    for (const [publisher, perRecord] of previews) {
-      perRecord.delete(`${record.app}\u0000${record.record}`);
-      if (!perRecord.size) previews.delete(publisher);
-    }
-    for (const remote of remotes.values()) remote.snap();
     emit('durable', {record});
   }
 
   /** Take what the workspace said since the last call: the members'
-   * presence and their ephemeral previews. */
+   * ephemeral previews (their presence is merged into the board as it
+   * arrives, never handed on). */
   function pump(events = JSON.parse(peer.takeLiveEvents())) {
-    const nowMs = Math.round(wallNow());
     for (const event of events) {
       switch (event.kind) {
         case 'durable': durableChanged(event.record); break;
-        case 'arrived': member(event.publisher, true); break;
-        case 'left': member(event.publisher, false); break;
-        case 'shell': {
-          member(event.publisher, true);
-          const whole = {...event.frame};
-          for (const part of SHELL_SAID) whole[part] ??= null;
-          heard(event.publisher, whole, nowMs);
-          break;
-        }
-        case 'pointer': member(event.publisher, true); heard(event.publisher, {pointer: {tile: {tab: event.tab}, at: event.at}, sentAtMs: event.sentAtMs}, nowMs); break;
-        case 'pointerLeft': heard(event.publisher, {pointer: null}, nowMs); break;
-        case 'wave': heard(event.publisher, {wave: event.wave}, nowMs); break;
-        case 'following': heard(event.publisher, {following: event.following}, nowMs); break;
-        case 'preview': member(event.publisher, true); preview(event.publisher, event.record, event.seq, event.ops); break;
+        case 'preview': preview(event.publisher, event.record, event.seq, event.ops); break;
         case 'previewEnd': preview(event.publisher, event.record, null, null); break;
         default: break;
       }
     }
   }
 
-  const isAgent = publisher => participants.get(publisher)?.kind === 'agent';
-
   function start() {
     if (stopped) return;
     publisherId = peer.deviceKey?.() ?? publisherId;
-    if (participant) publisher.update({participant: {kind: 'person', activity: null, ...participant}});
-    try { peer.announcePresence(workspace, true); } catch {}
-    publisher.start();
+    if (participant) value.participant = {kind: 'person', activity: null, ...participant};
+    say();
     setState('live');
   }
 
@@ -403,22 +305,17 @@ export function createLiveLayer(peer, runtime, workspace, {
     workspace,
     get state() { return state; },
     get available() { return state === 'live'; },
-    /** This layer's publisher in the workspace (the device, or its agent), once live. */
+    /** This layer's publisher in the workspace (the device), once live. */
     get publisherId() { return publisherId; },
-    get memberCount() { return members.size; },
-    /** Merge presence fields (`null` clears): focus, pointer, selection, drag. */
+    /** Merge presence fields (`null` clears): focus, pointer, selection,
+     * place, layout, chat, reaction, wave, following. */
     publishPresence(partial) {
-      // Who the layer publishes as from now on: the participant is announced
-      // as it is, not as it started.
-      if (partial.participant) participant = partial.participant;
-      if (partial.pointer === null) {
-        // The pointer left the workspace's tiles: the members take it off
-        // their screens rather than wait for it to age out.
-        publisher.update({pointer: null});
-        if (!stopped) { try { peer.pointerLeft(workspace); } catch {} }
-        return;
+      if (stopped || !partial) return;
+      for (const [key, part] of Object.entries(partial)) {
+        if (part === null) delete value[key];
+        else if (part !== undefined) value[key] = part;
       }
-      publisher.update(partial);
+      say();
     },
     /** Ephemeral text preview operations for a record. */
     publishPreview(record, ops) {
@@ -434,55 +331,27 @@ export function createLiveLayer(peer, runtime, workspace, {
       previewSeq.delete(`${record.app}\u0000${record.record}`);
       peer.endPreview(workspace, JSON.stringify(record)).catch(() => {});
     },
-    /** Receive previews for a record from every member (also once a
-     * member's presence focuses it). Every preview of the workspace reaches
-     * the layer already, so this only names the record watched. */
-    watchRecord(record) {
-      watchRecord(record);
-      return () => watched.delete(`${record.app}\u0000${record.record}`);
-    },
-    /** A durable change for the record landed: drop previews and snap drags. */
+    /** A durable change for the record landed: drop its previews. */
     durableChanged,
-    /** Per-frame interpolated remote state on the `performance.now()` timeline. */
-    remoteState(nowMs = now()) {
-      return [...remotes].map(([publisher, remote]) => ({
-        publisher,
-        ...remote.sample(nowMs),
-        previews: Object.fromEntries(previews.get(publisher) ?? []),
-        interpolationDelayMs: remote.interpolationDelayMs(),
-      })).filter(value => value.seq !== undefined);
+    /** Everyone here now, as the board merged their words: `[{publisher,
+     * epoch, agent, label, activity, colour, device, user, focus, place,
+     * following, pointer, selection, chat, reaction, layout, availability,
+     * call}]`, `pointer` with `ageMs`. */
+    presenceMembers() {
+      try { return JSON.parse(peer.presenceMembers(workspace)) ?? []; } catch { return []; }
     },
-    members: () => [...members],
-    /** `[{device, name, color}]` of the people whose presence named them;
-     * agents are in `agents()`. */
-    people: () => [...members].filter(from => !isAgent(from)).map(from => ({
-      device: from, name: participants.get(from)?.label ?? '', color: participants.get(from)?.color,
-    })),
-    /** Agents present in the workspace (their presence names them as agents). */
-    agents: () => [...members].filter(isAgent).map(from => ({
-      publisher: from, agentId: participants.get(from).label, name: participants.get(from).label,
-    })),
-    onPresence: on('presence'),
-    /** `presence` under the name `live-overlay` consumers use. */
-    onRemotePresence: on('presence'),
+    members() { return this.presenceMembers().map(member => member.publisher); },
     onPreview: on('preview'),
-    onMember: on('member'),
     onDurable: on('durable'),
     onState: on('state'),
-    /** Each presence frame this layer sent. */
-    onPublish: on('publish'),
-    /** An agent member named itself (`{publisher, agentId, name, expired}`). */
-    onAgentActivity: on('agentActivity'),
-    stats: () => ({state, members: members.size, published: publisher.stats(), lastPublishError}),
+    stats: () => ({state, lastPublishError}),
     /** Apply the session's live and durable events (called on every peer
      * change); pass `events` when several layers share one peer. */
     pump,
     stop() {
       stopped = true;
-      publisher.stop();
-      try { peer.announcePresence(workspace, false); } catch {}
-      for (const publisher of [...members]) member(publisher, false);
-      said.clear();
+      clear();
+      try { peer.leavePresence(workspace); } catch {}
       setState('closed');
     },
   };

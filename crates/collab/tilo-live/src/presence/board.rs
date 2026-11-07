@@ -21,6 +21,16 @@ use super::smooth::Smoother;
 /// A device here, as the workspace names it: its endpoint key.
 pub type Device = [u8; 32];
 
+/// `shell` without its sequence and send time: what a shell says, which two
+/// views of it are compared by, never when it was said.
+fn without_clock(shell: &ShellPresence) -> ShellPresence {
+    ShellPresence {
+        seq: 0,
+        sent_at_ms: 0,
+        ..shell.clone()
+    }
+}
+
 /// The name a person gives themselves here: what everyone calls them,
 /// whichever of their devices says it.
 const NAME_EDGE: usize = 64;
@@ -79,6 +89,9 @@ pub struct Own {
     pub wave: Option<Wave>,
     /// Where their pointer is over a tile here.
     pub pointer: Option<Point>,
+    /// This device's own view of its desktop, as a shell: its face, its
+    /// screen, the caret in it and what it says beside its pointer.
+    pub shell: Option<Box<ShellPresence>>,
 }
 
 /// A call in progress in a workspace, as the people in it say.
@@ -156,6 +169,9 @@ pub struct Member {
     pub apps: Vec<(PresenceKey, Payload)>,
     /// They said they are here and have not left: what makes them a member.
     pub here: bool,
+    /// When this stay here began: it moves each time the device comes back
+    /// after leaving, so a surface tells a member from the one before it.
+    pub epoch: u64,
     pointer: Smoother,
 }
 
@@ -174,8 +190,19 @@ impl Member {
             shell: None,
             apps: Vec::new(),
             here: false,
+            epoch: 0,
             pointer: Smoother::default(),
         }
+    }
+
+    /// They said they are here: their stay begins if it had not, which is
+    /// what a surface reads a new member by. Whether it is a change.
+    fn arrive(&mut self) -> bool {
+        if std::mem::replace(&mut self.here, true) {
+            return false;
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        true
     }
 
     /// Whether this member is an agent rather than a person.
@@ -231,6 +258,13 @@ impl Member {
         Some((tab, x, y))
     }
 
+    /// When they last said where their pointer was, or `None` while it has
+    /// left: on the clock presence is heard on, in Unix milliseconds.
+    #[must_use]
+    pub fn pointer_heard_at(&self) -> Option<f64> {
+        self.pointer.heard_at()
+    }
+
     /// The app's last word under `key`.
     #[must_use]
     pub fn app(&self, key: &PresenceKey) -> Option<&Payload> {
@@ -254,6 +288,9 @@ pub struct Board {
     arrived: bool,
     schedule: Schedule,
     keepalive_at: Option<f64>,
+    /// The sequence of the last shell view this device said: a receiver takes
+    /// a view with a higher one.
+    shell_seq: u32,
     members: Vec<Member>,
     revision: u64,
 }
@@ -270,6 +307,7 @@ impl Board {
             arrived: false,
             schedule: Schedule::default(),
             keepalive_at: None,
+            shell_seq: 0,
             members: Vec::new(),
             revision: 0,
         }
@@ -324,15 +362,27 @@ impl Board {
                 },
             ));
         }
-        if said.following != own.following
-            && let Some(target) = &own.following
-        {
+        // Following and stopping are both a change: a member who stops
+        // following says so, or everyone else keeps showing it.
+        if said.following != own.following {
             self.schedule.push(Presence::desktop(
                 workspace.clone(),
                 Payload::Following {
-                    target: Some(target.clone()),
+                    target: own.following.clone(),
                 },
             ));
+        }
+        // A shell says itself whole: a change of face, screen or caret is
+        // one frame, and the same view said again is none. Its sequence
+        // moves with what leaves, never with what is said.
+        if said.shell.as_deref().map(without_clock) != own.shell.as_deref().map(without_clock)
+            && let Some(shell) = &own.shell
+        {
+            self.shell_seq = self.shell_seq.wrapping_add(1);
+            let mut shell = shell.clone();
+            shell.seq = self.shell_seq;
+            self.schedule
+                .push(Presence::desktop(workspace.clone(), Payload::Shell(shell)));
         }
         if said.wave != own.wave
             && let Some(wave) = &own.wave
@@ -446,9 +496,7 @@ impl Board {
                 })
             }
             (PresenceKey::Workspace { id }, payload) if *id == self.workspace => match payload {
-                Payload::Arrived => {
-                    self.touch(from, |member| !std::mem::replace(&mut member.here, true))
-                }
+                Payload::Arrived => self.touch(from, Member::arrive),
                 Payload::Left => {
                     self.touch(from, |member| std::mem::replace(&mut member.here, false))
                 }
@@ -501,8 +549,7 @@ impl Board {
                 // A shell — a page's desktop, or an agent's face — says where
                 // its person is and, for an agent, that it works here at all.
                 Payload::Shell(shell) => self.touch(from, |member| {
-                    let changed = !member.here || member.shell.as_deref() != Some(&**shell);
-                    member.here = true;
+                    let changed = member.arrive() || member.shell.as_deref() != Some(&**shell);
                     member.shell = Some(shell.clone());
                     changed
                 }),
@@ -530,7 +577,7 @@ impl Board {
             // A pointer over a tile is the device saying it is here: it is
             // drawn whether or not the word that first said so reached this
             // device.
-            member.here = true;
+            member.arrive();
             member.pointer.heard(point.0, point.1, point.2, now_ms);
             true
         })
