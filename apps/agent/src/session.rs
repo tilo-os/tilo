@@ -1,12 +1,11 @@
-//! One agent session: join the workspace and carry out the runs of its issues.
+//! One agent session: join the workspace and answer the conversations it is
+//! asked in.
 
 use std::path::PathBuf;
 use ui::time::{Duration, Instant};
 
 use anyhow::Result;
-use ui::collaboration::{
-    CertifiedEndpointIdentity, CollabEvent, CollabRequest, PresencePayload, RouteSpec,
-};
+use ui::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceKey;
 use uuid::Uuid;
@@ -151,13 +150,6 @@ pub struct Config {
     /// Explicit typed collaboration endpoint for headless diagnostics outside
     /// the launcher. Normal sessions leave this `None` and inherit the fd.
     pub endpoint: Option<PathBuf>,
-    /// Certified credentials to join with: a diagnostic endpoint's device,
-    /// or a task agent's task delegation and key over the inherited service.
-    /// Other launcher-bound sessions leave this `None` and use the inherited
-    /// identity service.
-    pub endpoint_identity: Option<CertifiedEndpointIdentity>,
-    /// A task agent, made for one task: it ends once its first run does.
-    pub task_agent: bool,
     /// The app whose document this is — its manifest package id, which is
     /// what a launched copy of the app announces.
     pub app_id: String,
@@ -245,14 +237,14 @@ impl Session {
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
-                cfg.endpoint_identity.clone(),
+                None,
             )?,
             None => Link::connect(
                 &cfg.app_id,
                 cfg.cluster,
                 cfg.record.clone(),
                 Some(cfg.agent_id.clone()),
-                cfg.endpoint_identity.clone(),
+                None,
             )?,
         };
         // Discovery is workspace-wide, but writes never are. This subscription
@@ -316,10 +308,10 @@ impl Session {
         })
     }
 
-    /// Run the issues the broker delivers: an unattended run may invoke
+    /// Answer the turns the broker delivers: an unattended run may invoke
     /// only actions that the authenticated broker currently publishes to this
     /// agent.
-    pub fn run_task_runs(&mut self) -> Result<()> {
+    pub fn run(&mut self) -> Result<()> {
         let mut transforms = crate::transform::TransformService::new(
             std::sync::Arc::new(crate::transform::GatewayModel {
                 launched: self.chooser.selection().cloned(),
@@ -335,7 +327,7 @@ impl Session {
                 "published the AI transforms"
             );
         }
-        tracing::info!(agent = %self.cfg.name, "waiting for broker-addressed task runs");
+        tracing::info!(agent = %self.cfg.name, "waiting for the conversations' turns");
         loop {
             match self.link.recv(Duration::from_millis(100))? {
                 Some(CollabEvent::ActionCatalogue { surfaces }) => {
@@ -347,12 +339,6 @@ impl Session {
                         if let Err(report_error) = self.fail_task(&run, &error.to_string()) {
                             tracing::warn!(%report_error, "native task review report was refused");
                         }
-                    }
-                    // A task agent was made for this one task: its life ends
-                    // with the task's run, as its delegation does.
-                    if self.cfg.task_agent {
-                        tracing::info!(run_id = run.run_id, task = %run.task_id, "the task agent's task ended; exiting");
-                        return Ok(());
                     }
                 }
                 Some(CollabEvent::Invocation {

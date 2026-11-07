@@ -54,7 +54,6 @@ pub mod providers;
 pub mod session;
 pub mod skills;
 pub mod surface;
-pub mod task_identity;
 pub mod tools;
 pub mod transform;
 pub mod wire;
