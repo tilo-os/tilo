@@ -25,6 +25,11 @@
 # Only the app itself may frame it, and the one site that embeds it as a live
 # preview, if any (an embed reports its state to that site alone):
 #   TILO_WEB_EMBEDDER   that site's https:// origin (unset: none)
+# Where the site's shelf of sealed invitations is answered (the Caddyfile):
+# the host and port of the relay serving this site, which keeps an invitation
+# under the handle its link names. Unset, a link still opens the page, and the
+# page has no shelf to leave an invitation on or take one from.
+#   TILO_WEB_SHELF      a relay's host:port, as Caddy reaches it (unset: none)
 set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}

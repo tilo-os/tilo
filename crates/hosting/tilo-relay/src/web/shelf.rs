@@ -30,6 +30,8 @@ const NS: u64 = 1_000_000_000;
 struct Kept {
     /// The sealed signed invitation, base64url.
     sealed: String,
+    /// The origin the invitation admits into, as the inviter named it.
+    host: Option<String>,
     /// When the invitation it holds lapses.
     expires_at_ns: u64,
     /// The digest of the secret that takes it back.
@@ -92,6 +94,11 @@ impl Shelf {
         if stored.sealed.is_empty() || stored.sealed.len() > MAX_SEALED_BYTES {
             return Err(Refused::Malformed("a sealed invitation is at most 8 KiB"));
         }
+        if stored.host.as_deref().is_some_and(|host| !origin(host)) {
+            return Err(Refused::Malformed(
+                "the host a link names is an https:// origin",
+            ));
+        }
         if !spelled(&stored.delete) {
             return Err(Refused::Malformed(
                 "a delete secret is 43 base64url characters",
@@ -117,6 +124,7 @@ impl Shelf {
             handle.to_owned(),
             Kept {
                 sealed: stored.sealed,
+                host: stored.host,
                 expires_at_ns: stored.expires_at_ns,
                 delete: digest(&stored.delete),
             },
@@ -129,10 +137,13 @@ impl Shelf {
         clippy::significant_drop_tightening,
         reason = "the guard holds the shelf for the whole of one operation"
     )]
-    fn get(&self, handle: &str, now_ns: u64) -> Option<String> {
+    fn get(&self, handle: &str, now_ns: u64) -> Option<Fetched> {
         let mut inner = self.inner();
         inner.sweep(now_ns);
-        inner.kept.get(handle).map(|kept| kept.sealed.clone())
+        inner.kept.get(handle).map(|kept| Fetched {
+            sealed: kept.sealed.clone(),
+            host: kept.host.clone(),
+        })
     }
 
     /// Take an invitation back, if `delete` is the secret it was kept with.
@@ -166,7 +177,7 @@ pub(super) async fn handle(
     match *request.method() {
         Method::OPTIONS => reply(StatusCode::NO_CONTENT, Vec::new()),
         Method::GET => match web.shelf.get(handle, now_ns) {
-            Some(sealed) => json_status(StatusCode::OK, &Fetched { sealed }),
+            Some(fetched) => json_status(StatusCode::OK, &fetched),
             None => gone(),
         },
         Method::POST => {
@@ -237,6 +248,19 @@ pub(super) fn cors(response: &mut Response<Body>) {
     );
 }
 
+/// Whether `text` is an `https://` origin: a scheme, a host and maybe a port,
+/// and nothing else.
+fn origin(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("https://") else {
+        return false;
+    };
+    !rest.is_empty()
+        && rest.len() <= 260
+        && rest
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+}
+
 /// Whether `text` is [`DELETE_CHARS`] characters of base64url.
 fn spelled(text: &str) -> bool {
     text.chars().count() == DELETE_CHARS
@@ -273,6 +297,14 @@ mod tests {
             sealed: sealed.to_owned(),
             expires_at_ns: NOW.saturating_add(expires_in_s.saturating_mul(NS)),
             delete: DELETE.to_owned(),
+            host: None,
+        }
+    }
+
+    fn kept(sealed: &str) -> Fetched {
+        Fetched {
+            sealed: sealed.to_owned(),
+            host: None,
         }
     }
 
@@ -282,8 +314,11 @@ mod tests {
         shelf
             .put(HANDLE, stored(&"a".repeat(1200), 60), NOW)
             .unwrap();
-        assert_eq!(shelf.get(HANDLE, NOW), Some("a".repeat(1200)));
-        assert_eq!(shelf.get(HANDLE, NOW + 59 * NS), Some("a".repeat(1200)));
+        assert_eq!(shelf.get(HANDLE, NOW), Some(kept(&"a".repeat(1200))));
+        assert_eq!(
+            shelf.get(HANDLE, NOW + 59 * NS),
+            Some(kept(&"a".repeat(1200)))
+        );
         assert_eq!(
             shelf.get(HANDLE, NOW + 60 * NS),
             None,
@@ -334,6 +369,14 @@ mod tests {
                 ..stored("c2VhbGVk", 60)
             },
             Stored {
+                host: Some("https://host.example/not-an-origin".to_owned()),
+                ..stored("c2VhbGVk", 60)
+            },
+            Stored {
+                host: Some("http://host.example".to_owned()),
+                ..stored("c2VhbGVk", 60)
+            },
+            Stored {
                 expires_at_ns: NOW,
                 ..stored("c2VhbGVk", 60)
             },
@@ -348,6 +391,28 @@ mod tests {
             ));
         }
         assert!(shelf.get("ponmlkjihgfedcba", NOW).is_none());
+    }
+
+    #[test]
+    fn what_it_admits_into_comes_back_with_the_invitation() {
+        let shelf = Shelf::default();
+        shelf
+            .put(
+                HANDLE,
+                Stored {
+                    host: Some("https://host.example:8443".to_owned()),
+                    ..stored("c2VhbGVk", 60)
+                },
+                NOW,
+            )
+            .unwrap();
+        assert_eq!(
+            shelf.get(HANDLE, NOW),
+            Some(Fetched {
+                sealed: "c2VhbGVk".to_owned(),
+                host: Some("https://host.example:8443".to_owned()),
+            })
+        );
     }
 
     #[test]

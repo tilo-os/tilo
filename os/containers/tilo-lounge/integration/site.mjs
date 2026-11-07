@@ -1,12 +1,15 @@
 // The site's host for the Lounge integration test: the web entry's bundle,
 // served as the web entry image serves it, with the entry configuration this
 // deployment writes — its home is the Lounge, joined through the door the
-// relay lists it at, and its directory is the relay's.
+// relay lists it at, and its directory is the relay's. Under `/i/` it is the
+// site a sealed invitation's link opens: the page for a browser, and the
+// relay's shelf for the page's own request for the invitation (the web entry
+// image's `TILO_WEB_SHELF`).
 //
 // usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT
 // Prints {"url": "https://127.0.0.1:<port>"} once it listens.
 import {readFileSync, statSync, existsSync} from 'node:fs';
-import {createServer} from 'node:https';
+import {createServer, request as httpsRequest} from 'node:https';
 import {extname, join, normalize} from 'node:path';
 
 const [site, cert, key, origin, name, admission, port] = process.argv.slice(2);
@@ -36,6 +39,44 @@ const entry = JSON.stringify({
   directory: `${origin}/peer/v1/directory`,
 });
 
+/** The file at `path` below the bundle, or `null`. */
+const fileAt = path => {
+  let file = join(site, path);
+  if (!file.startsWith(site)) return null;
+  if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
+  return existsSync(file) ? file : null;
+};
+
+/** Serve `file` as the web entry image serves what it lays out. */
+const serve = (response, file) => {
+  const body = readFileSync(file);
+  response.writeHead(200, {
+    'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
+    'cache-control': 'no-store',
+    'content-length': body.length,
+  });
+  response.end(body);
+};
+
+/** Hand `request` to the relay at `origin` under the path it serves the
+ * shelf at, and its answer back as it came. */
+const shelf = (request, response) => {
+  const path = new URL(request.url, 'https://x').pathname;
+  const upstream = httpsRequest(`${origin}${path}`, {
+    method: request.method,
+    rejectUnauthorized: false,
+    headers: {...request.headers, host: new URL(origin).host},
+  }, answer => {
+    response.writeHead(answer.statusCode ?? 502, answer.headers);
+    answer.pipe(response);
+  });
+  upstream.on('error', error => {
+    console.error(`site: the shelf did not answer: ${error.message}`);
+    response.writeHead(502).end();
+  });
+  request.pipe(upstream);
+};
+
 const server = createServer({cert: readFileSync(cert), key: readFileSync(key)}, (request, response) => {
   const path = normalize(decodeURIComponent(new URL(request.url, 'https://x').pathname));
   if (path === '/entry.json') {
@@ -44,17 +85,24 @@ const server = createServer({cert: readFileSync(cert), key: readFileSync(key)}, 
     response.end(body);
     return;
   }
-  let file = join(site, path);
-  if (!file.startsWith(site)) { response.writeHead(403).end(); return; }
-  if (existsSync(file) && statSync(file).isDirectory()) file = join(file, 'index.html');
-  if (!existsSync(file)) { response.writeHead(404).end(); return; }
-  const body = readFileSync(file);
-  response.writeHead(200, {
-    'content-type': TYPES[extname(file)] ?? 'application/octet-stream',
-    'cache-control': 'no-store',
-    'content-length': body.length,
-  });
-  response.end(body);
+  // A sealed invitation's link: the page for a browser that accepts HTML,
+  // with the files it names relative to itself, and the relay answering under
+  // the handle for everyone else (the page fetching an invitation, and the
+  // inviter leaving one there).
+  if (path.startsWith('/i/')) {
+    const file = fileAt(path.slice('/i'.length));
+    if (file) { serve(response, file); return; }
+    const wantsPage = (request.headers.accept ?? '').includes('text/html');
+    if (wantsPage && /^[A-Za-z0-9_-]{16}$/.test(path.slice('/i/'.length))) {
+      serve(response, join(site, 'index.html'));
+      return;
+    }
+    shelf(request, response);
+    return;
+  }
+  const file = fileAt(path);
+  if (!file) { response.writeHead(404).end(); return; }
+  serve(response, file);
 });
 server.listen(Number(port), '127.0.0.1', () => {
   console.log(JSON.stringify({url: `https://127.0.0.1:${server.address().port}`}));

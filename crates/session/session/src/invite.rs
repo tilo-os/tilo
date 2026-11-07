@@ -179,7 +179,7 @@ impl Shared {
         let shelving = crate::directory::community_site().is_some_and(|site| {
             match self
                 .directory_store
-                .shelve(&invite, code.clone(), expires_at_ns, &site)
+                .shelve(&invite, code.clone(), expires_at_ns, &site, None)
             {
                 Ok(()) => true,
                 Err(error) => {
@@ -297,7 +297,7 @@ impl sheet::Invitations for DeskInvites<'_> {
         // a send-to picker would offer.
         let mut seen = std::collections::HashSet::new();
         let mut people = Vec::new();
-        let workspaces = std::iter::once(workspace.clone())
+        let workspaces = std::iter::once(workspace)
             .chain(engine.workspaces().into_iter().map(|held| held.to_string()));
         for held in workspaces {
             for member in engine.people(&held).unwrap_or_default() {

@@ -22,6 +22,7 @@ import {wireFetchProxy} from './fetch-proxy.mjs';
 import {takeLinkSecrets} from './link-secrets.mjs';
 import {openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
+import {sealedHandle, sealedLink} from './sealed-link.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
@@ -90,7 +91,10 @@ function titled(window, forward) {
  * embedder?}`; `about` holds the web host's links for the desktop's About
  * sheet, `embedder` the origin of the site that embeds the page, if any. */
 export async function readEntry({mode, location, fetch = globalThis.fetch}) {
-  const base = new URL(mode === 'app' ? '../' : './', location.href);
+  // A sealed invitation's link opens the page at `/i/<handle>`, whose files
+  // and configuration are the site's own: the page names the site, not the
+  // address the link happened to reach it at.
+  const base = new URL(mode === 'app' ? '../' : sealedHandle(location.pathname) ? '/' : './', location.href);
   base.search = '';
   base.hash = '';
   let config = {};
@@ -263,6 +267,10 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // A machine to set up is not admission: the page offers it once open.
   // Nor is a Discord account to link: the desktop offers it once open.
   const {install, link: linkOffer, ...secrets} = takeLinkSecrets(window);
+  // A site's sealed invitation (`https://<site>/i/<handle>#<key>`): the
+  // workspace is the invitation's to name, so the page learns it on the way
+  // in and reads no route from the address.
+  const sealed = sealedLink({location: window.location, secrets});
   // The runtime (most of the page's download) loads while the entry is read
   // and, for a bare entry under a home workspace, while admission starts:
   // a host's door is asked, and the person and device keys opened, before
@@ -274,9 +282,11 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   void linked.catch(() => {});
   let route;
   try {
-    route = chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
-      ?? homeRoute({location: window.location, mode, home: entry.home})
-      ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
+    route = sealed
+      ? {mode: 'desktop', target: {scope: {kind: 'sealed', site: sealed.site, handle: sealed.handle}}}
+      : chosenRoute({location: window.location, mode, home: entry.home, chosen: deps.chosenWorkspace?.() ?? null})
+        ?? homeRoute({location: window.location, mode, home: entry.home})
+        ?? initialRoute({link: await linked, location: window.location, mode, home: entry.home});
   } catch (error) {
     say(error?.message ?? String(error));
     throw error;
@@ -299,9 +309,16 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // does something (`entry-page.mjs`).
   if (idle) return null;
   if (peer) deps.onAdmitted?.(peer);
+  // A sealed invitation's link admits into a workspace the page learns on the
+  // way in: from here on it is in it, as a link to that workspace says.
+  const sealedAdmitted = Boolean(sealed && peer);
+  if (sealedAdmitted) {
+    route = {mode: 'desktop', target: {scope: {kind: 'room', host: new URL(peer.origin).origin, room: peer.workspace}}};
+  }
   // A link that names no workspace is let in through its host's door: the workspace
   // the door admits to is that host's listed workspace.
-  const admittedWorkspace = peer && route.target.scope.kind === 'room' && !route.target.scope.room ? peer.workspace : null;
+  const admittedWorkspace = peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)
+    ? peer.workspace : null;
   configureFeedback(peer, entry.home, admittedWorkspace, {
     homePeer: entry.home && deps.homePeer
       ? () => deps.homePeer(workspaceAt(workspaces, entry.home.host?.origin) ?? entry.home) : null,
@@ -319,8 +336,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   say(loading);
   onStep('open');
   const link = await linked;
-  if (peer && route.target.scope.kind === 'room' && !route.target.scope.room) {
-    // The home workspace's workspace is known now: show its canonical link.
+  if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
+    // The workspace is known now: show its canonical link, in place of the
+    // address the link reached the page at.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
     window.history.replaceState(window.history.state, '', link.format(route));
   }

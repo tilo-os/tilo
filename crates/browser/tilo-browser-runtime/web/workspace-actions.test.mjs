@@ -12,6 +12,9 @@ test('an invited wait-list entry says how long ago it was invited', () => {
 });
 
 const ADA = 'aa'.repeat(32);
+/** The short link a workspace's site keeps an invitation under. */
+const SEALED = 'https://tilo.so/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr3tKeyS3cr';
+const sealedLink = async () => SEALED;
 const WORKSPACE = '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90';
 const bytes = hex => Array.from({length: 32}, (_, index) => parseInt(hex.slice(index * 2, index * 2 + 2), 16));
 const ids = list => list.map(action => action.id);
@@ -49,7 +52,7 @@ test('the owner hears once who asks, and lets them in from the banner', async ()
   const {mount, shown, banners} = desktop();
   const polls = [];
   const actions = createWorkspaceActions({peer, every: run => { polls.push(run); return () => {}; },
-    inviteLink: text => `https://tilo.so/#/@node.example:8443/w/${WORKSPACE}?invite=${text}`,
+    inviteLink: sealedLink,
     ui: {fail: async text => assert.fail(text)}});
   await actions.attach(mount);
   assert.deepEqual(ids(shown.at(-1)), [NEW_WORKSPACE.id, JOIN_WORKSPACE.id, WAITING.id]);
@@ -68,13 +71,45 @@ test('a member the workspace lets invite hears who asks to join and lets them in
   const {mount, shown, banners} = desktop();
   const polls = [];
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
-    every: run => { polls.push(run); return () => {}; }, inviteLink: text => text, ui: {fail: async text => assert.fail(text)}});
+    every: run => { polls.push(run); return () => {}; }, inviteLink: sealedLink, ui: {fail: async text => assert.fail(text)}});
   await actions.attach(mount);
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
   assert.equal(banners.length, 1);
   assert.equal(banners[0].title, 'Bo asks to join');
   await actions.perform(banners[0].action.id);
   assert.deepEqual(calls.at(-1), ['admit', '02'.repeat(32)]);
+});
+
+test('a page made able to answer join requests while it stands open starts answering them, with no reload', async () => {
+  const base = adasRoom({owner: false}).peer;
+  const requests = [{requestId: '02'.repeat(32), name: 'Bo', role: 'commenter'}];
+  let allows = false;
+  const peer = {...base, userPublicKey: 'bb'.repeat(32), membership: {...base.membership,
+    requests: async () => {
+      if (!allows) throw new Error('only someone the room lets invite lists requests');
+      return requests;
+    }}};
+  const {mount, shown, banners} = desktop();
+  const polls = [];
+  const actions = createWorkspaceActions({peer, every: run => { polls.push(run); return () => {}; },
+    inviteLink: sealedLink, ui: {fail: async text => assert.fail(text)}});
+  await actions.attach(mount);
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'a person the room does not let invite is offered no wait list');
+  await polls[0]();
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id], 'the host’s refusal is nobody to let in, not a person to answer');
+  assert.equal(banners.length, 0);
+  // The workspace makes this person one it lets invite while the page stands
+  // open: the next pass answers what the host now offers, without a reload.
+  allows = true;
+  await polls[0]();
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id, WAITING.id]);
+  assert.equal(banners.length, 1);
+  assert.equal(banners[0].title, 'Bo asks to join');
+  assert.equal(banners[0].body, 'Bo wants to join “this workspace” as commenter.');
+  // Taken back, the page stops answering them again.
+  allows = false;
+  await polls[0]();
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
 });
 
 test('the wait list is listed with who waits, gets no banner, and each address is invited with a link of its own', async () => {
@@ -88,7 +123,7 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   const shared = [];
   let listed = null;
   const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
-    inviteLink: text => `https://tilo.so/#/@node.example:8443/w/${WORKSPACE}?invite=${text}`,
+    inviteLink: sealedLink,
     ui: {share: async offer => { shared.push(offer); }, waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
   await polls[0]();
@@ -97,11 +132,11 @@ test('the wait list is listed with who waits, gets no banner, and each address i
   assert.equal(banners.length, 0);
   await actions.perform(WAITING.id);
   assert.deepEqual(await listed.load(), {people: [], waitList: [ed]});
-  assert.deepEqual(await listed.invite(ed), {mailed: false, link: `https://tilo.so/#/@node.example:8443/w/${WORKSPACE}?invite=SIGNED-invitation`});
+  assert.deepEqual(await listed.invite(ed), {mailed: false, link: SEALED});
   assert.deepEqual(calls.at(-1), ['invite', {role: 'editor', waitListEntry: ed.requestId}]);
   assert.equal(shared[0].title, 'Invite ed@example.org');
-  assert.match(shared[0].body, /^Send this link to ed@example\.org\..+leave the wait list once they join\.$/);
-  assert.equal(shared[0].link, `https://tilo.so/#/@node.example:8443/w/${WORKSPACE}?invite=SIGNED-invitation`);
+  assert.match(shared[0].body, /^Send this link to ed@example\.org\..+as an editor\.$/);
+  assert.equal(shared[0].link, SEALED, 'the short link is what is shared, not the invitation text');
   await listed.unlist(ed.requestId);
   assert.deepEqual(calls.at(-1), ['unlist', ed.requestId]);
 });
@@ -115,25 +150,29 @@ test('a host that sends mail mails the invitation to the address, and nothing is
   const polls = [];
   let listed = null;
   const actions = createWorkspaceActions({peer: member, every: run => { polls.push(run); return () => {}; },
-    inviteLink: text => `https://tilo.so/?invite=${text}`,
+    inviteLink: sealedLink,
     ui: {share: async () => assert.fail('mailed, not shared'), waitingList: async list => { listed = list; }, fail: async text => assert.fail(text)}});
   await actions.attach(mount);
   await polls[0]();
   await actions.perform(WAITING.id);
-  assert.deepEqual(await listed.invite(ed), {mailed: true, link: 'https://tilo.so/?invite=SIGNED-invitation'});
-  assert.deepEqual(calls.at(-1), ['mail', ed.requestId, 'https://tilo.so/?invite=SIGNED-invitation']);
+  assert.deepEqual(await listed.invite(ed), {mailed: true, link: SEALED});
+  assert.deepEqual(calls.at(-1), ['mail', ed.requestId, SEALED]);
 });
 
-test('someone the workspace does not let invite is never asked to let anyone in', async () => {
+test('someone the workspace does not let invite is never offered anyone to let in', async () => {
   const {peer} = adasRoom({owner: false});
   const {mount, shown, banners} = desktop();
-  let polled = false;
+  const polls = [];
   const actions = createWorkspaceActions({peer: {...peer, userPublicKey: 'bb'.repeat(32)},
-    every: () => { polled = true; return () => {}; }, inviteLink: text => text, ui: {}});
+    every: run => { polls.push(run); return () => {}; }, inviteLink: sealedLink, ui: {}});
   await actions.attach(mount);
   assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
+  // The page asks, so that a role granted while it is open reaches it; the
+  // host's refusal is no one to answer, not a failure said.
+  await polls[0]();
+  assert.deepEqual(ids(shown.at(-1)), [JOIN_WORKSPACE.id]);
+  assert.deepEqual(banners, []);
   await actions.perform(WAITING.id);
-  assert.equal(polled, false);
   assert.deepEqual(banners, []);
 });
 

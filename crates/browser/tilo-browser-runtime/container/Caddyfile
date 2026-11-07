@@ -53,6 +53,32 @@
 		}
 	}
 
+	# A sealed invitation's link opens the page at the site that keeps the
+	# invitation: https://<site>/i/<handle>#<key>. A browser opening it gets
+	# the page, which reads the site's own configuration and files
+	# (/entry.json, /v/…); the page's own request for the invitation — and a
+	# build that takes the link without the page — is the deployment's relay's
+	# to answer, which keeps the invitation under the handle and was never
+	# given the key in the fragment. Without a relay behind the site
+	# (TILO_WEB_SHELF unset) the page still opens; an invitation left there is
+	# not one it can take.
+	handle /i/* {
+		@shelf not header Accept *text/html*
+		handle @shelf {
+			reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
+		}
+		handle {
+			uri strip_prefix /i
+			root * /srv/tilo-web
+			header Cache-Control "no-cache"
+			@page not file {path}
+			rewrite @page /index.html
+			file_server {
+				precompressed br zstd
+			}
+		}
+	}
+
 	# The entry pages and what they name by relative path, revalidated on
 	# every visit by the ETag of the encoding served (test-image.sh).
 	handle {

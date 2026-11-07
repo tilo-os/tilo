@@ -1188,6 +1188,7 @@ impl Workspaces {
                         user_public_key: inviter.user_public_key,
                         name: inviter.name.clone(),
                     }),
+                    members: workspace.summary().people(),
                 })
             }
             JoinStep::Ask {
@@ -1261,7 +1262,7 @@ impl Workspaces {
 
     #[expect(
         clippy::significant_drop_tightening,
-        reason = "the workspace stays locked while the request is recorded"
+        reason = "the workspace stays locked while the request is recorded and admitted"
     )]
     async fn prove(
         &self,
@@ -1277,68 +1278,116 @@ impl Workspaces {
         let request_id = proof.challenge.request_id;
         let device = proof.challenge.device_public_key;
         let proof_digest = super::collaboration::request_digest(&proof)?;
-        let workspace = self.workspace(&identity).await?;
-        let workspace = workspace.lock().await;
-        if let Some(prior) = self.page_joins().find(&identity, request_id) {
-            if prior.proof_digest != proof_digest {
+        let (issuer, invite_id) = {
+            let workspace = self.workspace(&identity).await?;
+            let workspace = workspace.lock().await;
+            if let Some(prior) = self.page_joins().find(&identity, request_id) {
+                if prior.proof_digest != proof_digest {
+                    return Err(CollaborationError::new(
+                        "join request ID already names a different proof",
+                    ));
+                }
+                return Ok(match prior.declined_at_ns {
+                    Some(_) => JoinReply::Declined,
+                    None => JoinReply::Waiting,
+                });
+            }
+            // A page that asked again under the same request — a reload, a
+            // lost answer — hears what became of it, not that its invitation
+            // is spent.
+            if workspace.admitted_device(request_id) == Some(device) {
+                return Self::admitted(&workspace, device, now);
+            }
+            let redemption = Self::redeem(&workspace, device, &proof, now)?;
+            let invite_id = redemption.join().invite_id();
+            if workspace.redeemed(invite_id) {
+                return Err(CollaborationError::new("invitation was already redeemed"));
+            }
+            let mut joins = self.page_joins();
+            joins.prune(now);
+            if joins.0.iter().any(|join| {
+                join.declined_at_ns.is_none() && join.redemption.join().invite_id() == invite_id
+            }) {
                 return Err(CollaborationError::new(
-                    "join request ID already names a different proof",
+                    "someone else is already waiting with this invitation",
                 ));
             }
-            return Ok(match prior.declined_at_ns {
-                Some(_) => JoinReply::Declined,
-                None => JoinReply::Waiting,
+            if joins
+                .0
+                .iter()
+                .filter(|join| join.workspace == identity)
+                .count()
+                >= MAX_JOIN_REQUESTS
+            {
+                return Err(CollaborationError::new(
+                    "too many people are waiting to join",
+                ));
+            }
+            let certificate = redemption.certificate();
+            let request = JoinRequest {
+                request_id,
+                user_public_key: certificate.user_public_key,
+                device_public_key: certificate.device_public_key,
+                name: name.to_owned(),
+                role: room_role(redemption.join().grant().role),
+                requested_at_ns: now,
+            };
+            let issuer = redemption.join().grant().issuer.clone();
+            joins.0.push(PageJoin {
+                workspace: identity.clone(),
+                request,
+                proof_digest,
+                redemption,
+                declined_at_ns: None,
             });
-        }
-        let redemption = Self::redeem(&workspace, device, &proof, now)?;
-        let invite_id = redemption.join().invite_id();
-        if workspace.redeemed(invite_id) {
-            return Err(CollaborationError::new("invitation was already redeemed"));
-        }
-        let mut joins = self.page_joins();
-        joins.prune(now);
-        if joins.0.iter().any(|join| {
-            join.declined_at_ns.is_none() && join.redemption.join().invite_id() == invite_id
-        }) {
-            return Err(CollaborationError::new(
-                "someone else is already waiting with this invitation",
-            ));
-        }
-        if joins
-            .0
-            .iter()
-            .filter(|join| join.workspace == identity)
-            .count()
-            >= MAX_JOIN_REQUESTS
-        {
-            return Err(CollaborationError::new(
-                "too many people are waiting to join",
-            ));
-        }
-        let certificate = redemption.certificate();
-        let request = JoinRequest {
-            request_id,
-            user_public_key: certificate.user_public_key,
-            device_public_key: certificate.device_public_key,
-            name: name.to_owned(),
-            role: room_role(redemption.join().grant().role),
-            requested_at_ns: now,
+            (issuer, invite_id)
         };
+        // An invitation is the approval of whoever made it: a page that holds
+        // one is let in by its issuer's own grant, as at every other door, and
+        // never waits for someone in the workspace to answer for it. A request
+        // that cannot be admitted does not sit on the list either.
+        if let Err(error) = self.admit_page(&identity, &issuer, request_id, now).await {
+            self.page_joins().0.retain(|join| {
+                !(join.workspace == identity && join.request.request_id == request_id)
+            });
+            return Err(error);
+        }
+        let governed = self.workspace(&identity).await?;
+        let workspace = governed.lock().await;
         tracing::info!(
             workspace = %identity,
             invite_id = %hex::encode(invite_id),
-            person = %hex::encode(request.user_public_key),
-            outcome = "waiting",
-            "workspace join request waits for the owner"
+            person = %hex::encode(device),
+            outcome = "admitted",
+            "workspace join admitted with its invitation"
         );
-        joins.0.push(PageJoin {
-            workspace: identity,
-            request,
-            proof_digest,
-            redemption,
-            declined_at_ns: None,
-        });
-        Ok(JoinReply::Waiting)
+        Self::admitted(&workspace, device, now)
+    }
+
+    /// What a device the workspace just admitted hears: the workspace it is in
+    /// and the part it holds there.
+    fn admitted(
+        workspace: &GovernedWorkspace,
+        device: [u8; 32],
+        now: u64,
+    ) -> Result<JoinReply, CollaborationError> {
+        let role = workspace
+            .peer()
+            .permissions(device, system_time(now))
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        Ok(JoinReply::Admitted {
+            workspace: workspace.workspace().to_owned(),
+            workspace_id: workspace.workspace_id(),
+            name: workspace.record.name.clone(),
+            role: match role.role {
+                collab_types::role::Role::Moderator => WorkspaceRole::Moderator,
+                collab_types::role::Role::Commenter => WorkspaceRole::Commenter,
+                collab_types::role::Role::Viewer => WorkspaceRole::Viewer,
+                collab_types::role::Role::Owner | collab_types::role::Role::Editor => {
+                    WorkspaceRole::Editor
+                }
+            },
+        })
     }
 
     /// Admit the redeeming device at once under the owner's pre-admission

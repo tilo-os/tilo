@@ -4,13 +4,19 @@
  * 1. the person's own desktop (`/me`) is this browser's, with no peer,
  *    once the home's door let them in where it gates (`ownDesktop`);
  * 2. an invitation is inspected (what the host verified: workspace, role,
- *    inviter), confirmed by the person, then redeemed; a pre-admission
- *    `token` admits at once, otherwise the owner admits while the page waits;
- *    a workspace service guest `ticket` is spent on this page's pairing code at
- *    the redemption door the web host names (`entry.json` `tickets`);
- *    with `pair`, this browser becomes a new device of that person once
- *    one of their devices approves its pairing code (the host relays): the
- *    device that made the link, when it names an invite (`pairing.mjs`);
+ *    inviter, how many people it has), confirmed by the person, then
+ *    redeemed. An invitation is the approval of whoever made it: the host
+ *    admits it at once, and nobody in the workspace answers for it. A link
+ *    a site hands over (`https://<site>/i/<handle>#<key>`) names the site
+ *    that keeps it, whose shelf answers with the invitation and the host it
+ *    admits into (`viaSealedLink`); the long form names the invitation's own
+ *    text, or its handle and key as `?invite=` after a workspace's route. A
+ *    pre-admission `token` admits at once too; a workspace service guest
+ *    `ticket` is spent on this page's pairing code at the redemption door
+ *    the web host names (`entry.json` `tickets`); with `pair`, this browser
+ *    becomes a new device of that person once one of their devices approves
+ *    its pairing code (the host relays): the device that made the link,
+ *    when it names an invite (`pairing.mjs`);
  * 3. a member connects with this browser's existing account for that host
  *    (where other tabs hold every device key it has there, this tab goes on
  *    to 4 and 5 as a new device of the person);
@@ -31,6 +37,10 @@
 import {parsePairSecret} from './pairing.mjs';
 
 export const NO_ACCESS = 'You don’t have access to this workspace. Ask the person who shared the link to invite you.';
+/** An invitation the site no longer keeps, or one that does not open: the
+ * same words for both, so a link tells nothing about invitations it does not
+ * hold. */
+const UNUSABLE_INVITATION = 'This link’s invitation is no longer there. Ask the person who invited you for a new one.';
 
 export class AdmissionError extends Error {
   constructor(code, message) {
@@ -38,6 +48,44 @@ export class AdmissionError extends Error {
     this.name = 'AdmissionError';
     this.code = code;
   }
+}
+
+/** The invitation `secret` names, as the site at `site` keeps it: the
+ * invitation's own text, and the host it admits into where the inviter named
+ * one. */
+async function openedAt({site, secret, deps}) {
+  try {
+    return await deps.openInvitation(site, secret);
+  } catch (error) {
+    console.warn('admission: the invitation did not open', error?.message ?? error);
+    throw new AdmissionError('invitation-unusable', UNUSABLE_INVITATION);
+  }
+}
+
+/** What `invitation` offers at `origin`, shown to the person, then joined
+ * with: the invitation is the approval of whoever made it, so the host
+ * admits it at once and nobody in the workspace answers for it. */
+async function viaInvitation({origin, invitation, room = null, secrets, deps, onProgress}) {
+  const offer = await deps.inspectInvitation(origin, invitation);
+  if (room && offer.room && offer.room !== room) {
+    throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
+  }
+  if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
+  return ready(await deps.joinWorkspace({
+    origin, invitation, admissionToken: secrets.token,
+    onProgress: event => onProgress(event),
+  }));
+}
+
+/** A link a site hands over (`https://<site>/i/<handle>#<key>`): the site
+ * keeps the invitation, sealed, and its shelf answers with the invitation —
+ * never with the key, which only the link carries — and with where it admits
+ * into. A shelf of a build that named no host is taken to mean the site's
+ * home workspace's host, and the site itself where it has no home. */
+async function viaSealedLink({scope, secrets, home, deps, onProgress}) {
+  const opened = await openedAt({site: scope.site, secret: `${scope.handle}${secrets.invite}`, deps});
+  const origin = opened.host ?? home?.host?.origin ?? scope.site;
+  return viaInvitation({origin, invitation: opened.invitation, secrets, deps, onProgress});
 }
 
 /** `{peer}` once `peer` is ready to use. */
@@ -84,6 +132,7 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
     throw new AdmissionError('malformed', 'This link’s invitation is damaged, so Tilo did not use it');
   }
   if (scope.kind === 'own') return ownDesktop({home, deps, onProgress});
+  if (scope.kind === 'sealed') return viaSealedLink({scope, secrets, home, deps, onProgress});
   const {host: origin, room} = scope;
   const listed = deps.workspaceAt?.(origin) ?? null;
   if (!room) {
@@ -94,25 +143,8 @@ export async function admit({scope, secrets = {}, tickets, home = null, deps, on
     // A link's `invite` names the invitation its host keeps, sealed under a
     // key in the link; the page opens it before anything reads it. An
     // invitation's own text is its own secret.
-    let invitation = secrets.invite;
-    if (deps.openInvitation) {
-      try {
-        invitation = await deps.openInvitation(origin, secrets.invite);
-      } catch (error) {
-        console.warn('admission: the invitation did not open', error?.message ?? error);
-        throw new AdmissionError('invitation-unusable', 'This link’s invitation is no longer there. Ask the person who invited you for a new one.');
-      }
-    }
-    const offer = await deps.inspectInvitation(origin, invitation);
-    if (offer.room && offer.room !== room) {
-      throw new AdmissionError('mismatch', 'This invitation is for another workspace than the link names');
-    }
-    if (!await deps.confirmInvitation(offer)) throw new AdmissionError('declined', 'You did not join');
-    const peer = await deps.joinWorkspace({
-      origin, invitation, admissionToken: secrets.token,
-      onProgress: event => onProgress(event),
-    });
-    return ready(peer);
+    const opened = await openedAt({site: origin, secret: secrets.invite, deps});
+    return viaInvitation({origin: opened.host ?? origin, invitation: opened.invitation, room, secrets, deps, onProgress});
   }
   if (secrets.ticket) {
     if (!tickets) throw new AdmissionError('unsupported', 'This page cannot redeem guest tickets');

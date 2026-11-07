@@ -5,24 +5,36 @@
 // other — the live plane's presence, the shared desk, and the chat all at
 // once.
 //
+// Then one of them is made someone the workspace lets invite, while their page
+// is open (the deployment's roles file is written under them, as an operator
+// does), and invites a third person from the page's own sheet. That person
+// opens the link the sheet handed over — `https://<site>/i/<handle>#<key>` — in
+// a browser of their own, is told who invited them, to what and as what, and
+// joins with no one in the workspace answering for them: an invitation is its
+// inviter's approval.
+//
 // The page is read through the desktop's own snapshots (its state, its window
 // list, its People list and the semantic tree a screen reader reads), not
 // through glyphs: what is drawn is a picture, and what a person can reach is
 // the snapshot.
 //
 // usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST
+// ROLES_FILE
 // LIVE_HOST is the host the live plane's origin names, which the browsers
 // resolve to this machine: pages dial it through the ingress in front of the
-// plane, with the certificate `/live` told them to pin.
+// plane, with the certificate `/live` told them to pin. ROLES_FILE is the file
+// the deployment mounts as the Lounge's roles file, which this run writes the
+// inviter into.
 // Prints a JSON report and saves what each page showed; exits non-zero when
-// the two people did not meet.
+// the two people did not meet, or when the invitation took more than an
+// invitation.
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, relay, origin, out, liveHost] = process.argv.slice(2);
-if (!site || !relay || !origin || !out || !liveHost) {
-  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST');
+const [site, relay, origin, out, liveHost, rolesFile] = process.argv.slice(2);
+if (!site || !relay || !origin || !out || !liveHost || !rolesFile) {
+  console.error('usage: node people.mjs SITE_URL RELAY_ORIGIN WORKSPACE_ORIGIN OUT_DIR LIVE_HOST ROLES_FILE');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -285,16 +297,19 @@ const rowsUnder = (tab, name) => tab.evaluate(`(() => {
 // what left and arrived over the plane.
 const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.call?.() ?? null)'));
 
-const open = async name => {
+// Another browser, its window the size the desktop draws for before it draws:
+// resizing a presented surface suspends and re-presents it, and keys sent
+// between the two are nobody's.
+const anotherBrowser = async () => {
   const context = await browser.context();
   const tab = await browser.tab({context});
-  // The window is the size the desktop draws for, before it draws: resizing
-  // a presented surface suspends and re-presents it, and keys sent between
-  // the two are nobody's.
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
-  await tab.navigate(site);
-  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, 240_000);
+  return tab;
+};
+// What a browser that reached the desktop leaves with the run: its arrival,
+// the keys reaching it, and its canvas.
+const mounted = async (tab, name) => {
   const arrival = JSON.parse(await tab.evaluate(`JSON.stringify({
     arrival: document.documentElement.dataset.arrival ?? null,
     door: document.documentElement.dataset.door ?? null,
@@ -318,6 +333,57 @@ const open = async name => {
   opened.push({name, tab});
   return {tab, command: mac ? 4 : 2};
 };
+const open = async name => {
+  const tab = await anotherBrowser();
+  await tab.navigate(site);
+  await until(tab, `['done', 'stopped'].includes(document.documentElement.dataset.arrival)`, `${name} arriving`, 240_000);
+  return mounted(tab, name);
+};
+// The invitations a site hands over: `https://<site>/i/<handle>#<key>`, the
+// handle and the key alone, the key never in the part a site's logs see.
+const sealedLink = /^https:\/\/[^/]+\/i\/[A-Za-z0-9_-]{16}#[A-Za-z0-9_-]{43}$/;
+// The page's words over the page, as a person at a link reads them.
+const pageText = tab => tab.evaluate(`(document.body.innerText || '').replace(/\\s+/g, ' ').trim()`).catch(() => '');
+// A person following a link: before anything is mounted, the page says who
+// invited them, to what and as what, and only then offers to join.
+const followLink = async (name, link) => {
+  const tab = await anotherBrowser();
+  await tab.navigate(link);
+  const deadline = Date.now() + 120_000;
+  for (;;) {
+    const card = await pageText(tab);
+    if (card.includes('invites you to')) {
+      writeFileSync(`${out}/${name}-card.txt`, card);
+      const buttons = JSON.parse(await tab.evaluate(
+        `JSON.stringify([...document.querySelectorAll('button')].map(button => button.textContent.trim()))`));
+      return {tab, card, buttons};
+    }
+    if (Date.now() > deadline) {
+      writeFileSync(`${out}/${name}-card.txt`, card);
+      await failed(`${name}'s link showed no invitation: ${card.slice(0, 400)}`, tab);
+    }
+    await sleep(250);
+  }
+};
+// The first semantic node named `name`, once the page shows it.
+const waitFor = async (tab, name, what, timeout = 120_000) => {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const node = JSON.parse(await find(tab, name));
+    if (node) return node;
+    if (Date.now() > deadline) await failed(`${what} never appeared`, tab);
+    await sleep(250);
+  }
+};
+// Every value the desktop's semantic tree carries, as the sheet's link is one.
+const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
+  const out = [];
+  const node = n => { if (n.value) out.push(n.value); (n.children || []).forEach(node); };
+  const walk = n => { if (n.semantics) node(n.semantics); (n.children || []).forEach(walk); };
+  const root = globalThis.tiloMount?.state()?.semantics?.root;
+  if (root) walk(root);
+  return out;
+})())`).then(JSON.parse);
 
 // SwiftShader's WebGPU, as the app SDK's lane runs the bundle: a host GPU in
 // headless Chrome can lose its device mid-run.
@@ -656,10 +722,136 @@ try {
   console.log('ok: hanging up ended the call for both');
   await dump(b.tab, '7-b-hung-up');
 
+  // A person the workspace lets invite, from the page itself: the workspace
+  // declares them one while their page stands open (the roles file the
+  // deployment mounts, which the Lounge takes in again as it changes), and
+  // the bar offers inviting without a reload, as a promotion reaches the
+  // native desk.
+  const offeredBefore = (await snapshot(a.tab)).names.filter(name => name === 'Invite');
+  report.inviteBefore = offeredBefore.length;
+  if (offeredBefore.length) await failed('the bar offered inviting before the workspace allowed it', a.tab);
+  writeFileSync(rolesFile, JSON.stringify({owners: [keptA.userPublicKey], moderators: []}), {mode: 0o644});
+  const allowedAt = Date.now();
+  await waitFor(a.tab, 'Invite', "the bar's invite button");
+  report.inviteAfterMs = Date.now() - allowedAt;
+  console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
+
+  // The page's own sheet, the same one a desk shows: the role a link brings
+  // someone in at, chosen before the link is made.
+  if (!await press(a.tab, 'Invite')) await failed("the bar's invite button could not be pressed", a.tab);
+  await waitFor(a.tab, 'Invite people', 'the invite sheet');
+  if (!await press(a.tab, 'Commenter')) await failed('the invite sheet offers no Commenter part', a.tab);
+  await until(a.tab, `JSON.stringify(globalThis.tiloMount?.state()?.semantics ?? {}).includes('add comments, but cannot edit it')`,
+    "the sheet's chosen role under the choice", 60_000);
+  if (!await press(a.tab, 'Create link')) await failed('the invite sheet offers no Create link', a.tab);
+  const made = await (async () => {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const link = (await nodeValues(a.tab)).find(value => sealedLink.test(value));
+      if (link) return link;
+      if (Date.now() > deadline) {
+        const handed = (await nodeValues(a.tab)).filter(value => /^https?:/.test(value));
+        await failed(`the sheet handed over no short link: ${JSON.stringify(handed)}`, a.tab);
+      }
+      await sleep(250);
+    }
+  })();
+  report.link = made;
+  if (new URL(made).origin !== new URL(site).origin) await failed(`the link is not at this site: ${made}`, a.tab);
+  const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
+  if (long) await failed(`the sheet shows the invitation's own text beside the link: ${long.slice(0, 120)}`, a.tab);
+  console.log(`ok: the sheet made a link a site keeps: handle in the path, key in the fragment (${made})`);
+  await dump(a.tab, '8-a-invite-sheet');
+
+  // The workspace as the invitation describes it, before this person joins:
+  // the name and how many people it has, which the host counts itself.
+  const listedNow = (await directory()).workspaces?.find(workspace => workspace.room === keptA.room);
+  if (!listedNow) await failed('the directory stopped listing the workspace', a.tab);
+  const ownName = (await snapshot(a.tab)).names
+    .find(name => / \(you\): your profile$/.test(name))?.replace(/ \(you\): your profile$/, '') ?? null;
+  if (!ownName) await failed("A's page names no person of its own", a.tab);
+  report.inviter = ownName;
+
+  // Someone else opens the link the sheet handed over, in a browser of their
+  // own: the page says who invited them, to what, how many people are in it
+  // and what the part lets them do — all from the host's verification of the
+  // invitation, not from the link alone.
+  const c = await followLink('C', made);
+  const people = listedNow.members === 1 ? '1 person' : `${listedNow.members} people`;
+  for (const expected of [`${ownName} invites you to`, listedNow.name, people,
+    'Commenter — you can add comments, but not edit shared work.']) {
+    if (!c.card.includes(expected)) {
+      await failed(`the invitation card does not say "${expected}": ${c.card.slice(0, 400)}`, c.tab);
+    }
+  }
+  if (!c.buttons.includes('Join') || !c.buttons.includes('Not now')) {
+    await failed(`the invitation card offers neither Join nor Not now: ${JSON.stringify(c.buttons)}`, c.tab);
+  }
+  report.card = c.card;
+  console.log(`ok: the link says who invited them, where and as what: ${c.card}`);
+  await dump(c.tab, '9-c-invitation-card');
+
+  // Joining is the whole of it: the invitation is its inviter's approval, so
+  // no one in the workspace is offered a chance to let this person in while
+  // they arrive.
+  const pressed = await c.tab.evaluate(`(() => {
+    const card = [...document.querySelectorAll('form.tilo-entry-card')].at(-1);
+    const button = card && [...card.querySelectorAll('button')].find(button => button.textContent.trim() === 'Join');
+    if (button) button.click();
+    return !!button;
+  })()`);
+  if (!pressed) await failed('the invitation card went away before Join', c.tab);
+  const arrivalDeadline = Date.now() + 240_000;
+  let offered = null;
+  for (;;) {
+    offered ??= (await snapshot(a.tab)).names.find(name => /^Let .+ in$/.test(name)) ?? null;
+    const arrival = await c.tab.evaluate(`document.documentElement.dataset.arrival ?? null`).catch(() => null);
+    if (arrival === 'done') break;
+    if (arrival === 'stopped') await failed('the invitation did not take: the page stopped', c.tab);
+    if (Date.now() > arrivalDeadline) await failed('the invitation arriving', c.tab);
+  }
+  if (offered) {
+    await failed(`the page asked its person to let the invitation's person in (${offered}); an invitation is its inviter's approval`, a.tab);
+  }
+  await mounted(c.tab, 'C');
+  const keptC = JSON.parse(await membership(c.tab));
+  report.invited = keptC;
+  if (!keptC?.userPublicKey || keptC.room !== keptA.room) {
+    await failed(`the invitation's person joined ${JSON.stringify(keptC)}, not ${keptA.room}`, c.tab);
+  }
+  if (keptC.userPublicKey === keptA.userPublicKey || keptC.userPublicKey === keptB.userPublicKey) {
+    await failed("the invitation's person is someone who was already here", c.tab);
+  }
+  console.log(`ok: ${keptC.userPublicKey.slice(0, 8)} arrived from the link in A's workspace, with no one letting them in`);
+  await dump(c.tab, '10-c-arrived');
+
+  // The desk each person is in is the desk the new person is on too: A's
+  // People list names them beside B.
+  const rowsAfter = await (async () => {
+    const deadline = Date.now() + 120_000;
+    for (;;) {
+      const rows = await herePeople(a.tab);
+      if (Array.isArray(rows) && rows.length === 2) return rows;
+      if (Date.now() > deadline) {
+        await dump(a.tab, 'timeout-people-invited');
+        await failed(`A's desk does not show the invitation's person beside B: ${JSON.stringify(rows)}`, a.tab);
+      }
+      await sleep(500);
+    }
+  })();
+  report.hereAfter = rowsAfter.map(row => ({id: row.id, user: row.user ?? null, label: row.label}));
+  const invitedRow = rowsAfter.find(row => row.id !== report.presence.a.id);
+  if (!invitedRow) await failed('the two rows A sees are one person', a.tab);
+  if (invitedRow.user && invitedRow.user !== keptC.userPublicKey) {
+    await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
+  }
+  console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
+  await dump(a.tab, '11-a-people-invited');
+
   // Nothing failed in either page.
-  const both = [...a.tab.log, ...b.tab.log];
+  const both = [...a.tab.log, ...b.tab.log, ...c.tab.log];
   const errors = both.filter(line => /^EXC/.test(line) || /panic/i.test(line));
-  report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10)};
+  report.logs = {a: a.tab.log.slice(-10), b: b.tab.log.slice(-10), c: c.tab.log.slice(-10)};
   if (errors.length) failed(`pages reported errors: ${errors.slice(0, 5).join('; ')}`);
 
   // The desk one person arranged is the desk the other shows: neither page's

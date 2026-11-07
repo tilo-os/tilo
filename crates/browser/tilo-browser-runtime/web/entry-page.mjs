@@ -108,6 +108,91 @@ function card(text, choices, name) {
   });
 }
 
+/** What each role lets someone do, in the words the desktop's role chooser
+ * uses (`workspace-settings-role-<role>-preview`), so an invitation says what
+ * it gives, not only its name. */
+const ROLE_WORDS = {
+  owner: 'you can manage people, permissions and settings',
+  moderator: 'you can edit shared work and remove other people’s messages',
+  editor: 'you can view, comment on and edit shared work',
+  commenter: 'you can add comments, but not edit shared work',
+  viewer: 'you can view shared work, but not comment or edit it',
+};
+
+/** The colour an initial is drawn in on `background`, `#rrggbb`: black or
+ * white, whichever has more contrast, by WCAG relative luminance. */
+function readableOn(background) {
+  const channels = [1, 3, 5].map(at => parseInt(background.slice(at, at + 2), 16) / 255)
+    .map(channel => channel <= 0.03928 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+  // Where black and white read alike (contrast 4.58:1 each way).
+  return luminance > 0.179 ? '#101114' : '#ffffff';
+}
+
+/** What an invitation offers, before the person joins: who it is from, the
+ * workspace it is for and how many people are in it, and what the role lets
+ * them do. `inviterColour` is the presence colour of who made it, where the
+ * page has one for them. Resolves to whether they join. */
+function invitationCard(offer, inviterColour) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card tilo-invite';
+    form.dataset.card = 'invite';
+    const inviter = offer.inviter?.name || 'Someone';
+    const who = document.createElement('div');
+    who.className = 'tilo-invite-who';
+    // The picture a person sets is not the workspace's to hand to someone
+    // who is not in it yet; their initial is, as the desktop draws who it
+    // has no picture of — in the colour presence gives them everywhere else
+    // the desktop shows them.
+    const face = document.createElement('span');
+    face.className = 'tilo-invite-face';
+    face.setAttribute('aria-hidden', 'true');
+    face.textContent = [...inviter][0]?.toUpperCase() ?? '?';
+    if (typeof inviterColour === 'string' && /^#[0-9a-f]{6}$/i.test(inviterColour)) {
+      face.style.background = inviterColour;
+      face.style.color = readableOn(inviterColour);
+    }
+    const name = document.createElement('span');
+    name.className = 'tilo-invite-name';
+    name.textContent = inviter;
+    who.append(face, name);
+    const lead = document.createElement('p');
+    lead.className = 'tilo-invite-lead';
+    lead.textContent = 'invites you to';
+    const workspace = document.createElement('p');
+    workspace.className = 'tilo-invite-workspace';
+    workspace.textContent = offer.workspaceName;
+    const place = document.createElement('div');
+    place.className = 'tilo-invite-place';
+    place.append(workspace);
+    if (Number.isInteger(offer.members) && offer.members > 0) {
+      const people = document.createElement('p');
+      people.className = 'tilo-invite-people';
+      people.textContent = offer.members === 1 ? '1 person' : `${offer.members} people`;
+      place.append(people);
+    }
+    const role = typeof offer.role === 'string' && offer.role ? offer.role : 'member';
+    const roleLine = document.createElement('p');
+    roleLine.className = 'tilo-invite-role';
+    const roleName = document.createElement('strong');
+    roleName.textContent = role[0].toUpperCase() + role.slice(1);
+    roleLine.append(roleName, ` — ${ROLE_WORDS[role] ?? 'you join the workspace'}.`);
+    const actions = document.createElement('div');
+    actions.className = 'tilo-entry-actions';
+    for (const [label, join] of [['Join', true], ['Not now', false]]) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = label;
+      if (join) button.className = 'tilo-entry-primary';
+      button.addEventListener('click', () => { form.remove(); resolve(join); });
+      actions.append(button);
+    }
+    form.append(who, lead, place, roleLine, actions);
+    document.body.append(form);
+  });
+}
+
 /** The person's name, asked over the page; resolves to what `save(typed)`
  * kept, or `null` when they keep the one they have. What `save` throws is
  * said in the form, which stays open. */
@@ -900,8 +985,9 @@ export async function startEntryPage({mode}) {
     confirmInvitation: offer => {
       workspaceName = offer.workspaceName || workspaceName;
       invitedTo = offer.workspaceName || null;
-      return card(`${offer.inviter?.name ?? 'Someone'} invites you to “${offer.workspaceName}” as ${offer.role}.`,
-        [['Join', true], ['Not now', false]]);
+      const inviter = offer.inviter?.userPublicKey;
+      return invitationCard(offer,
+        typeof inviter === 'string' ? runtime?.presenceColor?.(inviter) : undefined);
     },
     joinWorkspace: async options => {
       const identity = await browserPerson();
@@ -1123,15 +1209,22 @@ export async function startEntryPage({mode}) {
     };
     hostActions?.('machine').setHostActions([SET_UP]);
     const person = () => page.peer?.userPublicKey ?? currentIdentity()?.userPublicKey;
-    const workspaceLink = (origin, room) => page.link.format({mode: 'desktop', target: {scope: {kind: 'room', host: origin, room}}});
     // Only a desktop lists host actions and shows banners.
     workspaceActions = hostActions ? createWorkspaceActions({
       peer: page.peer,
       machines: () => (person() ? ownedHosts(person()) : []),
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
-      inviteLink: invitation => {
-        const url = workspaceLink(page.peer.origin, page.peer.workspace);
-        return `${url}${new URL(url).hash.includes('?') ? '&' : '?'}invite=${invitation}`;
+      // The invitation's short link, sealed onto this site's shelf, as the
+      // sheet makes it: the site keeps ciphertext it cannot read and the key
+      // rides in the link's fragment. A shelf that answers with nothing
+      // leaves the invitation's own text, which joins just the same.
+      inviteLink: async invitation => {
+        try {
+          return await runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation);
+        } catch (error) {
+          console.warn('invitation not shelved:', error?.message ?? error);
+          return invitation;
+        }
       },
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});

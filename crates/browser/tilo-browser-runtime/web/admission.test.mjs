@@ -11,7 +11,8 @@ function doors(overrides = {}) {
   return {calls, deps: {
     workspaceAt: () => null,
     enterViaHost: record('enterViaHost', {admission: true, room: room.room}),
-    inspectInvitation: record('inspectInvitation', {workspaceName: 'Reading group', role: 'editor', room: room.room}),
+    openInvitation: record('openInvitation', (site, secret) => ({invitation: `opened ${secret}`})),
+    inspectInvitation: record('inspectInvitation', {workspaceName: 'Reading group', role: 'editor', room: room.room, members: 4}),
     confirmInvitation: record('confirmInvitation', true),
     joinWorkspace: record('joinWorkspace', {joined: true}),
     readAccounts: record('readAccounts', []),
@@ -106,16 +107,45 @@ test('a person let in through the door is not taken to another workspace on the 
   assert.ok(disposed);
 });
 
-test('an invitation is inspected and confirmed before it is redeemed', async () => {
+test('an invitation is opened, inspected and confirmed before it is redeemed', async () => {
   const {calls, deps} = doors();
   const {peer} = await admit({scope: room, secrets: {invite: 'AAEC', token: 'tok'}, deps});
   assert.deepEqual(peer, {joined: true});
-  assert.deepEqual(calls.map(([name]) => name), ['inspectInvitation', 'confirmInvitation', 'joinWorkspace']);
-  assert.equal(calls[2][1].invitation, 'AAEC');
-  assert.equal(calls[2][1].admissionToken, 'tok');
+  assert.deepEqual(calls.map(([name]) => name), ['openInvitation', 'inspectInvitation', 'confirmInvitation', 'joinWorkspace']);
+  assert.equal(calls[0][1], room.host, 'the shelf is the workspace host’s');
+  assert.equal(calls[0][2], 'AAEC', 'the fragment is the secret');
+  assert.equal(calls[3][1].invitation, 'opened AAEC');
+  assert.equal(calls[3][1].admissionToken, 'tok');
   const declined = doors({confirmInvitation: async () => false});
   await assert.rejects(admit({scope: room, secrets: {invite: 'AAEC'}, deps: declined.deps}), {code: 'declined'});
   assert.ok(!declined.calls.some(([name]) => name === 'joinWorkspace'));
+});
+
+test('a link a site hands over opens at the site, and asks the host the invitation names', async () => {
+  const sealed = {kind: 'sealed', site: 'https://tilo.coffee', handle: 'abcdefghijklmnop'};
+  const key = 'A'.repeat(43);
+  const asked = [];
+  const {calls, deps} = doors({
+    openInvitation: async (site, secret) => {
+      asked.push([site, secret]);
+      return {invitation: 'the invitation', host: 'https://lounge.tilo.coffee'};
+    },
+  });
+  assert.deepEqual(await admit({scope: sealed, secrets: {invite: key}, deps}), {peer: {joined: true}});
+  assert.deepEqual(asked, [['https://tilo.coffee', `abcdefghijklmnop${key}`]], 'the site keeps it; the key never leaves the page');
+  assert.deepEqual(calls.map(([name]) => name), ['inspectInvitation', 'confirmInvitation', 'joinWorkspace']);
+  assert.equal(calls[0][1], 'https://lounge.tilo.coffee', 'the invitation is read at the host it admits into');
+  assert.equal(calls[2][1].origin, 'https://lounge.tilo.coffee');
+  // A shelf of a build that named no host: the site's home workspace's host.
+  const unnamed = doors({openInvitation: async () => ({invitation: 'x'})});
+  await admit({scope: sealed, secrets: {invite: key}, home: commons, deps: unnamed.deps});
+  assert.equal(unnamed.calls.find(([name]) => name === 'joinWorkspace')[1].origin, room.host);
+  // A shelf that does not answer, or a key that does not open it, is never
+  // acted on: nothing is inspected, and the words are the ones a spent
+  // invitation gets.
+  const gone = doors({openInvitation: async () => { throw Object.assign(new Error('410'), {code: 'directory-error-invitation-gone'}); }});
+  await assert.rejects(admit({scope: sealed, secrets: {invite: key}, deps: gone.deps}), {code: 'invitation-unusable'});
+  assert.ok(!gone.calls.some(([name]) => name === 'inspectInvitation'));
 });
 
 test('an invitation for another workspace than the link names is refused', async () => {

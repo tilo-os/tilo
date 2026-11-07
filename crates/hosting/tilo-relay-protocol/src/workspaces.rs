@@ -442,8 +442,9 @@ pub enum WorkspacesRequest {
         workspace: String,
         /// The confirmed entry.
         wait_list_entry: [u8; 32],
-        /// The invitation's web link: the workspace's own door, with the signed
-        /// invitation in its `invite` query parameter.
+        /// The invitation's web link: the site's short link,
+        /// `https://<site>/i/<handle>#<key>`, which keeps the invitation as
+        /// ciphertext the site cannot read.
         link: String,
     },
     /// Share one record, or one item of it, with `workspace`'s members, as the
@@ -599,6 +600,9 @@ pub enum JoinReply {
         expires_at_ns: u64,
         /// Who sent it, when the invitation names them.
         inviter: Option<Inviter>,
+        /// How many people the workspace has, so the invitation says what
+        /// someone joins, not only where.
+        members: usize,
     },
     /// The canonical encoding of the challenge to sign; it decodes as a
     /// [`JoinChallengeView`].
@@ -669,17 +673,37 @@ pub fn contact_address(text: &str) -> Result<String, &'static str> {
 pub const MAX_INVITATION_LINK: usize = 16 * 1024;
 
 /// Whether `link` is an invitation on the web entry `door` (a URL ending
-/// in `/`): under it, with an `invite=` parameter, no longer than
-/// [`MAX_INVITATION_LINK`] and without spaces or control characters. Only
-/// such a link is mailed to an address on a wait list for a member.
+/// in `/`): under it, either as an `invite=` parameter or as the site's own
+/// short invitation (`i/<handle>#<key>`, the key in the fragment), no longer
+/// than [`MAX_INVITATION_LINK`] and without spaces or control characters.
+/// Only such a link is mailed to an address on a wait list for a member.
 #[must_use]
 pub fn invitation_on_door(door: &str, link: &str) -> bool {
     door.ends_with('/')
         && link.len() <= MAX_INVITATION_LINK
         && link
             .strip_prefix(door)
-            .is_some_and(|rest| rest.contains("invite="))
+            .is_some_and(|rest| rest.contains("invite=") || short_invitation(rest))
         && !link.chars().any(|c| c.is_whitespace() || c.is_control())
+}
+
+/// Whether `rest`, a link minus its door, is the site's short invitation:
+/// `i/<handle>#<key>`, both in the site's own alphabet and nothing else.
+fn short_invitation(rest: &str) -> bool {
+    let Some((handle, key)) = rest
+        .strip_prefix("i/")
+        .and_then(|rest| rest.split_once('#'))
+    else {
+        return false;
+    };
+    let named = |part: &str, longest: usize| {
+        !part.is_empty()
+            && part.len() <= longest
+            && part
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    };
+    named(handle, 64) && named(key, 128)
 }
 
 /// What tells two addresses ([`contact_address`]) apart: lowercased, so
@@ -737,6 +761,29 @@ mod tests {
         assert_eq!(digest, join_proof_digest(b"challenge"));
         assert_ne!(digest, join_proof_digest(b"challengf"));
         assert_ne!(digest, *blake3::hash(b"challenge").as_bytes());
+    }
+
+    #[test]
+    fn a_mailed_invitation_is_on_the_door() {
+        let door = "https://tilo.example/";
+        assert!(invitation_on_door(
+            door,
+            "https://tilo.example/#/room?invite=signed-invitation"
+        ));
+        assert!(invitation_on_door(
+            door,
+            "https://tilo.example/i/AbCdEfGhIjKlMnOp#s3cr3tKeyS3cr3tKey"
+        ));
+        for elsewhere in [
+            "https://tilo.example/i/#",
+            "https://tilo.example/i/handle",
+            "https://tilo.example/i/handle#",
+            "https://tilo.example//i/handle#key",
+            "https://tilo.example/i/han dle#key",
+            "https://elsewhere.example/i/handle#key",
+        ] {
+            assert!(!invitation_on_door(door, elsewhere), "{elsewhere:?}");
+        }
     }
 
     #[test]

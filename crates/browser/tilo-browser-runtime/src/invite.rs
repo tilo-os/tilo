@@ -211,7 +211,13 @@ impl PageInvite {
         );
         if self.content.is_none() || self.built.as_ref() != Some(&built) {
             self.built = Some(built);
-            self.content = Some(sheet::sheet(&shown, &self.choosing, &self.link, &self.ask));
+            self.content = Some(sheet::sheet(
+                &shown,
+                &self.choosing,
+                &self.link,
+                &self.ask,
+                Some(self.seat.presentation()),
+            ));
             self.replaced = true;
             changed = true;
         }
@@ -327,13 +333,18 @@ impl PageInvite {
         self.made.borrow_mut().show(created, shelving);
     }
 
-    /// Leave the invitation on the shelf of the site hosting this page's
-    /// workspace: the link then carries the handle and the key.
+    /// Leave the invitation on the shelf of the site this page comes from: the
+    /// link then carries the handle and the key, and opens this page when
+    /// someone follows it.
     fn shelve(&self, invite: &str, invitation: Vec<u8>, expires_at_ns: u64) -> bool {
         let Some(site) = self.site() else {
             return false;
         };
-        match self.store.shelve(invite, invitation, expires_at_ns, &site) {
+        let host = self.config.as_ref().map(|config| config.origin.as_str());
+        match self
+            .store
+            .shelve(invite, invitation, expires_at_ns, &site, host)
+        {
             Ok(()) => true,
             Err(error) => {
                 web_sys::console::warn_1(&format!("invitation not shelved: {error}").into());
@@ -343,52 +354,17 @@ impl PageInvite {
     }
 
     /// Take what the shelf answered: the link the sheet shows becomes the
-    /// short one, or stays the invitation's own text when the site kept
-    /// nothing.
+    /// short one the site answered with, or stays the invitation's own text
+    /// when the site kept nothing.
     fn take_shelved(&self) -> bool {
         let mut changed = false;
         for (invite, shelved) in self.store.take_shelved() {
             changed = true;
-            let link = shelved
-                .ok()
-                .and_then(|shelved| tilo_workspace_join::sealed::parse_link(&shelved.link))
-                .and_then(|sealed| match self.page_link(&sealed.ref_text()) {
-                    Ok(link) => Some(link),
-                    Err(reason) => {
-                        web_sys::console::warn_1(&format!("invitation link: {reason}").into());
-                        None
-                    }
-                });
-            self.made.borrow_mut().shelved(&invite, link);
+            self.made
+                .borrow_mut()
+                .shelved(&invite, shelved.ok().map(|shelved| shelved.link));
         }
         changed
-    }
-
-    /// The link a person hands over from this page: the page, the workspace
-    /// and its host, and the secret that admits whoever opens it.
-    fn page_link(&self, secret: &str) -> Result<String, String> {
-        use tilo_reference::link::{
-            HostOrigin, Link, LinkSecrets, LinkTarget, Mode, Scope, Secret, WebEntry,
-        };
-        let config = self.config.as_ref().ok_or(NO_WORKSPACE)?;
-        let entry = WebEntry::new(&config.base).map_err(|error| error.to_string())?;
-        let host = HostOrigin::new(&config.origin).map_err(|error| error.to_string())?;
-        let id = uuid::Uuid::parse_str(&config.workspace).map_err(|error| error.to_string())?;
-        let invite = Secret::new(secret).map_err(|error| error.to_string())?;
-        Link {
-            mode: Mode::Desktop,
-            target: LinkTarget::new(Scope::Room {
-                host,
-                id,
-                slug: None,
-            }),
-            secrets: LinkSecrets {
-                invite: Some(invite),
-                ..LinkSecrets::default()
-            },
-        }
-        .to_url(&entry)
-        .map_err(|error| error.to_string())
     }
 
     /// Make a link, through the host that governs this workspace.
@@ -538,11 +514,11 @@ impl PageInvite {
             .filter(|workspace| !workspace.is_empty())
     }
 
-    /// The site whose shelf keeps the invitation: the one hosting the
-    /// workspace.
+    /// The site whose shelf keeps the invitation: the one this page comes
+    /// from, so the link opens it.
     fn site(&self) -> Option<url::Url> {
         let config = self.config.as_ref()?;
-        let origin = config.origin.trim().trim_end_matches('/');
+        let origin = config.base.trim().trim_end_matches('/');
         tilo_workspace_directory::web_origin(&format!("{origin}/")).ok()
     }
 

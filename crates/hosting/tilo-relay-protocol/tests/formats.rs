@@ -211,14 +211,32 @@ fn json_encodings_are_pinned() {
         sealed: "c2VhbGVk".to_string(),
         expires_at_ns: 1_700_000_000_000_000_000,
         delete: "ZGVsZXRl".to_string(),
+        host: Some("https://host.example".to_string()),
     };
     assert_json(
         &stored,
+        r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl","host":"https://host.example"}"#,
+    );
+    // What a build that named no host left, and what it answered with, still
+    // reads.
+    assert_json(
+        &SealedInvitations::Stored {
+            host: None,
+            ..stored
+        },
         r#"{"sealed":"c2VhbGVk","expiresAtNs":1700000000000000000,"delete":"ZGVsZXRl"}"#,
     );
     assert_json(
         &SealedInvitations::Fetched {
             sealed: "c2VhbGVk".to_string(),
+            host: Some("https://host.example".to_string()),
+        },
+        r#"{"sealed":"c2VhbGVk","host":"https://host.example"}"#,
+    );
+    assert_json(
+        &SealedInvitations::Fetched {
+            sealed: "c2VhbGVk".to_string(),
+            host: None,
         },
         r#"{"sealed":"c2VhbGVk"}"#,
     );
