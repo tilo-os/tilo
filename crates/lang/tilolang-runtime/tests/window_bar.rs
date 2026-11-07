@@ -105,6 +105,17 @@ mod cases {
             .collect()
     }
 
+    /// The field that edits the title of what the window shows: the one it marks as the title,
+    /// whatever words it puts in its placeholder. A page edits one title.
+    fn title_field(tree: &UiNode) -> &UiNode {
+        let titled: Vec<&UiNode> = of_kind(tree, "ui.TextInput")
+            .into_iter()
+            .filter(|field| field.props.get("title") == Some(&Value::Int(1)))
+            .collect();
+        assert_eq!(titled.len(), 1, "the page edits its title:\n{}", dump(tree));
+        titled[0]
+    }
+
     /// The text of a node's property.
     fn text_of(node: &UiNode, prop: &str) -> String {
         node.props
@@ -403,14 +414,13 @@ mod cases {
         let window = w.window("task_page", &task);
         let tree = window.tree();
         one_bar(tree);
-        let title = nodes_with(tree, "ui.TextInput", "placeholder", "Title");
-        assert_eq!(title.len(), 1, "the page edits its title:\n{}", dump(tree));
-        let path = path_to(tree, &title[0].key).expect("the title stands in the tree");
+        let title = title_field(tree);
+        let path = path_to(tree, &title.key).expect("the title stands in the tree");
         let parent = path[path.len() - 2];
         let at = parent
             .children
             .iter()
-            .position(|child| child.key == title[0].key)
+            .position(|child| child.key == title.key)
             .expect("the title is its parent's child");
         let more = parent
             .children
@@ -512,10 +522,7 @@ view quiet_page(q: Quiet) {
         );
         let window = w.window("card_page", &card);
         let tree = window.tree();
-        let title = of_kind(tree, "ui.TextInput")
-            .into_iter()
-            .find(|field| field.props.get("title") == Some(&Value::Int(1)))
-            .unwrap_or_else(|| panic!("the page edits its title:\n{}", dump(tree)));
+        let title = title_field(tree);
         let path = path_to(tree, &title.key).expect("the title stands in the tree");
         let line = path[path.len() - 2];
         assert_eq!(
