@@ -376,11 +376,19 @@ fn the_session_answers_every_shortcut_of_its_side() {
             ShortcutAction::ShortcutHelp => {
                 until(&mut session, "the guide", |session| guide_up(session));
             }
-            ShortcutAction::QuickSettings
-            | ShortcutAction::Notifications
-            | ShortcutAction::ClipboardHistory => {
+            ShortcutAction::QuickSettings | ShortcutAction::ClipboardHistory => {
                 until(&mut session, "quick settings", |session| {
                     session.quick_settings_open()
+                });
+            }
+            // The bell opens the one list of notifications: the centre over
+            // the desk, not a page of quick settings.
+            ShortcutAction::Notifications => {
+                until(&mut session, "the notification centre", |session| {
+                    session
+                        .accessible_labels()
+                        .iter()
+                        .any(|label| label == "Retained notifications")
                 });
             }
             ShortcutAction::AskAgent | ShortcutAction::SaySomething => {

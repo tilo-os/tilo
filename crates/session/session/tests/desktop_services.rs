@@ -320,16 +320,17 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         second
     });
     let centre = until(&mut session, |session| {
-        let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;
-        let rows = centre.get("rows")?.as_array()?;
-        rows.iter()
-            .any(|row| row.get("id").and_then(Value::as_u64) == Some(u64::from(second)))
-            .then_some(centre)
+        session
+            .notifications()
+            .log()
+            .history_entry(u64::from(second))
+            .is_some()
+            .then_some(())
     });
     assert!(
         centre.is_some(),
         "the centre keeps the notification the person opens: {:?}",
-        session.read(tilo_session::NOTIFICATIONS_RESOURCE)
+        session.notifications().log().history().len()
     );
     let mut invoked = runtime.block_on(async {
         proxy
@@ -489,16 +490,17 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
         session.banners().shown().banners
     );
     let kept = until(&mut session, |session| {
-        let centre = session.read(tilo_session::NOTIFICATIONS_RESOURCE)?;
-        let rows = centre.get("rows")?.as_array()?;
-        rows.iter()
-            .any(|row| row.get("id").and_then(Value::as_u64) == Some(id))
-            .then_some(centre)
+        session
+            .notifications()
+            .log()
+            .history_entry(id)
+            .is_some()
+            .then_some(())
     });
     assert!(
         kept.is_some(),
         "the centre keeps what left the stack: {:?}",
-        session.read(tilo_session::NOTIFICATIONS_RESOURCE)
+        session.notifications().log().history().len()
     );
     runtime.block_on(async {
         drop(app);

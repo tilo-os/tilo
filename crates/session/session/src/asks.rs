@@ -630,10 +630,10 @@ impl Shared {
         match action {
             ShortcutAction::QuickSettings => self.toggle_quick_settings(),
             // The bell opens the one list of notifications: the centre over
-            // the desk, which a press on it opens and another closes.
+            // the desk, whose own Back (or Escape) closes it.
             ShortcutAction::Notifications => {
                 invocations
-                    .push(Invocation::new(DESK_RESOURCE, "show-surface").with("surface", "centre"));
+                    .push(Invocation::new(CHROME_RESOURCE, "notifications").with("open", true));
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();
