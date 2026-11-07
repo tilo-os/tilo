@@ -175,7 +175,7 @@ fn the_feed_lists_newest_first_and_a_range_selects_by_id() {
     let mut pane = pane();
     pane.refresh(&mut tree);
     let feed = pane.serve_feed(&wire::FeedQuery::default(), &tree);
-    assert_eq!(feed.total, pane.entries().len());
+    assert_eq!(feed.total, pane.timeline.entries().len());
     assert!(feed.entries.len() >= 2);
     assert!(
         feed.entries
@@ -222,7 +222,7 @@ fn a_deep_link_is_offered_until_an_app_shows_it() {
     let (mut tree, _) = workspace_a_peer_changed();
     let mut pane = pane();
     pane.refresh(&mut tree);
-    let entry = pane.entries()[0].id;
+    let entry = pane.timeline.entries()[0].id;
     pane.focus_deep_link(&crate::activity::ActivityDeepLink {
         entry_id: Some(*entry.as_bytes()),
         ..Default::default()

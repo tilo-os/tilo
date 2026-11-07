@@ -205,7 +205,6 @@ activity-view-catch-up = Neues
 activity-view-tasks = Aufgaben
 activity-view-explore = Verlauf
 activity-view-replay = Wiedergabe
-activity-title-catch-up = Während du weg warst
 activity-title-whats-new = Neues
 activity-title-explore = Arbeitsbereich-Aktivität
 activity-title-replay = Arbeitsbereich wiedergeben
@@ -281,7 +280,6 @@ activity-history-gone = Diese Änderungen sind nicht mehr im Verlauf.
 activity-served-personal-only = Das kann nur die Person an diesem Gerät.
 activity-served-read-only = Dieser Desktop zeigt den Verlauf, kann ihn aber nicht ändern.
 activity-served-unavailable = Der Verlauf dieses Arbeitsbereichs wird hier nicht aufbewahrt.
-activity-summary-on-device = Zusammenfassung auf dem Gerät
 activity-session-move-newer = 1 Aktion neuer
 activity-session-move-older = 1 Aktion älter
 activity-more-sessions = Weitere Arbeitssitzungen…
@@ -384,7 +382,6 @@ activity-replay-position = Prüfpunkt { $position } von { $total } · { $when }
 activity-replay-no-workspace = Der Arbeitsbereich existierte zu diesem Prüfpunkt nicht
 activity-replay-empty-window = Leeres Fenster
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
-activity-presence-trail = Anwesenheitsverlauf
 workspace-create-task = { $manual ->
     [true] Aufgabe „{ $title }“ zum Selbermachen angelegt
    *[false] Aufgabe „{ $title }“ angelegt

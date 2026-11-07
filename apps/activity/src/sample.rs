@@ -175,10 +175,6 @@ fn summary(caught_up: bool) -> wire::Summary {
     wire::Summary {
         workspace: "Launch".to_owned(),
         briefs,
-        narrative: (!caught_up).then(|| {
-            "The press release is nearly done; the venue changed, so the invitations need the new address."
-                .to_owned()
-        }),
         resume: Some(wire::Resume {
             target: wire::Target {
                 app_id: Some("so.tilo.notes".to_owned()),
@@ -191,7 +187,6 @@ fn summary(caught_up: bool) -> wire::Summary {
             app: Some("Notes".to_owned()),
             at_ms: minutes_ago_ms(1560),
         }),
-        away: !caught_up,
         sources_available: true,
         sources: Vec::new(),
         pending: false,
@@ -292,10 +287,6 @@ fn replay() -> wire::Replay {
                     width_permille: 400,
                 },
             ],
-        }],
-        pointers: vec![wire::ReplayPointer {
-            name: "Grace".to_owned(),
-            rgb: [70, 150, 110],
         }],
     };
     wire::Replay {

@@ -91,7 +91,6 @@ mod native_history {
         let (mut snapshot, _written, authors) = native_history();
         let mut pane = native_pane();
         crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.set_view(ActivityView::Explore);
         pane.refresh(&mut snapshot);
 
         let rows: Vec<String> = pane
@@ -104,11 +103,13 @@ mod native_history {
             "the rename is what changed in the workspace: {rows:?}"
         );
         assert!(
-            pane.entries()
+            pane.timeline
+                .entries()
                 .iter()
                 .any(|entry| entry.author.name == "Grace"),
             "who changed it is named: {:?}",
-            pane.entries()
+            pane.timeline
+                .entries()
                 .iter()
                 .map(|entry| entry.author.name.clone())
                 .collect::<Vec<_>>()
@@ -125,15 +126,14 @@ mod native_history {
         let (mut snapshot, written, authors) = native_history();
         let mut pane = native_pane();
         crate::history_log::register_authors(pane.authors_mut(), &authors, &|_| None);
-        pane.set_view(ActivityView::Explore);
         pane.refresh(&mut snapshot);
 
         // The rows are oldest first: the newest is Ada closing Notes, so the
         // one before it is the version with the window still open.
-        let listed = pane.entries().len();
+        let listed = pane.timeline.entries().len();
         let before_close = listed
             .checked_sub(2)
-            .and_then(|older| pane.entries().get(older))
+            .and_then(|older| pane.timeline.entries().get(older))
             .map(|entry| entry.id)
             .expect("a version before the close");
         let arguments =
@@ -162,7 +162,7 @@ mod native_history {
             "the window Ada closed is back"
         );
         assert!(
-            pane.entries().len() > listed,
+            pane.timeline.entries().len() > listed,
             "the restore is a new change on top, not a rewind"
         );
     }

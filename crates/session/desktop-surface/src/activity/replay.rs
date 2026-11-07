@@ -1,6 +1,6 @@
 use super::ActivityTree;
 use super::pane::{WorkspaceActivityPane, WorkspaceScope};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use tilo_sort::CompactSort as _;
 use ui::time::SystemTime;
 use ui::widget::{HistoryEntry, HistoryEntryId};
@@ -24,14 +24,6 @@ pub(super) struct WorkspaceReplayFrame {
     pub(super) summary: String,
     pub(super) timestamp: SystemTime,
     pub(super) workspaces: Vec<ReplayWorkspace>,
-    pub(super) pointers: Vec<ReplayPointer>,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct ReplayPointer {
-    pub(super) name: String,
-    pub(super) color: (u8, u8, u8),
-    pub(super) desktop_space: bool,
 }
 
 /// What the desktop looked like at one history entry: every workspace's
@@ -71,11 +63,6 @@ impl WorkspaceActivityPane {
         ordered.compact_sort_by_key(|entry| entry.timestamp);
         let skip = ordered.len().saturating_sub(REPLAY_FRAMES);
         let mut baseline: Option<_> = None;
-        let retained_pointers: HashMap<HistoryEntryId, Vec<ReplayPointer>> = self
-            .replay_frames
-            .iter()
-            .map(|frame| (frame.entry_id, frame.pointers.clone()))
-            .collect();
         let mut checkpoints = std::mem::take(&mut self.replay_checkpoints);
         let mut frames = Vec::with_capacity(ordered.len().min(REPLAY_FRAMES));
         for entry in ordered.into_iter().skip(skip) {
@@ -105,10 +92,6 @@ impl WorkspaceActivityPane {
                 summary: entry.summary,
                 timestamp: entry.timestamp,
                 workspaces,
-                pointers: retained_pointers
-                    .get(&entry.id)
-                    .cloned()
-                    .unwrap_or_default(),
             });
         }
         // Another workspace's entries stay: switching back replays them

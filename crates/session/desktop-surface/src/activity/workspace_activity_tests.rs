@@ -100,7 +100,13 @@ mod workspace_activity {
         pane.begin_view(tree.active.raw());
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
-        pane.set_period(Period::AllTime);
+        pane.serve_feed(
+            &tilo_actions::remote::workspace_activity::FeedQuery {
+                period: tilo_actions::remote::workspace_activity::Period::AllTime,
+                ..Default::default()
+            },
+            &tree,
+        );
         assert!(pane.replay_frames.len() >= 2);
         let tab_counts: Vec<usize> = pane
             .replay_frames
@@ -118,28 +124,9 @@ mod workspace_activity {
             tab_counts.windows(2).any(|pair| pair[0] != pair[1]),
             "causal forks must expose a changing real layout: {tab_counts:?}"
         );
-        pane.set_view(ActivityView::Replay);
         assert_eq!(pane.serve_replay().frames.len(), pane.replay_frames.len());
-        pane.set_author_filter(Some("absent".into()));
-        pane.set_author_filter(None);
-        let mut presence = PresenceCtx::empty();
-        let ada = ui::permissions::UserId("ada".into());
-        presence.names.insert(ada.clone(), "Ada".into());
-        presence.set_pointer(
-            &ui::presence::PresenceKey::desktop_pointer("design-workspace"),
-            ada,
-            (420., 260.),
-        );
-        pane.observe_replay_presence(&presence);
-        let pointer = pane
-            .replay_frames
-            .last()
-            .and_then(|frame| frame.pointers.first())
-            .expect("session presence is retained against durable checkpoint");
-        assert_eq!(pointer.name, "Ada");
-        assert!(pointer.desktop_space);
         pane.finish_view(tree.active.raw());
-        assert!(!pane.replay_is_playing());
+        assert!(!pane.replay_playing);
         assert_eq!(tree.doc.get_heads(), heads_before);
         assert_eq!(
             records
@@ -177,9 +164,10 @@ mod workspace_activity {
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
         assert!(
-            !pane.entries().is_empty(),
+            !pane.timeline.entries().is_empty(),
             "expected a feed-visible rename, got {:?}",
-            pane.entries()
+            pane.timeline
+                .entries()
                 .iter()
                 .map(|e| e.summary.as_str())
                 .collect::<Vec<_>>()
@@ -187,7 +175,8 @@ mod workspace_activity {
         pane.timeline.set_selection(Some((0, 0)));
         assert!(!pane.timeline.begin_naming_selection());
         let heads = tree.doc.get_heads();
-        assert!(!pane.revert_to(&mut tree, &pane.entries()[0].id.clone()));
+        let first = pane.timeline.entries()[0].id;
+        assert!(!pane.restore_at(&mut tree, &first));
         assert_eq!(tree.doc.get_heads(), heads);
         pane.set_host(Rc::new(Enabled));
         assert!(pane.timeline.begin_naming_selection());
@@ -212,13 +201,18 @@ mod workspace_activity {
         tree.doc.commit_with(CommitOptions::default().with_time(7));
         let mut pane = WorkspaceActivityPane::new();
         pane.refresh(&mut tree);
-        assert!(pane.entries().iter().any(|entry| entry.id == broken_id));
+        assert!(
+            pane.timeline
+                .entries()
+                .iter()
+                .any(|entry| entry.id == broken_id)
+        );
         assert!(
             !pane
                 .replay_frames
                 .iter()
                 .any(|frame| frame.entry_id == broken_id)
         );
-        assert_eq!(pane.replay_unavailable_checkpoints(), 1);
+        assert_eq!(pane.replay_unavailable, 1);
     }
 }

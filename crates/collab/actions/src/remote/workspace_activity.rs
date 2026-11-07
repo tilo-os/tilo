@@ -392,13 +392,8 @@ pub struct Summary {
     pub workspace: String,
     /// Newest first.
     pub briefs: Vec<Brief>,
-    /// The briefs told in a sentence by a model on this device.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub narrative: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume: Option<Resume>,
-    /// Whether these are the changes made while the reader was away.
-    pub away: bool,
     /// Whether morning sources can be chosen here.
     pub sources_available: bool,
     pub sources: Vec<Source>,
@@ -425,14 +420,6 @@ pub struct ReplayWorkspace {
     pub groups: Vec<ReplayGroup>,
 }
 
-/// Someone's pointer as it was.
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ReplayPointer {
-    pub name: String,
-    pub rgb: [u8; 3],
-}
-
 /// The layout after one change.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -442,7 +429,6 @@ pub struct Frame {
     pub summary: String,
     pub at_ms: i64,
     pub workspaces: Vec<ReplayWorkspace>,
-    pub pointers: Vec<ReplayPointer>,
 }
 
 /// The workspace's layout at each recent change.

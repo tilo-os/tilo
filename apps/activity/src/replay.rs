@@ -208,26 +208,6 @@ fn frame_view(frame: &wire::Frame, index: usize, total: usize, note: Option<&str
             vec![arrangement(workspace)],
         )));
     }
-    if !frame.pointers.is_empty() {
-        let rows = frame
-            .pointers
-            .iter()
-            .enumerate()
-            .map(|(index, pointer)| {
-                Box::new(
-                    ListRow::new(
-                        format!("activity-replay-present-{index}"),
-                        pointer.name.clone(),
-                    )
-                    .avatar(pointer.name.clone(), pointer.name.clone()),
-                ) as Element
-            })
-            .collect();
-        parts.push(Box::new(Section::titled(
-            tr("activity-presence-trail"),
-            rows,
-        )));
-    }
     if let Some(note) = note {
         parts.push(Box::new(Text::new(note).dimmed()));
     }

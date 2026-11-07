@@ -38,8 +38,8 @@ use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_desktop_surface::HistorySource;
 use tilo_desktop_surface::activity::describer::{Describer, Job};
 use tilo_desktop_surface::activity::{
-    ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, WorkspaceDeparture,
-    WorkspaceSeenFrontier, morning,
+    ActivityHost, ActivitySnapshot, DetachedRecordHistory, HistoryOrigin, WorkspaceSeenFrontier,
+    morning,
 };
 use tilo_desktop_surface::history_log;
 use tilo_desktop_surface::session::{ActivityRequests, activity_requests};
@@ -757,14 +757,6 @@ impl ActivityHost for NativeActivityHost {
 
     fn save_frontiers(&self, frontiers: &HashMap<u64, WorkspaceSeenFrontier>) {
         self.maps.save("seen_frontiers", frontiers);
-    }
-
-    fn load_departures(&self) -> HashMap<u64, WorkspaceDeparture> {
-        self.maps.map("departures")
-    }
-
-    fn save_departures(&self, departures: &HashMap<u64, WorkspaceDeparture>) {
-        self.maps.save("departures", departures);
     }
 
     fn mutations_available(&self) -> bool {
