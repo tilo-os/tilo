@@ -166,6 +166,11 @@ pub struct PlanContext<'a> {
     /// origin — the network a window and the tilolang host never have — and
     /// the app's runtime runs that origin's connector there.
     pub connector: Option<&'a str>,
+    /// The resource address the session's document host publishes for this
+    /// app, when it serves the app's model: whether the app launches hosting
+    /// follows from that, and no per-app code says otherwise
+    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+    pub hosted: Option<&'a str>,
 }
 
 impl PlanContext<'_> {
@@ -328,6 +333,12 @@ impl Planned {
             // The window's instance: the id of the tab it opens in, which
             // its continuation reports are addressed by.
             env.insert("TILO_CONTINUITY_INSTANCE".to_owned(), instance.to_string());
+        }
+        if let Some(hosted) = context.hosted {
+            // The session's document host keeps this app's record: its
+            // process opens none, and reads the reading published here over
+            // the connection the launcher made it (`one-app-model.md` §4).
+            env.insert("TILO_HOSTED_RESOURCE".to_owned(), hosted.to_owned());
         }
         // The launcher resolves a package's services against
         // `$XDG_RUNTIME_DIR/tilo/services`. A session that serves none asks
@@ -504,6 +515,7 @@ mod tests {
             new_window: false,
             continuity_instance: None,
             connector: None,
+            hosted: None,
         }
     }
 

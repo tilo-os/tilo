@@ -188,6 +188,20 @@ impl Service for ModelService {
             .collect()
     }
 
+    /// The address this host publishes `app`'s record at: the session serves
+    /// the app, so a launch it makes names the address and the app's process
+    /// opens no record of its own (`docs/architecture/apps.md` §8 step 2).
+    fn hosted(&self, app: &str) -> Option<String> {
+        self.records
+            .iter()
+            .find(|held| {
+                self.owners
+                    .get(&held.address)
+                    .is_some_and(|owner| owner == app)
+            })
+            .map(|held| held.address.clone())
+    }
+
     fn read(&self, resource: &str) -> Option<Json> {
         let held = self.records.iter().find(|held| {
             held.address == resource || resource.starts_with(&format!("{}/", held.address))

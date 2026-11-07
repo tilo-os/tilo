@@ -149,6 +149,11 @@ pub(crate) trait RootSearch {
 /// The [`ActionControls`] part of a root: the controls its dispatcher
 /// queued, ahead of its view's.
 pub(crate) trait RootControls {
+    fn install_control_custody(
+        &mut self,
+        domain: &ui_core::ControlDomain,
+        attachment: ui_core::control_custody::CustodyAttachment,
+    );
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation>;
     fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation>;
     fn on_control_invocation_result(
@@ -207,7 +212,6 @@ impl Decorator for RootWidget {
             self.0.provide_mut(request);
         }
     }
-
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.0.view()
     }
@@ -527,6 +531,18 @@ impl SearchSource for RootWidget {
 }
 
 impl ActionControls for RootWidget {
+    /// The root keeps its view's controls for itself when the session keeps
+    /// its record: a press there is submitted over the app's connection, and
+    /// a host's local document door never runs it
+    /// (`docs/designs/app-language/one-app-model.md` §4).
+    fn install_control_custody(
+        &mut self,
+        domain: &ui_core::ControlDomain,
+        attachment: ui_core::control_custody::CustodyAttachment,
+    ) {
+        self.0.install_control_custody(domain, attachment);
+    }
+
     fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
         ui_core::widget::controls::children_action_control_bindings(self)
     }

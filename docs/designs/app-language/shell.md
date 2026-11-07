@@ -239,26 +239,38 @@ seams:
 
 ## 8.1 The conversation
 
-The agent chat and the REPL are one view, `conversation(r: Run)`, over a run of the session's
-agent (`tilo_agent_runs`). It is a shell view like any other: it can be a place on the canvas,
-a panel beside the strips or the whole screen of the conversation shell.
+The agent chat is a Chat conversation, not a shell part. An agent's work is the turns of the
+conversations it takes part in (`crates/session/session/src/conversations.rs`): a person's
+message the agent has not answered is a turn, and the kept agent's process (`so.tilo.agent`,
+started per workspace by `Apps::start_agent`) answers it in the same channel. The shell owns
+no run and no transcript; it places the channel like any resource.
 
-- **One input, two ways in.** A line that parses as a tilolang program runs as it is: one
-  `tilo` call on the run's door session, attributed to the person, with the same `let` scope
-  as the agent's own calls. Anything else is a sentence to the agent, which answers with
-  `tilo` calls of its own. So the person types exactly what the agent would. The terminal
-  `tilolang repl` is the same session reached from outside.
-- **The transcript is steps.** Each entry is a `ProgramStep`, whoever wrote it: the program,
-  highlighted; the changes it made, as undo rows; and what it printed, as references.
-  The agent's prose sits between steps. Nothing is drawn from the agent's text that a step
-  does not back.
-- **References place.** A reference in a step is drawn with its type's row view (search.md).
-  Activating it is §3: on the canvas, a place next to the conversation; in strips, a column
-  after it; in the conversation shell, embedded in the transcript. What the agent wants to
-  show is a reference it printed. It reaches the screen by §5's "What opens" setting: by
-  default what it creates, plus its answer.
-- **Looks.** The conversation uses the shared components (`ui.Composer`, `ui.CodeBlock`,
-  `ui.ListRow`) and theme roles only, so every theme reaches it.
+- **Asking from the canvas.** The canvas entry reads "Find something, or ask". Enter calls
+  `session.place_found(text, x, y)`. When the text is a question (`answers::question::asks`)
+  or nothing matches it, the session asks instead of failing: it posts `text` as the person
+  into their ask conversation in the workspace (a Chat channel the agent is a member of,
+  made with Chat's own actions on the first ask, and the workspace's kept agent kept with
+  `WorkspaceAgents` when it has none), then places that channel at (x, y), or brings its
+  place forward when it already has one. Nothing here is new machinery: Chat's actions post
+  and create, and the arrangement's `place_at` places.
+- **The view.** The channel is placed with Chat's default channel view, a `#[view]` over
+  Chat's channel type (one-app-model.md §2), drawn by the host from described components:
+  messages, the composer, and each attachment drawn with its type's row view. The same view
+  is what Chat's own window shows; the canvas gets no second chat.
+- **Any action.** The agent's tools are the broker's catalogue. The session publishes its
+  own actions there too (the arrangement's `place`, `place_at`, `open`; windows; notices),
+  so an agent answering a person's turn can arrange the screen exactly as the REPL can. Each
+  call is authorized per step against the turn's grants, attributed to the agent and the
+  person who asked, and undone like any change.
+- **What the agent shows.** What the agent wants to show is a resource it attaches to its
+  reply (a message carries attachments). Pressing an attachment places it beside the
+  conversation (§3). What opens unasked follows §5's "What opens" setting: by default what
+  the turn created, and a view it answered with (`plan.view`), placed beside the
+  conversation with `place_near`.
+- **The REPL.** `tilolang repl` reaches the person's door and calls the same actions by the
+  same names the agent's `invoke` does, so the person types what the agent would. Its
+  results are references that place the same way.
+- **Looks.** Only shared components and theme roles, so every theme reaches the chat.
 
 ## 8.2 Steps
 
@@ -301,7 +313,6 @@ carries its own actions:
 | `Workspace` | a workspace on this device | `switch`, `create`, `join`, `rename` |
 | `Window` | a window an app mapped (its id is the window's tab id) | `focus`, `close`, `move_to(workspace)` |
 | `Notice` | a notification | `act(choice)`, `dismiss`; `clear_all` on the centre |
-| `Run` | a conversation with the session's agent (§8.1) | `ask`, `send`, `stop` |
 | `Person` | someone here | `follow`, `message`, `call`, `see_work` |
 | `Setting` | a device setting quick settings shows | `set(value)` |
 | `Surface` | the system surface over the desk (launcher, overview, search) | `show`, `close` |

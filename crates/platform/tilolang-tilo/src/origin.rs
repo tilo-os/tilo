@@ -188,3 +188,17 @@ pub fn remote(
     };
     remote(stream, waker)
 }
+
+/// Whether some crate registered a client for the origin `name`: a service whose resources are
+/// kept in step by a connector process the session runs (`imap`, `youtube`).
+///
+/// The origins the session itself writes are no connector's (the types whose kinds the device
+/// derives, `session.desk`): what writes them runs in the session's own process.
+#[must_use]
+pub fn served(name: &str) -> bool {
+    REMOTES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .any(|(registered, _)| *registered == name)
+}

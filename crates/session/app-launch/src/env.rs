@@ -60,6 +60,9 @@ const FORWARDED: &[&str] = &[
     "LC_CTYPE",
     "LC_MESSAGES",
     "TZ",
+    // How much an app (and the connector the system runs for one) logs, as the session's own
+    // log says: a development session's log is all a connector without a window has.
+    "RUST_LOG",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",

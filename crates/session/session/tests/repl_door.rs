@@ -277,7 +277,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -372,6 +372,7 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         .set("LC_ALL", "de_DE.UTF-8")
         .set("LANG", "de_DE.UTF-8")
         .set("LANGUAGE", "de_DE");
+    // The apps come from the run's store, which the session reads as a device reads its own.
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the notebook's German label", |session| {
@@ -535,7 +536,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -615,7 +616,7 @@ fn my_mails_on_the_canvas_places_mails_root() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -1011,7 +1012,7 @@ impl tilo_service::Service for Withholding {
 fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let program = std::env::current_exe().expect("this test's program");
     let mut session = Session::headless(
         Options {
@@ -1108,7 +1109,7 @@ fn the_repl_finds_what_place_found_places() {
     let root = private_home();
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
-    let apps = tilo_session::seeded_apps::seeded(PERSON).expect("the seeded apps");
+    let apps = common::seeded_apps();
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,

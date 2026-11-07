@@ -1649,6 +1649,13 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        // A launch asks the services whether one runs the app's model, and
+        // where one does names the resource it publishes, so the app launches
+        // hosted and opens no record of its own
+        // (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+        if let Some(launch) = &options.launch {
+            launch.lend_services(Rc::clone(&services));
+        }
         // The session's own controls, served beside its services: an app
         // reads what they are now and invokes what changes them the way it
         // does every other resource of this device's.

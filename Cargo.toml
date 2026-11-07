@@ -151,6 +151,7 @@ members = [
     "apps/tasks-model",
     "apps/totp",
     "apps/tube",
+    "apps/tube-model",
     "apps/typst-editor",
     "apps/video-editor",
     "apps/video-player",

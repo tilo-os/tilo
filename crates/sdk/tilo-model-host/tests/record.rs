@@ -28,7 +28,8 @@ const APP: &str = "so.tilo.tasks";
 /// The app's module, built for `wasm32` by this crate's build script. A build that could not
 /// build it says so, and a test that needs it fails rather than passing on nothing.
 fn wasm() -> Vec<u8> {
-    tilo_model_host::fixture_module().expect("tilo-model-host's build script built the module")
+    tilo_model_host::fixture_module("tasks-model")
+        .expect("tilo-model-host's build script built the module")
 }
 
 fn module() -> Rc<Module> {
@@ -228,5 +229,182 @@ fn a_module_that_did_not_make_the_change_it_was_asked_for_is_refused() {
         record.document().clone().save(),
         before,
         "a refusal leaves the host's document as it was"
+    );
+}
+
+/// Tube's library, its model running in Tube's own module: the second app the storage migration
+/// serves, built the same way Tasks' is.
+#[test]
+fn tubes_library_changes_the_record_in_its_own_module() {
+    let wasm = tilo_model_host::fixture_module("tube-model")
+        .expect("tilo-model-host's build script built Tube's module");
+    let engine = Rc::new(Engine::new(EngineLimits::default()).expect("an engine"));
+    let module = Rc::new(Module::load("so.tilo.tube", &wasm, engine).expect("Tube's module loads"));
+    assert!(module.serves("tube.library"), "it serves the library");
+    let mut record = Record::open(
+        "so.tilo.tube",
+        "tube.library",
+        "tube.library",
+        Doc::new(),
+        module,
+    )
+    .expect("the library's record")
+    .record;
+    let offers = record.offers().expect("the library's tree");
+    assert!(
+        offers
+            .actions
+            .iter()
+            .any(|action| action.id == "reply-to-comment"),
+        "the module publishes the library's own verb: {:?}",
+        offers
+            .actions
+            .iter()
+            .map(|action| &action.id)
+            .collect::<Vec<_>>()
+    );
+    // The verb the app's own view submits, run by the module the host loads.
+    let mut arguments = Map::new();
+    arguments.insert("comment".to_owned(), json!("c1"));
+    arguments.insert("text".to_owned(), json!("Agreed"));
+    record
+        .invoke(
+            "tube.library",
+            "reply-to-comment",
+            &arguments,
+            &Invoker::person("ada"),
+        )
+        .expect("the model's own verb");
+    let reading = record.reading().expect("a reading");
+    assert_eq!(
+        reading["replies"]
+            .as_array()
+            .and_then(|replies| replies.first())
+            .map(|reply| reply["value"]["text"].clone()),
+        Some(json!("Agreed")),
+        "the module kept the reply its verb made: {reading}"
+    );
+}
+
+/// A library today's app wrote opens unchanged: the module reads the document the app's process
+/// kept, with the reply's id and the subscriptions exactly as they were (the data invariants).
+#[test]
+fn a_library_todays_app_wrote_opens_with_its_ids_unchanged() {
+    use tilo_resource::{Replica, Resource as _};
+    use tube_model::{Library, library::library::ReplyToComment};
+
+    let mut written = Replica::<Library>::new().as_author("ada");
+    written
+        .apply(Library::subscribe("UC_x5XG1OV2P6uZZ5FSM9Ttw", true))
+        .expect("today's app subscribes");
+    written
+        .apply(Library::REPLY_TO_COMMENT.with(ReplyToComment {
+            comment: "c1".parse().expect("a comment id"),
+            text: "Agreed".parse().expect("a reply"),
+        }))
+        .expect("today's app replies");
+    let mut before = written.doc().clone();
+    let heads_before = before.get_heads();
+
+    let wasm = tilo_model_host::fixture_module("tube-model")
+        .expect("tilo-model-host's build script built Tube's module");
+    let engine = Rc::new(Engine::new(EngineLimits::default()).expect("an engine"));
+    let module = Rc::new(Module::load("so.tilo.tube", &wasm, engine).expect("Tube's module"));
+    let record = Record::open(
+        "so.tilo.tube",
+        "tube.library",
+        "tube.library",
+        before,
+        module,
+    )
+    .expect("the host opens today's library")
+    .record;
+    assert_eq!(
+        record.document().clone().get_heads(),
+        heads_before,
+        "opening the library changed nothing it held"
+    );
+    let reading = record.reading().expect("a reading");
+    assert_eq!(
+        reading["subscriptions"],
+        json!(["UC_x5XG1OV2P6uZZ5FSM9Ttw"]),
+        "today's subscription opens as it was"
+    );
+    assert_eq!(
+        reading["replies"]
+            .as_array()
+            .and_then(|replies| replies.first())
+            .map(|reply| reply["value"]["text"].clone()),
+        Some(json!("Agreed")),
+        "today's reply opens with its id and text: {reading}"
+    );
+    let _ = Library::KIND;
+}
+
+/// A record today's app wrote opens unchanged: the host reads the document the app's own
+/// process kept, and neither a record's ids nor its history change by the documet host opening
+/// it (the data invariants, `docs/architecture/apps.md` §8).
+#[test]
+fn a_record_todays_app_wrote_opens_with_its_ids_unchanged() {
+    use tasks_model::Tracker;
+    use tilo_resource::Replica;
+    use tilo_resource::Resource as _;
+
+    // What today's Tasks keeps: a replica the app's own process wrote, its issue ids minted
+    // there.
+    let mut written = Replica::<Tracker>::new().as_author("ada");
+    written
+        .apply(Tracker::CREATE.with(tasks_model::tracker::Create {
+            title: "Written by today's Tasks".parse().expect("a title"),
+            parent: None,
+            body: None,
+            status: None,
+            assignee: None,
+        }))
+        .expect("today's app makes the issue");
+    let mut before = written.doc().clone();
+    let ids_before: Vec<tilo_resource::Id> = tasks_model::Tracker::read(&before)
+        .expect("today's record reads")
+        .issues
+        .ids()
+        .cloned()
+        .collect();
+    assert!(!ids_before.is_empty(), "today's record holds an issue");
+    let heads_before = before.get_heads();
+
+    // The session's document host opens the very document the app wrote, its model in the
+    // module: what it reads is those same ids, and the document it keeps is the same history.
+    let engine = Rc::new(Engine::new(EngineLimits::default()).expect("an engine"));
+    let module = Rc::new(Module::load("so.tilo.tasks", &wasm(), engine).expect("the module"));
+    let record = Record::open(APP, TRACKER, ADDRESS, before, module)
+        .expect("the host opens today's record")
+        .record;
+    let heads_after = record.document().clone().get_heads();
+    assert_eq!(
+        heads_after, heads_before,
+        "opening the record changed nothing it held"
+    );
+    let reading = record.reading().expect("a reading");
+    let issues: Vec<&str> = reading["issues"]
+        .as_array()
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|issue| issue["id"].as_str())
+                .collect()
+        })
+        .unwrap_or_default();
+    for id in &ids_before {
+        assert!(
+            issues.iter().any(|read| *read == id.as_str()),
+            "the issue {id} today's app made opens unchanged: {issues:?}"
+        );
+    }
+    assert_eq!(
+        reading["issues"]
+            .as_array()
+            .and_then(|issues| issues.first())
+            .and_then(|issue| issue["value"]["title"].as_str()),
+        Some("Written by today's Tasks")
     );
 }

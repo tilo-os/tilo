@@ -252,6 +252,26 @@ impl Engine {
         app: &str,
         record: &str,
     ) -> Result<Option<Vec<u8>>, String> {
+        self.record_since(workspace, app, record, None)
+            .map(|read| read.map(|(bytes, _)| bytes))
+    }
+
+    /// [`Self::record`], with the heads the bytes were saved at, and told the heads `known`
+    /// this caller already holds of the record: a record whose admitted heads still are those
+    /// is answered as unchanged without capturing or saving the document at all. A desk read
+    /// on every pass is one whose document does not change between passes, and saving it each
+    /// time copied its whole history — a cost that grew with the workspace's life and an
+    /// allocation that grew with it.
+    ///
+    /// # Errors
+    /// As [`Self::record`].
+    pub fn record_since(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        known: Option<[u8; 32]>,
+    ) -> Result<Option<(Vec<u8>, [u8; 32])>, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
         if self.asks_for_record(workspace, app, record)? {
             return Ok(None);
@@ -279,7 +299,7 @@ impl Engine {
             match view.read_document_with_history(
                 reader,
                 (app, record),
-                None,
+                known,
                 MAX_DOCUMENT_BYTES,
                 SystemTime::now(),
                 &mut |write| {
@@ -291,7 +311,10 @@ impl Engine {
                     keys.open(write)
                 },
             )? {
-                DocumentRead::Captured(document) => Ok(Some(document.bytes)),
+                DocumentRead::Captured(document) => {
+                    let revision = document.revision;
+                    Ok(Some((document.bytes, revision)))
+                }
                 DocumentRead::Unchanged(_) | DocumentRead::CheckpointPending => Ok(None),
             }
         })
