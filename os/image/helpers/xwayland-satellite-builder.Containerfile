@@ -14,7 +14,10 @@ COPY os/external-assets/xwayland-satellite/0001-drain-pending-conversions-before
 COPY os/external-assets/github-assets.tsv /tilo-assets.tsv
 COPY tools/ci/install-xwayland-satellite.sh /install-xwayland-satellite.sh
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     configure-fedora-mirrors \
     && dnf install -y ${XWAYLAND_SATELLITE_BUILD_PACKAGES} \
     && dnf clean all \

@@ -8,7 +8,10 @@ ARG BOOTC_SHA256=99c03054ded60c043a41f73b076b0dc137bc3518579c6cf98cf460556f86f64
 COPY os/external-assets/bootc/0001-probe-missing-partition-metadata.patch /patches/
 COPY os/external-assets/bootc-install-reseal/0002-select-mounted-esp.patch /patches/
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
-RUN configure-fedora-mirrors \
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host configure-fedora-mirrors \
     && dnf install -y ostree-devel patch \
     && dnf clean all \
     && curl -fsSL "https://github.com/bootc-dev/bootc/archive/refs/tags/v${BOOTC_VERSION}.tar.gz" -o /bootc.tar.gz \

@@ -27,7 +27,10 @@ COPY os/external-assets/bootc-runtime/0001-select-booted-esp.patch \
 # bootc builds matched and the image was not reproducible.
 COPY vendor/zlink-macros /tilo-vendor/zlink-macros
 COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
-RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
+# Fetches from the internet, so it runs in the build job's own network: podman hands a
+# nested build container public resolvers (the job's /etc/resolv.conf names only its own),
+# and the CI runners' egress serves those unreliably.
+RUN --network=host --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \
     configure-fedora-mirrors \
     && dnf install -y ${BOOTC_BUILD_PACKAGES} \
     && dnf clean all \
