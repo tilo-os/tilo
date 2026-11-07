@@ -592,6 +592,8 @@ pub struct Session {
     capture_studio: Option<capture_studio::CaptureStudio>,
     /// The windows opening and closing.
     windows: window_motion::WindowMotions,
+    /// The quick settings panel coming and going, which the compositor draws.
+    quick_settings_panel: quick_settings::PanelMotion,
     /// The temperature and colour every app window is told, as the settings
     /// and wallpapers last said them.
     warmth: window_warmth::Windows,
@@ -1260,6 +1262,10 @@ impl Session {
             &switcher,
         )));
         compositor.add_host(shell::under(options.shell, Held(Rc::clone(&chrome))));
+        // A press the desk takes never reaches the chrome drawn over it, so
+        // the stack judges it here: whatever the chrome or the session put
+        // up, standing where the press is not, goes down.
+        press_outside::mount(&mut compositor, &overlays);
         // Search's code is asked for as the session starts, so it is in by the
         // time someone searches; a search asked for before then opens now,
         // and the desk publishes it on its next pass.
@@ -1954,6 +1960,9 @@ impl Session {
             capture_io,
             capture_studio,
             windows: window_motion::WindowMotions::new((options.presentation)().theme.motion()),
+            quick_settings_panel: quick_settings::PanelMotion::new(
+                (options.presentation)().theme.motion(),
+            ),
             warmth,
             language: mount::language::Language::new(),
             night_light,

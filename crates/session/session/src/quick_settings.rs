@@ -15,9 +15,12 @@
 
 use std::path::PathBuf;
 
+use tilo_compositor::LayerPose;
 use tilo_desktop::overlays::Slot;
 use tilo_desktop_surface::navigation::ChromeEffect;
 use ui::kurbo::Rect;
+use ui::motion::{Appear, Appearing};
+use ui::tokens::EffectiveMotion;
 
 use crate::Shared;
 use crate::surfaces::{Anchor, Keyboard, Layer, StartError, Surface, program_path};
@@ -92,6 +95,71 @@ pub enum Run {
     },
 }
 
+/// The panel's own coming and going, which the compositor draws for it: its
+/// app is another process's layer surface, hidden here between openings, so
+/// it cannot tell an opening from a hiding and draws as it stands. The
+/// session poses it on the toolkit's [`Appear`] motion instead, every frame
+/// it moves, from the corner its slot anchors it by.
+pub(crate) struct PanelMotion {
+    appear: Appearing,
+    motion: EffectiveMotion,
+}
+
+/// The corner the panel's slot anchors it by (`Anchor::TopTrailing`): it
+/// grows out of and shrinks back into the display's top-right corner, where
+/// the status area is.
+const ANCHOR: (f64, f64) = (1.0, 0.0);
+
+impl PanelMotion {
+    pub(crate) fn new(motion: EffectiveMotion) -> Self {
+        Self {
+            appear: Appearing::closed(),
+            motion,
+        }
+    }
+
+    /// Follow the slot: `up` whether the stack has the panel open, `drawn`
+    /// whether its app has drawn it yet. A panel that is up but not drawn
+    /// has no first frame to grow from, so its arrival starts with that
+    /// frame rather than running unseen while its app starts.
+    pub(crate) fn follow(&mut self, up: bool, drawn: bool) {
+        if up && !drawn && !self.appear.is_open() {
+            return;
+        }
+        self.appear.follow(up, self.motion);
+    }
+
+    /// Whether anything of the panel is drawn now: up, opening, or still
+    /// going.
+    pub(crate) fn is_drawn(&self) -> bool {
+        self.appear.is_drawn()
+    }
+
+    /// When the panel's next pose is due, while it moves: the pass that draws
+    /// it again. Its app draws its own pixels once and the pose is this
+    /// session's, so nothing else would ask for that pass, and a panel that
+    /// stopped after its first frame would never finish arriving or leaving.
+    pub(crate) fn next_pass(&self, now: std::time::Instant) -> Option<std::time::Instant> {
+        self.appear.is_moving().then_some(now)
+    }
+
+    /// How the compositor draws it this frame; `None` while it stands in
+    /// place. Reduced motion only fades it, as [`Appear`] says.
+    pub(crate) fn pose(&self) -> Option<LayerPose> {
+        let progress = self.appear.progress();
+        if progress >= 1.0 {
+            return None;
+        }
+        let pose = Appear::pose(progress, ui::kurbo::Point::new(0.0, 0.0), self.motion);
+        let [scale, ..] = pose.transform.as_coeffs();
+        Some(LayerPose {
+            scale,
+            opacity: pose.opacity,
+            anchor: ANCHOR,
+        })
+    }
+}
+
 impl crate::Session {
     /// Follow quick settings: its app runs for the session's life, standing
     /// where the stack places it, shown while the stack has the slot up and
@@ -110,6 +178,8 @@ impl crate::Session {
         }
         self.follow_panel_back();
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
+        let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
+        self.quick_settings_panel.follow(open, drawn);
         if !open {
             self.hide_quick_settings();
             // Asked again when the panel opens again, a panel that would not
@@ -184,14 +254,14 @@ impl crate::Session {
         }
         // Up, where it stands: the surface is shown rather than started, so
         // an opening the panel already stands for costs nothing.
-        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
-            self.compositor.show_layer(SURFACE_NAMESPACE, true);
+        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true)
+            && self.shared.panel_asks.borrow().is_empty()
+        {
             // An opening nobody asked a page of shows the controls, not the
             // page the panel was left on.
-            if self.shared.panel_asks.borrow().is_empty() {
-                self.shared.panel_asks.borrow_mut().push("show-controls");
-            }
+            self.shared.panel_asks.borrow_mut().push("show-controls");
         }
+        self.show_quick_settings();
         // What the keys asked the panel to show, which it can only be told
         // while it runs.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
@@ -250,10 +320,31 @@ impl crate::Session {
         self.shared.panel_back.set(None);
     }
 
+    /// Show the panel where it stands, posed as far as it has come.
+    fn show_quick_settings(&mut self) {
+        self.compositor
+            .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
+        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
+            self.compositor.show_layer(SURFACE_NAMESPACE, true);
+        }
+    }
+
     /// Hide the panel: its app keeps running, and opening it again shows the
-    /// surface it already stands on.
+    /// surface it already stands on. While it leaves it stays shown, shrinking
+    /// back into its corner, and is hidden once nothing of it is left.
     fn hide_quick_settings(&mut self) {
-        self.compositor.show_layer(SURFACE_NAMESPACE, false);
+        if self.quick_settings_panel.is_drawn() {
+            self.compositor
+                .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
+            if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
+                self.compositor.show_layer(SURFACE_NAMESPACE, true);
+            }
+            return;
+        }
+        self.compositor.set_layer_pose(SURFACE_NAMESPACE, None);
+        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(false) {
+            self.compositor.show_layer(SURFACE_NAMESPACE, false);
+        }
     }
 
     /// Stop quick settings' app, if it runs: it stands somewhere else now.
@@ -378,5 +469,71 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
     if let Err(error) = shared.handle.dispatch(launch) {
         // The person asked for Settings and it did not open: they hear why.
         shared.answer_failed(&crate::i18n::t("action-failed-that-settings"), &error);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The panel grows from its corner when its first frame is drawn, stands
+    /// as it stands, and shrinks back into the corner while it leaves, until
+    /// it asks for nothing at all.
+    #[test]
+    fn the_panel_arrives_from_its_corner_and_leaves_back_into_it() {
+        use ui::time::testing::with_monotonic_time;
+        use ui::tokens::MotionSource;
+        let t0 = ui::time::now();
+        let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
+        let mut panel = PanelMotion::new(EffectiveMotion::default());
+        // Every read of the motion is pinned at the instant it is read at.
+        let look = |panel: &PanelMotion, ms: u64| {
+            with_monotonic_time(at(ms), || (panel.is_drawn(), panel.pose()))
+        };
+        let asks = |panel: &PanelMotion, ms: u64| {
+            with_monotonic_time(at(ms), || panel.next_pass(at(ms)).is_some())
+        };
+
+        // Up while its app has not drawn it yet: out of sight, not moving.
+        with_monotonic_time(t0, || panel.follow(true, false));
+        let (drawn, waiting) = look(&panel, 0);
+        assert!(!drawn, "nothing to animate before its first frame");
+        let waiting = waiting.expect("it waits invisible");
+        assert!(waiting.opacity < 0.01 && waiting.scale < 1.0, "{waiting:?}");
+        assert!(!asks(&panel, 0), "nothing moves, so no pass is due");
+
+        ui::motion::note_source(MotionSource::Pointer);
+        with_monotonic_time(t0, || panel.follow(true, true));
+        let (drawn, coming) = look(&panel, 0);
+        assert!(drawn);
+        let coming = coming.expect("it arrives");
+        assert!(
+            coming.opacity < 0.05 && coming.scale < 1.0,
+            "from faint and small: {coming:?}"
+        );
+        assert!(
+            asks(&panel, 0),
+            "an arriving panel asks for the pass that moves it"
+        );
+
+        assert_eq!(
+            look(&panel, 600).1,
+            None,
+            "at rest it is drawn as it stands"
+        );
+        assert!(!asks(&panel, 600), "and asks for no pass of its own");
+
+        with_monotonic_time(at(700), || panel.follow(false, true));
+        assert!(look(&panel, 700).0, "it leaves rather than vanishing");
+        let leaving = look(&panel, 770).1.expect("its leave is drawn");
+        assert!(
+            leaving.opacity > 0.05 && leaving.opacity < 0.95 && leaving.scale < 1.0,
+            "partway back into its corner: {leaving:?}"
+        );
+        assert!(
+            asks(&panel, 770),
+            "a leaving panel asks for the pass that moves it"
+        );
+        assert!(!look(&panel, 900).0, "and then it has gone");
     }
 }

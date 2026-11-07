@@ -430,9 +430,7 @@ impl Emoji {
             return;
         };
         self.choosing.borrow_mut().take();
-        picker.ask(None);
         picker.presentation().close();
-        picker.presentation().gone();
         self.bump();
         let FileAnswer::Chosen(paths) = &answer else {
             return;

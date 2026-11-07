@@ -1007,7 +1007,6 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// Dismissal, published as the dialog's close control
     /// ([`Self::on_dismiss`]); every way of dismissing emits it.
     dismiss: Option<super::dismissal::Dismissal>,
-    open: bool,
     destructive: bool,
     /// Widest the sheet is drawn, in design pixels.
     max_width: f64,
@@ -1070,7 +1069,9 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     /// `apply_layout` runs without one.
     layout_theme: Theme,
     /// Its arriving and leaving (`motion::Appear`, from the sheet's centre).
-    appear: crate::motion::Appearing,
+    /// Kept as a handle so a host that rebuilds this dialog's tree can hand
+    /// every rebuild the same one ([`Self::appearing`]).
+    appear: crate::motion::Appearance,
     /// The control the sheet asks about: it stands beside it, the window
     /// undimmed ([`Self::set_anchor`]).
     anchor: Option<Rect>,
@@ -1098,7 +1099,6 @@ impl<C: Widget + 'static> ModalDialog<C> {
             primary_enabled: true,
             primary_gate: None,
             dismiss: None,
-            open: false,
             destructive: false,
             max_width: MODAL_MAX_WIDTH,
             window: Rect::ZERO,
@@ -1127,7 +1127,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             structure_dirty: false,
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
-            appear: crate::motion::Appearing::closed(),
+            appear: crate::motion::Appearance::default(),
             anchor: None,
             foot: None,
         }
@@ -1228,8 +1228,23 @@ impl<C: Widget + 'static> ModalDialog<C> {
     pub fn open(mut self, open: bool) -> Self {
         self.set_open(open);
         // Built open: shown at rest from its first paint, so a host that
-        // rebuilds its tree never replays the entrance.
-        self.appear.snap(open);
+        // rebuilds its tree never replays the entrance. A dialog drawing on
+        // its host's appearance has no entrance to replay either — that
+        // handle carries how far it has come across rebuilds — so it
+        // arrives.
+        if self.appear.is_owned() {
+            self.appear.snap(open);
+        }
+        self
+    }
+
+    /// Draw this dialog on `appearance`, which the host keeps across the
+    /// rebuilds of the tree it stands in: built open, the dialog arrives
+    /// once, and a dialog its host closes leaves until it is gone. What a
+    /// shell whose surface is a modal sheet hands its dialog.
+    #[must_use]
+    pub fn appearing(mut self, appearance: crate::motion::Appearance) -> Self {
+        self.appear = appearance;
         self
     }
 
@@ -1237,13 +1252,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// [traps focus](Widget::traps_focus). Opening scrolls the body back
     /// to its top and lets the host focus the first control in it.
     pub fn set_open(&mut self, open: bool) {
-        if open && !self.open {
+        if !open {
+            self.shut(crate::motion::input_source());
+            return;
+        }
+        if !self.up() {
             self.scroll = 0.0;
             self.stale = true;
             self.remeasure = true;
         }
-        self.open = open;
-        self.appear.show(open);
+        self.appear.show(true);
         // A closed dialog receives no moves, so whatever position it last
         // saw is stale by the time it reopens.
         self.pointer_inside = false;
@@ -1425,6 +1443,25 @@ impl<C: Widget + 'static> ModalDialog<C> {
 }
 
 impl<C: Widget + ?Sized> ModalDialog<C> {
+    /// Close it as its own way out does — no action runs — `source` asking,
+    /// so it leaves the screen rather than staying drawn and taking no
+    /// input. `true` when it was open.
+    fn shut(&mut self, source: crate::tokens::MotionSource) -> bool {
+        if !self.up() {
+            return false;
+        }
+        self.appear.show_from(false, source);
+        self.pointer_inside = false;
+        true
+    }
+
+    /// Whether it is up: where its appearance is going, which for a dialog
+    /// drawing on its host's appearance is the host's own answer, however
+    /// long ago the tree holding it was built.
+    fn up(&self) -> bool {
+        self.appear.is_open()
+    }
+
     /// Measure and place the content again: call after changing the
     /// content in a way that changes its size without changing its
     /// structure. A structure change the content reports
@@ -1464,7 +1501,7 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         self.scroll
     }
     pub fn is_open(&self) -> bool {
-        self.open
+        self.up()
     }
 
     /// Whether anything of it is drawn now: open, arriving, or closed and
@@ -1938,7 +1975,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         state: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
-        if !self.open {
+        if !self.up() {
             return false;
         }
         let mut taffy = TaffyTree::new();
@@ -1995,7 +2032,7 @@ impl Widget for ModalDialog<dyn Widget> {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // A move the top layer found (a new window, a scroll) is laid out.
-        if self.open && (self.stale || self.remeasure) {
+        if self.up() && (self.stale || self.remeasure) {
             crate::widget::note_layout_moved();
         }
         super::defaults::update(self.children_mut(), state, path)
@@ -2168,11 +2205,17 @@ impl Widget for ModalDialog<dyn Widget> {
         presence: &PresenceCtx,
     ) {
         // The sheet arrives and leaves (`motion::Appear`); a leaving sheet is
-        // drawn until it has gone but takes no input.
-        self.appear.follow(self.open, theme.motion());
+        // drawn until it has gone but takes no input. Where it stands is the
+        // appearance's to say — an owner closes it, and for a sheet whose
+        // app its host rebuilds, the host's own presentation.
         if !self.appear.is_drawn() {
             return;
         }
+        // Each change starts on the motion the person allows, which only the
+        // theme says: a dialog its own tree keeps reads it from every frame
+        // it draws, and a sheet its host closes asks for the same. The state
+        // is the appearance's; this says how the next change moves.
+        self.appear.follow(self.up(), theme.motion());
         // The host pushes the window as the presence viewport for its
         // top-layer pass: the scrim covers all of it.
         if let Some(window) = presence.viewport.get() {
@@ -2181,7 +2224,7 @@ impl Widget for ModalDialog<dyn Widget> {
         }
         // A leaving sheet is drawn as it was laid out: it asks the host for
         // nothing more.
-        if self.open && self.host_content.is_some() {
+        if self.up() && self.host_content.is_some() {
             if self.laid_out_for != Some(self.key(theme)) {
                 self.resolve(theme, text_renderer);
                 // The content follows on the host's next layout pass; until
@@ -2193,7 +2236,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 self.remeasure = true;
                 self.stale = true;
             }
-        } else if self.open
+        } else if self.up()
             && (self.laid_out_for != Some(self.key(theme)) || self.detached.is_none())
         {
             self.relayout_detached(theme, text_renderer);
@@ -2299,7 +2342,7 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
-        if !self.open {
+        if !self.up() {
             return;
         }
         // Blocking: while open, every event is marked handled so the dialog
@@ -2444,20 +2487,15 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn modal_capture(&self) -> Option<Rect> {
-        self.open.then(|| self.dialog_rect())
+        self.up().then(|| self.dialog_rect())
     }
 
     /// The shell took the sheet this dialog stands in down: close it as its
     /// own way out does (no answer runs), so it leaves the screen rather than
     /// staying drawn and taking no input.
     fn dismiss_presented_modal(&mut self) -> bool {
-        if !self.open {
-            return false;
-        }
-        self.open = false;
-        self.appear.show(false);
-        self.pointer_inside = false;
-        true
+        // The shell took the surface down; no shortcut of the app's asked.
+        self.shut(crate::tokens::MotionSource::Pointer)
     }
 
     fn presents_modal(&self) -> bool {
@@ -2465,7 +2503,9 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        if !self.open {
+        // While it leaves, its card is still drawn: its content stays with
+        // it until nothing of it is left.
+        if !self.is_drawn() {
             return Vec::new();
         }
         let mut children: Vec<&dyn Widget> = Vec::new();
@@ -2476,7 +2516,7 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        if self.open {
+        if self.is_drawn() {
             if let Some(header) = self.header.as_deref() {
                 visitor(header);
             }
@@ -2500,7 +2540,7 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        if !self.open {
+        if !self.is_drawn() {
             return Vec::new();
         }
         let mut children: Vec<&mut (dyn Widget + '_)> = Vec::new();
@@ -2514,8 +2554,9 @@ impl Widget for ModalDialog<dyn Widget> {
 
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
-        let content = self.open && self.content.take_structure_dirty();
-        let header = self.open
+        let drawn = self.is_drawn();
+        let content = drawn && self.content.take_structure_dirty();
+        let header = drawn
             && self
                 .header
                 .as_deref_mut()
@@ -2535,14 +2576,14 @@ impl Widget for ModalDialog<dyn Widget> {
     fn is_layout_dirty(&self) -> bool {
         self.stale
             || self.remeasure
-            || (self.open
+            || (self.is_drawn()
                 && (self.content.is_layout_dirty()
                     || self.header.as_deref().is_some_and(Widget::is_layout_dirty)))
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.remeasure
-            || (self.open
+            || (self.is_drawn()
                 && (self.content.layout_needs_measure()
                     || self
                         .header
@@ -2554,7 +2595,8 @@ impl Widget for ModalDialog<dyn Widget> {
         // Opening, closing and every move are marked stale; an open sheet
         // otherwise changes only through its content or an event.
         self.stale
-            || (self.open
+            || self.appear.is_moving()
+            || (self.is_drawn()
                 && (self.content.needs_redraw()
                     || self.content.needs_animation_frame()
                     || self
@@ -2567,7 +2609,7 @@ impl Widget for ModalDialog<dyn Widget> {
         // A move the top layer found (a new window, a scroll) lands on the
         // host's next layout pass.
         self.appear.is_moving()
-            || (self.open
+            || (self.is_drawn()
                 && (self.stale
                     || self.content.needs_animation_frame()
                     || self
@@ -2581,12 +2623,12 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn traps_focus(&self) -> bool {
-        self.open
+        self.up()
     }
 
     // A closed dialog is hidden from the tree.
     fn accessibility_hidden(&self) -> bool {
-        !self.open
+        !self.is_drawn()
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -2604,7 +2646,7 @@ impl Widget for ModalDialog<dyn Widget> {
         node.description.clone_from(&self.description);
         // Footer actions a host laid out are buttons of their own focus
         // nodes; a dialog no host has built names them itself.
-        if self.open && self.keys.is_empty() {
+        if self.up() && self.keys.is_empty() {
             for (key, index, action, bounds, enabled) in [
                 (
                     "primary",
@@ -2642,7 +2684,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 }
             }
         }
-        if self.open && self.closable() {
+        if self.up() && self.closable() {
             node.children.push(
                 AccessNode::new(Role::Button)
                     .with_name(crate::i18n!("Close"))
@@ -2662,7 +2704,7 @@ impl Widget for ModalDialog<dyn Widget> {
         _: &mut crate::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
-        if !self.open || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.up() || !matches!(action, crate::a11y::Action::Activate) {
             return false;
         }
         let id = self.action_identity;

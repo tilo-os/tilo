@@ -88,7 +88,7 @@ impl ModalDialog<dyn Widget> {
         &self,
     ) -> impl Iterator<Item = (Slot, &'static str, tilo_actions::OperationKind)> + '_ {
         FOOTER.into_iter().filter(|(slot, _, _)| {
-            self.open && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
+            self.up() && self.slot_action(*slot).is_some() && self.slot_enabled(*slot)
         })
     }
 
@@ -98,7 +98,7 @@ impl ModalDialog<dyn Widget> {
         doc: &mut crate::widget::Edits<'_>,
         path: &ObjId,
     ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        if self.open
+        if self.up()
             && let Some(dismiss) = self.dismiss.as_mut()
             && let Some(started) = dismiss.start(op)?
         {
@@ -124,7 +124,7 @@ impl ModalDialog<dyn Widget> {
         let close = self
             .dismiss
             .as_ref()
-            .filter(|_| self.open)
+            .filter(|_| self.up())
             .and_then(crate::widget::dismissal::Dismissal::resource);
         let footer = self.published_footer().filter_map(|(slot, name, kind)| {
             let action = self.slot_action(slot)?;
@@ -182,7 +182,7 @@ impl ModalDialog<dyn Widget> {
         }
         // The close control stands where the dialog shows it: with no way
         // out of its own, Escape and the scrim keep their meaning.
-        if self.open
+        if self.up()
             && self.closable()
             && let Some(dismiss) = &self.dismiss
         {

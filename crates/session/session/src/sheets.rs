@@ -46,10 +46,6 @@ pub(crate) struct Sheet<S: Seat> {
     /// The displays as the compositor last said they are.
     outputs: Vec<tilo_compositor::HostedOutput>,
     role: Role,
-    /// The card this sheet presents was closed by the shell and is still
-    /// being drawn on its way out: the host watches it go rather than say it
-    /// is gone at once.
-    modal_left: bool,
 }
 
 impl<S: Seat> Sheet<S> {
@@ -61,6 +57,10 @@ impl<S: Seat> Sheet<S> {
         presentation: ComponentRunnerInputs,
         scale: f64,
     ) -> Result<Self, ui::launch::LaunchError> {
+        // The card's arrival and leaving move on the person's motion
+        // setting: the shell is where it is known, before any frame of the
+        // sheet reads its theme.
+        seat.presentation().set_motion(presentation.theme.motion());
         let lent = seat.clone();
         let component =
             prepare_private_surface(definition, device, person, "desktop", 0, |context| {
@@ -77,7 +77,6 @@ impl<S: Seat> Sheet<S> {
             seat,
             outputs: Vec::new(),
             role: Role::Presented,
-            modal_left: false,
         })
     }
 
@@ -372,23 +371,15 @@ impl<S: Seat> SurfaceHost for Sheet<S> {
 
     fn prepare_frame(&mut self) -> bool {
         self.follow_place();
-        // A sheet the shell closed (a chosen action, its own way out) may
-        // still have its card on screen. The host closes it as the sheet's
-        // own way out would, and its leaving draws until nothing is left;
-        // only then does the presentation say nothing of it is drawn, so it
-        // never stands drawn taking no input. A sheet that draws its own
+        // A sheet on its way out draws its card leaving until nothing of it
+        // is left; only then does the presentation say so, and the sheet
+        // stands drawn taking no input no longer. A sheet that draws its own
         // leave (the power menu) presents no modal and keeps its way out.
         let presentation = self.seat.presentation();
-        if presentation.phase() == tilo_sheets::Phase::Leaving {
-            if !self.modal_left {
-                self.modal_left = self.host.app_mut().dismiss_presented_modal();
-            }
-            if self.modal_left && !self.host.app_mut().presents_modal() {
-                self.modal_left = false;
-                presentation.gone();
-            }
-        } else if presentation.is_open() {
-            self.modal_left = false;
+        if presentation.phase() == tilo_sheets::Phase::Leaving
+            && !self.host.app_mut().presents_modal()
+        {
+            presentation.gone();
         }
         // A command surface answers the actions it is offered even with
         // nothing of it drawn.

@@ -21,7 +21,7 @@ use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::{Column, Element, ListRow, ModalDialog, Text, Toggle};
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -220,7 +220,8 @@ impl ResourceApp for UninstallApp {
             *seat.shown.borrow_mut() = Some(shown.clone());
             *seat.remove_data.borrow_mut() = Some(remove_data.clone());
         }
-        let answering = seat;
+        let answering = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: UninstallEffect, _cx| match &answering {
             Some(seat) => {
                 seat.asked.borrow_mut().push(effect);
@@ -229,7 +230,9 @@ impl ResourceApp for UninstallApp {
             None => Err("no apps to uninstall here".to_owned()),
         });
         let dispatch = cx.dispatcher();
-        cx.switch(&shown, move |_cx, app| card(app, &remove_data, &dispatch))
+        cx.switch(&shown, move |_cx, app| {
+            card(app, &remove_data, &dispatch, presentation.as_ref())
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -283,7 +286,12 @@ fn sample_app() -> App {
 
 /// The question about `app`: what goes, the data switch when it is offered,
 /// and the two answers.
-fn card(app: &App, remove_data: &LocalState<bool>, dispatch: &Dispatcher<Uninstall>) -> Element {
+fn card(
+    app: &App,
+    remove_data: &LocalState<bool>,
+    dispatch: &Dispatcher<Uninstall>,
+    presentation: Option<&Presentation>,
+) -> Element {
     let name = [("name", ui::i18n::ArgValue::Text(app.name.clone()))];
     let (title, action) = match app.removal {
         Removal::Uninstall => (
@@ -335,11 +343,11 @@ fn card(app: &App, remove_data: &LocalState<bool>, dispatch: &Dispatcher<Uninsta
     let toggled = remove_data.clone();
     let cancelling = dispatch.clone();
     let dismissed = dispatch.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(title, body)
             .with_test_id(SHEET)
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .with_destructive(app.removal != Removal::FromApps)
             .primary_action(action, move || {
                 confirming.effect(&UninstallEffect::Confirm {
@@ -350,7 +358,7 @@ fn card(app: &App, remove_data: &LocalState<bool>, dispatch: &Dispatcher<Uninsta
                 cancelling.effect(&UninstallEffect::Cancel);
             })
             .on_dismiss(move || dismissed.effect(&UninstallEffect::Cancel)),
-    )
+    ))
 }
 
 /// `count` as the catalogue's plural rules read it.

@@ -153,7 +153,6 @@ impl AppSheets {
             };
             let file = offer.file.to_string_lossy().into_owned();
             seat.presentation().close();
-            seat.presentation().gone();
             self.asked.borrow_mut().insert(file.clone());
             let mut arguments = Map::new();
             arguments.insert(wire::FILE_PARAM.to_owned(), Value::from(file));
@@ -196,7 +195,6 @@ impl AppSheets {
                 continue;
             };
             seat.presentation().close();
-            seat.presentation().gone();
             if let UninstallEffect::Confirm { .. } = effect {
                 let (action, confirmed) = match app.removal {
                     Removal::Uninstall => (wire::UNINSTALL, true),
@@ -645,9 +643,10 @@ mod tests {
             desk.offers().is_empty(),
             "the question was answered, so there is no offer left"
         );
-        assert!(
-            !desk.add.presentation().is_drawn(),
-            "and the question is taken down"
+        assert_eq!(
+            desk.add.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
         );
     }
 
@@ -691,7 +690,11 @@ mod tests {
         // can still add it.
         assert!(desk.apps().is_empty(), "nothing was added");
         assert!(desk.home.home().join("Downloads/Krita.AppImage").is_file());
-        assert!(!desk.add.presentation().is_drawn(), "the question is gone");
+        assert_eq!(
+            desk.add.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
+        );
 
         // It keeps running, and it is not asked about again.
         for _ in 0..4 {
@@ -800,9 +803,10 @@ mod tests {
         });
         desk.uninstall.answer(UninstallEffect::Cancel);
         desk.settle();
-        assert!(
-            !desk.uninstall.presentation().is_drawn(),
-            "the question goes"
+        assert_eq!(
+            desk.uninstall.presentation().phase(),
+            tilo_sheets::Phase::Leaving,
+            "the question's card leaves the screen; a shell reports it gone"
         );
         assert!(file.is_file(), "the app's file stays");
         assert_eq!(desk.apps().len(), 1, "and so does the app");

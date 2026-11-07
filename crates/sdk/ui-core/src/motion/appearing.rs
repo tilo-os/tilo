@@ -5,6 +5,8 @@ use super::named::Appear;
 use super::pose::Pose;
 use super::presence::Presence;
 use crate::tokens::{EffectiveMotion, MotionSource};
+use std::cell::Cell;
+use std::rc::Rc;
 use vello::kurbo::{Point, Rect};
 
 /// The coming and going of one surface on the standard [`Appear`] motion.
@@ -61,6 +63,15 @@ impl Appearing {
     pub fn show(&mut self, open: bool) {
         let motion = self.motion;
         self.follow(open, motion);
+    }
+
+    /// [`Self::show`] for a change `source` asked for: a host that opens and
+    /// closes a surface of its own says what asked, since no input of the
+    /// app did.
+    #[track_caller]
+    pub fn show_from(&mut self, open: bool, source: MotionSource) {
+        let motion = self.motion;
+        self.follow_from(open, motion, source);
     }
 
     /// [`Self::follow`] for a change `source` asked for (a hover dwell is the
@@ -123,5 +134,121 @@ impl Appearing {
             Appear::origin(surface, anchor),
             self.motion,
         )
+    }
+}
+
+/// One [`Appearing`] a surface and the host that draws it share.
+///
+/// A dialog belongs to the tree its app builds, and an app builds a new tree
+/// whenever its state changes: a dialog built open would arrive again on
+/// every rebuild, so it is built at rest instead — and then it never arrives
+/// at all. A host that builds the app's tree per state hands every rebuild
+/// the same handle ([`Self::shared`]), so the surface arrives once, leaves
+/// once, and reverses from where it is drawn like any other motion.
+#[derive(Clone, Debug)]
+pub enum Appearance {
+    /// The surface keeps its own: built open, it is drawn at rest from its
+    /// first paint.
+    Owned(Appearing),
+    /// Kept by the host that rebuilds the surface's tree.
+    Shared(Rc<Cell<Appearing>>),
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Self::Owned(Appearing::closed())
+    }
+}
+
+impl Appearance {
+    /// An appearance a host shares with every rebuild of a surface it draws,
+    /// starting closed: the first paint of a surface built open arrives.
+    #[must_use]
+    pub fn shared() -> Self {
+        Self::Shared(Rc::new(Cell::new(Appearing::closed())))
+    }
+
+    /// Whether the surface keeps this appearance itself: one built open is
+    /// drawn at rest, since a rebuild would otherwise replay its arrival.
+    #[must_use]
+    pub const fn is_owned(&self) -> bool {
+        matches!(self, Self::Owned(_))
+    }
+
+    fn get(&self) -> Appearing {
+        match self {
+            Self::Owned(appearing) => *appearing,
+            Self::Shared(shared) => shared.get(),
+        }
+    }
+
+    fn with(&mut self, change: impl FnOnce(&mut Appearing)) {
+        match self {
+            Self::Owned(appearing) => change(appearing),
+            Self::Shared(shared) => {
+                let mut appearing = shared.get();
+                change(&mut appearing);
+                shared.set(appearing);
+            }
+        }
+    }
+
+    /// [`Appearing::follow`].
+    #[track_caller]
+    pub fn follow(&mut self, open: bool, motion: EffectiveMotion) {
+        self.with(|appearing| appearing.follow(open, motion));
+    }
+
+    /// [`Appearing::follow_from`].
+    #[track_caller]
+    pub fn follow_from(&mut self, open: bool, motion: EffectiveMotion, source: MotionSource) {
+        self.with(|appearing| appearing.follow_from(open, motion, source));
+    }
+
+    /// [`Appearing::show`].
+    #[track_caller]
+    pub fn show(&mut self, open: bool) {
+        self.with(|appearing| appearing.show(open));
+    }
+
+    /// [`Appearing::show_from`].
+    #[track_caller]
+    pub fn show_from(&mut self, open: bool, source: MotionSource) {
+        self.with(|appearing| appearing.show_from(open, source));
+    }
+
+    /// [`Appearing::snap`].
+    pub fn snap(&mut self, open: bool) {
+        self.with(|appearing| appearing.snap(open));
+    }
+
+    /// [`Appearing::is_open`].
+    #[must_use]
+    pub fn is_open(&self) -> bool {
+        self.get().is_open()
+    }
+
+    /// [`Appearing::is_drawn`].
+    #[must_use]
+    pub fn is_drawn(&self) -> bool {
+        self.get().is_drawn()
+    }
+
+    /// [`Appearing::is_moving`].
+    #[must_use]
+    pub fn is_moving(&self) -> bool {
+        self.get().is_moving()
+    }
+
+    /// [`Appearing::progress`].
+    #[must_use]
+    pub fn progress(&self) -> f64 {
+        self.get().progress()
+    }
+
+    /// [`Appearing::pose`].
+    #[must_use]
+    pub fn pose(&self, surface: Rect, anchor: Point) -> Pose {
+        self.get().pose(surface, anchor)
     }
 }

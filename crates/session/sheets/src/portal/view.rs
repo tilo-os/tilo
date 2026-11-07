@@ -13,6 +13,7 @@ use super::{
     Body, Device, Dialog, DraftRow, DraftValue, Field, Focus, PortalEffect, PortalSeat,
     PortalSheet, Prompt, PromptKind, Shortcut, Shown,
 };
+use crate::presentation::presented;
 use crate::t;
 
 /// The id of the sheet's dialog, which the shell finds it by.
@@ -179,8 +180,7 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     let mut sheet = ModalDialog::new(dialog.title.clone(), body)
         .with_test_id(DIALOG_ID)
         .with_description(t("portal-sheet-description"))
-        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-        .open(true);
+        .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet));
     let cancel = parts.clone();
     sheet = sheet.secondary_action(dialog.cancel_label.clone(), move || cancel.cancel());
     if let Some((page, _)) = dialog.page.filter(|(page, _)| *page > 0) {
@@ -200,7 +200,7 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
     }
     // A press beside the sheet answers nothing: declining is Escape or
     // the button that says so.
-    Box::new(sheet)
+    Box::new(presented(Some(&parts.seat.presentation), sheet))
 }
 
 /// What the person chooses or types, under the detail.
@@ -444,7 +444,10 @@ pub(super) fn field_id(field: Field) -> String {
 fn secret(dialog: &Dialog, prompt: &Prompt, parts: &Parts) -> Element {
     let mut built = secret_prompt(dialog, prompt, &parts.seat);
     Widget::set_focus(&mut built, true);
-    Box::new(built.into_dialog().with_test_id(DIALOG_ID))
+    Box::new(presented(
+        Some(&parts.seat.presentation),
+        built.into_dialog().with_test_id(DIALOG_ID),
+    ))
 }
 
 /// The toolkit's secret prompt for `prompt`, holding what the seat's

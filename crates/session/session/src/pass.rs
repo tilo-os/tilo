@@ -364,6 +364,10 @@ impl Session {
             self.shared.desk_overlays.deadline(now),
             self.shared.restore.borrow().next_deadline(),
             self.shared.waking.next_deadline(),
+            // Quick settings is this session's own layer: its app drew the
+            // panel once and the pose the compositor grows it by is set here,
+            // so the pass that moves it is this loop's to schedule.
+            self.quick_settings_panel.next_pass(now),
             self.capture_studio
                 .as_ref()
                 .and_then(crate::capture_studio::CaptureStudio::next_deadline),

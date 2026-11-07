@@ -23,7 +23,7 @@ use ui::prelude::*;
 use ui::widget::{Column, Container, Element, InputHint, ModalDialog, Row, Scrollable, Text};
 
 use crate::keyboard_shortcuts::chord_text;
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 use crate::t;
 
 /// The app the shell mounts the guide as.
@@ -212,11 +212,14 @@ impl ResourceApp for ShortcutGuideApp {
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
         }
-        let asking = seat;
+        let asking = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: GuideEffect, _cx| match &asking {
             Some(seat) => {
                 if effect == GuideEffect::Done {
-                    seat.presentation.gone();
+                    // Its own close: the card leaves the screen, and the shell tells it gone
+                    // once nothing of it is drawn.
+                    seat.presentation.close();
                 }
                 seat.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
@@ -224,7 +227,9 @@ impl ResourceApp for ShortcutGuideApp {
             None => Err("no desktop to change here".to_owned()),
         });
         let dispatch = cx.dispatcher();
-        cx.switch(&shown, move |_cx, guide| sheet(guide, &dispatch))
+        cx.switch(&shown, move |_cx, guide| {
+            sheet(guide, &dispatch, presentation.as_ref())
+        })
     }
 
     fn scenarios() -> &'static [&'static str] {
@@ -290,20 +295,24 @@ fn sample_keyboard_guide() -> Guide {
 }
 
 /// The guide: a sheet over the desktop, Done or Escape to leave it.
-fn sheet(guide: &Guide, dispatch: &Dispatcher<ShortcutGuide>) -> Element {
+fn sheet(
+    guide: &Guide,
+    dispatch: &Dispatcher<ShortcutGuide>,
+    presentation: Option<&Presentation>,
+) -> Element {
     let done = dispatch.clone();
     let dismissed = dispatch.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(
             t("guide-title"),
             Scrollable::new_vertical().with_child(body(guide, dispatch)),
         )
         .with_test_id("shortcut-guide")
         .with_max_width(960.0)
-        .open(true)
         .primary_action(t("guide-done"), move || done.effect(&GuideEffect::Done))
         .on_dismiss(move || dismissed.effect(&GuideEffect::Done)),
-    )
+    ))
 }
 
 fn caption(text: &str) -> Element {
