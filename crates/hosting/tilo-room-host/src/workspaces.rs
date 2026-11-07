@@ -199,7 +199,7 @@ struct GovernedWorkspace {
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
-    /// The requests of people who asked at its door without an invitation.
+    /// The addresses people left at its door without an invitation.
     wait_list: wait_list::WaitList,
     /// Whom moderation removed, and when: the public door keeps them out for
     /// the day.
@@ -975,7 +975,6 @@ struct WorkspacesInner {
     /// once create it once.
     creating: AsyncMutex<()>,
     calls: Arc<voice::Calls>,
-    page_joins: std::sync::Mutex<pages::PageJoins>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
     /// Each record write of a member the governor's copy took in.
@@ -1178,7 +1177,6 @@ impl Workspaces {
                 workspaces,
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
-                page_joins: std::sync::Mutex::default(),
                 changes: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 content: content::ContentSlot::default(),

@@ -9,12 +9,11 @@
 //!
 //! `/rooms` administers the host's workspaces for a device of the host's own
 //! user: create a governed workspace, enter it as its owner, invite and
-//! cancel invitations, admit or decline the people who asked to join, change
-//! members' roles and remove them. `/join` is for
+//! cancel invitations, change members' roles and remove them. `/join` is for
 //! anyone holding an invitation, before the host admits them to a session:
-//! the device names itself with its certificate, signs the host's join
-//! challenge ([`join_proof_digest`]) and waits until the workspace's owner admits
-//! or declines it.
+//! the device names itself with its certificate and signs the host's join
+//! challenge ([`join_proof_digest`]); the invitation's own grant admits it,
+//! and the owner's pre-admission token admits it at once too.
 
 pub mod private;
 
@@ -23,9 +22,6 @@ use tilo_user_identity::DeviceCert;
 
 /// Domain of the device signature that answers a join challenge.
 pub const JOIN_PROOF_DOMAIN: &[u8] = b"tilo/workspace-join-proof/v1\0";
-
-/// Pending join requests a workspace keeps at once.
-pub const MAX_JOIN_REQUESTS: usize = 64;
 
 /// What the device signs to answer the join challenge whose canonical
 /// encoding the host sent as [`JoinReply::Challenge`]:
@@ -103,23 +99,6 @@ pub struct Workspace {
     pub generation: u64,
     /// Every person governance records, removed ones included.
     pub members: Vec<WorkspaceMember>,
-}
-
-/// A person who redeemed an invitation and waits for the owner.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct JoinRequest {
-    /// The device's request.
-    pub request_id: [u8; 32],
-    /// The person.
-    pub user_public_key: [u8; 32],
-    /// Their device.
-    pub device_public_key: [u8; 32],
-    /// The name they gave.
-    pub name: String,
-    /// The role the invitation grants.
-    pub role: WorkspaceRole,
-    /// When they asked.
-    pub requested_at_ns: u64,
 }
 
 /// The person who sent an invitation, as the host signed it into the
@@ -333,25 +312,14 @@ pub enum WorkspacesRequest {
         #[serde(rename = "room")]
         workspace: String,
     },
-    /// The people waiting to join `workspace`.
-    Requests {
-        #[serde(rename = "room")]
-        workspace: String,
-    },
-    /// Admit a waiting person.
-    Admit {
-        #[serde(rename = "room")]
-        workspace: String,
-        /// Their request.
-        request_id: [u8; 32],
-    },
-    /// Decline a waiting person: answered with [`WorkspacesReply::Requests`].
-    Decline {
-        #[serde(rename = "room")]
-        workspace: String,
-        /// Their request.
-        request_id: [u8; 32],
-    },
+    /// Retired: an invitation admits by itself, so nobody waits for the
+    /// owner's answer. It keeps the requests after it at their encoded
+    /// positions.
+    RetiredJoinRequests {},
+    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`].
+    RetiredAdmit {},
+    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`].
+    RetiredDecline {},
     /// Change a member's role.
     SetRole {
         #[serde(rename = "room")]
@@ -417,14 +385,14 @@ pub enum WorkspacesRequest {
         /// (`workspace:<id>/app:<app>/…`).
         node: String,
     },
-    /// The requests left at `workspace`'s door, oldest first: answered with
+    /// The addresses left at `workspace`'s door, oldest first: answered with
     /// [`WorkspacesReply::WaitList`]. Whoever may invite.
     WaitList {
         #[serde(rename = "room")]
         workspace: String,
     },
-    /// Take a request left at `workspace`'s door off its wait list, when it is
-    /// not to be invited: answered with [`WorkspacesReply::WaitList`]. An entry
+    /// Take an address left at `workspace`'s door off its wait list, when it
+    /// is not to be invited: answered with [`WorkspacesReply::WaitList`]. An entry
     /// invited ([`WorkspacesRequest::Invite`]'s `wait_list_entry`) leaves the
     /// list by itself once someone joins with that invitation.
     Unlist {
@@ -513,8 +481,9 @@ pub enum WorkspacesReply {
     },
     /// The redeemable invitations.
     Pending(Vec<PendingInvite>),
-    /// The people waiting to join.
-    Requests(Vec<JoinRequest>),
+    /// Retired with [`WorkspacesRequest::RetiredJoinRequests`]; it keeps the
+    /// replies after it at their encoded positions.
+    RetiredAnsweredJoinRequests,
     /// Refused, and why.
     Refused(String),
     /// What happened without the owner deciding it then, oldest first.
@@ -550,8 +519,8 @@ pub enum JoinStep {
         /// The device's request, random and kept until it is answered.
         request_id: [u8; 32],
     },
-    /// The device's signature over [`join_proof_digest`] of `challenge`:
-    /// the request then waits for the owner.
+    /// The device's signature over [`join_proof_digest`] of `challenge`.
+    /// The invitation's own grant admits the device.
     Prove {
         /// The challenge exactly as the host sent it.
         challenge: Vec<u8>,
@@ -610,8 +579,9 @@ pub enum JoinReply {
         /// The challenge.
         challenge: Vec<u8>,
     },
-    /// The owner has not decided yet.
-    Waiting,
+    /// Retired: nobody waits for the owner's answer. It keeps the replies
+    /// after it at their encoded positions.
+    RetiredWaiting,
     /// The owner admitted the device: it may open a session and subscribe.
     Admitted {
         /// The workspace's UUID.
@@ -622,7 +592,8 @@ pub enum JoinReply {
         name: String,
         role: WorkspaceRole,
     },
-    /// The owner declined.
+    /// The person was admitted and lost the workspace, or asked for a join
+    /// that is no longer admitted.
     Declined,
     /// Refused, and why.
     Refused(String),
@@ -737,8 +708,8 @@ pub const WAIT_LIST_REMOVAL_BYTES: usize = 32;
 /// entry), and the entry leaves the list once someone joins with it; or
 /// they take it off the list ([`WorkspacesRequest::Unlist`]). Whoever left it
 /// takes it off themselves with the secret they were handed
-/// ([`WAIT_LIST_REMOVAL_BYTES`]). Unlike a [`JoinRequest`] it names no person
-/// or device: it is not anyone to admit.
+/// ([`WAIT_LIST_REMOVAL_BYTES`]). It names no person
+/// or device: it is not anyone to admit, only an address to invite.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WaitListEntry {
     /// The entry, for [`WorkspacesRequest::Unlist`].

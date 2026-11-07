@@ -43,18 +43,15 @@ test('an invitation names the inviter and comes back as base64url text', async (
   await assert.rejects(membership.createInvitation({expiresIn: MAX_INVITATION_SECONDS + 1}), RangeError);
 });
 
-test('the owner lists, admits, declines and removes people', async () => {
+test('the owner lists invitations and people, invites an address and removes a person', async () => {
   const host = fakeHost({
     List: () => ({Rooms: [room]}),
-    Requests: () => ({Requests: [{request_id: key(9), user_public_key: key(0xcc), device_public_key: key(0xcd), name: 'Cy', role: 'Editor', requested_at_ns: 5e6}]}),
     WaitList: () => ({WaitList: [{request_id: key(8), contact: 'Ed@example.org', added_at_ns: 6e6, invited_at_ns: null},
       {request_id: key(7), contact: 'fy@example.org', added_at_ns: 6e6, invited_at_ns: 8e6}]}),
     Unlist: () => ({WaitList: []}),
     MailInvite: () => ({WaitList: []}),
     Pending: () => ({Pending: [{invite_id: key(4), role: 'Editor', expires_at_ns: 9e9}]}),
     Notices: () => ({Notices: [{PreAdmitted: {user_public_key: key(0xdd), name: 'Di', label: 'di@example.com', role: 'Editor', at_ns: 7e6}}]}),
-    Admit: () => ({Room: room}),
-    Decline: () => ({Requests: []}),
     Remove: request => ({Room: {...room, members: room.members.map(member =>
       member.user_public_key.every((byte, index) => byte === request.Remove.user_public_key[index]) ? {...member, removed: true} : member)}}),
     Cancel: () => ({Refused: 'invitation was already redeemed'}),
@@ -63,9 +60,6 @@ test('the owner lists, admits, declines and removes people', async () => {
   const listed = await membership.list();
   assert.equal(listed.name, 'Acme');
   assert.deepEqual(listed.members[0], {userPublicKey: 'aa'.repeat(32), name: 'Ada', role: 'editor', owner: true, removed: false});
-  assert.deepEqual(listed.waiting, [
-    {requestId: '09'.repeat(32), userPublicKey: 'cc'.repeat(32), devicePublicKey: 'cd'.repeat(32), name: 'Cy', role: 'editor', requestedAtMs: 5},
-  ]);
   // Addresses left at the door are a list of their own: nobody to admit.
   assert.deepEqual(await membership.waitList(), [{requestId: '08'.repeat(32), contact: 'Ed@example.org', addedAtMs: 6, invitedAtMs: null},
     {requestId: '07'.repeat(32), contact: 'fy@example.org', addedAtMs: 6, invitedAtMs: 8}]);
@@ -76,13 +70,9 @@ test('the owner lists, admits, declines and removes people', async () => {
   assert.deepEqual(listed.invitations, [{inviteId: '04'.repeat(32), role: 'editor', expiresAtMs: 9000}]);
   assert.deepEqual(listed.notices, [{kind: 'pre-admitted', userPublicKey: 'dd'.repeat(32), name: 'Di', label: 'di@example.com', role: 'editor', atMs: 7}]);
 
-  await membership.admit('09'.repeat(32));
-  assert.deepEqual(host.sent.at(-1), {Admit: {room: WORKSPACE, request_id: key(9)}});
-  await membership.decline('09'.repeat(32));
   const after = await membership.remove('bb'.repeat(32));
   assert.equal(after.members[1].removed, true);
   await assert.rejects(membership.cancelInvitation('04'.repeat(32)), /already redeemed/);
-  await assert.rejects(membership.admit('not hex'), TypeError);
 });
 
 test('a peer without a workspace administers nothing', async () => {

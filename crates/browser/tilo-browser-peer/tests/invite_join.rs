@@ -215,17 +215,6 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         .unwrap(),
         JoinReply::Refused(_)
     ));
-    assert_eq!(
-        workspaces(
-            &owner,
-            WorkspacesRequest::Requests {
-                workspace: created.workspace.clone()
-            }
-        )
-        .await,
-        WorkspacesReply::Requests(vec![])
-    );
-
     // He asks; the invitation admits him by the grant of whoever issued it,
     // so nobody waits to be let in.
     let bob_request = [2; 32];
@@ -259,18 +248,6 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
         ),
         "a reloaded page hears what became of its request"
     );
-    // Nobody waits for the owner, so there is nobody to admit.
-    assert_eq!(
-        workspaces(
-            &owner,
-            WorkspacesRequest::Requests {
-                workspace: created.workspace.clone(),
-            }
-        )
-        .await,
-        WorkspacesReply::Requests(vec![])
-    );
-
     // Someone else with the same invitation is turned away: he redeemed it.
     let carol = guest("Carol").await;
     assert!(matches!(
@@ -344,13 +321,6 @@ async fn the_owner_admits_and_removes_a_different_person_over_https() {
             inviter_name: None,
             wait_list_entry: None,
             recipient: None,
-        },
-        WorkspacesRequest::Requests {
-            workspace: created.workspace.clone(),
-        },
-        WorkspacesRequest::Admit {
-            workspace: created.workspace.clone(),
-            request_id: bob_request,
         },
     ] {
         assert!(matches!(

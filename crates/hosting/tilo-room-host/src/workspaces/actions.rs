@@ -79,12 +79,6 @@ use tilo_lock::MutexRecover as _;
 pub(crate) const INVITATIONS: &str = "invitation.list";
 /// Cancelling an unredeemed invitation: part of inviting.
 pub(crate) const CANCEL_INVITATION: &str = "invitation.cancel";
-/// Listing the join requests waiting for someone to admit them.
-pub(crate) const JOIN_REQUESTS: &str = "join-request.list";
-/// Admitting a waiting join request, with the role its invitation carries.
-pub(crate) const ADMIT: &str = "join-request.admit";
-/// Declining a waiting join request.
-pub(crate) const DECLINE: &str = "join-request.decline";
 /// Listing the workspace as a public workspace, with its description and the
 /// role everyone who joins gets.
 pub(crate) const PUBLISH: &str = "publish";
@@ -140,7 +134,7 @@ struct Verb {
 }
 
 /// What the workspaces serve, in catalogue order.
-const VERBS: [Verb; 17] = [
+const VERBS: [Verb; 14] = [
     Verb {
         id: governance::INVITE,
         label: "Invite",
@@ -161,27 +155,6 @@ const VERBS: [Verb; 17] = [
         gate: governance::INVITE,
         kind: roles::GOVERNANCE_KIND,
         params: invitation_params,
-    },
-    Verb {
-        id: JOIN_REQUESTS,
-        label: "List join requests",
-        gate: governance::INVITE,
-        kind: ActionKind::Read,
-        params: Vec::new,
-    },
-    Verb {
-        id: ADMIT,
-        label: "Admit",
-        gate: governance::INVITE,
-        kind: roles::GOVERNANCE_KIND,
-        params: join_request_params,
-    },
-    Verb {
-        id: DECLINE,
-        label: "Decline",
-        gate: governance::INVITE,
-        kind: roles::GOVERNANCE_KIND,
-        params: join_request_params,
     },
     Verb {
         id: governance::UNBAN,
@@ -331,14 +304,6 @@ fn invitation_params() -> Vec<ActionParam> {
         "invite",
         ParamType::Text,
         "The invitation's id, 64 hex characters, as listing invitations reports it.",
-    )]
-}
-
-fn join_request_params() -> Vec<ActionParam> {
-    vec![ActionParam::required(
-        "request",
-        ParamType::Text,
-        "The join request's id, 64 hex characters, as listing join requests reports it.",
     )]
 }
 
@@ -809,18 +774,6 @@ fn pending_json(invitation: &super::PendingInvitation) -> Value {
     })
 }
 
-/// A waiting join request, as listing join requests reports it.
-fn join_json(join: &tilo_relay_protocol::workspaces::JoinRequest) -> Value {
-    json!({
-        "request": hex::encode(join.request_id),
-        "person": hex::encode(join.user_public_key),
-        "device": hex::encode(join.device_public_key),
-        "name": join.name,
-        "role": role_name(super::pages::member_role(join.role)),
-        "requested_at_ns": join.requested_at_ns,
-    })
-}
-
 /// The idempotency key of invocation `invocation` by the person `person`:
 /// a retry of it is a retry to the workspace's request records, which answer it
 /// with what the first attempt did.
@@ -1041,12 +994,9 @@ impl Workspaces {
         call: GovernanceCall<'_>,
     ) -> Result<Value, ActionHostError> {
         match action {
-            governance::INVITE
-            | INVITATIONS
-            | CANCEL_INVITATION
-            | JOIN_REQUESTS
-            | ADMIT
-            | DECLINE => self.governance_invitations(action, call).await,
+            governance::INVITE | INVITATIONS | CANCEL_INVITATION => {
+                self.governance_invitations(action, call).await
+            }
             PUBLISH | UNPUBLISH | PUBLICATION => self.governance_listing(action, call).await,
             REQUEST_BOT | WITHDRAW_BOT_REQUEST => self.governance_bots(action, call).await,
             governance::INSTALL_APP | UNINSTALL_APP => self.governance_apps(action, call).await,
@@ -1216,8 +1166,7 @@ impl Workspaces {
         }
     }
 
-    /// Inviting, and what inviting covers: the invitations and join
-    /// requests.
+    /// Inviting, and what inviting covers: the invitations.
     async fn governance_invitations(
         &self,
         action: &str,
@@ -1277,25 +1226,6 @@ impl Workspaces {
                 )
                 .await
                 .map_err(|error| refused(&error))?;
-                Ok(json!({}))
-            }
-            JOIN_REQUESTS => {
-                let waiting = self
-                    .join_requests(workspace, device, now)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                Ok(waiting.iter().map(join_json).collect())
-            }
-            ADMIT => {
-                self.admit_page(workspace, device, args.required_key("request")?, now)
-                    .await
-                    .map_err(|error| refused(&error))?;
-                Ok(json!({}))
-            }
-            DECLINE => {
-                self.decline_page(workspace, device, args.required_key("request")?, now)
-                    .await
-                    .map_err(|error| refused(&error))?;
                 Ok(json!({}))
             }
             _ => Err(ActionHostError::UnknownAction),
