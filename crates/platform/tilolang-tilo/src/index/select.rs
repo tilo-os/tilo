@@ -269,12 +269,11 @@ impl View<'_> {
                 )
                 .map(Answer::shown);
         }
-        let fewest = (narrow.as_ref(), chosen.as_ref());
         if let Some(answer) = self.narrowed(
             (resource, field),
             schema,
             (&conj, order),
-            fewest,
+            chosen.as_ref(),
             (&touched, evaluated),
         )? {
             return Ok(answer);
@@ -332,41 +331,37 @@ impl View<'_> {
         .map(Answer::shown)
     }
 
-    /// The answer of a query ordered by a column, when the run that names the fewest of its
-    /// items names fewer than that column holds: read whole and put in the order, so a place of
-    /// the day's work costs those tasks and not the collection. `None` when the order is read
-    /// cheaper than the run ([`Self::ordered_listing`]), or cannot be read at all ([`Self::scanned`]).
+    /// The answer of a query ordered by a column, when the run of the conjunct it reads names no
+    /// more items than the page a listing reads at once: read whole and put in the order, so a
+    /// place of the day's work costs those tasks and not the collection. A longer run is left to
+    /// the pages of the order column ([`Self::ordered_listing`]): reading it whole reads an entry
+    /// of the index per item it names, which is the workspace's size for a place that holds most
+    /// of it, where a page costs what the window shows.
     fn narrowed(
         &self,
         (resource, field): (&str, &str),
         schema: &TypeSchema,
         (conj, order): (&[&Pred], Option<&Order>),
-        (narrow, chosen): (Option<&Fewest>, Option<&Chosen>),
+        chosen: Option<&Chosen>,
         (touched, evaluated): (&std::collections::BTreeSet<String>, &Cell<u64>),
     ) -> Result<Option<Answer>, StoreError> {
         let Some(order) = order.filter(|order| order.then.is_none()) else {
             return Ok(None);
         };
-        let fewest = match narrow {
-            Some((at, access, count)) => Some((*at, access.clone(), *count)),
-            None => match chosen {
-                Some((at, access)) => self
-                    .bound_of(
-                        (resource, field),
-                        schema,
-                        conj.get(*at).copied().unwrap_or(&Pred::Const(false)),
-                        touched,
-                    )?
-                    .map(|count| (*at, access.clone(), count)),
-                None => None,
-            },
+        let Some((at, access)) = chosen else {
+            return Ok(None);
         };
-        let (Some((at, access, count)), Some(scan)) =
-            (fewest, self.scanned((resource, field), schema, order))
+        let (at, access) = (*at, access.clone());
+        let Some(count) = self.bound_of(
+            (resource, field),
+            schema,
+            conj.get(at).copied().unwrap_or(&Pred::Const(false)),
+            touched,
+        )?
         else {
             return Ok(None);
         };
-        if count >= scan {
+        if count > PAGE {
             return Ok(None);
         }
         self.read_whole(
@@ -377,30 +372,6 @@ impl View<'_> {
             (touched, evaluated),
         )
         .map(|listing| Some(Answer::shown(listing)))
-    }
-
-    /// How many entries the column `order` is read from holds: the items an order read from the
-    /// index is read over, whether the query holds of them or not. `None` when the order is not
-    /// read that way, so what it costs to read it whole is not known ([`Self::ordered_listing`]
-    /// decides both); a read the index refuses is left to the read that answers the query.
-    fn scanned(
-        &self,
-        (resource, field): (&str, &str),
-        schema: &TypeSchema,
-        order: &Order,
-    ) -> Option<usize> {
-        let scan = *order.levels().last()?;
-        if scan.absent_last && scan.descending {
-            return None;
-        }
-        let column = schema
-            .column(&scan.field)
-            .filter(|column| !column.many && ordered_or_text(column.kind))?;
-        let pages = self
-            .snapshot
-            .pages(&scope_list(resource, field, &column.name))
-            .ok()?;
-        Some(pages.len())
     }
 
     /// The items of the collection `field` of `resource` under the item `node` (above it, for
