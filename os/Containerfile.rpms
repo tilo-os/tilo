@@ -18,29 +18,17 @@ COPY --from=github-assets / /
 FROM ${BASE_REF} AS configured-base
 
 # Snapshot creation must not inherit a randomly selected, stale mirror and then
-# retry every RPM serially. Use current Fedora HTTPS mirrors and bounded
-# parallelism; RPM signatures still provide the package authenticity check.
-# Two, both current: ftp.fau.de, and Fedora's own master (dl.fedoraproject.org)
-# where a download from it fails, so one mirror throttling or resetting
-# connections does not fail the snapshot ("All mirrors were tried").
-RUN sed -i \
-      -e 's|^#baseurl=http://download.example/pub/fedora/linux/releases/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/releases/\1 https://dl.fedoraproject.org/pub/fedora/linux/releases/\1|' \
-      -e '/^metalink=.*repo=fedora-/s/^/#/' \
-      /etc/yum.repos.d/fedora.repo \
- && sed -i \
-      -e 's|^#baseurl=http://download.example/pub/fedora/linux/updates/\(.*\)$|baseurl=https://ftp.fau.de/fedora/linux/updates/\1 https://dl.fedoraproject.org/pub/fedora/linux/updates/\1|' \
-      -e 's|/Everything/SRPMS/|/Everything/source/tree/|g' \
-      -e '/^metalink=.*repo=updates-/s/^/#/' \
-      /etc/yum.repos.d/fedora-updates.repo \
- && printf '[main]\nmax_parallel_downloads=20\n' > /etc/dnf/dnf.conf
-
-# Tilo never distributes Cisco's OpenH264 binary: Cisco's patent licence covers
-# only binaries the user downloads from Cisco. With the base's
+# retry every RPM serially, and the metalink can answer with an address that
+# never answers: os/dev/configure-fedora-mirrors.sh points the repository files
+# at two current Fedora HTTPS mirrors and sets bounded parallelism; RPM
+# signatures still provide the package authenticity check. With the base's
 # fedora-cisco-openh264 repository enabled, its `openh264` (which obsoletes
-# Fedora's `noopenh264` stub) satisfies libopenh264.so.8 for libavcodec-free,
-# libheif and freerdp-libs and so would enter every image. Without it the stub
-# does; Cisco's build reaches a device only through the media-codecs extension.
-RUN rm -f /etc/yum.repos.d/fedora-cisco-openh264.repo
+# Fedora's `noopenh264` stub) would enter every image, and Tilo never
+# distributes Cisco's OpenH264 binary (Cisco's patent licence covers only
+# binaries the user downloads from Cisco): the script removes it, and Cisco's
+# build reaches a device only through the media-codecs extension.
+COPY os/dev/configure-fedora-mirrors.sh /usr/local/bin/configure-fedora-mirrors
+RUN configure-fedora-mirrors
 
 # Repository tooling must never change the RPM database used for resolution.
 FROM configured-base AS metadata-tools
