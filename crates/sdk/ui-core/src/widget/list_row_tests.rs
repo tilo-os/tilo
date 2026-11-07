@@ -124,6 +124,26 @@ fn row_height_comes_from_measured_line_boxes_and_grows_with_text() {
     }
 }
 
+/// A note is a line of the row's own under its text: the builder reaches the face, the line
+/// is measured, and the reader is told it with the row.
+#[test]
+fn a_rows_note_is_a_line_of_its_own_under_its_text() {
+    let row = ListRow::new("note-row", "Claude")
+        .secondary("Kept by you")
+        .note("$0.42 of $5 today");
+    assert_eq!(
+        row.with_face(|face| face.note.map(str::to_owned)),
+        Some("$0.42 of $5 today".to_owned()),
+        "the builder's note is the face's"
+    );
+    let plain = ListRowFace::new("Claude").secondary("Kept by you");
+    let noted = plain.clone().note("$0.42 of $5 today");
+    assert!(
+        face_height(&noted, 1.0) > face_height(&plain, 1.0),
+        "the note is a line under the row's text, not on it"
+    );
+}
+
 /// A dense row is a quiet reference under content: one line at the caption's size with the
 /// small glyph, as tall as that line and its inset rather than the list's row height, and a
 /// finger's press on one still grows it to its target.
