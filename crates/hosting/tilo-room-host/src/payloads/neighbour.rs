@@ -1,4 +1,4 @@
-//! [`ShellPayloads`] for the desktop's peer-sync messages.
+//! [`ShellPayloads`](super::ShellPayloads) for the desktop's peer-sync messages.
 //!
 //! Every classification here is the one the host applied before the seam
 //! existed, so retained data written by any earlier host is judged exactly
@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::{Retention, audience, retention, standalone};
 
-use crate::{Checkpoint, CheckpointKind, Route, ShellPayloads};
+use super::{Checkpoint, CheckpointKind, Route, ShellPayloads};
 
 /// Classifies co-edit bodies as the desktop's `NeighbourMsg` vocabulary.
 #[derive(Clone, Copy, Debug, Default)]

@@ -20838,19 +20838,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-relay-shell"
-version = "0.1.0"
-dependencies = [
- "blake3",
- "collab-types",
- "neighbour-wire",
- "postcard",
- "tilo-peer-state",
- "tilo-user-identity",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-relay-store"
 version = "0.1.0"
 dependencies = [
@@ -21016,7 +21003,6 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
- "tilo-relay-shell",
  "tilo-relay-store",
  "tilo-secrets",
  "tilo-test-env",
@@ -28345,7 +28331,6 @@ dependencies = [
  "tilo-relay-client",
  "tilo-relay-protocol",
  "tilo-relay-session",
- "tilo-relay-shell",
  "tilo-relay-store",
  "tilo-render-protocol",
  "tilo-render-service",

@@ -139,16 +139,3 @@ pub fn input_identity(
     hash.update(body);
     *hash.finalize().as_bytes()
 }
-
-/// The [`input_identity`] of the complete retained frame `bytes` of
-/// `workspace`, or `None` when it is not one.
-#[must_use]
-pub fn incoming_identity(bytes: &[u8], workspace: u64) -> Option<[u8; 32]> {
-    let (source, payload) = payload(bytes, workspace)?;
-    Some(match payload {
-        CoeditPayload::Checkpoint { channel, body } => input_identity(source, channel, true, &body),
-        CoeditPayload::RetainedDelta { channel, body } => {
-            input_identity(source, channel, false, &body)
-        }
-    })
-}

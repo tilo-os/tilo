@@ -1275,7 +1275,6 @@ doc = false
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
-"tilo-relay-shell" = { path = "../../../crates/hosting/tilo-relay-shell", default-features = false, features = [] }
 "tilo-relay-store" = { path = "../../../crates/hosting/tilo-relay-store", default-features = false, features = ["test-support"] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }
@@ -3868,7 +3867,6 @@ doc = false
 "tilo-relay-client" = { path = "../../../crates/hosting/tilo-relay-client", default-features = false, features = ["default", "iroh"] }
 "tilo-relay-protocol" = { path = "../../../crates/hosting/tilo-relay-protocol", default-features = false, features = [] }
 "tilo-relay-session" = { path = "../../../crates/hosting/tilo-relay-session", default-features = false, features = [] }
-"tilo-relay-shell" = { path = "../../../crates/hosting/tilo-relay-shell", default-features = false }
 "tilo-relay-store" = { path = "../../../crates/hosting/tilo-relay-store", default-features = false, features = ["test-support"] }
 "tilo-render-protocol" = { path = "../../../crates/platform/tilo-render-protocol", default-features = false, features = [] }
 "tilo-render-service" = { path = "../../../crates/session/render-service", default-features = false, features = [] }

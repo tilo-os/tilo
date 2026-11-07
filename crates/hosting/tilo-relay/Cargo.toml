@@ -62,7 +62,7 @@ path = "src/home_peer_control/main.rs"
 #   It reads the desktop's peer-sync messages inside co-edit bodies to
 #   decide retention, replay and compaction: document frames, checkpoint
 #   kinds and audiences through the injected `payloads::ShellPayloads`
-#   (`tilo-relay-shell`); it refuses document
+#   (`tilo_room_host::payloads`); it refuses document
 #   changes an app's surface does not allow (`surfaces`). Sealed document
 #   content stays opaque.
 # - Multi-host by construction — several relays bound to the same
