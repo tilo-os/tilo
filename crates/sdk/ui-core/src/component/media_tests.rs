@@ -7,8 +7,7 @@
     reason = "in a test these are the assertion"
 )]
 
-use std::collections::BTreeMap;
-
+use super::testing::*;
 use super::*;
 use crate::component::{Component, Described, PropType};
 use crate::headless::FrameHarness;
@@ -18,88 +17,7 @@ use crate::widget::{
     MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget,
     RichTextLineProps, Widget,
 };
-
-/// An instance as a test gives it: values by prop, the events it handles, and the components in
-/// its slots.
-struct Node {
-    key: String,
-    props: BTreeMap<String, Value>,
-    events: Vec<&'static str>,
-    slots: Vec<(&'static str, Node)>,
-    queue: crate::Intents<Fired>,
-}
-
-impl Node {
-    fn new(_kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
-        Self {
-            key: key.to_owned(),
-            props: BTreeMap::new(),
-            events: Vec::new(),
-            slots: Vec::new(),
-            queue: queue.clone(),
-        }
-    }
-
-    fn prop(mut self, name: &str, value: Value) -> Self {
-        self.props.insert(name.to_owned(), value);
-        self
-    }
-
-    fn on(mut self, event: &'static str) -> Self {
-        self.events.push(event);
-        self
-    }
-
-    fn holding(mut self, slot: &'static str, child: Node) -> Self {
-        self.slots.push((slot, child));
-        self
-    }
-}
-
-impl Source for Node {
-    fn key(&self) -> &str {
-        &self.key
-    }
-
-    fn prop(&mut self, name: &str) -> Option<Value> {
-        self.props.get(name).cloned()
-    }
-
-    fn event(&mut self, name: &str) -> Event {
-        if self.events.contains(&name) {
-            Event::View(Intent::new(&self.queue, &self.key, name))
-        } else {
-            Event::None
-        }
-    }
-
-    fn binding(&mut self, _name: &str) -> Option<BoundValue> {
-        None
-    }
-
-    fn children(&mut self, _slot: &str) -> Vec<crate::widget::Element> {
-        Vec::new()
-    }
-
-    fn components(
-        &mut self,
-        slot: &str,
-        read: &mut dyn FnMut(&mut dyn Source) -> Result<(), String>,
-    ) -> Result<usize, String> {
-        let mut count = 0;
-        for (name, child) in &mut self.slots {
-            if *name == slot {
-                read(child)?;
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-}
-
-fn text(value: &str) -> Value {
-    Value::Text(value.to_owned())
-}
+use std::sync::Arc;
 
 fn picture(src: &str) -> Value {
     Value::Picture(tilo_ui_graph::component::Picture {
@@ -110,7 +28,7 @@ fn picture(src: &str) -> Value {
 /// A served pictures store, so a test's picture address answers from its own bytes rather than
 /// reaching for a content store.
 fn pictures_with(png: Vec<u8>) -> crate::pictures::Pictures {
-    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |_| Some(png.clone()));
+    let fetch: crate::image_store::Fetcher = Arc::new(move |_| Some(png.clone()));
     crate::pictures::Pictures::new(crate::ImageStore::new(&fetch))
 }
 
@@ -125,18 +43,6 @@ fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
         },
     );
     grid.take_card(0).expect("one card")
-}
-
-fn harness<W: Widget + 'static>(root: W) -> FrameHarness {
-    FrameHarness::for_root(crate::State::new(), root, (900, 600), Theme::light())
-}
-
-fn fired(key: &str, event: &str, value: Option<Value>) -> Fired {
-    Fired {
-        key: key.to_owned(),
-        event: event.to_owned(),
-        value,
-    }
 }
 
 #[test]
@@ -170,7 +76,7 @@ fn an_image_is_a_picture_by_its_address_and_shows_its_bytes_when_they_arrive() {
 #[test]
 fn a_picture_answers_a_served_store_and_nothing_else_loads() {
     let png = crate::png::encode_rgba8(2, 2, &[255; 4].repeat(4)).expect("a picture");
-    let fetch: crate::image_store::Fetcher = std::sync::Arc::new(move |url: &str| {
+    let fetch: crate::image_store::Fetcher = Arc::new(move |url: &str| {
         assert_eq!(url, "tilo-blob://only");
         Some(png.clone())
     });

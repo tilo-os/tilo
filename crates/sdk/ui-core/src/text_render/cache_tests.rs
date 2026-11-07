@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::Cell;
 
 #[test]
 fn packed_key_hash_preserves_all_equality_fields_in_one_write() {
@@ -167,10 +168,7 @@ fn reset_work() {
 }
 
 fn work() -> (usize, usize) {
-    (
-        HASHED_BYTES.with(std::cell::Cell::get),
-        COMPARED_BYTES.with(std::cell::Cell::get),
-    )
+    (HASHED_BYTES.with(Cell::get), COMPARED_BYTES.with(Cell::get))
 }
 
 #[test]

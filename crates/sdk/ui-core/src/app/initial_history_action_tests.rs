@@ -1,10 +1,7 @@
 // Socket-backed original history must precede public operation admission.
 use automerge::ReadDoc as _;
 use tilo_test_env::SpawnUnderEnvLock as _;
-struct InitialHistoryProbe(
-    std::rc::Rc<std::cell::Cell<usize>>,
-    std::rc::Rc<std::cell::Cell<bool>>,
-);
+struct InitialHistoryProbe(Rc<Cell<usize>>, Rc<Cell<bool>>);
 impl crate::widget::Widget for InitialHistoryProbe {
     crate::provides!(
         dyn crate::resources::PublishesResources,
@@ -72,8 +69,8 @@ fn initial_history_query() -> runtime_collab::ActionDirectoryQuery {
         resource_name: String::new(),
     }
 }
-fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+fn initial_history_app() -> (App, Rc<Cell<usize>>) {
+    let calls = Rc::new(Cell::new(0));
     let mut history = automerge::AutoCommit::new();
     history
         .put(ROOT, "original-owner-history", "retained")
@@ -88,7 +85,7 @@ fn initial_history_app() -> (App, std::rc::Rc<std::cell::Cell<usize>>) {
         State::new(),
         Box::new(InitialHistoryProbe(
             calls.clone(),
-            std::rc::Rc::new(std::cell::Cell::new(false)),
+            Rc::new(Cell::new(false)),
         )),
     );
     app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
@@ -107,11 +104,10 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
     assert!(!admission.directory.directory_enqueued);
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_none());
-    assert!(
-        app.published_action_directory_page(initial_history_query())
-            .rows
-            .is_empty()
-    );
+    assert!(app
+        .published_action_directory_page(initial_history_query())
+        .rows
+        .is_empty());
     assert!(matches!(
         app.published_action_directory_resolution("", "initial-probe", "inspect"),
         runtime_collab::ActionDirectoryResolution::Unavailable
@@ -125,13 +121,12 @@ fn initial_history_action_publication_waits_for_actual_owner_application() {
         );
         std::thread::yield_now();
     }
-    assert!(
-        app.state
-            .doc
-            .get(ROOT, "original-owner-history")
-            .unwrap()
-            .is_some()
-    );
+    assert!(app
+        .state
+        .doc
+        .get(ROOT, "original-owner-history")
+        .unwrap()
+        .is_some());
     app.publish_action_surface();
     assert!(app.actions.last_published_actions.is_some());
     let admission = app.native_admission_snapshot();
@@ -175,12 +170,11 @@ fn initial_history_accepted_delivery_cannot_run_before_original_owner_applicatio
     );
     assert_eq!(calls.get(), 0);
     assert!(!app.collaboration.manager.is_connected());
-    assert!(
-        app.action_publication_failure
-            .as_deref()
-            .unwrap()
-            .contains("outcome unknown")
-    );
+    assert!(app
+        .action_publication_failure
+        .as_deref()
+        .unwrap()
+        .contains("outcome unknown"));
 }
 
 #[test]
@@ -243,8 +237,8 @@ fn initial_history_retired_capture_refuses_previously_published_handler() {
 }
 
 struct NoCommittedReadPeer {
-    requests: std::rc::Rc<std::cell::RefCell<Vec<crate::collaboration::CollabRequest>>>,
-    directories: std::rc::Rc<std::cell::Cell<usize>>,
+    requests: Rc<RefCell<Vec<crate::collaboration::CollabRequest>>>,
+    directories: Rc<Cell<usize>>,
 }
 impl crate::collaboration::PeerTransport for NoCommittedReadPeer {
     fn is_connected(&self) -> bool {
@@ -266,8 +260,8 @@ impl crate::collaboration::PeerTransport for NoCommittedReadPeer {
 #[test]
 fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
     let (mut app, calls) = initial_history_app();
-    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
-    let directories = std::rc::Rc::new(std::cell::Cell::new(0));
+    let requests = Rc::new(RefCell::new(vec![]));
+    let directories = Rc::new(Cell::new(0));
     app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
         requests: requests.clone(),
         directories: directories.clone(),
@@ -305,10 +299,10 @@ fn initial_history_no_committed_read_peer_preserves_actual_public_dispatch() {
 fn a_shown_windows_published_surface_carries_its_zoom_and_the_broker_runs_it() {
     use crate::host_chrome::zoom::ZOOM_RESOURCE;
     let (mut app, calls) = initial_history_app();
-    let requests = std::rc::Rc::new(std::cell::RefCell::new(vec![]));
+    let requests = Rc::new(RefCell::new(vec![]));
     app.collaboration.manager = CollaborationManager::with_peer_transport(NoCommittedReadPeer {
         requests: requests.clone(),
-        directories: std::rc::Rc::new(std::cell::Cell::new(0)),
+        directories: Rc::new(Cell::new(0)),
     });
     // The window opens, taking up the zoom its app had on this device.
     let dir = tempfile::tempdir().expect("a settings directory");
@@ -361,13 +355,11 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
     );
     fixture.app.collaboration.manager = manager;
     fixture.app.actions.bound_broker_route_for_test = None;
-    assert!(
-        fixture
-            .app
-            .published_action_directory_page(initial_history_query())
-            .rows
-            .is_empty()
-    );
+    assert!(fixture
+        .app
+        .published_action_directory_page(initial_history_query())
+        .rows
+        .is_empty());
     let deadline = tilo_test_env::hang_deadline();
     while !fixture.app.published_action_history_ready() {
         fixture.app.poll_and_apply_collab_events();
@@ -409,13 +401,11 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
         .manager
         .retire_document_capture_for_test(&second);
     assert!(!fixture.app.published_action_history_ready());
-    assert!(
-        fixture
-            .app
-            .published_action_directory_page(initial_history_query())
-            .rows
-            .is_empty()
-    );
+    assert!(fixture
+        .app
+        .published_action_directory_page(initial_history_query())
+        .rows
+        .is_empty());
     assert!(matches!(
         fixture.app.published_action_directory_resolution(
             &page.revision,
@@ -430,7 +420,7 @@ fn initial_history_public_directory_requires_every_actual_live_record_owner() {
 fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     let mut scope = crate::wake::WakeScope::new();
     let (wake_tx, wakes) = std::sync::mpsc::channel();
-    let wake_tx = std::sync::Mutex::new(wake_tx);
+    let wake_tx = Mutex::new(wake_tx);
     scope
         .bind(move |_| {
             wake_tx.lock().unwrap().send(()).unwrap();
@@ -454,8 +444,8 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     let mut app = App::new_with_controlled_inputs(
         State::new(),
         Box::new(InitialHistoryProbe(
-            std::rc::Rc::new(std::cell::Cell::new(0)),
-            std::rc::Rc::new(std::cell::Cell::new(false)),
+            Rc::new(Cell::new(0)),
+            Rc::new(Cell::new(false)),
         )),
     );
     app.collaboration.manager = manager;
@@ -492,17 +482,16 @@ fn initial_history_worker_readiness_wakes_parked_owner_for_publication() {
     app.pump_collab_presence();
     assert!(app.published_action_history_ready());
     assert!(app.actions.last_published_actions.is_some());
-    assert!(
-        !app.published_action_directory_page(initial_history_query())
-            .rows
-            .is_empty()
-    );
+    assert!(!app
+        .published_action_directory_page(initial_history_query())
+        .rows
+        .is_empty());
 }
 
 #[test]
 fn initial_history_local_control_is_not_admitted_while_committed_capture_is_pending() {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-    let queued = std::rc::Rc::new(std::cell::Cell::new(true));
+    let calls = Rc::new(Cell::new(0));
+    let queued = Rc::new(Cell::new(true));
     let mut history = automerge::AutoCommit::new();
     history
         .put(ROOT, "original-owner-history", "retained")
@@ -569,7 +558,7 @@ fn initial_history_local_control_is_not_admitted_while_committed_capture_is_pend
 
 #[test]
 fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_owner() {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let calls = Rc::new(Cell::new(0));
     let mut history = automerge::AutoCommit::new();
     history
         .put(ROOT, "original-owner-history", "retained")
@@ -580,7 +569,7 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
         State::new(),
         Box::new(InitialHistoryProbe(
             calls.clone(),
-            std::rc::Rc::new(std::cell::Cell::new(false)),
+            Rc::new(Cell::new(false)),
         )),
     );
     app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
@@ -653,7 +642,7 @@ fn initial_history_external_job10_waits_for_subsequent_capture_on_original_live_
 #[test]
 fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_execution() {
     for refused in [false, true] {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+        let calls = Rc::new(Cell::new(0));
         let mut history = automerge::AutoCommit::new();
         history
             .put(ROOT, "original-owner-history", "retained")
@@ -665,7 +654,7 @@ fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_ex
             State::new(),
             Box::new(InitialHistoryProbe(
                 calls.clone(),
-                std::rc::Rc::new(std::cell::Cell::new(false)),
+                Rc::new(Cell::new(false)),
             )),
         );
         app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
@@ -749,7 +738,7 @@ fn initial_history_waited_external_job_rechecks_cancelled_or_refused_original_ex
 
 #[test]
 fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let calls = Rc::new(Cell::new(0));
     let mut history = automerge::AutoCommit::new();
     history
         .put(ROOT, "original-owner-history", "retained")
@@ -760,7 +749,7 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
         State::new(),
         Box::new(InitialHistoryProbe(
             calls.clone(),
-            std::rc::Rc::new(std::cell::Cell::new(false)),
+            Rc::new(Cell::new(false)),
         )),
     );
     app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
@@ -800,11 +789,10 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
         app.published_action_history_ready(),
         "the production live owner map is ready"
     );
-    assert!(
-        !app.collaboration
-            .manager
-            .document_route_ready(Some(&unowned))
-    );
+    assert!(!app
+        .collaboration
+        .manager
+        .document_route_ready(Some(&unowned)));
     let id = uuid::Uuid::parse_str("fb32a166-6569-490e-a585-6c7a8207ed06").unwrap();
     (fixture.invoke)(2, id);
     while calls.get() == 0 && app.collaboration.manager.is_connected() {
@@ -819,16 +807,14 @@ fn initial_history_job2_does_not_wait_for_unowned_retained_native_route() {
     assert_eq!(calls.get(), 1);
     assert_eq!((fixture.received)(), 1);
     assert!(app.action_publication_failure.is_none());
-    assert!(
-        app.committed_documents
-            .iter()
-            .any(|(route, read)| route == &unowned && read.is_current())
-    );
-    assert!(
-        !app.collaboration
-            .manager
-            .document_route_ready(Some(&unowned))
-    );
+    assert!(app
+        .committed_documents
+        .iter()
+        .any(|(route, read)| route == &unowned && read.is_current()));
+    assert!(!app
+        .collaboration
+        .manager
+        .document_route_ready(Some(&unowned)));
     drop(app);
     fixture.thread.join().unwrap();
 }
@@ -928,7 +914,7 @@ fn ordinary_native_pump_exports_admission_before_any_action() {
 
 #[test]
 fn accepted_delivery_is_refused_after_its_document_is_replaced() {
-    let calls = std::rc::Rc::new(std::cell::Cell::new(0));
+    let calls = Rc::new(Cell::new(0));
     let mut history = automerge::AutoCommit::new();
     history
         .put(ROOT, "original-owner-history", "retained")
@@ -939,7 +925,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
         State::new(),
         Box::new(InitialHistoryProbe(
             calls.clone(),
-            std::rc::Rc::new(std::cell::Cell::new(false)),
+            Rc::new(Cell::new(false)),
         )),
     );
     app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
@@ -1008,7 +994,7 @@ fn accepted_delivery_is_refused_after_its_document_is_replaced() {
 
 /// A probe publishing `late-probe` only once it has read it, and saying it
 /// may until then.
-struct LateRowProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
+struct LateRowProbe(Rc<Cell<Option<bool>>>);
 impl crate::widget::Widget for LateRowProbe {
     crate::provides!(dyn crate::resources::PublishesResources);
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "late-row-probe");
@@ -1056,7 +1042,7 @@ impl crate::resources::PublishesResources for LateRowProbe {
 #[test]
 fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
     for holds in [true, false] {
-        let read = std::rc::Rc::new(std::cell::Cell::new(None));
+        let read = Rc::new(Cell::new(None));
         let mut history = automerge::AutoCommit::new();
         history
             .put(ROOT, "original-owner-history", "retained")
@@ -1067,10 +1053,8 @@ fn a_resolution_of_a_resource_still_being_read_is_answered_once_it_is_read() {
             uuid::Uuid::new_v4(),
             history.save(),
         );
-        let mut app = App::new_with_controlled_inputs(
-            State::new(),
-            Box::new(LateRowProbe(std::rc::Rc::clone(&read))),
-        );
+        let mut app =
+            App::new_with_controlled_inputs(State::new(), Box::new(LateRowProbe(Rc::clone(&read))));
         app.collaboration.local_author = crate::permissions::UserId("fixture-user".into());
         app.collaboration.manager = manager;
         let deadline = tilo_test_env::hang_deadline();
