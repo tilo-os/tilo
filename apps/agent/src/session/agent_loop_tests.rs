@@ -1557,6 +1557,7 @@ fn execution_fixture(
             content: ui::content::ContentStore::memory(),
             companions: Vec::new(),
             provider: None,
+            identity: None,
         },
         link,
         chooser: Chooser::scripted(
