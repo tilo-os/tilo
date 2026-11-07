@@ -3608,7 +3608,10 @@ fn follow_channel_keys(
     tokio::task::spawn_local(async move {
         let mut after = 0;
         loop {
-            match channel.channel_keys_changed(after).await {
+            match channel
+                .changed(runtime_collab::wire::Changes::ChannelKeys, after)
+                .await
+            {
                 Ok(change) if change != after => {
                     after = change;
                     if signals.send(KeySignal::Changed(route.clone())).is_err() {

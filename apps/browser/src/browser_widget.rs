@@ -936,7 +936,7 @@ impl BrowserWidget {
         if let Some(client) = &self.service_client {
             self.service_catalog_pending = client
                 .request(
-                    ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::List,
+                    ui::collaboration::browser_service_sessions::BrowserServiceSessionCommand::List {},
                     Some(waker),
                 )
                 .ok();
@@ -984,7 +984,9 @@ impl BrowserWidget {
                 .service_client
                 .as_ref()
                 .ok_or_else(|| "Account inventory could not be confirmed".to_owned())
-                .and_then(|client| client.request(Command::List, self.service_list_waker.clone()));
+                .and_then(|client| {
+                    client.request(Command::List {}, self.service_list_waker.clone())
+                });
             match result {
                 Ok(pending) => self.service_list_pending = Some(pending),
                 Err(error) => {

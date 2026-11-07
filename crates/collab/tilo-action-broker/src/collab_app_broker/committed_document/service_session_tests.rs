@@ -179,7 +179,7 @@ fn browser_private_delegation_checks_route_and_post_provider_custody() {
         browser_service_sessions: Some(service.clone()),
         ..Default::default()
     };
-    let command = BrowserServiceSessionCommand::List.encode().unwrap();
+    let command = BrowserServiceSessionCommand::List {}.encode().unwrap();
     assert!(
         delegate_browser_service_session_command(
             &services,
@@ -198,7 +198,7 @@ fn browser_private_delegation_checks_route_and_post_provider_custody() {
     assert!(
         BrowserServiceSessionReply::decode(&reply)
             .unwrap()
-            .matches(&BrowserServiceSessionCommand::List)
+            .matches(&BrowserServiceSessionCommand::List {})
     );
     assert_eq!(service.calls.load(Ordering::Acquire), 1);
     assert!(
