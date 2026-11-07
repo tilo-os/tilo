@@ -2420,6 +2420,27 @@ impl Store for TiloStore {
             .collect())
     }
 
+    fn first(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&tilolang_runtime::query::Order>,
+    ) -> Result<Option<ResourceRef>, StoreError> {
+        let inner = self.held();
+        let schema = lookup(ty).ok_or_else(|| not_found(format!("type {ty}")))?;
+        let Some(view) = inner.view(&schema.app) else {
+            return Err(StoreError::Backend(format!(
+                "the index of {} is being built",
+                schema.app
+            )));
+        };
+        let path = view.first(schema, pred, order, &inner.evaluated)?;
+        Ok(path.and_then(|path| {
+            let held = view.type_of(&path).ok().flatten()?;
+            ResourceRef::parse_id(&path, held)
+        }))
+    }
+
     fn versions(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
         Ok(self
             .built_versions()

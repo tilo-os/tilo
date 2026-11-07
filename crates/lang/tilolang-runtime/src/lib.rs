@@ -37,6 +37,7 @@ mod live;
 mod marks;
 pub mod members;
 pub mod meta;
+pub mod notify;
 mod num;
 pub mod origin;
 pub mod place;

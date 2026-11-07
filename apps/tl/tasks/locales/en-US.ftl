@@ -18,6 +18,9 @@ d-g6kykjp2 = Due
 d-qadph346 = At
     .doc = The moment on that day it is due at, if it has one.
 
+d-aeilucpg = Remind
+    .doc = When to tell whoever is doing it that its moment came, if a reminder is set.
+
 d-ftjnco6i = Notes
     .doc = Anything worth remembering about it.
 
@@ -129,6 +132,12 @@ d-jqhwyztw = Pick date
 
 d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
+
+d-3qq23ybf = Remind me
+    .doc = Sets when to remind whoever is doing a task of it, counted from now, or clears the reminder.
+
+d-7vjyuy7c = Remind
+    .doc = Tells whoever is doing a task, or the one who made it, that its moment has come, and opens the task when they choose the notice.
 
 d-w43ij7uu = No priority
     .doc = Sets how much a task matters.
@@ -249,5 +258,11 @@ d-mtmufg3w = Task page
     .w-what-to-do = What to do
     .w-anything-worth-remembering-about-it = Anything worth remembering about it.
     .w-inbox = Inbox
+    .w-remind = Remind
+    .w-reminder-set = Reminder set
+    .w-in-10-minutes = In 10 minutes
+    .w-in-an-hour = In an hour
+    .w-tomorrow-at-this-time = Tomorrow at this time
+    .w-no-reminder = No reminder
     .w-subtasks = Subtasks
     .w-add-a-subtask = Add a subtask

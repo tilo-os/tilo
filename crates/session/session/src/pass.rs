@@ -30,6 +30,13 @@ impl Session {
             .as_ref()
             .and_then(|controllers| controllers.next_deadline(now))
             .map(|due| due.saturating_duration_since(now));
+        // A package's trigger at the instant it names: the pass that runs it is due then,
+        // whether or not a window of its app is open.
+        let service = self.shared.services.borrow().wakes_in();
+        let controller = match (controller, service) {
+            (Some(controller), Some(service)) => Some(controller.min(service)),
+            (controller, service) => controller.or(service),
+        };
         let timeout = match (timeout, controller) {
             (Some(timeout), Some(due)) => Some(timeout.min(due)),
             (timeout, due) => timeout.or(due),

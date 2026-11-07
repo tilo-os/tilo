@@ -92,6 +92,9 @@ pub struct Core {
     /// whose code makes the request. Until the host sets one, every request answers with a
     /// failure saying the host reaches no services.
     pub web: RefCell<Option<Box<dyn crate::web::WebTransport>>>,
+    /// Where `notify` reaches (`Runtime::set_notify`): the host's notification path, the one
+    /// it shows the person their news in. Until the host sets one, nothing is shown.
+    pub notify: RefCell<Option<Box<dyn crate::notify::NotifyHost>>>,
     /// What names principals; the id itself until the host says.
     pub names: RefCell<Option<Box<dyn NameHost>>>,
     /// How a day or a time of day reads in a sentence; its stored text until the host says
@@ -253,6 +256,7 @@ impl Core {
             authority,
             models: RefCell::new(None),
             web: RefCell::new(None),
+            notify: RefCell::new(None),
             names: RefCell::new(None),
             shown: RefCell::new(None),
             members: RefCell::new(crate::members::Members::default()),
@@ -365,21 +369,21 @@ impl Core {
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
             ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut,
             MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            ModelCall, NoneV, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind,
-            PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows, ProposalNote, Query,
-            QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText,
-            ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ReminderAt,
-            ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt, ResAddF, ResAddI, ResGetF,
-            ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmpty,
-            RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove, Single, SomeF, SomeH,
-            SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
-            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
-            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
-            Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
+            ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, Phrase, PrincipalEq,
+            PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print, PrintRows,
+            ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId, RandomInt,
+            RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq, RefId,
+            RefIs, RefLit, ReminderAt, ReminderLabel, RepeatLabel, RepeatNext, RepeatNextAt,
+            ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet,
+            ResourceRef, RichEmpty, RichNew, RichPart, RichTime, RunChanges, SetAdd, SetRemove,
+            Single, SomeF, SomeH, SomeI, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps,
+            StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit,
+            StrLower, StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim,
+            StrUpper, Suggest, Take, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today,
+            TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI,
+            UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF,
+            UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd,
+            Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
             WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
@@ -419,7 +423,7 @@ impl Core {
             | MapGetValue | MapKeys | MapKeysValue | RecNew | RecSetI | RecSetF | RecSetH
             | RefLit | RefEq | RefIs | RefId | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
-            | OutsideAt | Withdraw | ModelCall | Invoker | PrincipalEq | PrincipalName
+            | OutsideAt | Withdraw | ModelCall | Notify | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush
             | InvocationPop => self.effect_import(imp, a),
             WebGet | WebPost | WebOk | WebStatus | WebStatusText | WebHeaders | WebBody

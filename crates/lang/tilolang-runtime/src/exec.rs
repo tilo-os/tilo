@@ -2398,6 +2398,49 @@ impl Core {
         crate::run::WebResponse::of(reply)
     }
 
+    /// `notify(to, title, body, opens)`: tell the person `to` something, once. The run's
+    /// journal answers a run that replays, so it tells them no more than the first run did.
+    fn notify_import(&self, to: i32, title: i32, body: i32, opens: i32) -> HResult<Option<Wasm>> {
+        let to = self.principal_arg(to)?;
+        let title = self.text(title)?;
+        let body = self.text(body)?;
+        let opens = match self.val(opens)? {
+            Value::Ref(r) => Some(ResourceRef::clone(&r.target)),
+            other => {
+                return trap(format!(
+                    "notify: expected the resource it opens, got {}",
+                    other.kind_name()
+                ));
+            }
+        };
+        let notice = crate::notify::Notice {
+            to,
+            title,
+            body,
+            opens,
+        };
+        {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut() else {
+                return trap("a notification is only sent in an action");
+            };
+            if let Some(entry) = run.journal.entries.get(run.cursor) {
+                if !matches!(entry, crate::run::JournalEntry::Notified) {
+                    return trap(
+                        "the run diverged from its journal: expected a notification's entry",
+                    );
+                }
+                run.cursor = run.cursor.saturating_add(1);
+                return ret_void();
+            }
+        }
+        if let Some(host) = self.notify.borrow().as_ref() {
+            host.notify(&notice);
+        }
+        self.journal_push(crate::run::JournalEntry::Notified)?;
+        ret_void()
+    }
+
     pub(crate) fn effect_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
         match imp {
             Imp::ActRef => self.act_ref(a.h(0)?, a.h(1)?),
@@ -2417,6 +2460,7 @@ impl Core {
             Imp::OutsideAt => self.outside_at(a.h(0)?, a.h(1)?, a.h(2)?),
             Imp::Withdraw => self.withdraw(a.h(0)?, a.h(1)?),
             Imp::ModelCall => self.model_call(a.h(0)?, a.h(1)?),
+            Imp::Notify => self.notify_import(a.h(0)?, a.h(1)?, a.h(2)?, a.h(3)?),
             Imp::Invoker => {
                 let frames = self.frames.borrow();
                 let who = match &frames.top()?.kind {
@@ -2535,8 +2579,9 @@ fn entry_value(entry: &JournalEntry) -> Value {
         JournalEntry::Clock(_) | JournalEntry::Random { .. } | JournalEntry::Web { .. } => {
             Value::Unit
         }
-        // A write is answered where it is made, and a run that waited answers it there.
-        JournalEntry::Wrote { .. } => Value::Unit,
+        // A write is answered where it is made, and a run that waited answers it there; a
+        // notification is no step's value either.
+        JournalEntry::Wrote { .. } | JournalEntry::Notified => Value::Unit,
     }
 }
 

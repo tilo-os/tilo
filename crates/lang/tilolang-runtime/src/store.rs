@@ -1359,6 +1359,23 @@ pub trait Store {
         )))
     }
 
+    /// The one resource of the type `ty` anywhere in the store that `pred` holds of and comes
+    /// first in `order`, or `None` when `pred` holds of none (any of them for no `order`): the
+    /// same query as [`Store::select`], asked for its first answer, which a store with an index
+    /// finds from its columns without reading the rest.
+    ///
+    /// # Errors
+    ///
+    /// As [`Store::select`].
+    fn first(
+        &self,
+        ty: &TypeId,
+        pred: &Pred,
+        order: Option<&crate::query::Order>,
+    ) -> Result<Option<ResourceRef>, StoreError> {
+        Ok(self.select(ty, pred, order)?.into_iter().next())
+    }
+
     /// The resources linked to `at`: those an action made from it, those whose rich text
     /// mentions it, and those holding a reference to it in a field, each once per way, ordered
     /// by the way and then by the resource's id. A store with an index answers it from a

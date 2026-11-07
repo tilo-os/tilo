@@ -6,6 +6,7 @@ use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
 use tilolang::IdsLock;
+use tilolang_runtime::notify::{Notice, NotifyHost};
 use tilolang_runtime::{Principal, ResourceRef, UiNode, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::publish::resource_id;
@@ -21,7 +22,12 @@ const NOTES: (&str, &str) = (
     include_str!("../../../../apps/tl/notes/app.tl"),
     include_str!("../../../../apps/tl/notes/app.ids"),
 );
+const TASKS: (&str, &str) = (
+    include_str!("../../../../apps/tl/tasks/app.tl"),
+    include_str!("../../../../apps/tl/tasks/app.ids"),
+);
 const APP: &str = "so.tilo.lang.notes";
+const TASKS_APP: &str = "so.tilo.lang.tasks";
 
 /// A view of another app's package that shows a note by the notes app's own row view.
 const CARD: &str = r#"app test.card "Card"
@@ -200,4 +206,136 @@ fn another_app_reads_the_published_note_through_the_notes_package() {
         "the notes app's row shows the published note: {:#?}",
         view.tree()
     );
+}
+
+/// Ada's workspace with its tasks, as the session runs them: a `RecordService` over the record,
+/// with no window of the app open, and the clock its app and its triggers read.
+fn tasks() -> (
+    RecordService,
+    tilolang_runtime::Meta,
+    std::rc::Rc<std::cell::RefCell<String>>,
+) {
+    let clock = std::rc::Rc::new(std::cell::RefCell::new("2026-10-27T09:00:00Z".to_owned()));
+    let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[DISCUSSION, TASKS]);
+    ada.host.set_clock({
+        let clock = std::rc::Rc::clone(&clock);
+        move || clock.borrow().clone()
+    });
+    ada.host.root_of(TASKS_APP).unwrap();
+    ada.commit();
+    let Replica { doc, host, .. } = ada;
+    let mut service = RecordService::new(doc, host, "ada");
+    service.set_clock({
+        let clock = std::rc::Rc::clone(&clock);
+        move || clock.borrow().clone()
+    });
+    (service, packages.last().unwrap().meta.clone(), clock)
+}
+
+/// The id of the app's published root: the tasks.
+fn tasks_root(service: &RecordService) -> tilo_actions::ResourceId {
+    service
+        .resources()
+        .into_iter()
+        .find(|resource| resource.kind == format!("tl.{TASKS_APP}.Tasks"))
+        .expect("the tasks are published")
+        .id
+}
+
+/// What the packages told, as the notifications service would have shown it: the recording
+/// stand-in for the person's notifications.
+struct Told(std::rc::Rc<std::cell::RefCell<Vec<Notice>>>);
+
+impl NotifyHost for Told {
+    fn notify(&self, notice: &Notice) {
+        self.0.borrow_mut().push(notice.clone());
+    }
+}
+
+/// A task added by `new_task` under `title`.
+fn task(service: &mut RecordService, meta: &tilolang_runtime::Meta, title: &str) -> String {
+    let root = tasks_root(service);
+    let started = service
+        .invoke(
+            root.as_str(),
+            &action_id(meta, "new_task"),
+            &args(json!({ "title": title })),
+        )
+        .unwrap();
+    let Started::Done(output) = started else {
+        panic!("a tilolang action is done once committed");
+    };
+    service.settle();
+    output.resources.first().cloned().expect("the task it made")
+}
+
+/// Where a person choosing the notice lands, as the session makes it: the app and the task's
+/// published resource.
+fn place(notice: &Notice) -> ui::mentions::Place {
+    let opens = notice
+        .opens
+        .as_ref()
+        .expect("a notice that opens something");
+    let schema = tilolang_tilo::schema::lookup(&opens.ty).expect("the record's type");
+    ui::mentions::Place {
+        app: schema.app.clone(),
+        record: String::new(),
+        resource: resource_id(&schema.app, &opens.id_string()),
+    }
+}
+
+#[test]
+fn a_reminder_tells_the_person_at_its_moment_once_with_no_window_open() {
+    let (mut service, meta, clock) = tasks();
+    let told: std::rc::Rc<std::cell::RefCell<Vec<Notice>>> = std::rc::Rc::default();
+    service.set_notify(Told(std::rc::Rc::clone(&told)));
+
+    // Ada adds a task, gives it to Bo, and asks to be reminded of it in an hour.
+    let call = task(&mut service, &meta, "Call the landlord");
+    service
+        .invoke(
+            &call,
+            &action_id(&meta, "assign"),
+            &args(json!({ "who": { "person": "bo" } })),
+        )
+        .unwrap();
+    service
+        .invoke(
+            &call,
+            &action_id(&meta, "remind_at"),
+            &args(json!({ "after": { "some": 3600 } })),
+        )
+        .unwrap();
+    assert_eq!(
+        service.wakes_in(),
+        Some(std::time::Duration::from_secs(3600)),
+        "the workspace wakes for the reminder, not on a poll"
+    );
+
+    // A second short of the moment: nothing is told.
+    *clock.borrow_mut() = "2026-10-27T09:59:59Z".to_owned();
+    service.poll();
+    assert!(told.borrow().is_empty(), "not before its moment");
+
+    // At the moment the reminder tells Bo, and opens the task for them.
+    *clock.borrow_mut() = "2026-10-27T10:00:00Z".to_owned();
+    assert!(service.poll(), "the trigger ran");
+    {
+        let told = told.borrow();
+        assert_eq!(told.len(), 1, "one notice: {told:#?}");
+        assert_eq!(told[0].to, Principal::new("bo"), "whoever is doing it");
+        assert_eq!(told[0].title, "Call the landlord");
+        let place = place(&told[0]);
+        assert_eq!(place.app, TASKS_APP);
+        assert_eq!(place.resource, call, "the task the notice opens");
+        assert_eq!(
+            ui::mentions::Place::from_activation(&place.activation()),
+            Some(place),
+            "choosing the notice opens the task"
+        );
+    }
+
+    // And once: the turn after tells nothing of it again.
+    service.poll();
+    assert_eq!(told.borrow().len(), 1, "told once, not every turn");
 }

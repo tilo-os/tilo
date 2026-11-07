@@ -965,6 +965,12 @@ impl Host {
         self.inner.store.set_loader(loader);
     }
 
+    /// Where `notify` reaches: the host's notification path, the one it shows the person their
+    /// news in (a service that runs packages with no window sets it too).
+    pub fn set_notify(&self, host: impl tilolang_runtime::notify::NotifyHost + 'static) {
+        self.inner.runtime.set_notify(host);
+    }
+
     /// Replace what `now` reads (the system time until then): tests and captures fix it. The
     /// clock answers ISO-8601 UTC text, `YYYY-MM-DDTHH:MM:SSZ`.
     pub fn set_clock(&self, clock: impl Fn() -> String + 'static) {

@@ -93,6 +93,13 @@ pub trait Service {
         false
     }
 
+    /// How long until something it keeps is due on a clock of its own — a
+    /// package's trigger at the instant it names — so the session's wait ends
+    /// then and its next pass does it. `None` when nothing it keeps is timed.
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        None
+    }
+
     /// Wait until every device call it started has landed, and take them
     /// in: what a headless run does before it reads.
     fn settle(&mut self) {}
@@ -475,6 +482,16 @@ impl Services {
         changed
     }
 
+    /// How long until the soonest thing a service keeps is due: the session ends
+    /// its wait then (see [`Service::wakes_in`]).
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        self.started
+            .iter()
+            .filter_map(|service| service.wakes_in())
+            .min()
+    }
+
     /// Wait for every service's device calls to land.
     pub fn settle(&mut self) {
         for service in &mut self.started {
@@ -509,6 +526,10 @@ impl Service for Services {
 
     fn poll(&mut self) -> bool {
         Self::poll(self)
+    }
+
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        Self::wakes_in(self)
     }
 
     fn settle(&mut self) {

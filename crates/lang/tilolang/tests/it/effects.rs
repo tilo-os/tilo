@@ -311,3 +311,70 @@ fn the_manifest_keeps_the_hosts_the_header_declares() {
     let none = compile_with("app t.x \"X\"\n", &[]).unwrap_or_else(|d| panic!("{d:#?}"));
     assert!(none.meta.web.is_empty(), "no `web:` grants no host");
 }
+
+/// A note with a person to tell: what a notice is about.
+const NOTE: &str = "type Note {\n    title: Text\n    who: Option<Principal> = .none\n}\n";
+
+fn telling(body: &str) -> Vec<String> {
+    codes(&format!("{NOTE}{body}"))
+}
+
+const TELL: &str = "notify(to: invoker, title: \"It is time\", body: \"Anything\", opens: n)";
+
+#[test]
+fn an_action_that_tells_a_person_declares_uses_notify() {
+    let read = format!("action tell(n: Note) {{\n    {TELL}\n}}\n");
+    assert_eq!(telling(&read), ["E121"]);
+    let declared = "action tell(n: Note) uses notify {\n    ".to_owned() + TELL + "\n}\n";
+    assert_eq!(telling(&declared), Vec::<String>::new());
+}
+
+#[test]
+fn the_error_names_telling_a_person_and_what_to_declare() {
+    let src = format!("app t.x \"X\"\n{NOTE}action tell(n: Note) {{\n    {TELL}\n}}\n");
+    let errs = compile_with(&src, &[]).expect_err("`uses notify` is missing");
+    let message = errs.first().map(|d| d.message.clone()).unwrap_or_default();
+    assert!(
+        message.contains("telling a person something")
+            && message.contains("uses notify")
+            && message.contains("`tell`"),
+        "the message says what it reads and where to declare it: {message}"
+    );
+}
+
+#[test]
+fn a_view_and_a_fn_do_not_tell_a_person() {
+    // A view is drawn again from what it is shown, and a notice is not drawn: telling is an
+    // action's, recorded in its change as every other outside read is.
+    let view = format!("view look(n: Note) {{\n    {TELL}\n}}\n");
+    let found = telling(&view);
+    assert_eq!(found, ["E060"], "a view cannot tell a person");
+    let body = format!("fn tell_it(n: Note) -> Bool {{\n    {TELL}\n    true\n}}\n");
+    assert_eq!(telling(&body), ["E049"], "a fn cannot tell a person");
+}
+
+#[test]
+fn a_notice_is_written_with_what_it_says_and_what_it_opens() {
+    let asking =
+        "action tell(n: Note) uses notify {\n    notify(to: invoker, title: \"It is time\")\n}\n";
+    assert_eq!(telling(asking), ["E022"], "every part of a notice is named");
+    let unnamed =
+        "action tell(n: Note) uses notify {\n    notify(invoker, \"It is time\", \"\", n)\n}\n";
+    let found = telling(unnamed);
+    assert!(
+        !found.is_empty() && found.iter().all(|c| c == "E022"),
+        "a notice is named, not positional: {found:?}"
+    );
+    let unknown = "action tell(n: Note) uses notify {\n    notify(to: invoker, title: \"t\", body: \"b\", opens: n, tone: .loud)\n}\n";
+    assert!(
+        telling(unknown).contains(&"E022".to_owned()),
+        "a notice has no other part"
+    );
+    let opens_nothing = "action tell(n: Note) uses notify {\n    notify(to: invoker, title: \"t\", body: \"b\", opens: \"n\")\n}\n";
+    assert!(
+        telling(opens_nothing).contains(&"E022".to_owned()),
+        "what a notice opens is a resource, not words"
+    );
+    let all = "action tell(n: Note) uses notify, time {\n    notify(to: invoker, title: n.title, body: \"Then\", opens: n)\n}\n";
+    assert_eq!(telling(all), Vec::<String>::new());
+}

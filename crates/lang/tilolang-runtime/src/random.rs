@@ -103,11 +103,7 @@ impl Core {
                 return trap("a draw is only available in an action");
             };
             if let Some(entry) = run.journal.entries.get(run.cursor) {
-                let JournalEntry::Random {
-                    upto: drawn,
-                    value,
-                } = entry
-                else {
+                let JournalEntry::Random { upto: drawn, value } = entry else {
                     return trap(
                         "the run diverged from its journal: expected the entry of the draw it made",
                     );

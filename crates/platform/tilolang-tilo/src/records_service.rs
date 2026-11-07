@@ -38,6 +38,8 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
+    /// What `now` reads: the system time, or what a test fixes.
+    clock: Box<dyn Fn() -> String>,
     /// The resources whose readings moved since [`Service::moved`] was last asked, by their
     /// published ids, and whether something moved that names no one resource (the record was
     /// taken in anew, a document changed as a whole).
@@ -70,6 +72,7 @@ impl RecordService {
             publications,
             watch,
             person: person.into(),
+            clock: Box::new(crate::host::system_time),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
             shared: std::collections::BTreeMap::new(),
@@ -436,6 +439,60 @@ fn published_refs(json: &mut Json) {
     }
 }
 
+impl RecordService {
+    /// Run what the packages have due at this device's clock: a trigger runs here whether a
+    /// window of its app is open or not, as it does on the device that governs the workspace,
+    /// once per instant across the workspace's devices (the change records what the trigger last
+    /// did for the record). Whether anything ran.
+    fn trigger(&mut self) -> bool {
+        let Some(now) = self.now() else {
+            return false;
+        };
+        if self.host.run_triggers(now) == 0 {
+            return false;
+        }
+        // What a trigger did is the app's own change, committed as its invocation says: the same
+        // commit as an action from the workspace, as the run's principal.
+        for committed in self.host.take_committed() {
+            let invoker = tilo_actions::ActionInvoker::actor(
+                crate::authority::trigger_principal(&committed.action.app).0,
+            );
+            if let Err(error) = self.commit(&committed.action, &invoker) {
+                tracing::warn!(%error, "a trigger's change did not reach the workspace");
+            }
+        }
+        self.moved_unsaid = true;
+        true
+    }
+
+    /// How long until what the packages have due next: the service's next poll runs it then, so
+    /// nothing polls for it.
+    #[must_use]
+    pub fn wakes_in(&self) -> Option<std::time::Duration> {
+        let now = self.now()?;
+        let at = self.host.next_trigger(now)?;
+        Some(std::time::Duration::from_secs(
+            u64::try_from(at.saturating_sub(now)).unwrap_or(0),
+        ))
+    }
+
+    /// Where a package's `notify` reaches: the host's notification path, so a trigger running
+    /// here with no window of its app open tells the person the way their shell does.
+    pub fn set_notify(&mut self, host: impl tilolang_runtime::notify::NotifyHost + 'static) {
+        self.host.set_notify(host);
+    }
+
+    /// What `now` reads: this device's clock, or what a test fixes.
+    pub fn set_clock(&mut self, clock: impl Fn() -> String + 'static) {
+        self.clock = Box::new(clock);
+    }
+
+    /// This device's clock now, in seconds since the epoch.
+    fn now(&self) -> Option<i64> {
+        tilolang::calendar::instant(&(self.clock)())
+    }
+}
+
 impl Service for RecordService {
     fn seated(&mut self, person: &str, _earlier: &[String]) {
         person.clone_into(&mut self.person);
@@ -495,7 +552,12 @@ impl Service for RecordService {
 
     fn poll(&mut self) -> bool {
         let touched = self.publications.update(&self.host, &self.planner);
-        self.watched() || !touched.is_empty()
+        let ran = self.trigger();
+        self.watched() || !touched.is_empty() || ran
+    }
+
+    fn wakes_in(&self) -> Option<std::time::Duration> {
+        RecordService::wakes_in(self)
     }
 
     fn moved(&mut self) -> Option<Vec<String>> {
