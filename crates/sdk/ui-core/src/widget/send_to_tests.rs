@@ -25,7 +25,7 @@ fn box_beside(menu: Rect, viewport: Rect) -> SendToBox {
 
 /// Give `send_to` an event, with no modifiers held.
 fn send(send_to: &mut SendToBox, event: &WindowEvent) -> bool {
-    send_held(send_to, event, &Modifiers::default())
+    send_held(send_to, event, Modifiers::default())
 }
 
 /// Give `send_to` a key with `modifiers` held.
@@ -34,12 +34,12 @@ fn key(send_to: &mut SendToBox, key: Key, modifiers: Modifiers) -> bool {
     send_held(
         send_to,
         &crate::synthetic_input::keyboard_input(event),
-        &modifiers,
+        modifiers,
     )
 }
 
 /// Give `send_to` an event with `modifiers` held.
-fn send_held(send_to: &mut SendToBox, event: &WindowEvent, modifiers: &Modifiers) -> bool {
+fn send_held(send_to: &mut SendToBox, event: &WindowEvent, modifiers: Modifiers) -> bool {
     let mut taffy = taffy::TaffyTree::<()>::new();
     let node = taffy.leaf_node(taffy::Style::default());
     let mut doc = automerge::AutoCommit::new();
@@ -49,7 +49,7 @@ fn send_held(send_to: &mut SendToBox, event: &WindowEvent, modifiers: &Modifiers
         event,
         &mut EventCtx {
             scale_factor: 1.0,
-            modifiers,
+            modifiers: &modifiers,
             state: Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,

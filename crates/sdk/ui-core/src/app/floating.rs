@@ -1243,9 +1243,10 @@ impl App {
                     }
                 }
                 FloatingSurfaceHostMessage::ShareSelection => {
-                    // The shell asks to send what is selected, with no menu
-                    // to carry it. Nothing in the window reads that yet: the
-                    // box opens from a menu's own Send… row.
+                    // The shell asks this window to send from its keyboard,
+                    // with no menu to carry a box: it opens alone, with no
+                    // subject, and the person names whom it goes to.
+                    crate::shared_selection::open_send_box(None, None, None);
                 }
                 FloatingSurfaceHostMessage::Recipients { request, rows } => {
                     crate::shared_selection::answer_recipients(*request, rows.clone());

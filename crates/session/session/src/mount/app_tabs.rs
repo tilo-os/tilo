@@ -776,10 +776,13 @@ impl Answers<'_> {
             // would press, so nothing here draws a second one; and the session
             // names none of them to assistive technology or opens what one
             // points at, so the inventory is read and adds nothing. A surface
-            // cleared or a destination presented is the app's own business.
+            // cleared or a destination presented is the app's own business,
+            // and a window that says it carries a send-to box is telling the
+            // truth about itself: there is nothing to answer.
             FloatingSurfaceClientMessage::ActionMarkers { .. }
             | FloatingSurfaceClientMessage::SourceCleared { .. }
-            | FloatingSurfaceClientMessage::DestinationPresented { .. } => {}
+            | FloatingSurfaceClientMessage::DestinationPresented { .. }
+            | FloatingSurfaceClientMessage::SelectionCapable => {}
             // An app's own card — a call, a route — is a window of its own:
             // the app presents it, the floating layer decides where it
             // stands, and the app draws the activity inline whenever its own
@@ -827,8 +830,7 @@ impl Answers<'_> {
             }
             // The resource a window shows is what the composer asks the
             // agent about it, so it goes with the selection it seeds.
-            FloatingSurfaceClientMessage::SelectionCapable
-            | FloatingSurfaceClientMessage::WindowResource { .. }
+            FloatingSurfaceClientMessage::WindowResource { .. }
             | FloatingSurfaceClientMessage::Pointed { .. }
             | FloatingSurfaceClientMessage::PickAnswered { .. } => {
                 refuse(&reply, &app, &name, NO_AGENT);

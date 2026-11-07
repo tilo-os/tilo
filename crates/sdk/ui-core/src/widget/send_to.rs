@@ -223,16 +223,13 @@ impl SendToBox {
         self.hovered = None;
         self.answered = false;
         self.request = crate::shared_selection::search_recipients("");
-        match draft {
-            Some(text) => {
-                text.clone_into(&mut self.text);
-                self.text_selection = Selection::collapsed(self.text.len());
-                self.focus = SendToFocus::Message;
-            }
-            None => {
-                self.text.clear();
-                self.focus = SendToFocus::Recipients;
-            }
+        if let Some(text) = draft {
+            text.clone_into(&mut self.text);
+            self.text_selection = Selection::collapsed(self.text.len());
+            self.focus = SendToFocus::Message;
+        } else {
+            self.text.clear();
+            self.focus = SendToFocus::Recipients;
         }
     }
 
@@ -571,8 +568,7 @@ impl SendToBox {
     /// when it was on the last and the keyboard leaves for the menu.
     fn cycle(&mut self, shift: bool) -> bool {
         let next = match (self.focus, shift) {
-            (SendToFocus::Recipients, false) => Some(SendToFocus::Message),
-            (SendToFocus::Recipients, true) => Some(SendToFocus::Message),
+            (SendToFocus::Recipients, _) => Some(SendToFocus::Message),
             (SendToFocus::Message, false) => None,
             (SendToFocus::Message, true) => Some(SendToFocus::Recipients),
         };

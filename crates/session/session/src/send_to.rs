@@ -125,9 +125,13 @@ mod tests {
             text: "issue 42".into(),
             from: None,
         };
-        let Target::Invoke(target) =
-            send_target("ws", &[ada.clone()], &[carried.clone()], "look").expect("a send builds")
-        else {
+        let Target::Invoke(target) = send_target(
+            "ws",
+            std::slice::from_ref(&ada),
+            std::slice::from_ref(&carried),
+            "look",
+        )
+        .expect("a send builds") else {
             panic!("a send invokes the chat");
         };
         assert_eq!(target.app, CHAT);

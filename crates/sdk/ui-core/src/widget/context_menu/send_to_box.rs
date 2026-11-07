@@ -2,7 +2,12 @@
 //! between it and the menu's rows, and the box a window opens with no menu
 //! around it.
 
-use super::*;
+use vello::kurbo::Rect;
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
+use winit::keyboard::{Key, NamedKey};
+
+use super::ContextMenu;
+use crate::widget::EventCtx;
 
 impl ContextMenu {
     /// The box beside the menu, as it stands.

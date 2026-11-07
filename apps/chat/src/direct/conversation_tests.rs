@@ -212,8 +212,8 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
 
     let sent = bob_window
         .effect(&ChatEffect::Send {
-            to: vec![Recipient::found(RecipientKind::Person, ada.clone(), "Ada")],
-            attached: vec![carried.clone()],
+            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            attached: vec![carried],
             text: "can you look?".into(),
         })
         .expect("Bob's box sends");
@@ -246,7 +246,10 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
     );
     assert_eq!(
         rows[0].attachments,
-        [carried],
+        [tilo_reference::Attached::Text {
+            text: "the wheel stutters".into(),
+            from: None,
+        }],
         "the message carries what the box held"
     );
 }
@@ -264,14 +267,12 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let bob = "b0".repeat(32);
     let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
     let agent = "a5".repeat(16);
-    let conversation = Chat::direct_id([
-        Participant::person(bob.clone()),
-        Participant::agent(agent.clone()),
-    ]);
+    let conversation =
+        Chat::direct_id([Participant::person(bob), Participant::agent(agent.clone())]);
 
     let sent = bob_window
         .effect(&ChatEffect::Send {
-            to: vec![Recipient::found(RecipientKind::Agent, agent.clone(), "Ada")],
+            to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
         })
