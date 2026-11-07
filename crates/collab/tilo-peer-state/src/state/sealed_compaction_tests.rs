@@ -632,6 +632,84 @@ fn a_history_missing_a_write_opens_without_it_and_keeps_what_waits_for_it() {
     );
 }
 
+#[test]
+fn a_history_that_writes_a_sequence_twice_opens_with_the_second_write_named() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut first = Author::new(&f.host);
+    let mut conflicting = Author::new(&f.host);
+    // Two writers of one desk used one actor: each wrote the next sequence of
+    // the same writer without seeing the other's change.
+    let actor = automerge::ActorId::from(vec![0x42]);
+    first.0.set_actor(actor.clone());
+    conflicting.0.set_actor(actor.clone());
+    let one = write(
+        &f.host,
+        &f.owner,
+        &keys,
+        &first.edit("value", "canonical"),
+        now,
+    );
+    let two = write(
+        &f.host,
+        &f.other,
+        &keys,
+        &conflicting.edit("value", "conflicting"),
+        now,
+    );
+    admit(&mut f.host, &f.owner, one, now);
+    admit(&mut f.host, &f.other, two, now);
+    let mut read_write = |op: &SignedOp| open(&keys, op);
+
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .expect("the record is held");
+    let read = AutoCommit::load(&opened.document).expect("the record reads as a whole document");
+    assert_eq!(
+        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("canonical"),
+        "the record keeps the change of the sequence that reached it first"
+    );
+    let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
+    assert!(
+        matches!(
+            opened.unmerged.as_slice(),
+            [UnmergedWrite {
+                author: a,
+                seq: 1,
+                reason: UnmergedReason::AlreadyHeld { actor: written, seq: 1 },
+            }] if *a == other && written == "42"
+        ),
+        "{:?}",
+        opened.unmerged
+    );
+    assert_eq!(
+        held(&f.host).len(),
+        2,
+        "the write the record cannot hold is kept"
+    );
+
+    // A compaction replaces the history, so it folds the write whose sequence
+    // the record already holds: no reader can ever carry both changes.
+    mint(&mut f.host, &keys, &f.owner, now).expect("a fork does not block the compaction");
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut read_write)
+        .unwrap()
+        .unwrap();
+    let read = AutoCommit::load(&opened.document).unwrap();
+    assert_eq!(
+        read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("canonical")
+    );
+    assert!(opened.unmerged.is_empty());
+}
+
 /// A public workspace's chat as its governor kept it after hard stops, opened
 /// with the channel's keys: the record's base, the last member snapshot,
 /// the governor's own write, then two visitors' writes that build on a
@@ -1454,7 +1532,7 @@ fn captured_history_replays_causal_order_and_continues_the_original_writer() {
 }
 
 #[test]
-fn captured_history_keeps_the_conflicting_original_writer_refusal() {
+fn captured_history_folds_a_writer_sequence_written_twice() {
     let mut f = fixture();
     let keys = f.keys();
     let mut first = Author::new(&f.host);
@@ -1470,7 +1548,7 @@ fn captured_history_keeps_the_conflicting_original_writer_refusal() {
     admit(&mut f.host, &f.other, two, f.now);
     let before = f.host.durable().unwrap();
     let restored_peer = f.restore(&before).unwrap();
-    let error = restored_peer
+    let capture = restored_peer
         .capture_document(
             f.authority.device_public_key,
             (APP, RECORD),
@@ -1478,9 +1556,18 @@ fn captured_history_keeps_the_conflicting_original_writer_refusal() {
             1024 * 1024,
             Some(&mut |op| open(&keys, op)),
         )
-        .err()
-        .expect("a conflicting same-writer history must not be replaced or normalized");
-    assert!(error.to_string().contains("duplicate seq 1"), "{error}");
+        .expect("a reader carries the change that reached the record first, never both");
+    let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
+    assert_eq!(
+        restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+        Some("canonical")
+    );
+    // The reader continues that writer without writing its sequence twice.
+    restored.set_actor(automerge::ActorId::from(vec![0x41]));
+    let heads = restored.get_heads();
+    restored.put(ROOT, "value", "next").unwrap();
+    restored.commit();
+    assert_eq!(restored.get_changes(&heads)[0].seq(), 2);
     assert_eq!(f.host.durable().unwrap(), before);
 }
 

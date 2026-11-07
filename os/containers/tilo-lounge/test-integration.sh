@@ -199,6 +199,15 @@ wait_ready() {
   done
   fail 'the Lounge did not reach Ready'
 }
+# Every record the start reads, reads whole: a sealed write the host leaves
+# out of its history, a record it cannot open, or one seeded app that did not
+# settle is the state that serves an empty or unloadable app, and no start may
+# hand it to people as if it worked.
+verify_records_read() {
+  local broken
+  broken=$(grep -E 'writes of its history that do not merge|invalid automerge input|duplicate seq|does not open: |open the chat.s channels|seed(ing)? .* failed' "$log" || true)
+  [[ -z $broken ]] || fail "a record did not read whole: $(head -5 <<< "$broken")"
+}
 # The directory's answer, read: `POST /peer/v1/directory` on the relay.
 directory() { curl -ksS --max-time 20 -X POST "$relay_origin/peer/v1/directory"; }
 # page_field FIELD: one value of the one listing, read from the page on stdin.
@@ -263,6 +272,7 @@ fresh=$work/fresh
 mkdir -p "$fresh"
 start_on "$fresh"
 wait_ready || fail "the image did not start on a fresh volume: $(tail -20 "$log")"
+verify_records_read
 [[ $mode == '{"relay":"up","revision":"'* ]] || fail "/mode answered $mode"
 [[ $mode == *"\"revision\":\"$revision\""* ]] || fail "/mode reports $mode, not the image's revision $revision"
 minted=$(cat "$state_root/lounge/room-id" 2>/dev/null) || fail 'the fresh start kept no workspace id'
@@ -278,6 +288,7 @@ stop_image
 : > "$log"
 start_image
 wait_ready || fail "the image did not start again on its own volume: $(tail -20 "$log")"
+verify_records_read
 [[ $(cat "$state_root/lounge/room-id") == "$minted" ]] \
   || fail 'a restart on the same volume served a different workspace'
 verify_directory "$minted"
@@ -306,6 +317,7 @@ base64 -d "$here/integration/previous-state.tar.b64" | tar -xf - -C "$previous" 
   || fail 'the previous release state did not unpack'
 start_on "$previous"
 if wait_ready; then
+  verify_records_read
   # Opened by bringing the record up, which keeps the version it read beside
   # it: the state that would not decode is still there, and the start says
   # which format it came from.

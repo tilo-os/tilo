@@ -208,7 +208,7 @@ fn open_history(
     maximum: usize,
 ) -> Result<AutoCommit, PeerDocumentReadError> {
     let mut remaining = maximum;
-    let mut merged = match &document.covered_snapshot {
+    let merged = match &document.covered_snapshot {
         Some(base) => {
             remaining = remaining
                 .checked_sub(base.0.bytes.len())
@@ -220,33 +220,38 @@ fn open_history(
         }
         None => AutoCommit::new(),
     };
-    let mut waiting = Vec::with_capacity(document.sealed.len());
-    for op in &document.sealed {
+    let mut writes = Vec::with_capacity(document.sealed.len());
+    for (index, op) in document.sealed.iter().enumerate() {
         let plaintext = open(op).map_err(PeerDocumentReadError::Opening)?;
         remaining = remaining
             .checked_sub(plaintext.len())
             .ok_or(PeerDocumentReadError::Capacity)?;
-        waiting.push(
+        writes.push((
+            index,
             DocumentMutation::decode(&plaintext)
                 .map_err(|error| PeerDocumentReadError::Opening(error.to_string()))?,
-        );
+        ));
     }
-    // Admission order may differ from causal order on a keyless replica.
-    while !waiting.is_empty() {
-        let before = waiting.len();
-        let mut blocked = Vec::new();
-        for mutation in waiting {
-            match crate::document::merge_committed_with_status(&mut merged, &mutation)
-                .map_err(|error| PeerDocumentReadError::Opening(format!("{error:?}")))?
-            {
-                crate::document::MergeOutcome::Changed(_) => {}
-                crate::document::MergeOutcome::MissingDependencies => blocked.push(mutation),
+    // Admission order may differ from causal order on a keyless replica. A
+    // write whose sequences the record already holds is folded away: the
+    // record cannot carry both changes of one writer's sequence, and the
+    // capture carries the change that reached it first.
+    let (merged, left) = super::sealed_compaction::merge_writes(
+        merged,
+        writes,
+        super::sealed_compaction::LeftOut::Named,
+    )
+    .map_err(PeerDocumentReadError::Opening)?;
+    for (_, reason) in left {
+        match reason {
+            super::sealed_compaction::UnmergedReason::AlreadyHeld { .. } => {}
+            super::sealed_compaction::UnmergedReason::MissingDependencies { .. } => {
+                return Err(PeerDocumentReadError::Incomplete);
+            }
+            super::sealed_compaction::UnmergedReason::Unreadable(why) => {
+                return Err(PeerDocumentReadError::Opening(why));
             }
         }
-        if blocked.len() == before {
-            return Err(PeerDocumentReadError::Incomplete);
-        }
-        waiting = blocked;
     }
     Ok(merged)
 }
