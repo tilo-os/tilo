@@ -1,0 +1,110 @@
+name: Build / OS board image
+
+# Build a board's sealed development image on the native arm64 runner and move
+# the board's dev channel to it. The image chain is tools/ci/build-os.sh, the
+# same steps a development machine runs; the runner supplies what they need: a
+# native overlay store on a disposable ext4 volume and the Kata guest's loop
+# devices. The board image is what `tilo device update` pulls from
+# registry.tilo.so/tilo/tilo-vm:<board>-ci; nothing here signs or releases.
+on:
+  workflow_dispatch:
+    inputs:
+      board:
+        description: "Hardware profile the image seals (os/hardware/profiles/<board>.json)"
+        required: true
+        default: "orangepi-3b-v2-1"
+        type: string
+      move_channel:
+        description: "Move the board's dev channel (<board>-ci) to this build when it moves forward"
+        required: true
+        default: true
+        type: boolean
+      jobs:
+        description: "Cargo jobs the compiles run with"
+        required: true
+        default: "8"
+        type: string
+
+concurrency:
+  group: os-board-${{ github.ref }}-${{ github.event.inputs.board }}
+  cancel-in-progress: false
+
+jobs:
+  board:
+    runs-on: runner-large-arm64
+    # No job may need more than three hours; a slower one is a bug to fix.
+    timeout-minutes: 175
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Require the runner's native architecture
+        run: ./os/dev/assert-native-arch.sh "$(python3 -I -c 'import json,sys; print(json.load(open("os/hardware/profiles/${{ github.event.inputs.board }}.json"))["architecture"])')"
+
+      - name: Install the image and disk tools
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs jq podman \
+              qemu-efi-aarch64 qemu-utils skopeo slirp4netns systemd uidmap util-linux zstd
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y \
+              binutils btrfs-progs dosfstools e2fsprogs fuse-overlayfs jq podman \
+              qemu-img qemu-utils skopeo slirp4netns systemd util-linux zstd
+          else
+            echo '::error::native arm64 runner must provide apt-get or dnf'
+            exit 1
+          fi
+          command -v jq losetup podman qemu-img skopeo systemd-repart zstd >/dev/null
+
+      - name: Use the Kata guest's disk devices and a native overlay store
+        env:
+          TILO_PODMAN_STORE_SIZE: 100G
+        run: |
+          bash os/dev/ci-prepare-disk-devices.sh --kata-job
+          bash os/dev/ci-native-podman-store.sh
+
+      - name: Build the OS image, the development image and the board's sealed image
+        env:
+          BOARD: ${{ github.event.inputs.board }}
+          JOBS: ${{ github.event.inputs.jobs }}
+        run: |
+          set -euo pipefail
+          # The steps' shared state lives on the ext4 volume the store step mounted,
+          # where the images' own Podman keeps a native overlay store and every
+          # layer commit copies a file instead of walking its parent.
+          target="$(dirname "$CONTAINERS_STORAGE_CONF")/os"
+          start=$SECONDS
+          bash tools/ci/build-os.sh --target "$target" --jobs "$JOBS" \
+            image dev-image board "$BOARD" 2>&1 \
+          | while IFS= read -r line; do printf '%7ds %s\n' "$((SECONDS - start))" "$line"; done
+          ls -l "$target/publish/os-board/$BOARD" "$target/publish/os-board/$BOARD/disk"
+
+      - name: Publish the board image and move its dev channel
+        env:
+          BOARD: ${{ github.event.inputs.board }}
+          MOVE_CHANNEL: ${{ github.event.inputs.move_channel }}
+          REGISTRY_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+          GITHUB_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          target="$(dirname "$CONTAINERS_STORAGE_CONF")/os"
+          out="$target/publish/os-board/$BOARD"
+          test "$(cat "$out/board")" = "$BOARD"
+          test "$(cat "$out/revision")" = "$GITHUB_SHA"
+          # The tags this commit's board image takes: the immutable one its update
+          # origin names, and the board's dev channel when it moves only forward.
+          export T_REF=main T_COMMIT="$GITHUB_SHA"
+          . tools/ci/publish/lib.sh
+          tags=("main-${GITHUB_SHA:0:7}-$BOARD")
+          if [[ $MOVE_CHANNEL == true ]]; then
+            current=$(skopeo inspect --format '{{index .Labels "org.opencontainers.image.revision"}}' \
+              "docker://registry.tilo.so/tilo/tilo-vm:$BOARD-ci" 2>/dev/null) || current=
+            moves_forward "$current" && tags+=("$BOARD-ci")
+          fi
+          REGISTRY_USER=$GITHUB_ACTOR REGISTRY_PASSWORD=$REGISTRY_TOKEN \
+            bash tools/ci/publish/oci-publish.sh dev registry.tilo.so/tilo/tilo-vm "$out" "${tags[@]}"
+          cat "$out/receipt.json"
