@@ -18,9 +18,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::Arc;
+use std::net::TcpListener;
 
 use app_cli::config::{RegistriesFile, RegistryConfig};
 use ed25519_dalek::SigningKey;
@@ -30,76 +28,11 @@ use registry_types::{
 use tilo_app_package::pack::SigningIdentity;
 
 use crate::registry_to_installed::{
-    author_tapp_version, scoped_env, signed_entry_version, test_publisher, tilo_install_bin,
+    Registry, author_tapp_version, scoped_env, signed_entry_version, test_publisher,
+    tilo_install_bin,
 };
 
 const PACKAGE_ID: &str = "so.tilo.catalogue-recovery";
-
-/// A minimal HTTP server: `GET /entries*` answers with the catalogue JSON,
-/// `GET /<name>.tapp` with the package bytes.
-struct Registry {
-    port: u16,
-    _thread: std::thread::JoinHandle<()>,
-}
-
-impl Registry {
-    fn start(catalogue: String, tapp: Vec<u8>) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-        let port = listener.local_addr().unwrap().port();
-        let catalogue = Arc::new(catalogue);
-        let tapp = Arc::new(tapp);
-        let thread = std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { break };
-                serve_one(stream, &catalogue, &tapp);
-            }
-        });
-        Self {
-            port,
-            _thread: thread,
-        }
-    }
-
-    fn base_url(&self) -> String {
-        format!("http://127.0.0.1:{}", self.port)
-    }
-}
-
-fn serve_one(mut stream: TcpStream, catalogue: &str, tapp: &[u8]) {
-    let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
-    let mut request_line = String::new();
-    if reader.read_line(&mut request_line).is_err() {
-        return;
-    }
-    // Drain headers so the client sees a clean response.
-    loop {
-        let mut line = String::new();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) if line.trim().is_empty() => break,
-            Ok(_) => {}
-            Err(_) => return,
-        }
-    }
-    let path = request_line.split_whitespace().nth(1).unwrap_or("/");
-    let is_tapp = std::path::Path::new(path)
-        .extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("tapp"));
-    let (status, content_type, body): (&str, &str, Vec<u8>) = if path.starts_with("/entries") {
-        ("200 OK", "application/json", catalogue.as_bytes().to_vec())
-    } else if is_tapp {
-        ("200 OK", "application/octet-stream", tapp.to_vec())
-    } else {
-        ("404 Not Found", "text/plain", b"no".to_vec())
-    };
-    let header = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-        body.len()
-    );
-    let _ = stream.write_all(header.as_bytes());
-    let _ = stream.write_all(&body);
-    let _ = stream.flush();
-}
 
 /// One published release: the entry naming the bytes `Registry` serves from
 /// `url`, and those bytes.
