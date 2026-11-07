@@ -1,0 +1,119 @@
+//! Tube's shared library: likes, the shared watch queue, subscriptions, and comment likes and
+//! replies. What the catalogue fetched, the screen on show, and the person's watch history and
+//! playback preferences are not part of it.
+//!
+//! Liking, queueing and subscribing are field edits of the library's sets
+//! (`Library::paths().likes.insert(&video)`), so concurrent adds and removes merge per video.
+//! Replying to a comment is the one verb.
+
+use tilo_resource::{
+    self, ActionCx, Collection, Edit, Id, Model, NonBlank, Path, Refusal, Set, resource,
+};
+
+/// One reply to a comment, visible to everyone sharing the library.
+#[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
+pub struct Reply {
+    /// Comment
+    ///
+    /// The comment it answers: its id after `tube.comment:`.
+    #[model(readonly)]
+    pub comment: String,
+    /// Reply
+    #[model(label, readonly)]
+    pub text: String,
+}
+
+/// The library that syncs between everyone who shares it.
+#[derive(Model, Clone, Debug, Default, PartialEq)]
+pub struct Library {
+    /// Liked videos
+    pub likes: Set<String>,
+    /// Shared watch queue
+    ///
+    /// Membership, not order, so concurrent adds and removes converge
+    /// without one person reordering another's queue.
+    pub queue: Set<String>,
+    /// Subscribed creators
+    ///
+    /// A channel id, or a channel URL a paired device brought in before
+    /// this one fetched the channel.
+    pub subscriptions: Set<String>,
+    /// Liked comments
+    ///
+    /// By their id after `tube.comment:`.
+    pub comment_likes: Set<String>,
+    /// Replies to comments
+    pub replies: Collection<Reply>,
+}
+
+#[resource(kind = "tube.library", label = "Tube")]
+impl Library {
+    /// Reply to a comment.
+    ///
+    /// Visible to everyone sharing this library. The same reply twice to one
+    /// comment is kept once, so a retried reply is not posted again.
+    #[action]
+    pub fn reply_to_comment(
+        &mut self,
+        cx: &mut ActionCx,
+        #[param("The comment's id: its row id after `tube.comment:`")] comment: NonBlank,
+        #[param("The reply")] text: NonBlank,
+    ) -> Result<(), Refusal> {
+        if self
+            .replies
+            .values()
+            .any(|reply| reply.comment == comment.as_str() && reply.text == text.as_str())
+        {
+            return Ok(());
+        }
+        self.replies.push(
+            cx.id(),
+            Reply {
+                comment: comment.into_string(),
+                text: text.into_string(),
+            },
+        );
+        Ok(())
+    }
+
+    /// Retract a reply.
+    #[action]
+    pub fn retract(&mut self, reply: &Id) -> Result<(), Refusal> {
+        self.replies
+            .remove(reply)
+            .map(drop)
+            .ok_or_else(|| Refusal::new("no such reply"))
+    }
+}
+
+impl Library {
+    /// The edit that likes `video` or takes the like back.
+    pub fn like(video: &str, liked: bool) -> Edit<Self> {
+        Self::member(&Self::paths().likes, video, liked)
+    }
+
+    /// The edit that adds `video` to the shared queue or takes it out.
+    pub fn enqueue(video: &str, queued: bool) -> Edit<Self> {
+        Self::member(&Self::paths().queue, video, queued)
+    }
+
+    /// The edit that subscribes to the creator stored as `key`, or
+    /// unsubscribes it.
+    pub fn subscribe(key: &str, subscribed: bool) -> Edit<Self> {
+        Self::member(&Self::paths().subscriptions, key, subscribed)
+    }
+
+    /// The edit that likes the comment `comment` or takes the like back.
+    pub fn like_comment(comment: &str, liked: bool) -> Edit<Self> {
+        Self::member(&Self::paths().comment_likes, comment, liked)
+    }
+
+    /// The edit that puts `value` in the set at `set`, or takes it out.
+    fn member(set: &Path<Self, Set<String>>, value: &str, member: bool) -> Edit<Self> {
+        if member {
+            set.insert(&value.to_owned())
+        } else {
+            set.remove(&value.to_owned())
+        }
+    }
+}

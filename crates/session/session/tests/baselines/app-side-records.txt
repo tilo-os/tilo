@@ -57,12 +57,10 @@ slides: runner
 snippets: runner
 speed-test: runner
 store: runner
-tasks: runner
 terminal: runner
 themes: runner
 tilolang: broker
 totp: runner
-tube: runner
 typst-editor: runner
 video-editor: runner
 video-player: runner

@@ -50,9 +50,10 @@ tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional 
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 
 [dev-dependencies]
-# The record kind the tests run, as a crate their own assertions read: the module the host runs
-# is that same crate built for wasm32 by this package's build script.
+# The record kinds the tests run, as crates their own assertions read: the modules the host
+# runs are those same crates built for wasm32 by this package's build script.
 tasks-model = { path = "../../../apps/tasks-model" }
+tube-model = { path = "../../../apps/tube-model" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
 automerge.workspace = true
 

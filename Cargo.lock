@@ -16761,7 +16761,9 @@ dependencies = [
  "tasks",
  "tasks-model",
  "tilo-app",
+ "tilo-model-host",
  "tilo-rich-text",
+ "tilo-service",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -19807,6 +19809,7 @@ dependencies = [
  "tilo-service",
  "tilolang-runtime",
  "tracing",
+ "tube-model",
  "workspace-hack",
 ]
 
@@ -23608,8 +23611,10 @@ dependencies = [
  "tilo-files",
  "tilo-innertube",
  "tilo-media",
+ "tilo-model-host",
  "tilo-net",
  "tilo-secrets",
+ "tilo-service",
  "tilo-test-env",
  "tilo-vello",
  "tilo-vello-encoding",
@@ -23620,10 +23625,22 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tube",
+ "tube-model",
  "uuid",
  "wire-frame",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tube-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "tilo-actions",
+ "tilo-model-guest",
+ "tilo-resource",
+ "workspace-hack",
 ]
 
 [[package]]

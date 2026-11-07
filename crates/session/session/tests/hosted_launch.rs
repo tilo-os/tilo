@@ -42,7 +42,8 @@ const ADDRESS: &str = "tasks.tracker";
 /// The tracker's model module: `tasks-model` built for wasm32 by `tilo-model-host`'s build
 /// script, the same code the app ships.
 fn wasm() -> Vec<u8> {
-    tilo_model_host::fixture_module().expect("tilo-model-host's build script built the module")
+    tilo_model_host::fixture_module("tasks-model")
+        .expect("tilo-model-host's build script built the module")
 }
 
 /// The session's document host for the tracker: the app's model running in its module, its
