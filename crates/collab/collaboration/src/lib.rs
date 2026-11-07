@@ -174,6 +174,8 @@ pub mod external_moderation;
 pub mod handoff;
 mod history;
 #[cfg(feature = "broker-transport")]
+mod lane;
+#[cfg(feature = "broker-transport")]
 pub mod write_attribution_lane;
 
 mod surface_publication;

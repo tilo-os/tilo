@@ -4316,9 +4316,9 @@ struct SdkJoinContext<'a> {
 }
 
 struct SdkRoute {
-    _checks: Option<super::approved_checks::Registration>,
-    _moderation: Option<super::external_moderation::Registration>,
-    _attribution: Option<super::write_attribution_lane::Registration>,
+    _checks: Option<crate::lane::Registration<super::approved_checks::Endpoint>>,
+    _moderation: Option<crate::lane::Registration<super::external_moderation::Endpoint>>,
+    _attribution: Option<crate::lane::Registration<super::write_attribution_lane::Endpoint>>,
     spec: RouteSpec,
     channel: runtime_collab::ChannelHandle,
     presence: Option<runtime_collab::PresenceHandle>,

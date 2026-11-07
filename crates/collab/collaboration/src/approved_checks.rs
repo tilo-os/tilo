@@ -1,10 +1,10 @@
 //! Typed bounded jobs on an existing acknowledged record channel.
 use runtime_collab::approved_checks::{Receipt, Report, ReportedProgressUpdate, Request};
-use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex, OnceLock, Weak};
+use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
 
-const MAX_ROUTES: usize = 16;
+use crate::lane::{Lane, Registration};
+
 const MAX_PENDING: usize = 2;
 type Reply = Result<Receipt, String>;
 type ReportedReply = (oneshot::Receiver<Reply>, watch::Receiver<Option<Report>>);
@@ -14,30 +14,14 @@ pub struct Job {
     pub reply: oneshot::Sender<Reply>,
     pub reports: Option<watch::Sender<Option<Report>>>,
 }
-struct Endpoint(mpsc::Sender<Job>);
-pub(super) struct Registration {
-    _endpoint: Arc<Endpoint>,
-    worker: tokio::task::JoinHandle<()>,
-}
-impl Drop for Registration {
-    fn drop(&mut self) {
-        self.worker.abort();
-    }
-}
+pub(crate) struct Endpoint(mpsc::Sender<Job>);
 
-fn registry() -> &'static Mutex<BTreeMap<String, Weak<Endpoint>>> {
-    static REGISTRY: OnceLock<Mutex<BTreeMap<String, Weak<Endpoint>>>> = OnceLock::new();
-    REGISTRY.get_or_init(Mutex::default)
-}
+/// The routes this kind of lane serves.
+static LANE: Lane<Endpoint> = Lane::new("approved-check");
 
 pub fn enqueue(route: &str, request: Request) -> Result<oneshot::Receiver<Reply>, String> {
     request.encode()?;
-    let endpoint = registry()
-        .lock()
-        .map_err(|_| "approved-check bridge unavailable")?
-        .get(route)
-        .and_then(Weak::upgrade)
-        .ok_or("no acknowledged approved-check route")?;
+    let endpoint = LANE.endpoint(route)?;
     let (reply, receive) = oneshot::channel();
     endpoint
         .0
@@ -52,12 +36,7 @@ pub fn enqueue(route: &str, request: Request) -> Result<oneshot::Receiver<Reply>
 
 pub fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, String> {
     request.encode()?;
-    let endpoint = registry()
-        .lock()
-        .map_err(|_| "approved-check bridge unavailable")?
-        .get(route)
-        .and_then(Weak::upgrade)
-        .ok_or("no acknowledged approved-check route")?;
+    let endpoint = LANE.endpoint(route)?;
     let (reply, receive) = oneshot::channel();
     let (reports, observe) = watch::channel(None);
     endpoint
@@ -71,31 +50,15 @@ pub fn enqueue_reported(route: &str, request: Request) -> Result<ReportedReply, 
     Ok((receive, observe))
 }
 
-fn admit(route: String, endpoint: &Arc<Endpoint>) -> Result<(), String> {
-    let mut entries = registry()
-        .lock()
-        .map_err(|_| "approved-check bridge unavailable")?;
-    entries.retain(|_, endpoint| endpoint.strong_count() != 0);
-    if route.is_empty()
-        || route.len() > 1024
-        || entries.contains_key(&route)
-        || entries.len() >= MAX_ROUTES
-    {
-        return Err("approved-check route is ambiguous or exceeds admission bounds".into());
-    }
-    entries.insert(route, Arc::downgrade(endpoint));
-    Ok(())
-}
-
 /// Register only the capability returned by the existing authenticated join.
 /// Duplicate live routes refuse ambiguity rather than selecting another instance.
 pub(super) fn register(
     route: String,
     channel: runtime_collab::ChannelHandle,
-) -> Result<Registration, String> {
+) -> Result<Registration<Endpoint>, String> {
     let (send, mut receive) = mpsc::channel::<Job>(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    admit(route, &endpoint)?;
+    LANE.admit(route, &endpoint)?;
     let worker = tokio::task::spawn_local(async move {
         while let Some(mut job) = receive.recv().await {
             if job.reply.is_closed() {
@@ -135,10 +98,7 @@ pub(super) fn register(
             let _ = job.reply.send(result);
         }
     });
-    Ok(Registration {
-        _endpoint: endpoint,
-        worker,
-    })
+    Ok(Registration::new(endpoint, worker))
 }
 
 /// A lane admitted on `route` for the toolkit's tests, which take its jobs
@@ -157,6 +117,6 @@ pub struct LaneForTest(
 pub fn admit_for_test(route: String) -> Result<(LaneForTest, mpsc::Receiver<Job>), String> {
     let (send, receive) = mpsc::channel(MAX_PENDING);
     let endpoint = Arc::new(Endpoint(send));
-    admit(route, &endpoint)?;
+    LANE.admit(route, &endpoint)?;
     Ok((LaneForTest(endpoint), receive))
 }
