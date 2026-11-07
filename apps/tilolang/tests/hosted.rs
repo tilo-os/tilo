@@ -52,9 +52,48 @@ const TASKS: &str = "so.tilo.lang.tasks";
 /// The notebook whose notes are signed: what a workspace of a person's own looks like.
 const SIGNED: &str = "so.tilo.lang.signed";
 const VIEWPORT: (u32, u32) = (1280, 800);
+/// The turns in a row that change nothing before a window is taken to be at rest.
+const QUIET_TURNS: u32 = 20;
+/// The longest a settle waits for the host to be woken by the work it has off its frames.
+const WAKE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 type Sent = Rc<RefCell<Vec<CollabRequest>>>;
 type Inbox = Rc<RefCell<VecDeque<CollabEvent>>>;
+
+/// What wakes the host: work it does off its frames (an index built from the record, the whole
+/// search index read) is ready to be taken in. A session's settle waits on it instead of taking
+/// frames until the work happens to be done.
+#[derive(Default)]
+struct Woken {
+    woken: Mutex<bool>,
+    signal: std::sync::Condvar,
+}
+
+impl Woken {
+    /// The host's waker: what the background work calls when its result waits.
+    fn waker(self: &Arc<Self>) -> tilolang_tilo::background::Waker {
+        let woken = Arc::clone(self);
+        Arc::new(move || woken.mark())
+    }
+
+    fn mark(&self) {
+        let mut woken = self.woken.lock().unwrap_or_else(|held| held.into_inner());
+        *woken = true;
+        self.signal.notify_all();
+    }
+
+    /// Wait until the host is woken, at most `timeout`: the frames have nothing to take in
+    /// until then.
+    fn wait(&self, timeout: std::time::Duration) {
+        let woken = self.woken.lock().unwrap_or_else(|held| held.into_inner());
+        let (mut woken, _) = self
+            .signal
+            .wait_timeout_while(woken, timeout, |woken| !*woken)
+            .unwrap_or_else(|held| held.into_inner());
+        // Taken in, and the next work's wake reads again.
+        *woken = false;
+    }
+}
 
 /// The broker's end of the instance's connection.
 struct Broker {
@@ -349,6 +388,8 @@ struct Session {
     window: Window,
     /// The requests the instance's connection sent.
     sent: Sent,
+    /// What wakes the host when its work off the frame is ready to be taken in.
+    woken: Arc<Woken>,
     /// The broker's end of the instance's connection.
     _broker: Box<dyn std::any::Any>,
 }
@@ -564,7 +605,8 @@ impl Session {
         }));
         let _ = manager.poll();
         let record = InstanceRecord::new(doc, manager, route.clone(), person);
-        let wake: tilolang_tilo::background::Waker = Arc::new(|| {});
+        let woken = Arc::new(Woken::default());
+        let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
         let kept = host.kept(app).unwrap();
         let (ours, theirs) = Channel::pair().unwrap();
@@ -588,6 +630,7 @@ impl Session {
             host,
             window: window(HostedWindow::over(theirs)),
             sent,
+            woken,
             _broker: broker,
         }
     }
@@ -613,13 +656,16 @@ impl Session {
         published
     }
 
-    /// The host's frames and the window's, until neither has anything left to do.
-    fn settle(&mut self) {
+    /// The host's frames and the window's, until neither has anything left to do: how many
+    /// turns it took.
+    fn settle(&mut self) -> u32 {
         // An index built off the frame is what the window waits for: this is how long the wait
         // is given before the frames are taken to be at rest.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
         let mut quiet = 0_u32;
-        while quiet < 20 {
+        let mut turns = 0_u32;
+        while quiet < QUIET_TURNS {
+            turns = turns.saturating_add(1);
             let changed = self.host.turn();
             self.window.frame();
             let waiting = (!self.index_ready() || self.search_index_pending())
@@ -630,9 +676,17 @@ impl Session {
                 quiet = quiet.saturating_add(1);
             }
             if !changed {
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                if waiting {
+                    // What the window waits for is read beside its frames, and the host is woken
+                    // when it is done: wait on that wake, as a session's loop waits, instead of
+                    // taking frames until the work happens to be finished.
+                    self.woken.wait(WAKE_WAIT);
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
             }
         }
+        turns
     }
 
     /// Whether the window's instance reads the workspace's indexes: until then it shows the
@@ -662,7 +716,7 @@ impl Session {
             let changed = self.host.turn();
             self.window.frame();
             if !changed {
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                self.woken.wait(std::time::Duration::from_millis(50));
             }
         }
         assert!(self.index_ready(), "the window reads the workspace's index");
