@@ -562,7 +562,6 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
         });
         let carried = Value::List(vec![task.clone(), Value::Int(at)]);
         view.fire_with(&key, "drop", Some(&carried)).unwrap();
-        view.poll_patches().unwrap();
     };
     // Into the empty lane, then a second card above it.
     drop(&mut view, Some("Doing"), &books, 0);
@@ -572,6 +571,9 @@ fn on_a_projects_board_a_dropped_task_lands_in_its_lane_where_it_was_dropped() {
     // Below a lane's last card.
     drop(&mut view, Some("Doing"), &boxes, 2);
     ada.commit();
+    // A window hears of a change once, after the record holds it: it runs again now, and shows
+    // the cards where they landed.
+    view.poll_patches().unwrap();
     assert_eq!(
         lanes(&view),
         [
