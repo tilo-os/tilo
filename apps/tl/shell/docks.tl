@@ -26,32 +26,16 @@ view dock(s: Shell, d: Desk) {
 /// leading or trailing edge runs top to bottom. A dock along the top or the foot holding more
 /// than its edge has room for scrolls along it, so the dock stays on the output.
 ///
-/// Every item is one the shell's record holds. An app that is running but was never pinned is
-/// not drawn here: a run's drop carries the record an item stands for, and an item built from
-/// the desk has none, so it could not be dragged with the others
-/// (`drag_run_component.rs`, the drop's `Value::Resource`). Pinning the app puts it on the dock.
+/// The run holds the items the shell's record keeps, which a drag rearranges. The apps running
+/// now stand beside it (`dock_running_tiles`): a running app the person never pinned names no
+/// record, so a drop could carry nothing of it — it is drawn, and pressed, and not dragged.
 view dock_run(s: Shell, d: Desk) {
     let standing = s.dock_edge == .left or s.dock_edge == .right
     let across = s.dock_fit == .full
+    let running = unfiled_running(s, d)
     if standing {
-        ui.DragRun(axis: .vertical, distribute: .center) {
-            on drop(moved: DockItem, at: Int): place_item(s, moved, at)
-            for item in s.dock_items {
-                if item.pinned or s.dock_running {
-                    ui.DragItem(item, title: item.title) {
-                        on activate: open_item(s, d, item.key)
-                        dock_tile(s, d, item)
-                    }
-                }
-            }
-        }
-    } else if across {
-        scroll(axis: .horizontal) {
-            ui.DragRun(axis: .horizontal) {
-                trailing: {
-                    clock(d)
-                    bell(d)
-                }
+        stack(gap: .tight, align: .center) {
+            ui.DragRun(axis: .vertical, distribute: .center) {
                 on drop(moved: DockItem, at: Int): place_item(s, moved, at)
                 for item in s.dock_items {
                     if item.pinned or s.dock_running {
@@ -61,20 +45,94 @@ view dock_run(s: Shell, d: Desk) {
                         }
                     }
                 }
+            }
+            dock_running_tiles(s, d, running)
+        }
+    } else if across {
+        scroll(axis: .horizontal) {
+            row(gap: .tight, align: .center) {
+                ui.DragRun(axis: .horizontal) {
+                    trailing: {
+                        clock(d)
+                        bell(d)
+                    }
+                    on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+                    for item in s.dock_items {
+                        if item.pinned or s.dock_running {
+                            ui.DragItem(item, title: item.title) {
+                                on activate: open_item(s, d, item.key)
+                                dock_tile(s, d, item)
+                            }
+                        }
+                    }
+                }
+                dock_running_tiles(s, d, running)
             }
         }
     } else {
         scroll(axis: .horizontal) {
-            ui.DragRun(axis: .horizontal, distribute: .center) {
-                on drop(moved: DockItem, at: Int): place_item(s, moved, at)
-                for item in s.dock_items {
-                    if item.pinned or s.dock_running {
-                        ui.DragItem(item, title: item.title) {
-                            on activate: open_item(s, d, item.key)
-                            dock_tile(s, d, item)
+            row(gap: .tight, align: .center) {
+                ui.DragRun(axis: .horizontal, distribute: .center) {
+                    on drop(moved: DockItem, at: Int): place_item(s, moved, at)
+                    for item in s.dock_items {
+                        if item.pinned or s.dock_running {
+                            ui.DragItem(item, title: item.title) {
+                                on activate: open_item(s, d, item.key)
+                                dock_tile(s, d, item)
+                            }
                         }
                     }
                 }
+                dock_running_tiles(s, d, running)
+            }
+        }
+    }
+}
+
+/// The apps running on this device that the dock's record does not keep, one item an app: the
+/// window of it the person was in last, named and drawn as that window is. A window of another
+/// of the person's devices is not a window of this desk's dock, and an app the record already
+/// holds (pinned, or pinned and running) stands in the run, once.
+fn unfiled_running(s: Shell, d: Desk) -> List<DockItem> {
+    let windows = d.windows.filter(w -> w.local).sort_by(w -> w.recency)
+    return windows
+        .filter(w -> front_of_its_app(windows, w))
+        .filter(w -> not s.dock_items.any(i -> i.key == w.app_key))
+        .map(w -> running_item(w))
+}
+
+/// Whether `w` is the window of its app the person was in last: the first of `windows` showing
+/// that app, they being in the order of the walk.
+fn front_of_its_app(windows: List<Win>, w: Win) -> Bool {
+    if let front = windows.find(v -> v.app_key == w.app_key) {
+        return front.key == w.key
+    }
+    return false
+}
+
+/// The dock's item for the running window `w`: the window's app, by its `app_key`, named as the
+/// window names it, with the window's own glyph.
+fn running_item(w: Win) -> DockItem {
+    return DockItem(
+        key: w.app_key,
+        title: w.origin_app,
+        icon: w.icon,
+        pinned: false,
+        running: true,
+        badge: 0,
+        attention: false,
+    )
+}
+
+/// The running apps the record does not keep, each a tile of its own beside the run: a press
+/// opens or focuses its window, and it keeps its badge. It is not a `ui.DragItem`, which names
+/// the record an item stands for: a running app the person never pinned has one only here, not
+/// in the shell's record. Pinning the app puts it in the run, where it is rearranged.
+view dock_running_tiles(s: Shell, d: Desk, running: List<DockItem>) {
+    if not running.is_empty() {
+        row(gap: .tight, align: .center) {
+            for item in running {
+                dock_tile(s, d, item)
             }
         }
     }
