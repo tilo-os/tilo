@@ -51,7 +51,8 @@ fn a_persons_click_on_a_button_runs_the_action_and_history_names_them() {
     }
     let counter = app.read(|doc| {
         let id = resource_ids(doc, COUNTER).remove(0);
-        let record = tilolang_tilo::action::read_resource(doc, COUNTER, &id).unwrap();
+        let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
+        let record = tilolang_tilo::action::read_resource(&chunks, COUNTER, &id).unwrap();
         record
             .schema()
             .fields

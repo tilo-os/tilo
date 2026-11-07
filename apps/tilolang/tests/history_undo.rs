@@ -103,7 +103,9 @@ trait Window {
 /// The titles of the tasks in the root, in order.
 fn titles(doc: &mut ui::tilo_resource::Doc) -> Vec<String> {
     let root = tilolang_tilo::action::resource_ids(doc, TASKS).remove(0);
-    let record = tilolang_tilo::action::read_resource(doc, TASKS, &root).expect("the root reads");
+    let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
+    let record =
+        tilolang_tilo::action::read_resource(&chunks, TASKS, &root).expect("the root reads");
     record
         .schema()
         .fields
