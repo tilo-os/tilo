@@ -182,11 +182,7 @@ fn copy_value(
         }
         Copy::Text(from) => {
             let made = make(doc, into, to, ObjType::Text)?;
-            let text = doc.text(&from)?;
-            doc.splice_text(&made, 0, 0, &text)?;
-            for mark in doc.marks(&from)? {
-                doc.mark(&made, mark, automerge::marks::ExpandMark::None)?;
-            }
+            tilo_resource::text::copy_whole(doc, &from, &made)?;
             Ok(())
         }
     }
