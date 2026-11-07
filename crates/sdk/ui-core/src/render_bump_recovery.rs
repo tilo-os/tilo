@@ -91,8 +91,8 @@ impl BumpRecovery {
 }
 
 /// The overflows collected from one renderer, for a host whose retained
-/// targets it draws ([`crate::retained_raster::RetainedFrames::note_overflows`]):
-/// each target repaints whole once after each.
+/// targets it draws ([`crate::retained_raster::RetainedFrames::note_scratch`]):
+/// each target repaints whole once after its scratch changes.
 #[derive(Debug, Default)]
 pub struct Overflows {
     recovery: BumpRecovery,
@@ -133,18 +133,40 @@ impl Overflows {
     pub const fn collected(&self) -> u64 {
         self.collected
     }
+
+    /// What `renderer` had for scratch now, and what has been collected of
+    /// its overflows: a reservation that changed between two frames is one
+    /// that was short of what a frame needed, and the frames it drew in
+    /// between may have lost geometry.
+    #[must_use]
+    pub fn scratch(&self, renderer: &vello::Renderer) -> Scratch {
+        Scratch {
+            collected: self.collected,
+            bump_bytes: renderer.memory_stats().bump_budget_bytes,
+        }
+    }
+}
+
+/// A renderer's scratch as one moment saw it ([`Overflows::scratch`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scratch {
+    /// Overflows collected so far.
+    pub collected: u64,
+    /// The bump buffers' reservation.
+    pub bump_bytes: u64,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// A frame drawn while the renderer's bump buffers overflowed shows
-    /// with geometry missing; once the overflow is collected, the next
-    /// frame repaints the whole target, even one that changed nowhere, and
-    /// the frame after that repaints only what changed again.
+    /// A frame drawn while the renderer's bump buffers overflowed shows with
+    /// geometry missing; once the scratch it was drawn at changes (an
+    /// overflow collected, or the reservation grown for it), the next frame
+    /// repaints the whole target, even one that changed nowhere, and the
+    /// frame after that repaints only what changed again.
     #[test]
-    fn a_collected_overflow_repaints_the_whole_target_once() {
+    fn a_changed_scratch_repaints_the_whole_target_once() {
         use crate::retained_raster::{Repaint, RetainedFrames, TargetKey, Unknown};
         let scene = vello::Scene::new();
         let parts = crate::scene_parts::SectionParts::default();
@@ -155,48 +177,63 @@ mod tests {
             base_color: vello::peniko::Color::BLACK,
             generation: 0,
         };
-        let mut overflows = Overflows::default();
         let mut frames = RetainedFrames::default();
         frames.presented(&scene, Some(&parts), key);
         let unchanged = Repaint::Regions(Vec::new());
+        let quiet = Scratch {
+            collected: 0,
+            bump_bytes: 1 << 20,
+        };
 
-        assert_eq!(
-            overflows.observe(Ok(BumpBudgetPoll::Pending)),
-            Some(POLL_INTERVAL),
-            "a readback still out is polled again soon"
+        frames.note_scratch(quiet);
+        assert!(
+            !frames.shows_lost_geometry(quiet),
+            "the first frame is not one the renderer was short of"
         );
-        frames.note_overflows(overflows.collected());
-        assert!(!frames.shows_lost_geometry(overflows.collected()));
         assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
 
-        assert_eq!(
-            overflows.observe(Ok(BumpBudgetPoll::Complete { overflowed: true })),
-            None
-        );
+        // The reservation grows for a frame that did not fit: what the target
+        // shows was drawn with too little scratch, even before anything is
+        // collected of it.
+        let grown = Scratch {
+            bump_bytes: 2 << 20,
+            ..quiet
+        };
         assert!(
-            frames.shows_lost_geometry(overflows.collected()),
-            "the target asks for a frame"
+            frames.shows_lost_geometry(grown),
+            "a grown reservation asks for a frame"
         );
-        frames.note_overflows(overflows.collected());
+        frames.note_scratch(grown);
         assert_eq!(
             frames.repaint(&scene, Some(&parts), key),
             Repaint::Full(Unknown::LostGeometry),
-            "the frame after the overflow repaints whole"
+            "the frame after the reservation grew repaints whole"
         );
         frames.presented(&scene, Some(&parts), key);
-        frames.note_overflows(overflows.collected());
-        assert!(!frames.shows_lost_geometry(overflows.collected()));
+        assert!(!frames.shows_lost_geometry(grown));
         assert_eq!(
             frames.repaint(&scene, Some(&parts), key),
             unchanged,
             "once repainted, only changes repaint"
         );
 
-        assert_eq!(
-            overflows.observe(Ok(BumpBudgetPoll::Complete { overflowed: false })),
-            None
+        // An overflow collected while the reservation could not grow is the
+        // same loss, named by the count.
+        let collected = Scratch {
+            collected: 1,
+            ..grown
+        };
+        frames.note_scratch(collected);
+        assert!(
+            frames.shows_lost_geometry(collected),
+            "a collected overflow asks for a frame"
         );
-        frames.note_overflows(overflows.collected());
+        assert_eq!(
+            frames.repaint(&scene, Some(&parts), key),
+            Repaint::Full(Unknown::LostGeometry)
+        );
+        frames.presented(&scene, Some(&parts), key);
+        frames.note_scratch(collected);
         assert_eq!(frames.repaint(&scene, Some(&parts), key), unchanged);
     }
 

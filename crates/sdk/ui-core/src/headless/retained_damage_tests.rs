@@ -248,6 +248,9 @@ struct Retained {
     view: vello::wgpu::TextureView,
     raster: RetainedRaster,
     frames: RetainedFrames,
+    /// The renderer's collected overflows, as the hosts keep them: a frame
+    /// drawn while it collected one has geometry missing.
+    overflows: crate::render_bump_recovery::Overflows,
     /// How many frames it repainted in part.
     partial: usize,
     sparse: bool,
@@ -298,6 +301,7 @@ impl Retained {
             view,
             raster: RetainedRaster::new(false),
             frames: RetainedFrames::default(),
+            overflows: crate::render_bump_recovery::Overflows::default(),
             partial: 0,
             sparse,
         }
@@ -306,6 +310,30 @@ impl Retained {
     /// Repaint what this frame changed onto the target, then compare the
     /// target with a full render of the frame.
     fn step(&mut self, harness: &mut FrameHarness, key: TargetKey, what: &str) {
+        let sparse = self.sparse;
+        // A frame repainted whole has nothing to compare: it is the render.
+        let Some(readback) = self.step_report(harness, key) else {
+            return;
+        };
+        match readback {
+            Readback::Differing(differences) => assert_eq!(
+                differences.count, 0,
+                "after {what} (sparse {sparse}), repainting left stale pixels at {:?}",
+                differences.bounds
+            ),
+            // A check that could not run proves nothing either way, and the
+            // test says so rather than calling the frame stale.
+            Readback::Unreadable(why) => panic!(
+                "after {what} (sparse {sparse}), the check could not read its frames back: {why}"
+            ),
+        }
+    }
+
+    /// [`Self::step`], with what the check said of the frame, or `None` when
+    /// the frame was repainted whole.
+    fn step_report(&mut self, harness: &mut FrameHarness, key: TargetKey) -> Option<Readback> {
+        self.frames
+            .note_scratch(self.overflows.scratch(&self.renderer));
         let repaint = present(harness, &mut self.frames, key);
         let input = harness.frame_render_input();
         let (damage, full_redraw) = match &repaint {
@@ -337,7 +365,7 @@ impl Retained {
             .0
             .unwrap();
         if full_redraw {
-            return;
+            return None;
         }
         self.partial += 1;
         let whole = culled.is_some().then(|| {
@@ -345,6 +373,7 @@ impl Retained {
             whole.append(input.scene, Some(key.to_device));
             whole
         });
+        let scratch = self.overflows.scratch(&self.renderer);
         let check = RasterCheck::start(
             (&self.device, &self.queue),
             &mut self.renderer,
@@ -355,29 +384,24 @@ impl Retained {
             whole.as_ref().unwrap_or(&physical),
             SIZE,
             input.background,
+            scratch,
         )
         .unwrap();
+        // The host's counters, as a host that can wait for the GPU reads
+        // them: whether the render that drew this frame dropped geometry is
+        // only known from the readback, after the frame was drawn.
+        let overflowed = self.renderer.settle_bump_budget(&self.device);
+        self.overflows
+            .observe(Ok(vello::BumpBudgetPoll::Complete { overflowed }));
         // Another test polling the shared device may be the one that runs
         // the readback's callbacks, after this poll returns.
-        let readback = loop {
+        loop {
             let _ = self.device.poll(vello::wgpu::PollType::wait_indefinitely());
-            if let Some(readback) = check.differences() {
-                break readback;
+            let scratch = self.overflows.scratch(&self.renderer);
+            if let Some(readback) = check.differences(scratch) {
+                return Some(readback);
             }
             std::thread::yield_now();
-        };
-        let sparse = self.sparse;
-        match readback {
-            Readback::Differing(differences) => assert_eq!(
-                differences.count, 0,
-                "after {what} (sparse {sparse}), repainting {damage:?} left stale pixels at {:?}",
-                differences.bounds
-            ),
-            // A check that could not run proves nothing either way, and the
-            // test says so rather than calling the frame stale.
-            Readback::Unreadable(why) => panic!(
-                "after {what} (sparse {sparse}), the check could not read its frames back: {why}"
-            ),
         }
     }
 }
@@ -436,6 +460,203 @@ fn session_matches_full_renders(sparse: bool) {
         "the session repainted in part {} times",
         target.partial
     );
+}
+
+/// A renderer that dropped geometry from a render may have dropped it from
+/// the frame the target shows or from the check's render of it: a difference
+/// is then no proof of a stale frame. A difference with no lost geometry
+/// still is.
+#[test]
+fn a_difference_after_lost_geometry_proves_no_stale_frame() {
+    const SIDE: (u32, u32) = (320, 240);
+    const STALE: vello::kurbo::Rect = vello::kurbo::Rect {
+        x0: 40.0,
+        y0: 40.0,
+        x1: 90.0,
+        y1: 80.0,
+    };
+    let base = vello::peniko::Color::from_rgb8(30, 30, 40);
+    let gpu = crate::offscreen::shared_gpu().expect("shared GPU context for the raster check");
+    let mut renderer = vello::Renderer::new(
+        &gpu.device,
+        vello::RendererOptions {
+            use_cpu: false,
+            antialiasing_support: vello::AaSupport::area_only(),
+            num_init_threads: None,
+            pipeline_cache: None,
+        },
+    )
+    .unwrap();
+    let texture = gpu.device.create_texture(&vello::wgpu::TextureDescriptor {
+        label: Some("retained-stale-cause-target"),
+        size: vello::wgpu::Extent3d {
+            width: SIDE.0,
+            height: SIDE.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: vello::wgpu::TextureDimension::D2,
+        format: vello::wgpu::TextureFormat::Rgba8Unorm,
+        usage: vello::wgpu::TextureUsages::STORAGE_BINDING
+            | vello::wgpu::TextureUsages::COPY_SRC
+            | vello::wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    let view = texture.create_view(&vello::wgpu::TextureViewDescriptor::default());
+    let target = RetainedTarget {
+        texture: &texture,
+        view: &view,
+    };
+    // A frame that drew `STALE`, and the frame after it, which removed it
+    // but repainted a region that does not reach it: the target keeps it.
+    let mut with_stale = vello::Scene::new();
+    with_stale.fill(
+        vello::peniko::Fill::NonZero,
+        Affine::IDENTITY,
+        vello::peniko::Color::WHITE,
+        None,
+        &STALE,
+    );
+    let without_stale = vello::Scene::new();
+    let mut raster = RetainedRaster::new(false);
+    let mut draw = |scene: &vello::Scene, damage: &[Rect]| {
+        raster
+            .rasterize(
+                (&gpu.device, &gpu.queue),
+                Some(&mut renderer),
+                target,
+                FrameContent {
+                    scene,
+                    width: SIDE.0,
+                    height: SIDE.1,
+                    base_color: base,
+                    damage_regions: damage,
+                    scroll_copies: &[],
+                    full_redraw: damage.is_empty(),
+                    backdrop: &crate::backdrop::BackdropFrame::default(),
+                },
+            )
+            .0
+            .unwrap();
+    };
+    draw(&with_stale, &[]);
+    draw(&without_stale, &[Rect::new(200.0, 200.0, 240.0, 230.0)]);
+    let mut overflows = crate::render_bump_recovery::Overflows::default();
+    let before = overflows.scratch(&renderer);
+    let check = RasterCheck::start(
+        (&gpu.device, &gpu.queue),
+        &mut renderer,
+        target,
+        &without_stale,
+        SIDE,
+        base,
+        before,
+    )
+    .unwrap();
+    let readback = loop {
+        let _ = gpu.device.poll(vello::wgpu::PollType::wait_indefinitely());
+        if let Some(readback) = check.differences(overflows.scratch(&renderer)) {
+            break readback;
+        }
+        std::thread::yield_now();
+    };
+    let Readback::Differing(differences) = readback else {
+        panic!("a target left stale was not compared: {readback:?}");
+    };
+    assert!(
+        differences.count > 0,
+        "the frame that removed the rectangle repainted a region away from it: \
+         the target shows it still"
+    );
+
+    // The same comparison, with the renderer having dropped geometry from a
+    // render in between: a stale frame and a lost render look the same.
+    let before = overflows.scratch(&renderer);
+    let check = RasterCheck::start(
+        (&gpu.device, &gpu.queue),
+        &mut renderer,
+        target,
+        &without_stale,
+        SIDE,
+        base,
+        before,
+    )
+    .unwrap();
+    let scratch = gpu.device.create_texture(&vello::wgpu::TextureDescriptor {
+        label: Some("retained-stale-cause-scratch"),
+        size: vello::wgpu::Extent3d {
+            width: SIDE.0,
+            height: SIDE.1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: vello::wgpu::TextureDimension::D2,
+        format: vello::wgpu::TextureFormat::Rgba8Unorm,
+        usage: vello::wgpu::TextureUsages::STORAGE_BINDING,
+        view_formats: &[],
+    });
+    let scratch_view = scratch.create_view(&vello::wgpu::TextureViewDescriptor::default());
+    let busy = busy_scene(SIDE);
+    renderer.set_bump_budget_limit(1 << 20);
+    renderer
+        .render_to_texture(
+            &gpu.device,
+            &gpu.queue,
+            &busy,
+            &scratch_view,
+            &vello::RenderParams {
+                base_color: base,
+                width: SIDE.0,
+                height: SIDE.1,
+                antialiasing_method: vello::AaConfig::Area,
+            },
+        )
+        .unwrap();
+    let overflowed = renderer.settle_bump_budget(&gpu.device);
+    overflows.observe(Ok(vello::BumpBudgetPoll::Complete { overflowed }));
+    assert!(
+        overflows.collected() > 0,
+        "a scene of this many segments overflows a megabyte of scratch"
+    );
+    let readback = loop {
+        let _ = gpu.device.poll(vello::wgpu::PollType::wait_indefinitely());
+        if let Some(readback) = check.differences(overflows.scratch(&renderer)) {
+            break readback;
+        }
+        std::thread::yield_now();
+    };
+    let Readback::Unreadable(why) = readback else {
+        panic!("a check that saw lost geometry judged the frame: {readback:?}");
+    };
+    assert!(
+        why.contains("scratch changed while this frame was drawn"),
+        "the check says what it could not prove: {why}"
+    );
+}
+
+/// More line segments than a megabyte of scratch holds, over `SIDE`.
+fn busy_scene((width, height): (u32, u32)) -> vello::Scene {
+    let mut scene = vello::Scene::new();
+    let mut seed = 1u32;
+    let mut random = || {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        f64::from(seed >> 8) / f64::from(1u32 << 24)
+    };
+    let stroke = vello::kurbo::Stroke::new(1.5);
+    for _ in 0..30_000 {
+        let (x, y) = (random() * f64::from(width), random() * f64::from(height));
+        let line = vello::kurbo::Line::new((x, y), (x + 6.0, y + 4.0));
+        scene.stroke(
+            &stroke,
+            Affine::IDENTITY,
+            vello::peniko::Color::from_rgb8(200, 200, 210),
+            None,
+            &line,
+        );
+    }
+    scene
 }
 
 /// A desk under an overlay's scrim, as search dims the frame behind its
