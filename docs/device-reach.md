@@ -111,7 +111,9 @@ rolled back, and the next boot either keeps or drops it on purpose.
   - On a laptop whose owner logs in through greetd, the `device` slot is the
     owner's session on seat0. Its layers merge system-wide with
     `systemd-sysext`, because greetd starts that session in the host's mount
-    namespace.
+    namespace. A board's own session runs there for the same reason, so the
+    `device` and `vm` slots' layers are one system-wide set: whichever of the
+    two slots applies, the other's layers stay merged.
 - **Restarting the desktop does not log the person out.** `tilo-session` keeps
   the PAM session, the user manager and `tilo-graphical-session.target`, and
   starts the compositor again when asked to restart. Apps reopen through
