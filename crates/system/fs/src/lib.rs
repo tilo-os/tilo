@@ -35,8 +35,6 @@ pub mod conflict_merge;
 pub mod content;
 #[cfg(feature = "filesystem")]
 pub mod content_kind;
-#[cfg(feature = "filesystem")]
-pub mod control;
 #[cfg(feature = "document-media")]
 pub mod document_media;
 #[cfg(feature = "filesystem")]
