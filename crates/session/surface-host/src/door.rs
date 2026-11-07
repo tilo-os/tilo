@@ -353,12 +353,13 @@ impl Doors {
 
     /// Every control the offered surfaces show by name, in name order: what
     /// a test or a tool lists and then presses. A name two surfaces show is
-    /// the earlier surface's, which is the one in front of it.
+    /// the frontmost surface's — the sheet over the bar, the bar over the
+    /// desk — which is the last one offered, as it draws.
     #[must_use]
     pub fn controls(&self) -> Vec<(String, (f64, f64, f64, f64))> {
         let mut shown: std::collections::BTreeMap<String, (f64, f64, f64, f64)> =
             std::collections::BTreeMap::new();
-        for (_, surface) in self.offered() {
+        for (_, surface) in self.offered().into_iter().rev() {
             for (name, rect) in surface.borrow_mut().controls() {
                 shown.entry(name).or_insert(rect);
             }
@@ -376,7 +377,8 @@ impl Doors {
     }
 
     /// Act on the control `name` on the surface showing it as `action` says,
-    /// as an assistive technology does.
+    /// as an assistive technology does: the frontmost one, which is what
+    /// [`Self::controls`] lists.
     ///
     /// # Errors
     /// No offered surface shows it, or the surface refused.
@@ -385,7 +387,7 @@ impl Doors {
         name: &str,
         action: ui::window_targets::TargetAction,
     ) -> Result<(), String> {
-        for (_, surface) in self.offered() {
+        for (_, surface) in self.offered().into_iter().rev() {
             let mut surface = surface.borrow_mut();
             if surface.controls().iter().any(|(shown, _)| shown == name) {
                 return surface.press_action(name, action);
