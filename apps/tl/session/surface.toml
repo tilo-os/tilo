@@ -603,74 +603,6 @@ id = "redo"
 kind = "undoable"
 params = []
 
-[[resources.verbs]]
-id = "conversation"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "line"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "run"
-required = false
-type = "text"
-
-[[resources.verbs.params]]
-name = "x"
-required = false
-type = "int"
-
-[[resources.verbs.params]]
-name = "y"
-required = false
-type = "int"
-
-[[resources]]
-id = "agent-runs"
-kind = "so.tilo.session.agent-runs"
-label = ""
-version = 0
-fields = []
-
-[[resources.verbs]]
-id = "ask"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "id"
-required = false
-type = "text"
-
-[[resources.verbs.params]]
-name = "title"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "body"
-required = false
-type = "text"
-
-[[resources.verbs.params]]
-name = "agent"
-required = true
-type = "text"
-
-[[resources.verbs.params]]
-name = "model"
-required = false
-
-[[resources.verbs.params]]
-name = "subject"
-required = false
-
-[[resources.verbs.params]]
-name = "quick"
-required = false
-type = "bool"
-
 [[resources]]
 instances = true
 kind = "desktop.window"
@@ -697,43 +629,6 @@ params = []
 id = "force-quit-app"
 kind = "outside"
 params = []
-
-[[resources]]
-instances = true
-kind = "so.tilo.session.agent-run"
-label = ""
-version = 0
-fields = []
-
-[[resources.verbs]]
-id = "send-message"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "text"
-required = true
-type = "text"
-
-[[resources.verbs]]
-id = "stop-run"
-kind = "outside"
-params = []
-
-[[resources.verbs]]
-id = "record-step"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "step"
-required = true
-
-[[resources.verbs]]
-id = "record-answer"
-kind = "outside"
-
-[[resources.verbs.params]]
-name = "view"
-required = true
 
 [[resources]]
 instances = true

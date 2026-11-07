@@ -131,12 +131,5 @@ view desk_doors(d: Desk) {
         ) {
             on activate: device.show_surface(device.desk, surface: "centre")
         }
-        ui.ListRow(
-            "Ask an agent",
-            secondary: .some("Run a task over what you point at"),
-            icon: .bot,
-        ) {
-            on activate: device.show_surface(device.desk, surface: "composer")
-        }
     }
 }

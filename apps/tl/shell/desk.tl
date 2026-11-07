@@ -1,6 +1,6 @@
 /// The desk: what this device shows. The person's bar across the top edge its settings name,
 /// the dock on its own edge, and one surface over the desk at a time: the overview, the
-/// switcher, search and launching, the notifications, the workspaces and the composer. Which
+/// switcher, search and launching, the notifications and the workspaces. Which
 /// one is up is the session's (`d.here`), so the shell re-runs when it changes and nothing else
 /// moves while the desk is at rest.
 ///
@@ -255,8 +255,8 @@ view at_rest(d: Desk) {
 }
 
 /// The surface the person is in, at the place its kind shows: the launcher fills the desk
-/// under the bar, the overview and the workspaces fill it, the centre sits at the trailing
-/// edge and the composer at the foot. Every one of them stands the desk's gutter in from the
+/// under the bar, the overview and the workspaces fill it, and the centre sits at the
+/// trailing edge. Every one of them stands the desk's gutter in from the
 /// window's edge, where that window is narrow enough to have no page gutter of its own: a
 /// surface is a panel over the desk, not a band of the window.
 view surface(d: Desk) {
@@ -273,12 +273,6 @@ view surface(d: Desk) {
             quick_settings(d, fill)
         } else if d.here == "workspaces" {
             workspaces(d, fill)
-        } else if d.here == "composer" {
-            composer(d, fill)
-        } else if d.here == "conversation" {
-            if let r = d.runs.last() {
-                conversation(r, fill)
-            }
         }
     }
 }
