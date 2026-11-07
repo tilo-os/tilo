@@ -21,13 +21,17 @@ use crate::node::{Binding, Event, Node, Principal, ResourceRef, Value};
 /// A tilolang view hands an action what it read (`post(c, text)`); a Rust view does the same.
 /// What the control's event carries at the press (a field's `submit` carries its text, a picked
 /// emoji, the row a list activated) reaches the action where [`Arg::Event`] stands, exactly as a
-/// tilolang view's `event` argument does.
+/// tilolang view's `event` argument does, and the view's own state where [`Arg::State`] stands,
+/// as a tilolang view's `draft`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Arg {
     /// A value the view read.
     Value(Value),
     /// What the event carries at the press.
     Event,
+    /// The view's own state `name`, read at the press: the text a bound control holds, which a
+    /// send button hands the action the composer's field is bound to.
+    State(String),
 }
 
 impl Arg {
@@ -35,6 +39,12 @@ impl Arg {
     #[must_use]
     pub fn text(value: impl Into<String>) -> Self {
         Self::Value(Value::Text(value.into()))
+    }
+
+    /// The view's own state `name`, read at the press (`Arg::state("Composer")`).
+    #[must_use]
+    pub fn state(name: impl Into<String>) -> Self {
+        Self::State(name.into())
     }
 }
 

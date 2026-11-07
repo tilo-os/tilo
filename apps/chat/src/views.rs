@@ -333,15 +333,14 @@ impl ViewResource for Channel {
 /// row and a reply's quote open `chat.workspace/messages/<id>`.
 const MESSAGES_KIND: &str = "chat.workspace";
 
-/// The channel's page: what it is called and about, its messages, and the box that sends the
-/// next one.
+/// The channel's page: what it is called and about over a conversation — its messages filling
+/// the column with the composer docked at its foot, the box answering them.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    ui::column(
-        &cx.key("page"),
-        Gap::Sibling,
-        vec![header(c, cx), messages(c, cx), composer(c, cx)],
-    )
+    let docked = ui::DockedBuilder::new(&cx.key("conversation")).into();
+    let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
+    let docked = node::slot(docked, "content", vec![messages(c, cx)]);
+    ui::column(&cx.key("page"), Gap::Sibling, vec![header(c, cx), docked])
 }
 
 /// Who the channel is: its name, and what it is about or that it is a call.
@@ -388,10 +387,13 @@ fn messages(c: &Channel, cx: &ViewCx) -> Node {
         .collect();
     // A conversation scrolls its transcript, opening at the newest message and following it as
     // it grows. It is a scroll rather than a list: the rows are the page's own, drawn whole, and
-    // the place scrolls them (a Rust view sends no list rows of its own).
-    let transcript = ui::ScrollBuilder::new(&cx.key("transcript"))
-        .follow_end(true)
-        .into();
+    // the place scrolls them (a Rust view sends no list rows of its own). It fills the room the
+    // page leaves it, so the composer stays at the foot and the transcript is what scrolls.
+    let transcript = ui::fill(
+        ui::ScrollBuilder::new(&cx.key("transcript"))
+            .follow_end(true)
+            .into(),
+    );
     node::with(
         transcript,
         vec![ui::column(&cx.key("messages"), Gap::Sibling, rows)],
@@ -513,17 +515,20 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, cx: &ViewCx) -> Node {
     }
 }
 
-/// One thing a message carries: a record it was shared from (a chip that places it), the words
+/// One thing a message carries: a record it was shared from (a row that places it), the words
 /// it quotes, a picture, or a file it posts (a card naming it).
 fn attachment_row(attachment: &Attachment, key: &str, cx: &ViewCx) -> Node {
     if let Some(target) = &attachment.resource {
-        // A record: the chip that opens it. Pressing places it, which is the system's open
-        // (`open(r)`, shell.md §3): Chat does not handle the press itself.
-        let chip: Node = ui::ChipBuilder::new(key, &attachment.label)
+        // A record is a reference: a row that shows it and places it when activated, which is
+        // the system's open (shell.md §3) — Chat does not handle the press itself.
+        let row: Node = ui::ListRowBuilder::new(key)
+            .title(&attachment.label)
             .icon("corner-up-right")
+            .item(target.clone())
+            .dense(true)
             .into();
-        let open = cx.open(&chip, "press", target.clone(), None);
-        return node::on(chip, "press", open);
+        let opened = cx.open(&row, "activate", target.clone(), None);
+        return node::on(row, "activate", opened);
     }
     match attachment.kind.as_str() {
         "image" if !attachment.src.is_empty() => {
@@ -573,9 +578,9 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 
 /// The foot of the conversation: the box a message is typed in, and the button that sends it.
 ///
-/// The field submits what it holds on Enter or on the button, and what it holds is the `text`
-/// argument of Chat's own `post` action, so a press and an agent's step take the one path to
-/// the record. Nothing of Chat's own state sits between them.
+/// The field is the composer's own draft, and what it holds is the `text` argument of Chat's own
+/// `post` action: Enter sends what the field carries, and the button sends the draft the field is
+/// bound to, so a press and an agent's step take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
         .placeholder(format!("Message #{}", c.name))
@@ -584,21 +589,25 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
         .into();
     // The field is its own draft: what is typed is the field's, and the entry lets go of it
     // once it submits, so the next message starts from an empty box.
-    let input = node::bind(field, ViewCx::bind_state("Composer"));
-    let input = post(cx, input, "submit", &c.id);
-
+    let input = node::bind(field, ViewCx::bind_state(DRAFT));
+    // Enter hands the action the text the field carries as it submits.
+    let input = post(cx, input, "submit", &c.id, Arg::Event);
+    // The button carries no text of its own: it sends the draft the field is bound to.
     let send: Node = ui::ButtonBuilder::new(&cx.key("send"), "Send")
         .icon("send")
         .icon_only(true)
         .into();
-    let send = post(cx, send, "press", &c.id);
+    let send = post(cx, send, "press", &c.id, Arg::state(DRAFT));
     ui::row(&cx.key("composer"), Gap::Tight, vec![input, send])
 }
 
+/// The name the composer's draft is held under in the view's own state.
+const DRAFT: &str = "Composer";
+
 /// `node` with its event `event` running the chat's `post` of channel `channel`, with the text
-/// the control carries at the press: what a composer's field and its button both do.
-fn post(cx: &ViewCx, node: Node, event: &str, channel: &str) -> Node {
-    let fired = cx.action_with(&node, event, "post", vec![Arg::text(channel), Arg::Event]);
+/// `text`: what the composer's field and its button both do.
+fn post(cx: &ViewCx, node: Node, event: &str, channel: &str, text: Arg) -> Node {
+    let fired = cx.action_with(&node, event, "post", vec![Arg::text(channel), text]);
     node::on(node, event, fired)
 }
 
@@ -820,9 +829,12 @@ mod tests {
             cx.effect(&send.key, "press"),
             Some(tilo_view::Effect::Action {
                 action: "post".to_owned(),
-                args: vec![tilo_view::Arg::text("c_crit"), tilo_view::Arg::Event],
+                args: vec![
+                    tilo_view::Arg::text("c_crit"),
+                    tilo_view::Arg::state("Composer"),
+                ],
             }),
-            "the send button posts what is typed as the field's Enter does"
+            "the send button posts the draft the field holds"
         );
     }
 
@@ -848,20 +860,20 @@ mod tests {
         let cx = view_cx(&channel);
         let tree = page(&channel, &cx);
         passes(&tree);
-        let chip = walk(&tree)
+        let row = walk(&tree)
             .into_iter()
             .find(|node| {
-                node.kind == "ui.Chip"
-                    && node.props.get("label") == Some(&Value::Text("Q3 plan".to_owned()))
+                node.kind == "ui.ListRow"
+                    && node.props.get("title") == Some(&Value::Text("Q3 plan".to_owned()))
             })
-            .expect("the shared record's chip");
+            .expect("the shared record's row");
         assert_eq!(
-            cx.effect(&chip.key, "press"),
+            cx.effect(&row.key, "activate"),
             Some(tilo_view::Effect::Open {
                 target: shared,
                 view: None,
             }),
-            "pressing the attachment places it, which is the system's open"
+            "activating the attachment places it, which is the system's open"
         );
     }
 

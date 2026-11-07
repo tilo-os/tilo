@@ -980,7 +980,14 @@ impl Core {
             };
             let root = rendered
                 .tree
-                .into_ui(&rendered.events, &shown.target, &author, &mut retain)
+                .into_ui(
+                    &rendered.events,
+                    &shown.target,
+                    &author,
+                    cx.offer.window,
+                    cx.offer.viewer,
+                    &mut retain,
+                )
                 .map_err(RuntimeError::Package)?;
             acc.retained.extend(retained);
             root

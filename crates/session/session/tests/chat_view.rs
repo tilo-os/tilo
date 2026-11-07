@@ -188,7 +188,12 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
         "the text is typed"
     );
     // Pressing send posts what was typed through Chat's own `post`: the channel then says it.
-    common::press(&mut session, "Send");
+    let answer = common::control(
+        &mut session,
+        &socket,
+        &json!({"op": "click_named", "name": "Send"}),
+    );
+    assert_eq!(answer, json!({"ok": {}}), "the Send button takes the press");
     common::until(&mut session, "the posted message", |session| {
         session.shell_says(TYPED)
     });
@@ -206,28 +211,43 @@ fn pressing_an_attachment_places_the_resource_it_holds() {
     let _settled = ui::motion::testing::settled();
     let root = common::private_home();
     let mut session = session(root.path());
-    // A message sharing a record: its chip is what the page draws for the attachment.
-    const SHARED: &str = "Q3 plan";
-    place(&mut session, CHANNEL);
+    // The small demo channel holds one message and a message sharing a sample video, whose
+    // row is what the page draws for the attachment: both stand within a place's view.
+    const SHARED: &str = "I rewrote my window compositor in Rust and it changed EVERYTHING!!!";
+    place(&mut session, "chat.channel:c_general");
     common::until(&mut session, "the channel's page", |session| {
         session.shell_says(SHARED)
     });
-    // The attachment's chip opens what it holds: a press places it beside the page, which is
-    // the system's open (shell.md §3), never Chat's.
+    // The attachment's row opens what it holds: activating it places it beside the page, which
+    // is the system's open (shell.md §3), never Chat's.
+    let before: Vec<String> = common::places(&session)
+        .into_iter()
+        .map(|place| place.record)
+        .collect();
     common::press(&mut session, SHARED);
-    common::until(&mut session, "the shared record is placed", |session| {
-        common::places(session)
+    // The press places the video beside the page: the arrangement takes it as one step of the
+    // person's, and the page stays where it was.
+    for _ in 0..20 {
+        session
+            .step(std::time::Duration::from_millis(16))
+            .expect("step");
+        if common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("notes.pages/"))
-    });
+            .any(|place| place.record.starts_with("tube.video:"))
+        {
+            break;
+        }
+    }
     assert!(
         common::places(&session)
             .iter()
-            .any(|place| place.record.starts_with("notes.pages/")),
-        "the attachment's press places what it holds: {:?}",
+            .any(|place| place.record.starts_with("tube.video:")),
+        "the attachment's press places what it holds; before: {before:?}, after: {:?}; the \
+         shell refused {:?}",
         common::places(&session)
             .into_iter()
             .map(|place| place.record)
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>(),
+        session.shell_refusals()
     );
 }
