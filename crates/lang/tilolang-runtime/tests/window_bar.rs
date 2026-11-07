@@ -213,6 +213,105 @@ mod cases {
         );
     }
 
+    /// Whether any node of the tree carries the property `name`.
+    fn any_prop(node: &UiNode, name: &str) -> bool {
+        node.props.contains_key(name) || node.children.iter().any(|child| any_prop(child, name))
+    }
+
+    /// A row shows the actions its view places, in the order it placed them, and keeps what it
+    /// left over behind its "More": the board's placement is not on every row, and every
+    /// command a task takes stays in the row's menu.
+    #[test]
+    fn a_tasks_row_offers_the_actions_its_view_places_first() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        let row = of_kind(tree, "ui.ListItem")[0];
+        let menu = slot(row, "menu");
+        let labels: Vec<String> = menu.iter().map(|item| text_of(item, "label")).collect();
+        assert_eq!(
+            labels.get(..4).unwrap_or_default(),
+            ["Complete", "Pick date…", "Assign…", "Delete"],
+            "the row opens with the actions its view placed, whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
+        assert!(
+            menu[4..]
+                .iter()
+                .all(|item| item.props.get("group") == Some(&Value::text("More"))),
+            "what the view left over stands behind its \"More\", whole menu {labels:?}:\n{}",
+            dump(tree)
+        );
+        assert!(
+            labels
+                .get(4..)
+                .is_some_and(|held| held.contains(&"Duplicate".to_owned())),
+            "every other action a task takes stays in the row's menu, whole menu \
+             {labels:?}:\n{}",
+            dump(tree)
+        );
+        // The swipe a row offers is one it placed: Delete, the destructive action it names.
+        let swipe = slot(row, "swipe");
+        assert_eq!(
+            swipe.first().map(|node| text_of(node, "label")).as_deref(),
+            Some("Delete"),
+            "the row swipes an action it placed:\n{}",
+            dump(tree)
+        );
+        // The host read the placement while it built the surfaces and took it off the tree: the
+        // row is sent with the properties its widget declares and no other.
+        assert!(
+            !any_prop(tree, "actions"),
+            "a row is sent no placement:\n{}",
+            dump(tree)
+        );
+    }
+
+    /// The bar shows the window's actions its view placed, in its order, and keeps the rest of
+    /// what the window's own place offers behind a "More" the bar holds itself.
+    #[test]
+    fn the_tasks_bar_places_the_actions_its_view_names() {
+        let w = tasks();
+        let root = w.root("Tasks");
+        w.task(&root, "milk");
+        let window = w.window("home", &root);
+        let tree = window.tree();
+        let shell = of_kind(tree, "ui.NavShell")[0];
+        let bar = slot(shell, "overview_actions");
+        let buttons: Vec<String> = bar
+            .iter()
+            .filter(|node| node.kind == "ui.Button")
+            .map(|node| text_of(node, "label"))
+            .collect();
+        assert_eq!(
+            buttons,
+            ["New task", "New task due today", "Delete finished tasks"],
+            "the bar holds the actions the view placed, in its order:\n{}",
+            dump(tree)
+        );
+        let more = bar
+            .iter()
+            .find(|node| node.kind == "ui.MenuButton")
+            .unwrap_or_else(|| panic!("the bar keeps the rest behind More:\n{}", dump(tree)));
+        let behind = more
+            .children
+            .iter()
+            .filter(|child| child.kind == "ui.MenuItem")
+            .any(|child| text_of(child, "label") == "New project");
+        assert!(
+            behind,
+            "the rest of what Tasks offers stands behind More:\n{}",
+            dump(tree)
+        );
+        assert!(
+            !any_prop(tree, "actions"),
+            "a shell is sent no placement:\n{}",
+            dump(tree)
+        );
+    }
+
     /// An action that destroys what it names is drawn as the destructive button the action
     /// declares, wherever the bar places it: its role is the one its declaration gives it, not
     /// one the bar picks.

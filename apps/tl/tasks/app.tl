@@ -621,6 +621,7 @@ view home(t: Tasks) {
         sidebar_title: "Tasks",
         overview_title: title,
         overview_count: header_count,
+        actions: [new_task, new_task_today, clear_done],
     ) {
         // The places this window offers, and the projects of its root under them: what a
         // window offers in its sidebar is what the app declares.
@@ -709,6 +710,14 @@ view task_list(items: List<Task>, kids: List<Task>, by_day: Bool, done_place: Bo
             parent: x.parent,
             parent_title: x.parent?.title,
             progress: subtask_count(kids, x),
+            actions: [
+                check(primary: true),
+                schedule(group: "Plan"),
+                assign,
+                indent(group: "Move"),
+                outdent(group: "Move"),
+                remove,
+            ],
         ) {
             task_row(x, .day, x.parent)
         }
@@ -740,6 +749,14 @@ view project_list(p: Project) {
                             parent: x.parent,
                             parent_title: x.parent?.title,
                             progress: subtask_count(kids, x),
+                            actions: [
+                                check(primary: true),
+                                schedule(group: "Plan"),
+                                assign,
+                                indent(group: "Move"),
+                                outdent(group: "Move"),
+                                remove,
+                            ],
                         ) {
                             task_row(x, .project, x.parent)
                         }
@@ -794,7 +811,7 @@ view project_board(p: Project) {
 /// A task on a board: its row. It opens in a window of its own, and its menu moves it to
 /// another lane; the host appends what its type declares after the moves.
 view task_card(t: Task, sections: List<Section>) {
-    ui.BoardCard(t) {
+    ui.BoardCard(t, actions: [check(primary: true), schedule(group: "Plan"), assign, remove]) {
         on activate: open(t)
         menu: {
             if t.section != .none {
