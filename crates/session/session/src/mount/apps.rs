@@ -122,6 +122,11 @@ struct State {
     /// workspace and id: what each was started with, and the launch running
     /// it while one does.
     agents: BTreeMap<(String, String), AgentProcess>,
+    /// The session's services, once it lent them: a launch asks them whether
+    /// one runs the app's model, and if so names the resource it publishes
+    /// for the app, so the app launches hosted
+    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+    services: Option<Rc<RefCell<crate::Services>>>,
 }
 
 /// An agent this device started, as the record of it the launch pass keeps.
@@ -188,6 +193,7 @@ impl Apps {
                 broker: None,
                 wake,
                 agents: BTreeMap::new(),
+                services: None,
             }),
         }
     }
@@ -227,6 +233,22 @@ impl Apps {
     /// admitted for the launch that made it.
     pub fn lend_launches(&self, launches: std::sync::Arc<crate::Launches>) {
         self.state.borrow_mut().launches = Some(launches);
+    }
+
+    /// The session's services: from here on a launch asks them whether one
+    /// runs the app's model, and names the resource it publishes for the app
+    /// where one does, so the app launches hosted
+    /// (`docs/architecture/apps.md` §8 step 2).
+    pub fn lend_services(&self, services: Rc<RefCell<crate::Services>>) {
+        self.state.borrow_mut().services = Some(services);
+    }
+
+    /// The resource address the session's document host publishes `app`'s
+    /// record at, when a service runs its model: whether this launch is
+    /// hosted follows from that, and no per-app code says otherwise.
+    fn hosted(&self, app: &str) -> Option<String> {
+        let services = self.state.borrow().services.clone()?;
+        services.borrow().hosted(app)
     }
 
     /// The session's action broker: from here on an action an app publishes
@@ -360,6 +382,9 @@ impl Apps {
             new_window: false,
             continuity_instance: None,
             connector: Some(origin),
+            // A connector reads the origin outside, not a record the session
+            // serves: it is never the document host's launch.
+            hosted: None,
         };
         let planned = Planned::of(
             &Launch::Package {
@@ -935,6 +960,7 @@ impl Apps {
                 new_window: false,
                 continuity_instance: None,
                 connector: None,
+                hosted: None,
             };
             Planned::of(&launch, &context)
         };
@@ -996,6 +1022,12 @@ impl Apps {
     ) -> Result<bool, DoorError> {
         let authored = self.authored(launch, workspace);
         let workspace = &authored;
+        // A service running this app's model serves its record: the launch
+        // names the resource the session publishes, so the app opens no
+        // record of its own (`docs/architecture/apps.md` §8 step 2).
+        let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
+            .then(|| self.hosted(launch.app()))
+            .flatten();
         let planned = {
             let state = self.state.borrow();
             // The workspace's own X11 display: an app started there connects
@@ -1017,6 +1049,7 @@ impl Apps {
                 new_window,
                 continuity_instance: instance,
                 connector: None,
+                hosted: hosted.as_deref(),
             };
             Planned::of(launch, &context)
         };

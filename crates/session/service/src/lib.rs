@@ -118,6 +118,15 @@ pub trait Service {
         None
     }
 
+    /// The resource address this service publishes the app `app`'s record at,
+    /// when it runs that app's model: the session's document host serves the
+    /// app, so a launch it makes names the address and the app's process opens
+    /// no record of its own (`docs/architecture/apps.md` §8 step 2,
+    /// `one-app-model.md` §4). `None` for a service that runs no such model.
+    fn hosted(&self, _app: &str) -> Option<String> {
+        None
+    }
+
     /// The record of the app `app` this service keeps, when the session runs the app's package
     /// itself (the shell) and its records are the person's as any app's: what a connection the
     /// session admits — a REPL, an agent's task — reads and changes by the app, as it does
@@ -340,6 +349,13 @@ impl Services {
     #[must_use]
     pub fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         self.started.iter().find_map(|service| service.module(app))
+    }
+
+    /// The resource address a service publishes the app `app`'s record at,
+    /// when it runs that app's model; see [`Service::hosted`].
+    #[must_use]
+    pub fn hosted(&self, app: &str) -> Option<String> {
+        self.started.iter().find_map(|service| service.hosted(app))
     }
 
     /// The record of the app `app`, from the service keeping it; see [`Service::record`].
@@ -597,6 +613,10 @@ impl Service for Services {
 
     fn module(&self, app: &str) -> Option<std::sync::Arc<[u8]>> {
         Self::module(self, app)
+    }
+
+    fn hosted(&self, app: &str) -> Option<String> {
+        Self::hosted(self, app)
     }
 
     fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
