@@ -1081,3 +1081,263 @@ fn a_step_reaches_the_window_in_one_frame() {
         );
     }
 }
+// -- What a step costs, counted ------------------------------------------------------------
+//
+// The interactions above are costed in time, which a machine reads differently from week to
+// week. These are the same steps counted: what the window's instance read of the record and of
+// the workspace's indexes, how many items a filter was checked against one by one, which
+// boundaries it rendered and what it sent the window; and what the window's layout built and
+// its text shaped. A step costs what it changed and what the window shows, so every one of
+// them reads the same in a workspace ten times the size.
+
+/// A workspace a tenth the size of the one a person has used for years.
+const SMALL: usize = 1_000;
+
+/// What one step did, counted rather than timed.
+#[derive(Clone, Copy, Debug, Default)]
+struct Done {
+    renders: u64,
+    items: u64,
+    located: u64,
+    fields: u64,
+    listings: u64,
+    entries: u64,
+    dirs: u64,
+    pages: u64,
+    index_fields: u64,
+    evaluated: u64,
+    versions: u64,
+    sent: u64,
+    nodes: u64,
+    shaped: u64,
+}
+
+impl Done {
+    /// What the window and its instance have done so far.
+    fn now(session: &mut Session) -> Self {
+        let (renders, items, reads, sent) = {
+            let hosted = session
+                .host
+                .instances()
+                .next()
+                .expect("the window's instance");
+            let instance = hosted.instance();
+            let host = instance.host().expect("the instance's host");
+            let reads = host.store().read_stats();
+            let renders = [
+                tilo_render_protocol::patch::Lane::Root,
+                tilo_render_protocol::patch::Lane::Detail,
+            ]
+            .into_iter()
+            .filter_map(|lane| instance.view(lane))
+            .map(|view| view.borrow().stats().renders)
+            .fold(0, u64::saturating_add);
+            (
+                renders,
+                host.runtime().items_built(),
+                reads,
+                instance.patches_sent(),
+            )
+        };
+        let (_, shaped, _) = session.window.harness().take_text_shape_stats();
+        Self {
+            renders,
+            items,
+            located: reads.doc.located,
+            fields: reads.doc.fields,
+            listings: reads.doc.listings,
+            entries: reads.doc.entries,
+            dirs: reads.index.dirs,
+            pages: reads.index.pages,
+            index_fields: reads.index.fields,
+            evaluated: reads.evaluated,
+            versions: reads.versions,
+            sent,
+            nodes: session.window.harness().layout_nodes_built(),
+            shaped,
+        }
+    }
+
+    /// This, less what `earlier` had done.
+    fn since(self, earlier: Self) -> Self {
+        Self {
+            renders: self.renders.saturating_sub(earlier.renders),
+            items: self.items.saturating_sub(earlier.items),
+            located: self.located.saturating_sub(earlier.located),
+            fields: self.fields.saturating_sub(earlier.fields),
+            listings: self.listings.saturating_sub(earlier.listings),
+            entries: self.entries.saturating_sub(earlier.entries),
+            dirs: self.dirs.saturating_sub(earlier.dirs),
+            pages: self.pages.saturating_sub(earlier.pages),
+            index_fields: self.index_fields.saturating_sub(earlier.index_fields),
+            evaluated: self.evaluated.saturating_sub(earlier.evaluated),
+            versions: self.versions.saturating_sub(earlier.versions),
+            sent: self.sent.saturating_sub(earlier.sent),
+            nodes: self.nodes.saturating_sub(earlier.nodes),
+            shaped: self.shaped.saturating_sub(earlier.shaped),
+        }
+    }
+
+    /// Each count with its name, for a table.
+    fn counts(self) -> [(&'static str, u64); 14] {
+        [
+            ("renders", self.renders),
+            ("items", self.items),
+            ("located", self.located),
+            ("fields", self.fields),
+            ("listings", self.listings),
+            ("entries", self.entries),
+            ("dirs", self.dirs),
+            ("pages", self.pages),
+            ("index_fields", self.index_fields),
+            ("evaluated", self.evaluated),
+            ("versions", self.versions),
+            ("sent", self.sent),
+            ("nodes", self.nodes),
+            ("shaped", self.shaped),
+        ]
+    }
+}
+
+/// The rows the window's lists hold rendered: what it shows, whatever the workspace holds.
+fn rows_shown(session: &mut Session) -> u64 {
+    let Some(view) = session.hosted().view() else {
+        return 0;
+    };
+    view.lists()
+        .into_iter()
+        .filter_map(|list| view.rows_of(&list))
+        .map(|rows| rows.borrow().rendered().len() as u64)
+        .sum()
+}
+
+/// `input`, the frames that show what it did, and what the window and its instance did for them:
+/// what a step of a person costs.
+fn step(session: &mut Session, input: impl FnOnce(&mut Session)) -> Done {
+    let before = Done::now(session);
+    input(session);
+    session.settle();
+    Done::now(session).since(before)
+}
+
+/// What a day of the window's steps costs at `n` tasks, in the order a person does them, and
+/// the rows the window shows at rest: each step, and what it did.
+fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
+    let doc = seeded_tasks(n);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, doc, None);
+    // What a writer's first change in a record renumbers is none of these steps'.
+    for _ in 0..2 {
+        let (_, x, y) = first_check(&mut session);
+        session.window.click_at(x, y);
+        session.settle();
+    }
+    assert!(!session.titles().is_empty(), "the window shows the place");
+    let mut out = Vec::new();
+    let (_, x, y) = first_check(&mut session);
+    out.push((
+        "check a task",
+        step(&mut session, |session| session.window.click_at(x, y)),
+    ));
+    // Done orders its place by when each task was finished, a stamp of the record's history
+    // rather than a field a column orders: reading the place once to show it is the open of
+    // the place, not a step, so it is taken here and what is counted is the way back.
+    let (x, y) = place_at(&mut session, "Done");
+    session.window.click_at(x, y);
+    session.settle();
+    let (x, y) = place_at(&mut session, "Inbox");
+    out.push((
+        "switch place",
+        step(&mut session, |session| session.window.click_at(x, y)),
+    ));
+    session.window.chord(&["ctrl"], "n");
+    session.settle();
+    out.push((
+        "entry keystroke",
+        step(&mut session, |session| session.window.type_text("B")),
+    ));
+    out.push((
+        "entry enter",
+        step(&mut session, |session| {
+            session
+                .window
+                .press_key(ui::winit::keyboard::NamedKey::Enter);
+        }),
+    ));
+    let first = top_title(&mut session);
+    let at = shown_at(&mut session, &first);
+    session.window.move_to(at.0, at.1);
+    session.settle();
+    out.push((
+        "scroll",
+        step(&mut session, |session| session.window.scroll(0.0, -3.0)),
+    ));
+    (out, rows_shown(&mut session))
+}
+
+/// What a step still does for each task the workspace holds grows with the workspace: where the
+/// workspace is larger, the step does `per_task` more of `count` for every task more.
+///
+/// Both are loops over the collection a change did not narrow, and both are read through the
+/// index rather than item by item, so neither gathers the workspace's items to answer:
+/// - `check a task` follows the tasks under it with `descendants`, lowered to a loop over the
+///   list reading each item's parent: the collection holds no index of a task's children.
+/// - `entry enter` adds a task, which rejoins the place's filter: the filtered listing is read
+///   again from the collection, its predicate's remaining fields read on every item it may hold.
+const KNOWN_PER_TASK: &[(&str, &str, u64)] = &[
+    ("check a task", "index_fields", 1),
+    ("entry enter", "index_fields", 3),
+];
+
+/// A step of the window costs what it changed and what the window shows, never the size of the
+/// workspace: checking a task off, switching the sidebar's place, a keystroke in the entry, the
+/// Enter that adds the task and a notch of the scroll do the same work in ten thousand tasks as
+/// in a thousand. What would grow with the workspace is a loop over the collection, a filter no
+/// index answers, a publication of rows the window cannot show or a layout of rows off screen.
+/// An index reads a tree whose depth is the logarithm of what it holds, so ten times the
+/// workspace must not make a step do twice the work: what a step costs is what it changed, and
+/// of the collection only what [`KNOWN_PER_TASK`] names.
+#[test]
+fn a_step_costs_what_it_changes_not_the_workspace() {
+    let _motion = ui::motion::testing::settled();
+    let (small, small_rows) = steps_costs(SMALL);
+    let (large, large_rows) = steps_costs(SEEDED);
+    assert_eq!(
+        large_rows, small_rows,
+        "the window shows {large_rows} rows of {SEEDED} tasks and {small_rows} of {SMALL}"
+    );
+    let mut grew = Vec::new();
+    let mut table = vec![format!(
+        "{:<18} {:>12} {:>8} {:>8}",
+        "step", "count", SMALL, SEEDED
+    )];
+    let more = u64::try_from(SEEDED - SMALL).unwrap_or(0);
+    for ((label, at_large), (_, at_small)) in large.iter().zip(&small) {
+        for ((name, at_large), (_, at_small)) in
+            at_large.counts().into_iter().zip(at_small.counts())
+        {
+            table.push(format!(
+                "{label:<18} {name:>12} {at_small:>8} {at_large:>8}"
+            ));
+            let known = KNOWN_PER_TASK
+                .iter()
+                .find(|(step, count, _)| step == label && count == &name)
+                .map_or(0, |(_, _, per_task)| per_task * more);
+            let allowed = at_small
+                .saturating_mul(2)
+                .saturating_add(8)
+                .saturating_add(known);
+            if at_large > allowed {
+                grew.push(format!(
+                    "{label} {name}: {at_large} at {SEEDED} tasks, {at_small} at {SMALL}"
+                ));
+            }
+        }
+    }
+    eprintln!("{}", table.join("\n"));
+    assert!(
+        grew.is_empty(),
+        "a step costs more in a larger workspace:\n{}",
+        grew.join("\n")
+    );
+}
