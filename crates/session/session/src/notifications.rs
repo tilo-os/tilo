@@ -29,8 +29,8 @@ use settings_store::system_sounds::{QuietState, SystemSoundEvent};
 use tilo_actions::{ActionAddress, ActionOutput, DoorError, ResourceSpec};
 use tilo_desktop_surface::notifications::{
     self, Addressed, BannerAsk, ContinuityNotificationId, DEFAULT_DISMISS_AFTER, Notification,
-    NotificationPerson, NotificationSeverity, PERSISTENT_DISMISS, QuietReason,
-    RemoteNotificationRoute, ScheduledNotificationTarget,
+    NotificationIconKind, NotificationPerson, NotificationSeverity, PERSISTENT_DISMISS,
+    QuietReason, RemoteNotificationRoute, ScheduledNotificationTarget,
 };
 use tilo_desktop_surface::{DesktopNotifications, NotificationOutcome};
 use tilo_device_fabric::link::SharedLink;
@@ -202,10 +202,19 @@ pub(crate) fn shown(
     // what the device calls that app — a program with no app behind it by
     // what it calls itself — and an unattributed sender's name is shown as
     // its claim, never as who it is.
-    notification.app_name = match app_id.as_deref() {
-        Some(id) => Some(crate::app_names::sender_name(id, &sent.app_name)),
-        None => notifications::sender_claim(&sent.app_name),
-    };
+    //
+    // The desktop's own notice is neither: the session raises it in its own
+    // name, so it keeps the name it carries and leads with the system's
+    // mark rather than being read as some app's claim.
+    if sent.system {
+        notification.app_name = Some(sent.app_name);
+        notification.icon_kind = NotificationIconKind::System;
+    } else {
+        notification.app_name = match app_id.as_deref() {
+            Some(id) => Some(crate::app_names::sender_name(id, &sent.app_name)),
+            None => notifications::sender_claim(&sent.app_name),
+        };
+    }
     // Artwork from what proves the app first, then lower-trust hints that
     // can only supply pixels, then the sender's own decoded image. Only
     // ever pixels: it never names or groups the app.
@@ -886,6 +895,7 @@ impl SessionNotifications {
                 let sender = sent.id;
                 let transient = sent.transient;
                 let app_id = sent.caller.as_ref().map(|caller| caller.app_id.clone());
+                let system = sent.system;
                 let badge_count = sent.badge_count;
                 let sound = sound_event(&sent);
                 let effective = self.effective(app_id.as_deref(), sent.priority_contact);
@@ -901,8 +911,9 @@ impl SessionNotifications {
                 // What the person's other devices show of it, judged by the
                 // same policy: their own rules decide whether it is shown
                 // there, and its text leaves this device only when previews
-                // may.
-                if effective.cross_device {
+                // may. The desktop's own news is about this machine and
+                // stays here.
+                if effective.cross_device && !system {
                     self.mirror.project(
                         sender,
                         (

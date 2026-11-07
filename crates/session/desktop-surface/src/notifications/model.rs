@@ -41,11 +41,13 @@ impl NotificationSeverity {
 /// What a notification is about, when the desktop itself knows: plain
 /// information leads with its glyph. `Generic` has none of its own, so the
 /// notification leads with its sender's mark, and with the system's bell
-/// when no app is named.
+/// when no app is named. `System` is the desktop's own notice about the
+/// machine, which leads with the same bell whoever raises it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum NotificationIconKind {
     #[default]
     Generic,
+    System,
     Workspace,
     Network,
     Permission,
@@ -56,6 +58,7 @@ impl NotificationIconKind {
     pub fn icon(self) -> Option<ui::icons::Icon> {
         match self {
             Self::Generic => None,
+            Self::System => Some(ui::icons::Icon::Bell),
             Self::Workspace => Some(ui::icons::Icon::LayoutGrid),
             Self::Network => Some(ui::icons::Icon::Wifi),
             Self::Permission => Some(ui::icons::Icon::Fingerprint),

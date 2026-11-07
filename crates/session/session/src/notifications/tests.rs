@@ -192,6 +192,33 @@ fn urgency_and_timeout_set_how_long_a_banner_stays() {
     }
 }
 
+/// The desktop's own notice is the system speaking, not a sender: it keeps
+/// the name it carries and leads with the system's mark. A program nobody
+/// attributed is still shown as making a claim, never as who it is.
+#[test]
+fn the_desktops_own_notice_is_the_systems_never_a_claim() {
+    let mut notice = sent(8);
+    notice.app_name = "Updates".into();
+    notice.system = true;
+    let banner = shown(notice, 0);
+    assert_eq!(banner.app_id, None, "no app is behind it");
+    assert_eq!(
+        banner.app_name.as_deref(),
+        Some("Updates"),
+        "the system raises it in its own name"
+    );
+    assert_eq!(
+        banner.mark().icon,
+        Some(ui::icons::Icon::Bell),
+        "the system's mark, not a generic window"
+    );
+    assert_eq!(
+        shown(sent(9), 0).app_name,
+        notifications::sender_claim("Mail"),
+        "a program nobody attributed still says what it claims"
+    );
+}
+
 #[test]
 fn only_an_attributed_app_is_named_and_a_person_needs_a_name() {
     let unattributed = shown(sent(3), 0);
@@ -1056,6 +1083,29 @@ fn laptop() -> DeviceId {
     laptop
 }
 
+/// The desktop's own notice is about the machine that raises it: it is not
+/// an app's message to continue on the person's other devices.
+#[test]
+fn the_desktops_own_notice_stays_on_this_machine() {
+    let (rig, fabric) = rig_on_fabric(true);
+    let mismatch = crate::network::VersionMismatch {
+        endpoint: "zpeerexample".into(),
+        theirs: 91,
+        ours: 90,
+    };
+    rig.bridge
+        .borrow_mut()
+        .tell(crate::notices::version_mismatch_notice(
+            &mismatch,
+            Some("Framework 16"),
+        ));
+    rig.step();
+    assert!(
+        fabric.projected().is_empty(),
+        "this machine's own news is no other device's notification"
+    );
+}
+
 #[test]
 fn an_apps_notification_continues_on_the_persons_other_devices() {
     let (rig, fabric) = rig_on_fabric(true);
@@ -1381,6 +1431,16 @@ fn a_device_on_another_version_is_named_on_the_desk() {
         banner.body.contains("restarts"),
         "the body says what happens here: {}",
         banner.body
+    );
+    assert_eq!(
+        banner.app_name.as_deref(),
+        Some("Updates"),
+        "the system raises it in its own name, never a sender's claim"
+    );
+    assert_eq!(
+        banner.mark().icon,
+        Some(ui::icons::Icon::Bell),
+        "the system's mark, not a generic window"
     );
     assert_eq!(
         rig.desktop.log().active().len(),

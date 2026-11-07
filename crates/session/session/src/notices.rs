@@ -43,7 +43,8 @@ use std::time::Duration;
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
 use tilo_desktop_surface::notifications::{
-    Notification as DeskNotification, NotificationSeverity, PERSISTENT_DISMISS,
+    Notification as DeskNotification, NotificationIconKind, NotificationSeverity,
+    PERSISTENT_DISMISS,
 };
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
@@ -129,6 +130,9 @@ impl Notice {
             urgency: self.urgency,
             machine_wide: self.machine_wide,
             suppress_sound: self.sound.is_some(),
+            // The session raises its own notice: it is the system's word
+            // about the machine, not a sender's.
+            system: true,
             ..Notification::new(0)
         }
     }
@@ -158,6 +162,7 @@ impl Notice {
             .unwrap_or(PERSISTENT_DISMISS);
         let mut desk_notice = DeskNotification::new(self.title, self.body)
             .with_app_name(self.app)
+            .with_icon_kind(NotificationIconKind::System)
             .with_severity(severity)
             .with_dismiss_after(dismiss_after);
         desk_notice.actions = self.actions;
@@ -1567,6 +1572,23 @@ mod tests {
                 "its endpoint is not the person's language"
             );
         }
+    }
+
+    /// A desk with no notifications service to show a notice still shows it
+    /// as the system's: its own name and the system's mark, never a
+    /// sender's claim and a generic window.
+    #[test]
+    fn a_notice_with_no_service_to_show_it_is_still_the_systems() {
+        let desks = DesktopNotifications::default();
+        let newer = crate::network::VersionMismatch {
+            endpoint: "zpeerexample".into(),
+            theirs: 31,
+            ours: 30,
+        };
+        version_mismatch_notice(&newer, Some("Framework 16")).tell_desk(&desks);
+        let banner = desks.log().active().first().cloned().expect("it is shown");
+        assert_eq!(banner.app_name.as_deref(), Some("Updates"));
+        assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));
     }
 
     /// The banner a person reads: the title names the device on one line and
