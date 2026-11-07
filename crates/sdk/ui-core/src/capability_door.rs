@@ -1,8 +1,7 @@
 //! The capability door: privilege is granted, never inferred.
 //!
-//! A privileged verb declares the [`Capability`] it needs. Before the app
-//! draws a control for that verb it asks for the capability's
-//! [`Resolution`], which is one of exactly three answers:
+//! A privileged verb declares the [`Capability`] it needs and, before the app draws a control
+//! for it, asks for the capability's [`Resolution`]:
 //!
 //! | Resolution | What the surface draws |
 //! |---|---|
@@ -10,19 +9,13 @@
 //! | [`Resolution::Grantable`] | the control plus an explicit grant step, in the person's words |
 //! | [`Resolution::Unavailable`] | no control at all: one sentence of why, and what would make it available |
 //!
-//! A [`Door`] packages the capability with its resolution so a view cannot
-//! accidentally draw the granted face for a grantable or unavailable one.
-//! [`Door::face`] is the three-way choice; [`Door::control`] is the common
-//! "only when granted" shorthand.
+//! A [`Door`] packages the capability with its resolution so a view cannot accidentally draw
+//! the granted face for a grantable or unavailable one: [`Door::face`] is the three-way choice,
+//! [`Door::control`] the common "only when granted" shorthand.
 //!
-//! **No inert control may exist.** A switch, button or menu item for a
-//! privileged act is drawn only in the granted face. The grantable face adds
-//! the grant step; the unavailable face draws no control and says why.
-//!
-//! **Discovery is not resolution.** `which()`, `$PATH` and environment
-//! variables are test seams (`#[cfg(test)]`, the `testing` module), never the
-//! product path. An app may ask the platform or the person for a capability;
-//! it may not infer one from its environment.
+//! **No inert control may exist**: a control for a privileged act is drawn only in the granted
+//! face. **Discovery is not resolution**: `which()`, `$PATH` and environment variables are test
+//! seams (`#[cfg(test)]`, the `testing` module), never the product path.
 //!
 //! ```
 //! use tilo_ui::capability_door::{Capability, Door};
@@ -34,10 +27,9 @@
 //! assert!(grant.contains("permission"));
 //! ```
 //!
-//! The source of a verdict is the host or the platform:
-//! [`Authority::resolve`]. An app whose host gives it a verdict holds a
-//! [`Door`]; a capture or test holds one built directly, so neither needs an
-//! environment variable to say what it can do.
+//! The verdict's source is the host or the platform ([`Authority::resolve`]): an app its host
+//! gives a verdict holds a [`Door`], a capture or test holds one built directly, so neither
+//! needs an environment variable to say what it can do.
 
 use std::fmt;
 

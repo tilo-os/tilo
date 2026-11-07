@@ -1,34 +1,26 @@
-//! One reading of pointer intent for the whole system: is the pointer
-//! passing over something, or aiming at it?
+//! One reading of pointer intent for the whole system: is the pointer passing over something, or
+//! aiming at it?
 //!
-//! Passing over a control is not hovering it. Only aim counts: the pointer
-//! slowing and settling on a target, or decelerating so that it will stop
-//! inside one. Every surface that reacts to the pointer before a click (a
-//! tab pill opening its chips, a maximized window's bar revealed at the top
-//! edge, a desk widget brought by reaching for its edge, a banner that must
-//! not expire under the pointer) reads intent from this one
-//! [`Trajectory`], so they agree about what a given hand movement means and
-//! are tuned in one place.
+//! Passing over a control is not hovering it. Only aim counts: the pointer slowing and settling on
+//! a target, or decelerating so that it will stop inside one. Every surface that reacts to the
+//! pointer before a click (a tab pill opening its chips, a maximized window's bar revealed at the
+//! top edge, a desk widget brought by reaching for its edge, a banner that must not expire under
+//! the pointer) reads intent from this one [`Trajectory`], so they agree about what a hand movement
+//! means and are tuned in one place.
 //!
-//! The readings:
+//! - **settled**: slow at the newest sample ([`SETTLE_SPEED`]), or silent for [`SETTLE`] since it
+//!   (a moving pointer reports far more often, so silence means it stopped);
+//! - **settling into** a target: settled inside it, or decelerating so that, at constant
+//!   deceleration, it stops inside it;
+//! - **heading for** a target: inside the convex hull of a recent position (the apex) and the
+//!   target, so a pointer moving away or sideways past it is not;
+//! - **in transit**: fast and not braking, its speed still above a share of its recent peak;
+//! - **aiming at** a target ([`Trajectory::aims_at`]): on it and settled or settling there. This is
+//!   what "the pointer is on this control" means everywhere: an aimed-at control never moves, and
+//!   something that pauses for the person (a banner's timer) pauses only while aimed at.
 //!
-//! - **settled**: slow at the newest sample ([`SETTLE_SPEED`]), or silent
-//!   for [`SETTLE`] since it (a moving pointer reports far more often than
-//!   that, so silence means it stopped);
-//! - **settling into** a target: settled inside it, or decelerating so that,
-//!   at constant deceleration, it stops inside it;
-//! - **heading for** a target: inside the convex hull of a recent position
-//!   (the apex) and the target, so a pointer moving away or sideways past it
-//!   is not;
-//! - **in transit**: fast and not braking, its speed still above a share of
-//!   its recent peak;
-//! - **aiming at** a target ([`Trajectory::aims_at`]): on it and settled or
-//!   settling there. This is what "the pointer is on this control" means
-//!   everywhere: an aimed-at control never moves, and something that pauses
-//!   for the person (a banner's timer) pauses only while aimed at.
-//!
-//! Pure: every method takes the instant it reasons about, so slow and fast
-//! pointer paths are tested against a synthetic timeline.
+//! Pure: every method takes the instant it reasons about, so slow and fast pointer paths are tested
+//! against a synthetic timeline.
 
 use crate::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect, Vec2};

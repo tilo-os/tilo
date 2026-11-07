@@ -1,20 +1,16 @@
-//! One way through an app: [`HeadlessApp`], the application tests reach a
-//! component the way a person, a script and an agent do — by the resources it
-//! publishes and the actions on them — in the frame the host draws.
+//! One way through an app: [`HeadlessApp`], the application tests reach a component the way a
+//! person, a script and an agent do — by the resources it publishes and the actions on them — in
+//! the frame the host draws.
 //!
-//! A test that drove a component had four ways in, and each proved something
-//! else. Clicking a named control proves where a widget sits; reading the
-//! Automerge document proves what the app stored; a headless scenario proves
-//! the same clicks from a JSON file; and the control socket proves the door
-//! an agent uses. Only the last is the app's public surface, and
-//! [`FrameHarness::invoke_action`](super::FrameHarness::invoke_action) already
-//! speaks it — but reaching it from a test meant mounting a `TileHost` by
-//! hand, wrapping it in a frame, and knowing which of `call_on`,
-//! `invoke_published` and `invoke_bound_action` takes which address.
+//! A test that drove a component had four ways in, and each proved something else: clicking a named
+//! control proves where a widget sits, reading the Automerge document proves what the app stored, a
+//! headless scenario proves the same clicks from a JSON file, and the control socket proves the
+//! door an agent uses. Only the last is the app's public surface, and
+//! [`FrameHarness::invoke_action`](super::FrameHarness::invoke_action) already speaks it — but
+//! reaching it from a test meant mounting a `TileHost` by hand, wrapping it in a frame, and knowing
+//! which of `call_on`, `invoke_published` and `invoke_bound_action` takes which address.
 //!
-//! [`HeadlessApp`] mounts an application's component in one frame and opens
-//! the door on it:
-//!
+//! [`HeadlessApp`] mounts an application's component in one frame and opens the door on it:
 //! ```ignore
 //! let host = ProbeHost::new();
 //! let component = host.component(11);

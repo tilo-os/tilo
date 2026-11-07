@@ -31,24 +31,21 @@ pub struct Button {
     /// Accessible name for an icon-only button (empty visible label);
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
-    /// Fluent key or plain string, revealed by the host's central
-    /// [`TooltipHost`](crate::widget::TooltipHost) — and, for an
-    /// icon-only button, used as the accessible name when none was set
-    /// explicitly.
+    /// Fluent key or plain string, shown by the host's central
+    /// [`TooltipHost`](crate::widget::TooltipHost); on an icon-only button it is also the
+    /// accessible name unless one was set.
     tooltip: Option<String>,
     /// Why it cannot be pressed now, where that says more than the label (an action whose
     /// requirement does not hold): spoken as its description, beside the name it announces.
     description: Option<String>,
-    /// Original presentation captured while a responsive toolbar displays
-    /// this button icon-first. Kept separately so an app's explicit tooltip
-    /// and accessible name are restored exactly when space returns.
+    /// Presentation captured while a responsive toolbar shows this button icon-first, restored
+    /// exactly when space returns.
     compact_presentation: Option<(String, Option<String>, Option<String>)>,
     /// It belongs in its header's menu, not in the row: the row's More
     /// button holds it, whatever room the row has.
     menu_only: bool,
-    /// The run of its owner's actions it stands in (`group: "Due"`), as the
-    /// app names it: the header's menu keeps rows of one run together, under
-    /// the run's own row.
+    /// The run of its owner's actions it stands in (`group: "Due"`), as the app names it: the
+    /// header's menu keeps rows of one run together.
     menu_group: Option<String>,
     rect: Rect,
     is_hovered: bool,
@@ -58,17 +55,14 @@ pub struct Button {
     /// Focus came from pressing the button: the pointer already shows where
     /// the person is, so the focus ring is kept for keyboard focus.
     pressed_into_focus: bool,
-    /// Drawn instead of (icon-only) or before (icon + label) the text,
-    /// so toolbars render crisp lucide icons without depending on a
-    /// Nerd Font being installed.
+    /// Drawn instead of (icon-only) or before (icon + label) the text.
     icon: Option<crate::icons::Icon>,
-    /// A picture drawn in the icon's place (an icon-only button), with an
-    /// optional badge pill on its corner: what an extension's toolbar action
-    /// shows. The glyph in `icon` remains the fallback and the layout key.
+    /// A picture drawn in the icon's place (an icon-only button), with an optional badge pill: what
+    /// an extension's toolbar action shows. The glyph in `icon` stays the fallback and the layout
+    /// key.
     image: Option<vello::peniko::ImageData>,
-    /// Who is here, as their faces ([`Self::with_faces`]), each with their name and their
-    /// identity: a button with no label is their faces alone, and one with a label leads with
-    /// them.
+    /// Who is here, as their faces: a button with no label is their faces alone, one with a label
+    /// leads with them.
     faces: Vec<(String, String)>,
     /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
     /// as a person field's chip shows who it holds.
@@ -102,20 +96,17 @@ pub struct Button {
     measured_width: Option<f32>,
     /// Sets the label role and the height (see [`ControlSize`]).
     control_size: ControlSize,
-    /// The geometry resolved against the theme seen in `build_layout`, for
-    /// `measure`, which has no theme of its own; `draw` reads the theme it
-    /// is handed.
+    /// The geometry resolved against the theme seen in `build_layout`, for `measure`, which has no
+    /// theme of its own.
     metrics: FaceMetrics,
-    /// Fires on release-while-hovered *in addition to* any
-    /// `on_click_path` CRDT mutation, for app code that isn't modelling
-    /// its control flow in the CRDT (e.g. the file explorer's command sink).
+    /// Fires on release-while-hovered in addition to any `on_click_path` mutation, for app code
+    /// that does not model its control flow in the CRDT.
     on_click: Option<Box<dyn FnMut()>>,
     /// An advertised action intent. While present it is the exclusive
     /// activation path; raw document writes and callbacks are suppressed.
     action: Option<ActionEmitter<()>>,
-    /// Resource and handler synthesized by the low-ceremony `on_effect` /
-    /// `on_view` APIs. The closure is still ordinary Rust, but it is reachable
-    /// only through the same published action door as agents and search.
+    /// Resource and handler synthesized by `on_effect` / `on_view`: ordinary Rust, reachable only
+    /// through the published action door.
     native_resource: Option<tilo_actions::ResourceSpec>,
     native_handler: Option<Box<dyn FnMut()>>,
     presence_path: Vec<PathSegment>,
@@ -147,9 +138,8 @@ pub struct Button {
     /// The container's motion between states, on the toolkit's clock, as
     /// the theme's painter set moves it ([`crate::part_paint`]).
     motion: crate::part_paint::PartMotion,
-    /// The shape the theme's painter set drew the container as, relative
-    /// to `rect`'s origin: where the button takes the pointer. `None`: its
-    /// hit rect.
+    /// The shape the theme's painter set drew the container as, relative to `rect`'s origin: where
+    /// the button takes the pointer.
     painted_hit: Option<vello::kurbo::BezPath>,
 }
 
@@ -266,8 +256,7 @@ impl Button {
         self
     }
 
-    /// Fires once per completed click (left-button release while the
-    /// cursor is still over the button), Enter, Space or an assistive
+    /// Fires once per completed click (left release over the button), Enter, Space or an assistive
     /// `Activate`.
     #[must_use]
     pub fn on_click<F: FnMut() + 'static>(mut self, f: F) -> Self {
@@ -285,30 +274,24 @@ impl Button {
         self
     }
 
-    /// Publish a zero-argument effect and route every activation through it.
-    ///
-    /// This is the quick-app path: it keeps closure ergonomics without making
-    /// an invisible callback-only control. For replayable document mutations,
-    /// prefer a typed document [`Action`](tilo_actions::Action).
+    /// Publish a zero-argument effect and route every activation through it: closure ergonomics
+    /// without an invisible callback-only control. For replayable document mutations, prefer a
+    /// typed document [`Action`](tilo_actions::Action).
     #[must_use]
     pub fn on_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
         self.on_native(tilo_actions::OperationKind::Effect, handler)
     }
 
-    /// [`Self::on_effect`] for an effect whose scope is the person's own
-    /// device and nothing shared: copying to their clipboard, applying their
-    /// own appearance, starting a draft of their own. A room's grants have
-    /// nothing to consent to, so a guest presses it as the workspace's owner
-    /// does ([`tilo_actions::OWN_DEVICE_SCOPE`]); a shared change it goes on
-    /// to make is decided as that change's own action.
+    /// [`Self::on_effect`] for an effect scoped to the person's own device: copying to their
+    /// clipboard, their own appearance, their own draft. A room's grants have nothing to consent to
+    /// ([`tilo_actions::OWN_DEVICE_SCOPE`]).
     #[must_use]
     pub fn on_own_device_effect<F: FnMut() + 'static>(self, handler: F) -> Self {
         self.on_native_scoped(tilo_actions::OperationKind::Effect, true, handler)
     }
 
-    /// Publish a zero-argument transient presentation action. View actions are
-    /// discoverable and agent-driveable but intentionally absent from document
-    /// history and collaboration logs.
+    /// Publish a zero-argument transient presentation action: discoverable and agent-driveable,
+    /// absent from history and collaboration logs.
     #[must_use]
     pub fn on_view<F: FnMut() + 'static>(self, handler: F) -> Self {
         self.on_native(tilo_actions::OperationKind::View, handler)
@@ -331,9 +314,8 @@ impl Button {
         self.on_native_boxed(kind, own_device, Box::new(handler))
     }
 
-    /// [`Self::on_native_scoped`] once the handler is boxed: the toolkit
-    /// compiles publishing the press once, rather than every app once for
-    /// each closure it hands a button.
+    /// [`Self::on_native_scoped`] once the handler is boxed, so the toolkit compiles publishing the
+    /// press once rather than every app once per closure.
     #[expect(
         clippy::expect_used,
         reason = "String serialization and lookup of the just-created action are infallible"
@@ -346,9 +328,8 @@ impl Button {
     ) -> Self {
         const TYPE_ID: &str = "tilo.ui.control.invoke";
         let resource_id = format!("tilo.control:{}", self.id);
-        // A button is named by what a screen reader announces: the name its app gave it where
-        // that says more than the visible label, else the label; an icon-only button has only
-        // that name, falling back to the tooltip so the glyph is never silent.
+        // Named by what a screen reader announces: the app's name where it says more than the
+        // label, else the label; an icon-only button falls back to the tooltip.
         let label = self.accessible_name.clone().unwrap_or_else(|| {
             if self.label.is_empty() {
                 self.tooltip.clone().unwrap_or_default()
@@ -356,9 +337,8 @@ impl Button {
                 self.label.clone()
             }
         });
-        // Pressing the button is the control's own verb: how agents and
-        // scripts press what a person presses directly, never a row of its
-        // own in people's lists, where it would repeat the app's actions.
+        // Pressing is the control's own verb, never a row of its own in people's lists, where it
+        // would repeat the app's actions.
         let mut spec =
             tilo_actions::ActionSpec::operation("invoke", label.clone(), kind, TYPE_ID, &self.id)
                 .expect("a control id is always JSON serializable")
@@ -387,10 +367,8 @@ impl Button {
         self
     }
 
-    /// A header action that belongs in its header's menu rather than in the row: the row's
-    /// More button holds it, whatever room the row has, so a header keeps its everyday
-    /// actions in reach and the rest one press away (a row of every action reads as noise).
-    /// Its label, icon, checked state and enabled state are the menu row's.
+    /// A header action that belongs in its header's menu: the row's More button holds it, so a
+    /// header keeps its everyday actions in reach and the rest one press away.
     #[must_use]
     pub fn in_menu(mut self) -> Self {
         self.menu_only = true;
@@ -440,13 +418,9 @@ impl Button {
         self
     }
 
-    /// Show only who is here, as their faces: up to three faces, then a face counting the
-    /// rest. The button is as wide as the group and as tall as its face, its label the name a
-    /// screen reader hears (`with_accessible_name`), and no text on it at any width. One
-    /// press does what the button does — open the roster of everyone here.
-    ///
-    /// Each name is its own identity: a caller with people whose names are not their
-    /// identities shows them by both ([`Self::with_faces_of`]).
+    /// Show only who is here, as their faces: up to three, then a face counting the rest. As wide
+    /// as the group and as tall as its face, its label the name a reader hears, no text on it at
+    /// any width; a press opens the roster.
     #[must_use]
     pub fn with_faces(mut self, faces: impl IntoIterator<Item = String>) -> Self {
         self.faces = faces.into_iter().map(|name| (name.clone(), name)).collect();
@@ -455,9 +429,8 @@ impl Button {
         self
     }
 
-    /// Show who is here as their faces, each named and identified: the face is picked and
-    /// coloured by the identity, and the name is what a reader hears. A button with a label
-    /// leads with them; one without draws them alone ([`Self::with_faces`]).
+    /// Show who is here as their faces, each named and identified: the face is picked and coloured
+    /// by the identity, the name is what a reader hears.
     #[must_use]
     pub fn with_faces_of(mut self, faces: impl IntoIterator<Item = (String, String)>) -> Self {
         self.faces = faces.into_iter().collect();
@@ -466,9 +439,8 @@ impl Button {
         self
     }
 
-    /// Lead the face with one person's avatar, before the label: a chip that names someone
-    /// shows who they are as well as what they are called. A button with no label draws the
-    /// avatar alone, as its face.
+    /// Lead with one person's avatar before the label, so a chip names who it is about as well as
+    /// what it is called.
     #[must_use]
     pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
         self.avatar = Some((name.into(), identity.into()));
@@ -486,9 +458,8 @@ impl Button {
         self
     }
 
-    /// What the face says means something ([`Tone::Neutral`] is no tone): the icon and the
-    /// label take the tone's colour, so a fact that is late reads late in the chip that states
-    /// it, while the face stays the role's.
+    /// What the face says means something ([`Tone::Neutral`] is no tone): the icon and label take
+    /// the tone's colour while the face stays the role's.
     #[must_use]
     pub fn tone(mut self, tone: Tone) -> Self {
         self.set_tone(tone);
@@ -514,9 +485,8 @@ impl Button {
         self
     }
 
-    /// Show `label`, and whether it stands for no value yet: what the control is for changed
-    /// elsewhere (a field following its binding), so the face changes in place and keeps what
-    /// stands on it.
+    /// Show `label`, and whether it stands for no value yet, changing in place when the control's
+    /// binding moved.
     pub fn set_label(&mut self, label: impl Into<String>, placeholder: bool) {
         let label = label.into();
         if label == self.label && placeholder == self.placeholder {
@@ -530,12 +500,8 @@ impl Button {
         self.dirty = true;
     }
 
-    /// Take the words and the glyph of `fresh`, keeping this button's place, its press and what
-    /// it holds (`false` when the two are a shape apart: an icon-only face where there was a
-    /// label, another role or size, which only building the widget again can change).
-    ///
-    /// A control whose words the desk renames — the workspace in the bar — says the new ones
-    /// without being built again, so what stands against it (the menu it opened) stays open.
+    /// Take the words and glyph of `fresh`, keeping this button's place and press; a shape apart
+    /// (icon-only for a label, another role or size) can only change by building it again.
     pub(crate) fn take_words(&mut self, fresh: &Button) -> bool {
         if fresh.icon.is_some() != self.icon.is_some()
             || fresh.label.is_empty() != self.label.is_empty()
@@ -560,11 +526,9 @@ impl Button {
         true
     }
 
-    /// Stand `content` on the icon's top-trailing corner, centred on it, in `style`: how many
-    /// new things wait behind the control (unread notifications, new mail), as an app icon's
-    /// count stands on it. Only an icon-only face shows it. The count stays inside the face,
-    /// so the bar's own edge never cuts it and it covers no control beside the face; a zero
-    /// count is none. The button's name says the count, not the badge.
+    /// Stand `content` on the icon's top-trailing corner in `style`: how many new things wait
+    /// behind the control, as an app icon's count does. Only an icon-only face shows it, and a zero
+    /// count is none.
     #[must_use]
     pub fn with_count(
         mut self,
@@ -602,9 +566,8 @@ impl Button {
         }
     }
 
-    /// Where the count stands: centred on the icon's top-trailing corner, and inside the face
-    /// on both axes, so the bar's edge never cuts it and it covers no control beside the face.
-    /// `None` without one.
+    /// Where the count stands: centred on the icon's top-trailing corner and inside the face on
+    /// both axes.
     fn count_rect(&self) -> Option<Rect> {
         self.count.as_ref()?;
         if !self.label.is_empty() || self.icon.is_none() || self.count_size.width <= 0.0 {
@@ -627,22 +590,16 @@ impl Button {
         Some(count.with_origin((left, top)))
     }
 
-    /// How a screen reader announces it, where that says more than the
-    /// visible label: the charge shows "61%" beside a charging glyph and is
-    /// announced as "61%, charging". Use it for every icon-only toolbar
-    /// control so the glyph isn't silent; a button whose label already
-    /// names it keeps the label.
+    /// How a screen reader announces it where that says more than the label ("61%, charging" beside
+    /// a charging glyph).
     #[must_use]
     pub fn with_accessible_name(mut self, name: &str) -> Self {
         self.accessible_name = Some(name.to_string());
         self
     }
 
-    /// On an icon-only button, absent an explicit
-    /// [`with_accessible_name`](Self::with_accessible_name), this also
-    /// becomes the accessible name, so the same short label serves both
-    /// mouse and screen-reader users. Rendered centrally by the host's
-    /// [`TooltipHost`](crate::widget::TooltipHost) — no per-app wiring.
+    /// On an icon-only button, also the accessible name absent an explicit one, so the same short
+    /// label serves mouse and screen-reader users.
     #[must_use]
     pub fn tooltip(mut self, text: impl Into<String>) -> Self {
         self.tooltip = Some(text.into());
@@ -653,9 +610,8 @@ impl Button {
         self.tooltip = text;
     }
 
-    /// Why it cannot be pressed now, where the label does not say: an action whose requirement
-    /// does not hold. Assistive technology reads it as the button's description, so the name it
-    /// announces stays the action's own.
+    /// Why it cannot be pressed now, where the label does not say: assistive technology reads it as
+    /// the description, so the announced name stays the action's own.
     #[must_use]
     pub fn with_description(mut self, why: impl Into<String>) -> Self {
         self.description = Some(why.into());
@@ -671,9 +627,8 @@ impl Button {
         }
     }
 
-    /// Change what an icon-only button is announced (and published) as, for
-    /// a control whose meaning flips with state ("Show sidebar" / "Hide
-    /// sidebar").
+    /// Change what an icon-only button is announced as, for a control whose meaning flips with
+    /// state ("Show sidebar" / "Hide sidebar").
     pub fn set_accessible_name(&mut self, name: &str) {
         if self.accessible_name.as_deref() != Some(name) {
             self.accessible_name = Some(name.to_owned());
@@ -722,11 +677,8 @@ impl Button {
         }
     }
 
-    /// An icon-only button: `icon` is what it shows, `label` is what a
-    /// screen reader announces and what its tooltip says. It is a square of
-    /// its [`ControlSize`]'s height (never under the minimum pointer target)
-    /// and, like every toolbar glyph, a [`ButtonRole::Plain`] button unless
-    /// a role is given.
+    /// An icon-only button: `icon` is what it shows, `label` what a reader hears and the tooltip
+    /// says. A square of its [`ControlSize`]'s height, never under the minimum pointer target.
     #[track_caller]
     pub fn icon_only(id: &str, icon: crate::icons::Icon, label: &str) -> Self {
         debug_assert!(
@@ -781,9 +733,8 @@ impl Button {
         }
     }
 
-    /// Make this a toggle button: while `on` it stands on a lift of its
-    /// ground (a selected toolbar glyph, HIG §9.3) and is announced as a
-    /// pressed toggle. Use it on a [`ButtonRole::Plain`] glyph.
+    /// Make this a toggle button: while `on` it stands on a lift of its ground (HIG §9.3) and is
+    /// announced as a pressed toggle.
     #[must_use]
     pub fn toggled(mut self, on: bool) -> Self {
         self.set_toggled(on);
@@ -803,9 +754,8 @@ impl Button {
         self.toggled == Some(true)
     }
 
-    /// Show the keyboard shortcut that does the same thing, after the label,
-    /// in the platform's keycap legends (`Ctrl+Enter` on Linux and Windows,
-    /// `⌘↩` on macOS). It is part of the button's width.
+    /// Show the shortcut that does the same thing after the label, in the platform's keycap legends
+    /// (`Ctrl+Enter`, `⌘↩`); part of the button's width.
     #[must_use]
     pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
@@ -861,11 +811,8 @@ impl Button {
         self
     }
 
-    /// Prefer the icon in a space-constrained toolbar while retaining the
-    /// original visible label as the accessible name and hover tooltip.
-    ///
-    /// Apps should use this for responsive presentation only; activation,
-    /// focus and resource-action semantics are intentionally unchanged.
+    /// Prefer the icon in a space-constrained toolbar, keeping the label as the accessible name and
+    /// tooltip; activation, focus and resource semantics are unchanged.
     pub fn set_compact_toolbar_presentation(&mut self, compact: bool) {
         if compact && !self.label.is_empty() && self.compact_presentation.is_none() {
             self.compact_presentation = Some((
@@ -916,10 +863,8 @@ impl Button {
         self.menu_only
     }
 
-    /// The counterpart to `TextInput::apply_layout_external` for an app
-    /// that hand-positions a shared control over its own painted chrome;
-    /// the button still owns its focus / a11y / activation contract, only
-    /// its geometry is caller-driven.
+    /// The counterpart to `TextInput::apply_layout_external`, for an app hand-positioning a shared
+    /// control over its own chrome: the button keeps its focus, a11y and activation contract.
     pub fn apply_layout_external(&mut self, rect: Rect) {
         // Bitwise: this asks whether the stored size changed at all, not
         // whether it changed by more than some tolerance.
@@ -935,8 +880,8 @@ impl Button {
     }
 }
 
-/// What a button does. The role is a button's whole appearance: an app never
-/// picks a fill, an ink, an edge or a radius for one.
+/// What a button does: a role is its whole appearance, so an app never picks a fill, an ink, an
+/// edge or a radius for one.
 ///
 /// | Role | Use | Face |
 /// |---|---|---|
@@ -947,8 +892,7 @@ impl Button {
 /// | `Key` | a keypad or keyboard key (a calculator digit, an on-screen key, a one-letter toggle) | a faint lift of its ground at rest, its label in `Title` |
 /// | `Bar` | a control of the desktop's top bar or a window's bar | the bar control ([`crate::widget::BarControlFace`]): nothing at rest, half a lift under the pointer, a whole lift while pressed or on, its icon in secondary ink until then |
 ///
-/// Every role has the control radius (`radii.control`): buttons are not
-/// pills.
+/// Every role has the control radius (`radii.control`): buttons are not pills.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Hash)]
 pub enum ButtonRole {
     Primary,
@@ -1020,22 +964,16 @@ fn confirmation_face_colors(theme: &Theme, interact: ButtonInteract) -> FaceColo
     (fill, None, ink)
 }
 
-/// The colours of `role` in `interact`: the single source of truth for the
-/// retained [`Button`] and the immediate-mode [`Button::paint`].
-///
-/// `edge` is `None` where the fill defines the shape by itself (an inverted
-/// primary face) or there is no face (a plain button); the painters stroke
-/// the focus ring, in your colour, on top when focused.
+/// The colours of `role` in `interact`, the one source for the retained and immediate-mode
+/// painters; `edge` is `None` where the fill defines the shape or there is no face.
 pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) -> FaceColors {
     use vello::peniko::Color;
     let colors = &theme.tokens.colors;
     let intent = &colors.intent;
 
-    // Disabled never keeps the fill of an enabled primary or destructive
-    // action: a translucent "Save" still reads as actionable. A faced role
-    // falls back to the secondary rest face and a plain one stays bare; the
-    // painters lay either under `widget::DISABLED_ALPHA`, keeping the edge
-    // at full strength so the control's bounds stay visible in light.
+    // Disabled never keeps the fill of an enabled primary or destructive action, since a
+    // translucent "Save" still reads as actionable: a faced role falls back to the secondary rest
+    // face.
     if interact.disabled {
         let ink = colors.ink_on_any(
             &[colors.surfaces.raised],
@@ -1066,9 +1004,8 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: ButtonInteract) ->
             } else {
                 rest
             };
-            // The label of the inverted fill is the theme's own
-            // (`intent.on_accent`, the window ground), resolved over every
-            // fill so it does not change under the pointer.
+            // The label of the inverted fill is the theme's own (`intent.on_accent`), resolved over
+            // every fill so it does not change under the pointer.
             let ink = colors.ink_on_any(
                 &[rest, hover, pressed],
                 intent.on_accent,

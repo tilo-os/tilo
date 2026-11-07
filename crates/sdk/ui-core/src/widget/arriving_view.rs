@@ -1,28 +1,19 @@
-//! `ArrivingView`: what shows of a read ([`crate::arriving`]) while its
-//! answer is on the way, and the answer once it is there.
+//! `ArrivingView`: what shows of a read ([`crate::arriving`]) while its answer is on the way, and
+//! the answer once it is there.
 //!
-//! The app says what shows once the data is there ([`Arriving::view`]), and
-//! optionally the content's shape ([`ArrivingView::shaped`]); this view owns
-//! every timing and placeholder decision:
+//! The app says what shows once the data is there ([`Arriving::view`]) and optionally the content's
+//! shape ([`ArrivingView::shaped`]); this view owns every timing and placeholder decision: the
+//! space is reserved at the shape's geometry from the first frame, so nothing moves when the answer
+//! lands; a local read inside its frame budget holds the frame
+//! ([`Widget::holds_frame_until`]) and shows its answer with no placeholder and no motion;
+//! otherwise only the reserved ground shows until [`GRACE`](crate::arriving::GRACE), then a
+//! skeleton for at least [`MIN_SHOWN`](crate::arriving::MIN_SHOWN), naming where the data comes
+//! from after [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER). The answer cross-fades in
+//! ([`CrossFade::arrive`]); a failure shows the one failure face
+//! ([`arrival_failure`](fn@super::arrival_failure)) with a retry where the read offers one.
 //!
-//! - The space is reserved at the shape's geometry from the first frame, so
-//!   nothing moves when the answer lands in a content of that shape.
-//! - A local read inside its frame budget holds the frame
-//!   ([`Widget::holds_frame_until`]) and shows its answer with no
-//!   placeholder and no motion.
-//! - Otherwise only the reserved ground shows until [`GRACE`](crate::arriving::GRACE),
-//!   then a skeleton that stays at least [`MIN_SHOWN`](crate::arriving::MIN_SHOWN),
-//!   naming where the data comes from after
-//!   [`NAME_SOURCE_AFTER`](crate::arriving::NAME_SOURCE_AFTER).
-//! - The answer cross-fades in ([`CrossFade::arrive`]); a failure shows the
-//!   one failure face ([`arrival_failure`](fn@super::arrival_failure)) with a
-//!   retry when the read offers one.
-//!
-//! Each step is a deadline ([`Widget::next_wake_deadline`]), never a frame
-//! loop: a pending view draws nothing between its steps.
-//!
-//! [`ArrivalFace`] paints the same placeholder steps for immediate-mode
-//! painters that hold an [`ArrivalClock`] of their own.
+//! Each step is a deadline ([`Widget::next_wake_deadline`]), never a frame loop.
+//! [`ArrivalFace`] paints the same steps for immediate-mode painters holding an [`ArrivalClock`].
 
 use std::cell::Cell;
 use std::rc::Rc;

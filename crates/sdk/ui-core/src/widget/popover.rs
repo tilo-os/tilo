@@ -1,28 +1,21 @@
 //! `Popover`: the one anchored floating Panel.
 //!
-//! A popover opens next to the control that summoned it, on a preferred
-//! side, flipping to the opposite side when it would leave the window and
-//! sliding along the other axis to stay inside it. It is a floating Panel
-//! ([`super::floating_surface`]): panel radius, the blurred material, one
-//! soft shadow. It paints in the window's top layer
-//! ([`Widget::draw_overlay`]), so it is never clipped by, or drawn under,
-//! the pane it was opened from. While open it captures input: Escape or a
-//! click outside closes it, and the click does not reach what is behind.
+//! It opens next to the control that summoned it, on a preferred side, flipping to the opposite
+//! side when it would leave the window and sliding along the other axis to stay inside. It is a
+//! floating Panel ([`super::floating_surface`]): panel radius, the blurred material, one soft
+//! shadow. It paints in the window's top layer ([`Widget::draw_overlay`]), so it is never clipped
+//! by the pane it was opened from, and while open it captures input: Escape or a click outside
+//! closes it, and the click does not reach what is behind.
 //!
-//! Two bodies:
-//!
-//! - An **option menu** ([`Popover::new`]): pick one of a short list of
-//!   options next to the control that owns the value (a refresh cadence, a
-//!   unit). The chosen option carries a check; the keyboard and pointer
-//!   highlight is the lift of the panel ground, never an accent fill. Full
-//!   keyboard navigation, and `Role::Menu` semantics.
-//! - **Any content** ([`Popover::with_content`]): a widget laid out at its
-//!   own size inside the panel's padding.
+//! Two bodies: an **option menu** ([`Popover::new`]) picking one of a short list next to the
+//! control that owns the value, the chosen option checked and the highlight the lift of the panel
+//! ground rather than an accent fill, with full keyboard navigation and `Role::Menu` semantics; or
+//! **any content** ([`Popover::with_content`]) laid out at its own size inside the panel's padding.
 //!
 //! Hosts that draw by hand drive an option menu through [`Popover::open_at`],
-//! [`Popover::item_at`], [`Popover::move_highlight`], [`Popover::select`]
-//! and [`Popover::take_selection`], and reach its paint through their own
-//! `draw_overlay` (or by returning it from `children_mut`).
+//! [`Popover::item_at`], [`Popover::move_highlight`], [`Popover::select`] and
+//! [`Popover::take_selection`], and reach its paint through their own `draw_overlay` (or by
+//! returning it from `children_mut`).
 
 use std::collections::HashMap;
 

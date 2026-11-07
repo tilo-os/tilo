@@ -1,76 +1,42 @@
-//! `NavShell` — the one window shell.
+//! `NavShell` — the one window shell: an optional sidebar of destinations, an optional
+//! overview list beside the content, the content, and an optional inspector. The app hands
+//! it the columns and their headers; the shell owns everything else, at the shell metrics
+//! (`theme.tokens.metrics`):
 //!
-//! Every app with navigation is a `NavShell`: an optional sidebar of
-//! destinations (HIG §1a), an optional overview list beside the content
-//! (§1b), the content, and an optional inspector at the trailing edge. The
-//! app hands it the columns and their headers; the shell owns everything
-//! else, at the shell metrics (`theme.tokens.metrics`):
+//! - **One header row** across the window's top holds each column's header (title, count, a
+//!   leading fill such as a path bar, actions), so the row reads as one toolbar; its
+//!   geometry is [`crate::chrome::HeaderRowFace`]. Windows have no title bar, so this row is
+//!   the window's top edge. Actions that do not fit collapse to icons, then move into a
+//!   trailing More menu.
+//! - **The sidebar toggle** is a Plain [`Icon::PanelLeft`] button at the top-leading corner
+//!   (on the sidebar while it shows, the next column while it is hidden), published as "Show
+//!   sidebar" / "Hide sidebar" ([`HostShortcut::Sidebar`] toggles it in every app).
+//! - **Back** is the shell's: a narrow window's push stack and an app's own page stack
+//!   ([`NavShell::with_back`]) share one `ChevronLeft` chip at the content's leading edge.
+//! - **History** is the window's: the host puts its control at the trailing edge where the
+//!   app has History, and the app adds none of its own.
+//! - **Responsive:** at any width the shell picks the layout in which everything shown is
+//!   fully usable. The sidebar docks while it fits beside the content's real minimum
+//!   ([`ContentKind`]), shrinking toward its own first; narrower, one column shows at a time
+//!   as push screens with a Back button, keeping the page the person was on (only a
+//!   [`ContentKind::Document`] app floats its sidebar as a drawer). An inspector docks while
+//!   the content keeps its minimum beside it and floats from the trailing edge otherwise. A
+//!   drawer is never modal and dims nothing. Thresholds have hysteresis
+//!   (`metrics.layout_hysteresis`), the show/hide choice is remembered per size class, and
+//!   [`NavShell::minimum_width`] is the compact layout the host states to the window system.
+//! - **Resizable:** dragging the sidebar's trailing edge (pointer, finger or arrow keys)
+//!   resizes it, below its narrowest hides it; the width is remembered per app.
+//! - **Regions:** sidebar on `Region::Sidebar`, inspector on `Region::Inspector`, overview
+//!   and content on the window ground.
+//! - **Motion:** hide, show and push move with `motion.durations.base`, cross-fading under
+//!   reduced motion; a layout switched at a fixed size moves from where the columns stood, a
+//!   layout a **resize** switches lands at once, since the window's rect is that frame's truth.
 //!
-//! - **One header row** across the top of the window holds each column's
-//!   header (title, an optional count, a leading fill such as a path bar,
-//!   and actions), so the row reads as one unified toolbar. Windows have no
-//!   title bar; this row is the window's top edge. Its geometry is
-//!   [`crate::chrome::HeaderRowFace`], the same face a painted app uses.
-//!   Actions that do not fit first collapse to their icons, then move into
-//!   a trailing More menu.
-//! - **The sidebar toggle** is a Plain icon button (`Icon::PanelLeft`) the
-//!   shell draws at the window's top-leading corner, on the sidebar while it
-//!   shows and on the next column while it is hidden. One shortcut toggles
-//!   it in every app (`HostShortcut::Sidebar`), and the button publishes the
-//!   action ("Show sidebar" / "Hide sidebar") to the palette and to agents.
-//! - **Back** is the shell's: a narrow window's push stack, and an app's own
-//!   page stack ([`NavShell::with_back`]), share one `ChevronLeft` chip at
-//!   the leading edge of the content's header.
-//! - **History** is the window's: where the app has History, the host puts
-//!   its control (`Icon::History`, a Plain icon button named "History") at
-//!   the trailing edge of the row, and it reads as on while History shows.
-//!   The app adds no History button of its own.
-//! - **Responsive:** at any width the shell picks the layout in which
-//!   everything shown is fully usable. The sidebar docks while it fits beside
-//!   the content's real minimum (its [`ContentKind`]), shrinking from its
-//!   width toward its own minimum first. Narrower, the window shows one
-//!   column at a time: the sidebar (or overview) and the content become push
-//!   screens with a Back button, and narrowing keeps the page the person was
-//!   on. Only a content-primary app ([`ContentKind::Document`]) floats its
-//!   sidebar as a drawer over the content instead. An inspector docks while
-//!   the content keeps its minimum beside it and floats from the trailing
-//!   edge otherwise. A drawer is never modal and dims nothing: the content
-//!   beside it stays visible and live, and a press on it puts the drawer
-//!   away. Each threshold has hysteresis (`metrics.layout_hysteresis`), so a
-//!   window resized near it does not flicker. A person's show/hide choice is
-//!   remembered per window size class. The narrowest window the shell works
-//!   at is its compact layout ([`NavShell::minimum_width`]), which the host
-//!   states to the window system.
-//! - **Resizable:** dragging the sidebar's trailing edge (pointer, finger
-//!   or arrow keys) resizes it, below its narrowest hides it, and a
-//!   navigation list reads as a rail while narrow and a list while wide;
-//!   the width is remembered per app (`sidebar_resize`, `memory`).
-//! - **Regions:** the sidebar stands on `Region::Sidebar`, the inspector on
-//!   `Region::Inspector`, the overview and content on the window ground;
-//!   each column's children draw with that region's theme.
-//! - **Motion:** hide, show and push move with `motion.durations.base`;
-//!   under reduced motion they cross-fade. A layout the person switches at a
-//!   fixed size (a toggle, a choice, a text-scale change) moves its columns
-//!   on from where they stood, so nothing jumps; a layout a **resize**
-//!   switches lands at once, because the window's rect is the truth that
-//!   frame draws — a window dragged narrow shows its narrow layout, never the
-//!   wide one sliding out of view.
-//!
-//! The class of the rect the shell last laid out in is
-//! [`NavGeometry::size_class`] ([`Breakpoint`]): the shell derives it every
-//! layout pass, holding it through
-//! [`Metrics::layout_hysteresis`] so a window resting on a threshold does not
-//! flutter. An app reads it instead of comparing a width to a number of its
-//! own, and nothing — app or host — seeds it.
-//!
-//! There is no width, breakpoint, colour or padding to pass: the shell is
-//! semantic. A filter field for the sidebar's list goes in
-//! [`NavShell::with_filter`] (Ctrl+F focuses it).
-//!
-//! Slots and headers change in place (`set_content`, `set_content_header`,
-//! …). A change made while an event is being routed takes effect when the
-//! host next builds the tree, never in the middle of the event, so the host
-//! never holds a widget the shell has dropped.
+//! [`NavGeometry::size_class`] ([`Breakpoint`]) is the class of the last laid-out rect, held
+//! through [`Metrics::layout_hysteresis`] so a window resting on a threshold does not flutter;
+//! an app reads it instead of comparing widths itself. There is no width, breakpoint, colour
+//! or padding to pass: the shell is semantic. Slots and headers change in place
+//! (`set_content`, `set_content_header`, …), taking effect when the host next builds the tree.
 
 use crate::num::f64_of_usize;
 use std::cell::RefCell;

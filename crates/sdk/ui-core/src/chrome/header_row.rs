@@ -1,22 +1,17 @@
-//! The window's header row as a face: one geometry for `NavShell` and for
-//! every painted app.
+//! The window's header row as a face: one geometry for `NavShell` and for every painted app.
 //!
-//! Windows have no title bar; the top band of the window is the header row
-//! (HIG §1, "The header row"). [`crate::widget::NavShell`] draws it for
-//! widget apps. A painted app that owns its whole surface builds a
-//! [`HeaderRowFace`] for the same band and gets the same rects the shell
-//! uses:
+//! Windows have no title bar, so the top band of the window is the header row (HIG §1).
+//! [`crate::widget::NavShell`] draws it for widget apps; a painted app that owns its whole
+//! surface builds a [`HeaderRowFace`] for the same band and gets the same rects:
 //!
-//! - the row itself, `metrics.header_height` tall (grown with the text the
-//!   way a one-line control grows);
-//! - the leading shell buttons: the sidebar toggle and Back, Plain icon
-//!   buttons of `min_pointer_target` in the `s3` inset;
-//! - the title band: `Heading` in sentence case, starting at the content
-//!   gutter, or just after the leading buttons;
-//! - the actions band: from the end of the title to the trailing buttons;
-//! - the trailing buttons: the window's History control in the top-trailing
-//!   corner ([`HeaderRowFace::history_rect`]), any other trailing chip
-//!   before it;
+//! - the row, `metrics.header_height` tall (grown with the text as a one-line control grows);
+//! - the leading shell buttons: the sidebar toggle and Back, Plain icon buttons of
+//!   `min_pointer_target` in the `s3` inset;
+//! - the title band: `Heading` in sentence case, from the content gutter or just after the
+//!   leading buttons;
+//! - the actions band, from the end of the title to the trailing buttons;
+//! - the trailing buttons: the window's History control in the top-trailing corner
+//!   ([`HeaderRowFace::history_rect`]), any other trailing chip before it;
 //! - the rule: one hairline under a content column's row.
 //!
 //! ```ignore

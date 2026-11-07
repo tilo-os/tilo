@@ -1,28 +1,23 @@
 //! The window around an app its host shows in its own process.
 //!
-//! An app in a process of its own reaches its window's bar and its tab over
-//! its shell connection ([`crate::window_toolbar`], [`crate::shell_tabs`]),
-//! which knows the asking app by its process. Apps a host mounts in its own
-//! process (the desktop's Terminal tabs) share that process and its thread,
-//! so they cannot use those: the host lends each of them the window it shows
-//! it in, a [`HostedWindow`] (through
-//! [`HostContext::lend`](crate::application::HostContext::lend)). On it the
-//! app declares its bar's slots and asks to close its tab; the host draws the
-//! slots in the bar, hands back what the person did with them, and closes
-//! the tab the way the desktop closes any tab, the window with it when it was
-//! the window's only tab.
+//! An app in a process of its own reaches its window's bar and its tab over its shell connection
+//! ([`crate::window_toolbar`], [`crate::shell_tabs`]), which knows the asking app by its process.
+//! Apps a host mounts in its own process (the desktop's Terminal tabs) share that process and its
+//! thread, so they cannot use those: the host lends each of them the window it shows it in, a
+//! [`HostedWindow`] (through [`HostContext::lend`](crate::application::HostContext::lend)). On it
+//! the app declares its bar's slots and asks to close its tab; the host draws the slots in the bar,
+//! hands back what the person did with them, and closes the tab the way the desktop closes any tab,
+//! the window with it when it was the window's only tab.
 //!
-//! The app's side may be used from any thread: a shell that exits is seen
-//! by the thread reading its terminal, and the tab closes even while it is
-//! not the one the window shows.
+//! The app's side may be used from any thread: a shell that exits is seen by the thread reading its
+//! terminal, and the tab closes even while it is not the one the window shows.
 //!
-//! An app need not know it shares a process: while a host's
-//! [`TileHost`](crate::widget::TileHost) runs the app it shows in a window
+//! An app need not know it shares a process: while a host's [`TileHost`](crate::widget::TileHost)
+//! runs the app it shows in a window
 //! ([`TileHost::set_hosted_window`](crate::widget::TileHost::set_hosted_window)),
-//! [`crate::window_toolbar`]'s calls act on that window, so an app written
-//! for a process of its own declares its slots and hears its events the
-//! same way in either. What the host does with the windows is one
-//! [`crate::window_slots::WindowSlots`] in every desktop.
+//! [`crate::window_toolbar`]'s calls act on that window, so an app written for a process of its own
+//! declares its slots and hears its events the same way in either. What the host does with the
+//! windows is one [`crate::window_slots::WindowSlots`] in every desktop.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};

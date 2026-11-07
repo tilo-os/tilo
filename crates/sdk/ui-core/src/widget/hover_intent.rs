@@ -1,44 +1,24 @@
-//! Pointer intent for a row of items that open on hover to show more
-//! controls (a tab pill's search/maximize chips beside its ×).
+//! Pointer intent for a row of items that open on hover to show more controls (a tab pill's
+//! search/maximize chips beside its ×).
 //!
-//! Opening an item changes the row's geometry: the item grows rightward
-//! from its leading edge, so its own controls and everything after it move.
-//! The rules, in priority order:
+//! Opening an item changes the row's geometry: it grows rightward from its leading edge, so its
+//! own controls and everything after it move. The rules, in priority order:
 //!
-//! 1. **An aimed-at control never moves.** A pointer that settles on a
-//!    control (a ×, a revealed chip, "new tab") is aiming at it: its speed
-//!    drops toward zero with the trajectory ending inside the control. Until
-//!    it leaves, nothing opens or collapses that would move that control, so
-//!    the × stays under a pointer about to press it.
-//! 2. **Passing over a control is not hovering it.** A pointer still moving
-//!    with its trajectory continuing past the control is in transit: the
-//!    control lights no hover wash and holds nothing back, so a pointer that
-//!    crosses the × on its way to the chips still opens the pill. Whether a
-//!    pointer inside a control is passing or settling is only known once it
-//!    leaves or stops, so a change that would move that control waits at
-//!    most [`SETTLE`] for the answer.
-//! 3. **Heading for a control the change would move holds the change.** Each
-//!    motion sample from outside a control is checked against the triangle
-//!    (the convex hull) spanned by a recent pointer position and the control.
-//!    An item crossed on the way to its own × does not open under the
-//!    approaching pointer, and an open item does not collapse (sliding its
-//!    neighbours) while the pointer heads for a neighbour's ×.
-//! 4. **Seeing more takes a short rest on the item**: [`DWELL`], counted from
-//!    when the pointer entered it (a sweep across the row spends less than
-//!    that on each item, so none opens). Once open, the item stays open while
-//!    the pointer is in it or heading for its revealed controls (mega-menu
-//!    "menu aim", rather than a timer long enough for the slowest hand), and
-//!    closes the moment the pointer moves anywhere else.
+//! 1. **An aimed-at control never moves**: a pointer that settles on a control is aiming at it,
+//!    and nothing opens or collapses that would move that control until it leaves.
+//! 2. **Passing over a control is not hovering it**: a trajectory continuing past the control is
+//!    in transit, and lights no hover wash — so a change that would move it waits at most
+//!    [`SETTLE`] for the answer.
+//! 3. **Heading for a control the change would move holds the change**, checked against the
+//!    convex hull spanned by a recent pointer position and the control.
+//! 4. **Seeing more takes a short rest on the item** ([`DWELL`], counted from when the pointer
+//!    entered), and once open the item stays open while the pointer is in it or heading for its
+//!    revealed controls.
 //!
-//! A change held by heading resumes [`AIM_HOLD`] after the last sample that
-//! confirmed the heading, so a pointer that stops short lets go instead of
-//! pinning the row.
-//!
-//! Transit and aim are read from the system's one pointer predictor,
-//! [`super::aim::Trajectory`].
-//!
-//! The state is pure: every method takes the instant it reasons about, so
-//! slow and fast pointer paths are tested against a synthetic timeline.
+//! A change held by heading resumes [`AIM_HOLD`] after the last sample that confirmed it, so a
+//! pointer that stops short lets go instead of pinning the row. Transit and aim come from
+//! [`super::aim::Trajectory`]; the state is pure, so pointer paths are tested against a
+//! synthetic timeline.
 
 use super::aim::Trajectory;
 pub(crate) use super::aim::{SETTLE, in_aim_hull};

@@ -1,12 +1,10 @@
 //! `ActionProposal`: one model call's answer, shown before it is written.
 //!
-//! A one-shot action (rewrite, translate, summarise) is one model call over
-//! an explicit context — a selection or a whole resource, optionally what
-//! surrounds it — and an answer the person accepts or rejects. That answer is
-//! never a document and has no lifetime: accepting writes it once, rejecting
-//! drops it, and nothing of it is left either way. This module is the shared
-//! contract and the shared surface, so every place that offers such an action
-//! offers the same one.
+//! A one-shot action (rewrite, translate, summarise) is one model call over an explicit context
+//! — a selection or a whole resource, optionally what surrounds it — and an answer the person
+//! accepts or rejects. That answer is never a document and has no lifetime: accepting writes it
+//! once, rejecting drops it. This module is the shared contract and surface, so every place
+//! that offers such an action offers the same one.
 //!
 //! | Part | Is |
 //! |---|---|
@@ -16,27 +14,17 @@
 //! | [`ProposalAccept`] | the single action accepting it runs |
 //! | [`ProposalDecision`] | Accept or Reject, with the change the person agreed to |
 //!
-//! [`ActionProposal::accept_action`] is the one write-back: a single typed
-//! field edit on the resource the proposal was made of
-//! ([`tilo_resource::Edit`]), submitted as the record's own
-//! [`field edit`](tilo_resource::FIELD_EDIT)
-//! ([`ProposalAccept::invoke`]) so it lands as one action — one change, one
-//! undo step, one History row — and a peer replays it for what it was. A
-//! selection is named by its character range, and
-//! [`ProposalAccept::refusal_over`] says why it must not be written when the
-//! field no longer holds what the model was shown, rather than writing over
-//! whatever is there now. [`ActionProposal::reject`] writes nothing and
-//! stores nothing.
+//! [`ActionProposal::accept_action`] is the one write-back: a single typed field edit on the
+//! resource the proposal was made of ([`tilo_resource::Edit`]), submitted as the record's own
+//! [`field edit`](tilo_resource::FIELD_EDIT), so it lands as one action — one change, one undo
+//! step, one History row — and a peer replays it for what it was. A selection is named by its
+//! character range, and [`ProposalAccept::refusal_over`] says why it must not be written when
+//! the field no longer holds what the model was shown. A secret field never offers any of this
+//! (`TextInput::set_sensitive`).
 //!
-//! A secret field never offers any of this: its text stays in the widget, so
-//! there is nothing to propose over (`TextInput::set_sensitive`).
-//!
-//! [`ActionProposalView`] is the shared surface: what the person asked for,
-//! the change as a line diff (or a value's before and after), which model
-//! answers and where it runs, and Accept and Reject. What is sent is not a
-//! footnote — every part and its whole text stand above the decision, so the
-//! person reads exactly what leaves before it does. The view is built from
-//! `Column`, `Text` and `Button` and paints no control of its own.
+//! [`ActionProposalView`] is the shared surface: what the person asked for, the change as a line
+//! diff (or a value's before and after), which model answers and where it runs, and Accept and
+//! Reject — built from `Column`, `Text` and `Button`, painting no control of its own.
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{Edit, EditOp, Path, Segment};

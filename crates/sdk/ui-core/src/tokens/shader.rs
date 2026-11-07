@@ -1,28 +1,22 @@
-//! A theme's own surface shader: a short WGSL function a finish names,
-//! validated when the theme is read (`docs/architecture/theming.md`, "A
-//! surface shader").
+//! A theme's own surface shader: a short WGSL function a finish names, validated when the theme is
+//! read (`docs/architecture/theming.md`, "A surface shader").
 //!
-//! A theme may paint a surface role with its own colour arithmetic instead
-//! of choosing from the built-in painter sets: ordered dithering,
-//! pixelation, a hatch, a gradient the palette roles cannot express. The
-//! shader is **one pure function** over a fixed, documented set of inputs
-//! ([`INPUTS`]). It declares no entry point and no bindings of its own —
-//! the toolkit writes the pipeline around it and hands it everything it may
-//! read — so a shader cannot sample anything but what the toolkit samples
-//! for it, cannot read the person's data or the window's content, and has
-//! no clock: `time` is the static value the theme states.
+//! A theme may paint a surface role with its own colour arithmetic instead of choosing from the
+//! built-in painter sets: ordered dithering, pixelation, a hatch, a gradient the palette roles
+//! cannot express. The shader is **one pure function** over a fixed, documented set of inputs
+//! ([`INPUTS`]), declaring no entry point and no bindings of its own — the toolkit writes the
+//! pipeline around it — so it cannot sample anything but what the toolkit samples for it, cannot
+//! read the person's data or the window's content, and has no clock: `time` is the static value the
+//! theme states.
 //!
-//! It runs **once per settled frame**. The toolkit evaluates the shader
-//! into the surface's image when the surface, its theme or what the surface
-//! samples changes, and replays that image until then, so an idle surface
-//! draws no frame at all.
+//! It runs **once per settled frame**: the toolkit evaluates it into the surface's image when the
+//! surface, its theme or what the surface samples changes, and replays that image until then, so an
+//! idle surface draws no frame.
 //!
-//! The source is checked when the theme is read ([`Source::validate`]): it
-//! must parse as WGSL, declare exactly one function `fs_surface` whose
-//! parameters and result are exactly [`INPUTS`], and declare no entry point
-//! and no global variable. A theme that fails is refused, with the reason
-//! (Theme Studio shows it, the runtime logs it), and the theme it sits on
-//! does not apply.
+//! The source is checked when the theme is read ([`Source::validate`]): it must parse as WGSL,
+//! declare exactly one function `fs_surface` whose parameters and result are exactly [`INPUTS`],
+//! and declare no entry point and no global. A theme that fails is refused, with the reason, and
+//! the theme it sits on does not apply.
 
 use serde::{Deserialize, Serialize};
 

@@ -1,38 +1,11 @@
-//! Shared collection selection models.
+//! Shared collection selection models: [`SelectionModel`], the compact index-based form for
+//! immutable local lists, and [`KeySelection`], which keeps selection attached to stable model
+//! keys and represents select-all as a complement, for mutable, virtualized and partially
+//! resident collections.
 //!
-//! [`SelectionModel`] is the compact index-based form for immutable local
-//! lists. [`KeySelection`] keeps selection attached to stable model keys and
-//! represents select-all as a complement, making it suitable for mutable,
-//! virtualized, and partially resident collections.
-//!
-//! Several toolkit widgets surface a list of homogeneous items that the
-//! user can select — `DataTable` list mode, the file picker, the
-//! file-explorer's views — and they all need the *same* selection
-//! semantics, so that logic lives here once instead of being re-derived
-//! (subtly differently) in each widget.
-//!
-//! Pure index bookkeeping: it knows nothing about geometry, rendering, or
-//! what the indices point at. Widgets map a click/keystroke to an index and
-//! call [`SelectionModel::apply_click`] or [`SelectionModel::move_to`], then
-//! paint `is_selected(i)` and treat `primary()` as the keyboard cursor.
-//!
-//! # Semantics (matching common file managers)
-//!
-//! | Gesture            | Effect                                             |
-//! |--------------------|----------------------------------------------------|
-//! | click              | select only `i`; anchor = primary = `i`            |
-//! | Ctrl+click         | toggle `i`; primary = `i`                          |
-//! | Shift+click        | select the inclusive range anchor..=`i` (replace)  |
-//! | Ctrl+Shift+click   | add the inclusive range anchor..=`i` to the set    |
-//! | arrow (no mod)     | select only the new index                          |
-//! | Shift+arrow        | extend the range from the anchor to the new index  |
-//!
-//! When there is no anchor yet, Shift gestures degrade to a plain
-//! single-select (there is nothing to extend from), and the first
-//! modified click sets it. After that a modified click adds to or removes
-//! from the choice without moving the anchor: Shift then extends the
-//! choice the person built, and the rows they gathered before it stay in
-//! it, instead of the range from the row just clicked replacing them.
+//! Several toolkit widgets surface a list of homogeneous items to select — `DataTable` list
+//! mode, the file picker, the file explorer's views — and they all need the *same* selection
+//! semantics, so that logic lives here once instead of being re-derived in each widget.
 
 use std::collections::{BTreeSet, HashSet};
 use std::hash::Hash;

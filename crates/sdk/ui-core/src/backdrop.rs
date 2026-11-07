@@ -1,37 +1,29 @@
 //! The blurred material floating chrome is made of.
 //!
-//! Floating chrome — the palette, menus, popovers, quick settings, sheets,
-//! notifications and chrome over media — is drawn over a blurred copy of
-//! what is behind it, tinted with the panel ground
-//! (`docs/design-language.md`, "Material and transparency"). The blur
-//! radius and the tint's opacity are theme roles
-//! (`surfaces.material_blur_px`, `surfaces.material_opacity`, set by the
-//! theme document's `material`). A surface asks for the material with
-//! [`crate::floating_surface::Material::Floating`]; nothing outside the
-//! theme and this module picks a blur radius or a tint.
+//! Floating chrome — the palette, menus, popovers, quick settings, sheets, notifications and
+//! chrome over media — is drawn over a blurred copy of what is behind it, tinted with the panel
+//! ground (`docs/design-language.md`, "Material and transparency"). The blur radius and the
+//! tint's opacity are theme roles (`surfaces.material_blur_px`, `surfaces.material_opacity`,
+//! set by the theme document's `material`); a surface asks for the material with
+//! [`crate::floating_surface::Material::Floating`], and nothing outside the theme and this
+//! module picks a blur radius or a tint.
 //!
-//! Vello cannot sample what it has already drawn, so the blur is a pass
-//! that runs before the frame:
+//! Vello cannot sample what it has already drawn, so the blur is a pass that runs before the
+//! frame:
 //!
-//! 1. While a host holds a [`BackdropRecording`], `fill` draws a surface's
-//!    body as a placeholder image under the tint and records what lies
-//!    behind it: what the scene it is drawn into held so far, which of the
-//!    host's scenes that is (see [`layer_scene`]), the surface's bounds and
-//!    its blur radius.
-//! 2. The host turns those records into a [`BackdropFrame`] in its target's
-//!    pixel space, each region carrying the complete scene composed below
-//!    the surface.
-//! 3. A renderer that composites materials calls [`BackdropBlur::prepare`]:
-//!    each region's backdrop is rendered at half resolution, halved until
-//!    the blur fits a short kernel, blurred separably, and substituted for
-//!    the placeholder. The frame then renders as usual, and
-//!    [`BackdropBlur::release`] drops the substitutions.
+//! 1. While a host holds a [`BackdropRecording`], `fill` draws a surface's body as a placeholder
+//!    image under the tint and records what lies behind it: what the scene held so far, which of
+//!    the host's scenes that is ([`layer_scene`]), the surface's bounds and its blur radius.
+//! 2. The host turns those records into a [`BackdropFrame`] in its target's pixel space, each
+//!    region carrying the complete scene composed below the surface.
+//! 3. A renderer that composites materials calls [`BackdropBlur::prepare`]: each region's
+//!    backdrop is rendered at half resolution, halved until the blur fits a short kernel,
+//!    blurred separably and substituted for the placeholder; [`BackdropBlur::release`] drops the
+//!    substitutions.
 //!
-//! The placeholder's own pixels are the opaque panel ground, so any path
-//! that does not substitute it — no blur pass in the renderer, a failed
-//! backdrop render, a capture of the scene — shows the opaque material.
-//! Reduced transparency, forced colours and a theme without blur draw the
-//! opaque material directly.
+//! The placeholder's own pixels are the opaque panel ground, so any path that does not
+//! substitute it (no blur pass, a failed backdrop render, a capture of the scene) shows the
+//! opaque material — as do reduced transparency, forced colours and a theme without blur.
 #![allow(
     clippy::arithmetic_side_effects,
     reason = "backdrop geometry is bounded floating-point pixel math"

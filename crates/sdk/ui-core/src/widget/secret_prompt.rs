@@ -1,36 +1,25 @@
-//! The one password prompt: every secret Tilo asks for — a Wi-Fi
-//! passphrase, a polkit password, a VPN login, an unlock, a SIM PIN — is
-//! asked by this component, drawn the same by the shell and by apps.
+//! The one password prompt: every secret Tilo asks for — a Wi-Fi passphrase, a polkit password, a
+//! VPN login, an unlock, a SIM PIN — is asked by this component, drawn the same by the shell and by
+//! apps.
 //!
-//! It shows an icon and a title naming who asks and why ("Connect to
-//! TruffleBoys2026"), the resource line, the field or fields the kind asks
-//! for (each a secret [`TextInput`] with its own show/hide button), one
-//! notice line under them (an inline error after a wrong secret, Caps Lock,
-//! the PIN length or the attempts a SIM has left), a numeric keypad for the
-//! PIN kinds while touch is the input in use, and Cancel plus a primary
-//! button labelled by the action (Connect, Unlock, Allow).
+//! It shows an icon and a title naming who asks and why ("Connect to TruffleBoys2026"), the
+//! resource line, the fields the kind asks for (each a secret [`TextInput`] with its own show/hide
+//! button), one notice line under them (an inline error after a wrong secret, Caps Lock, the PIN
+//! length or the attempts a SIM has left), a numeric keypad for the PIN kinds while touch is the
+//! input in use, and Cancel plus a primary button labelled by the action.
 //!
-//! Three presentations of the same body:
+//! Three presentations of the same body: [`Presentation::Sheet`], the modal sheet a painted host
+//! draws itself through the one modal chrome ([`super::modal_dialog`]) — Enter answers, Escape
+//! cancels, and it keeps the field clear of an on-screen keyboard
+//! ([`SecretPrompt::set_keyboard_inset`]); [`Presentation::Inline`], inside another surface, with
+//! no title or sheet; and [`Presentation::DialogBody`], the body of a retained [`ModalDialog`],
+//! which draws the title and actions ([`SecretPrompt::into_dialog`] wires them).
 //!
-//! - [`Presentation::Sheet`]: the modal sheet a painted host (the shell)
-//!   draws itself, through the one modal chrome ([`super::modal_dialog`]):
-//!   floating on a roomy display, a full-window page on a phone. Enter
-//!   answers, Escape cancels, and the sheet keeps the field clear of an
-//!   on-screen keyboard ([`SecretPrompt::set_keyboard_inset`]).
-//! - [`Presentation::Inline`]: inside another surface (Quick Settings):
-//!   the resource line, fields, notice and its own Cancel and primary
-//!   buttons, no title or sheet.
-//! - [`Presentation::DialogBody`]: the body of a retained
-//!   [`ModalDialog`], which draws the title and the
-//!   actions; [`SecretPrompt::into_dialog`] wires them.
-//!
-//! The secret lives only in the fields' zeroizing buffers and in the
-//! [`SecretAnswer`] handed out on submit, which zeroes itself on drop. It is
-//! never in the accessibility tree (fields report `protected`), a log (the
-//! answer's `Debug` is redacted), a document or replicated state (fields are
-//! local, with no binding), or a screenshot (a painted secret marks the
-//! frame through [`crate::secret_paint`], so hosts withhold it).
-//!
+//! The secret lives only in the fields' zeroizing buffers and in the [`SecretAnswer`] handed out on
+//! submit, which zeroes itself on drop. It is never in the accessibility tree (fields report
+//! `protected`), a log (the answer's `Debug` is redacted), a document or replicated state (fields
+//! are local, with no binding), or a screenshot (a painted secret marks the frame through
+//! [`crate::secret_paint`], so hosts withhold it).
 //! ```ignore
 //! // A painted host:
 //! let mut prompt = SecretPrompt::new(SecretKind::Secret)

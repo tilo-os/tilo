@@ -1,31 +1,19 @@
-//! [`ConversationList`]: the message list, with the mechanics underneath it.
+//! [`ConversationList`]: the message list a widget-tree app draws, the same conversation the
+//! painting apps compose themselves — the day breaks, the clock each line carries, the delivery
+//! vocabulary, the way consecutive lines from one person run together — so a message reads the
+//! same whether it arrived in a channel or a private thread.
 //!
-//! This is the list a widget-tree app draws. It is the same conversation the
-//! painting apps compose themselves — the day breaks, the clock each line
-//! carries, the delivery vocabulary, the way consecutive lines from one person
-//! run together — so a message reads the same whether it arrived in a channel or
-//! a private thread.
+//! The list owns the *mechanics*, not the app's identity: an app names its lines
+//! ([`ConversationLine`]) and which side they sit on ([`ConversationRole`]), and the list decides
+//! where the day changes, how wide a bubble may grow, when a line continues the one above it, and
+//! where the time and delivery state go. A private thread puts your own words on the right; a
+//! channel puts everything on one side with its author's name over each run.
 //!
-//! What the list owns is the *mechanics*, not the app's identity: an app names
-//! its lines ([`ConversationLine`]) and which side they sit on
-//! ([`ConversationRole`]), and the list decides where the day changes, how wide
-//! a bubble may grow, when a line is a continuation of the one above it, and
-//! where the time and the delivery state go. A private thread puts your own
-//! words on the right and the other person's on the left; a channel would put
-//! everything on one side with its author's name over each run
-//! (`ConversationRole::Incoming` for every line).
-//!
-//! The list is static: it paints and it measures. It takes no pointer, holds no
-//! selection and keeps no state of its own, so a scroll view can measure it
-//! exactly and a screen reader can walk it — every line is a list item with its
-//! author, its time and its delivery state in its spoken name.
-//!
-//! What it does keep is its layout ([`ListCache`]). Measuring a line's bubble is
-//! a function of its text, the column's width and the theme's type; a frame in
-//! which none of those changed — a caret blinking, someone's presence moving, one
-//! message arriving — reuses the measurement it already has, and paints only the
-//! rows its viewport shows. A frame costs what is on screen, not what the
-//! conversation holds.
+//! The list is static: it paints and measures, taking no pointer, holding no selection and
+//! keeping no state of its own, so a scroll view can measure it exactly and a screen reader can
+//! walk it (every line is a list item with its author, time and delivery state in its spoken
+//! name). What it keeps is its layout ([`ListCache`]), so a frame in which no text, width or type
+//! changed reuses its measurements and paints only the rows its viewport shows.
 
 use std::collections::HashMap;
 

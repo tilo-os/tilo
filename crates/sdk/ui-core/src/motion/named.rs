@@ -1,7 +1,5 @@
-//! The named motions: each one defined here, once. A call site says which
-//! one it is playing; how it moves (pace, curve, distance, pose, reduced
-//! variant) is decided here and nowhere else. See the module docs for the
-//! vocabulary.
+//! The named motions, each defined once: a call site says which one it plays, and its pace, curve,
+//! pose and reduced variant are decided here.
 
 use super::pose::Pose;
 use super::spec::{Direction, MotionSpec, Pace, Reduced, Shortcut};
@@ -21,10 +19,8 @@ pub fn unit_opacity(x: f64) -> f32 {
     x.clamp(0.0, 1.0) as f32
 }
 
-/// The progress of a part of a motion that runs over `from..to` of the
-/// whole one's progress (a part that starts late or ends early: content
-/// fading in after a container has mostly arrived), `0..=1`. Parts of one
-/// motion share its spring, so they stay in step when it is interrupted.
+/// The progress of a part of a motion running over `from..to` of the whole one's progress, `0..=1`;
+/// parts share its spring, so they stay in step when it is interrupted.
 #[must_use]
 pub fn stage(progress: f64, from: f64, to: f64) -> f64 {
     if to <= from {
@@ -41,17 +37,11 @@ fn scale_about(origin: Point, scale: f64) -> Affine {
 // 1. Appear / dismiss
 // ---------------------------------------------------------------------------
 
-/// A popover, menu, sheet or dialog coming from the control that summoned it
-/// and going back to it.
-///
-/// It arrives from nothing: opacity 0, 92 % of its size, 8 px toward that
-/// control; it leaves to nothing, 97 % of its size and those 8 px again. Both
-/// about the **origin**, the point of the surface nearest the control. In at
-/// `base`, out at `fast`. Reduced motion: opacity only. A shortcut: at once.
+/// A popover, menu, sheet or dialog coming from the control that summoned it and going back to it,
+/// both about the origin nearest that control; the constants below are its shares and reach.
 pub struct Appear;
 
-/// How one [`Appear`] surface is drawn at one progress: the opacity and scale
-/// it is drawn at, about its origin, and how far toward its anchor it stands.
+/// How one [`Appear`] surface is drawn at one progress, about its origin.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Coming {
     /// Of its settled size.
@@ -69,23 +59,17 @@ impl Appear {
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
     };
-    /// The share of its size it starts arriving at. A surface is drawn on the
-    /// frame after the press that summoned it, with the motion already under
-    /// way — in a software-rendered session that frame is 50 to 90 ms into a
-    /// 210 ms motion, most of the way through a spring's travel — so the share
-    /// is set where that frame still reads clearly smaller than the surface at
-    /// rest, not where it would read at the instant of the press.
+    /// A surface is drawn on the frame after the press, with the motion already under way (50 to 90
+    /// ms into a 210 ms motion in a software-rendered session), so it starts where that frame still
+    /// reads clearly smaller than at rest, not where it would read at the instant of the press.
     const ENTER_SCALE: f64 = 0.92;
     /// The share of its size it ends leaving at.
     const EXIT_SCALE: f64 = 0.97;
-    /// How far toward its anchor it starts arriving and ends leaving, in
-    /// logical pixels.
+    /// How far toward its anchor it starts arriving and ends leaving, in logical pixels.
     pub const REACH: f64 = 8.0;
 
-    /// How `surface` is drawn `progress` of the way through arriving or
-    /// leaving `direction`, its anchor the point nearest the control that
-    /// summoned it (a bar button, a control, the pointer of a context menu,
-    /// or the surface's own centre for a centred dialog).
+    /// How `surface` is drawn `progress` of the way through arriving or leaving `direction`, its
+    /// anchor the point nearest the summoning control.
     #[must_use]
     pub fn coming(
         progress: f64,
@@ -114,13 +98,9 @@ impl Appear {
         }
     }
 
-    /// Its size, its fade and its reach over the whole motion. Arriving, it is
-    /// eased so the first frames after a press are its faintest and smallest —
-    /// it grows and brightens into place; the surface is drawn on the frame
-    /// after what asked for it, so a motion linear in the clock would be a
-    /// third of the way in on its first frame. Leaving, it gives up its
-    /// opacity at a steady rate, so every frame of the way out still shows
-    /// some of it, rather than the first frame showing none.
+    /// Arriving, it eases so the first frame after a press is its faintest and smallest, since a
+    /// motion linear in the clock would be a third of the way in by then; leaving, opacity goes at
+    /// a steady rate, so every frame of the way out still shows some of it.
     fn eased(progress: f64, direction: Direction) -> f64 {
         match direction {
             Direction::Enter => progress * progress,
@@ -128,8 +108,7 @@ impl Appear {
         }
     }
 
-    /// [`Self::coming`] as a [`Pose`], applied in the surface's own
-    /// coordinates.
+    /// [`Self::coming`] as a [`Pose`], in the surface's own coordinates.
     #[must_use]
     pub fn pose(
         progress: f64,
@@ -150,8 +129,7 @@ impl Appear {
         }
     }
 
-    /// How far, and which way, it stands from where it rests at its first
-    /// frame: [`Self::REACH`] toward the point of `surface` nearest `anchor`.
+    /// How far and which way it stands from where it rests at its first frame.
     fn toward(surface: Rect, anchor: Point) -> Vec2 {
         let out = Self::origin(surface, anchor) - surface.center();
         let length = out.hypot();
@@ -162,8 +140,7 @@ impl Appear {
         }
     }
 
-    /// The point of `surface` nearest `anchor` (the summoning control's
-    /// centre, the pointer for a context menu): where it appears from.
+    /// The point of `surface` nearest `anchor`: where it appears from.
     #[must_use]
     pub fn origin(surface: Rect, anchor: Point) -> Point {
         Point::new(
@@ -177,15 +154,8 @@ impl Appear {
 // 2. Drill in / back
 // ---------------------------------------------------------------------------
 
-/// Moving deeper into a panel and back: Quick Settings submenus, push
-/// navigation, settings sub-pages.
-///
-/// A continuous depth ([`DrillDepth`]) follows the stack; each page is posed
-/// by its offset from it. Within a panel it is a **shared axis**: a 28 px
-/// shift (at most a tenth of the width) and a fade that has the outgoing page
-/// gone by 60 % of the way. Back is the same function run the other way.
-/// Whole columns on phone widths use [`Self::screen_pose`]. Reduced motion:
-/// a cross-fade at `fast`. A shortcut: at once.
+/// Moving deeper into a panel and back: Quick Settings submenus, push navigation, settings
+/// sub-pages. Each page is posed by its offset from one continuous depth ([`DrillDepth`]).
 pub struct Drill;
 
 impl Drill {
@@ -195,10 +165,8 @@ impl Drill {
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
     };
-    /// Switching to another workspace by pointer (its menu, a banner): the
-    /// whole view goes along the same shared axis, at `slow` toward a later
-    /// workspace and `base` back, as a whole-view change. A shortcut lands;
-    /// reduced motion cross-fades at `fast`.
+    /// Switching to another workspace by pointer: the whole view goes along the same shared axis,
+    /// `slow` toward a later workspace and `base` back; a shortcut lands.
     pub const WORKSPACE: MotionSpec = MotionSpec {
         enter: Pace::Slow,
         exit: Pace::Base,
@@ -211,9 +179,8 @@ impl Drill {
     /// How far the column behind a whole-column push trails.
     const PARALLAX: f64 = 0.3;
 
-    /// The pose of a page `offset` levels from the drawn depth (positive:
-    /// deeper than what is shown, so it waits to the trailing side) in a
-    /// panel `width` wide. Invisible pages need not be drawn.
+    /// The pose of a page `offset` levels from the drawn depth, in a panel `width` wide; invisible
+    /// pages need not be drawn.
     #[must_use]
     pub fn pose(offset: f64, width: f64, motion: EffectiveMotion) -> Pose {
         let shown = unit_opacity(1.0 - Self::FADE_RATE * offset.abs());
@@ -228,9 +195,7 @@ impl Drill {
         }
     }
 
-    /// The pose of a whole column `offset` columns from the drawn one, in a
-    /// window `width` wide: the next column slides in over the full width,
-    /// the one it covers trails at 30 %. Reduced motion: a cross-fade.
+    /// The pose of a whole column `offset` columns from the drawn one, in a window `width` wide.
     #[must_use]
     pub fn screen_pose(offset: f64, width: f64, motion: EffectiveMotion) -> Pose {
         if motion.reduced() {
@@ -333,12 +298,9 @@ fn level_f64(level: usize) -> f64 {
 // 3. Expand / collapse
 // ---------------------------------------------------------------------------
 
-/// A disclosure, an accordion, a panel whose height follows its content.
-///
-/// The clip height moves; the content is laid out once at its full height
-/// and revealed, and fades in over the second half. The chevron turns with
-/// it. Open at `base`, close at `fast`, longer for tall reveals. Reduced
-/// motion: the height lands; the content fades in at `fast`.
+/// A disclosure, an accordion, a panel whose height follows its content: the clip height moves over
+/// content laid out once at its full height and fades in over the second half; open at `base`,
+/// close at `fast`, longer for tall reveals.
 pub struct Disclose;
 
 /// How much of a disclosed block shows.
@@ -385,8 +347,8 @@ impl Disclose {
     }
 }
 
-/// An extent that follows its content (a panel's height when its page
-/// changes), on the expand/collapse motion.
+/// An extent that follows its content (a panel's height when its page changes), on the
+/// expand/collapse motion.
 #[derive(Clone, Copy, Debug)]
 pub struct Extent {
     value: MotionValue<f64>,
@@ -403,8 +365,7 @@ impl Default for Extent {
 }
 
 impl Extent {
-    /// Follow `to`. The first extent is taken as it is: nothing grows on
-    /// first paint.
+    /// Follow `to`; the first extent is taken as it is, so nothing grows on first paint.
     #[track_caller]
     pub fn follow(&mut self, to: f64, motion: EffectiveMotion, source: MotionSource, now: Instant) {
         if !self.known {
@@ -446,13 +407,9 @@ impl Extent {
 // 4. Panel slide
 // ---------------------------------------------------------------------------
 
-/// A sidebar, drawer or inspector sliding in from its edge.
-///
-/// The panel slides at its own width under a clip; content beside a docked
-/// panel is laid out at the wider of its two widths while the panel moves and
-/// slides with it, so it reflows once, at the wide end, never per frame
-/// ([`Self::content_width`]). `base` both ways. Reduced motion and a
-/// shortcut: it lands.
+/// A sidebar, drawer or inspector sliding in from its edge. Content beside a docked panel is laid
+/// out at the wider of its two widths and slides with it, so it reflows once, never per frame
+/// ([`Self::content_width`]).
 pub struct PanelSlide;
 
 impl PanelSlide {
@@ -469,11 +426,9 @@ impl PanelSlide {
         extent * progress.clamp(0.0, 1.0)
     }
 
-    /// The pose of a modal edge sheet (a drawer over everything, such as
-    /// wireless projection) at `progress`: it slides in from its edge by a
-    /// quarter of its width (at most 48 px) while it fades in, so it reads as
-    /// coming from the edge without crossing the whole screen. `trailing`
-    /// sheets come from the right. Reduced motion: no slide.
+    /// The pose of a modal edge sheet at `progress`: it slides in from its edge by a quarter of its
+    /// width (at most 48 px) while it fades in, so it reads as coming from the edge without
+    /// crossing the screen; `trailing` sheets come from the right.
     #[must_use]
     pub fn sheet_pose(progress: f64, width: f64, trailing: bool, motion: EffectiveMotion) -> Pose {
         let p = progress.clamp(0.0, 1.0);
@@ -488,9 +443,8 @@ impl PanelSlide {
         }
     }
 
-    /// The width content beside the panel is laid out at: `settled` at rest;
-    /// while the panel moves, the widest it will be (`widest`), so no frame
-    /// of the slide re-lays it out.
+    /// The width content beside the panel is laid out at: `settled` at rest, the widest it will be
+    /// (`widest`) while the panel moves, so no frame re-lays it out.
     #[must_use]
     pub fn content_width(settled: f64, widest: f64, moving: bool) -> f64 {
         if moving { settled.max(widest) } else { settled }
@@ -501,14 +455,9 @@ impl PanelSlide {
 // 5. Cross-fade
 // ---------------------------------------------------------------------------
 
-/// Swapping one content for another in place: the bar's clock and a live
-/// activity, a state icon, an image over its placeholder.
-///
-/// The old content fades out over the first 60 %, the new fades in over the
-/// whole `fast` spring; nothing moves. A swap during a swap starts from what
-/// is drawn. The same under reduced motion; a shortcut swaps at once.
-/// The cross-fade's timing, for a fade that carries no content of its own
-/// (a column fading in where it appeared).
+/// Swapping one content for another in place (the bar's clock and a live activity, an image over
+/// its placeholder): the old fades out over the first 60 %, the new in over the whole `fast`
+/// spring, nothing moves. Also the timing for a fade that carries no content of its own.
 pub const CROSS_FADE: MotionSpec = MotionSpec {
     enter: Pace::Fast,
     exit: Pace::Fast,
@@ -546,10 +495,9 @@ impl<K: Clone + PartialEq> CrossFade<K> {
         self.show_with(next, timing, now);
     }
 
-    /// Show `next`, data that arrived (a read's answer replacing its
-    /// placeholder). No hand caused it, so it neither lands at once like a
-    /// shortcut's result nor waits on input: it fades at `fast`, under
-    /// reduced motion too. A no-op when it is already shown.
+    /// Show `next`, data that arrived (a read's answer replacing its placeholder): no hand caused
+    /// it, so it fades at `fast` rather than landing or waiting on input; a no-op when already
+    /// shown.
     #[track_caller]
     pub fn arrive(&mut self, next: K, motion: EffectiveMotion, now: Instant) {
         if next == self.shown {
@@ -614,13 +562,10 @@ impl<K: Clone + PartialEq> CrossFade<K> {
 // 6. List insert / remove / reorder
 // ---------------------------------------------------------------------------
 
-/// Rows arriving, leaving and changing places: a survivor springs from its
-/// old place to its new one (`base`), an arriving row fades in and a leaving
-/// one fades out while their slots open and close (`fast`). Reduced motion:
-/// rows land; arrivals fade at `fast`. A shortcut: at once. Driven by
-/// [`crate::collection_transition::RowMotions`] for virtualized
-/// lists; a change that would move the row under an aiming pointer waits
-/// ([`held_by_aim`]).
+/// Rows arriving, leaving and changing places: a survivor springs from its old place to its new one
+/// (`base`), arrivals and departures fade while their slots open and close (`fast`), driven by
+/// [`crate::collection_transition::RowMotions`]; a change that would move the row under an aiming
+/// pointer waits ([`held_by_aim`]).
 pub struct ListChange;
 
 impl ListChange {
@@ -638,8 +583,7 @@ impl ListChange {
     };
 }
 
-/// Whether a motion that would move `rect` must wait: the pointer is aiming
-/// at it. An aimed-at control never moves.
+/// Whether a motion that would move `rect` must wait: the pointer is aiming at it.
 #[must_use]
 pub fn held_by_aim(aim: &crate::widget::aim::Trajectory, rect: Rect, now: Instant) -> bool {
     aim.aims_at(rect, now)
@@ -649,12 +593,9 @@ pub fn held_by_aim(aim: &crate::widget::aim::Trajectory, rect: Rect, now: Instan
 // 7. Scroll / carousel snap
 // ---------------------------------------------------------------------------
 
-/// A carousel or paged strip settling on a detent. The release projects the
-/// fling forward ([`Self::rest_for`]), picks the nearest detent, and the
-/// settle carries the release velocity into it (`base`, no bounce). A wheel
-/// notch retargets to the next detent, so spins accumulate into one motion.
-/// A shortcut: `fast` at most; reduced motion: it lands. Free scrolling
-/// glides on `virtual_viewport::glide_step`.
+/// A carousel or paged strip settling on a detent: the release projects the fling
+/// ([`Self::rest_for`]), picks the nearest detent and carries the release velocity into it (`base`,
+/// no bounce); a wheel notch retargets, so spins accumulate into one motion.
 pub struct Snap;
 
 impl Snap {
@@ -664,20 +605,16 @@ impl Snap {
         reduced: Reduced::Lands,
         shortcut: Shortcut::Context,
     };
-    /// A wheel step's glide (zooming a canvas a notch): `fast`, retargeted
-    /// by every further notch so a spin is one motion.
+    /// A wheel step's glide (zooming a canvas a notch): `fast`, retargeted by every further notch.
     pub const WHEEL: MotionSpec = MotionSpec {
         enter: Pace::Fast,
         exit: Pace::Fast,
         reduced: Reduced::Lands,
         shortcut: Shortcut::Context,
     };
-    /// A thrown surface coasting on after the fingers lift (a strip flung
-    /// sideways): released with the fingers' velocity toward where the
-    /// release projects ([`Self::rest_for`]), it slows exponentially over
-    /// the gesture token's coast and comes to rest there without turning
-    /// back. Reduced motion: it stops where the fingers left it, so it
-    /// lands. Only a gesture throws; a shortcut lands.
+    /// A thrown surface coasting on: released with the fingers' velocity toward where the release
+    /// projects ([`Self::rest_for`]), it slows exponentially over the gesture token's coast and
+    /// rests there without turning back.
     pub const COAST: MotionSpec = MotionSpec {
         enter: Pace::Coast,
         exit: Pace::Coast,
@@ -685,8 +622,8 @@ impl Snap {
         shortcut: Shortcut::Lands,
     };
 
-    /// Where a release at `position` moving at `velocity` (per second) would
-    /// come to rest: the projection a flick is judged by.
+    /// Where a release at `position` moving at `velocity` would come to rest: the projection a
+    /// flick is judged by.
     #[must_use]
     pub fn rest_for(position: f64, velocity: f64, motion: EffectiveMotion) -> f64 {
         let coast = f64::from(motion.tokens().gesture.fling_projection_ms) / 1000.0;
@@ -705,11 +642,9 @@ impl Snap {
 // 8. Shared element / zoom
 // ---------------------------------------------------------------------------
 
-/// One thing becoming another in place: a window and its overview card, a
-/// photo and its full view, a widget's glance and its open form. One rect
-/// spring between the two (`slow` in, `base` out, longer across the
-/// screen); the two contents cross-fade over the middle half. Reduced
-/// motion: the destination fades in over the source. A shortcut: at once.
+/// One thing becoming another in place (a window and its overview card, a photo and its full view):
+/// one rect spring between the two (`slow` in, `base` out, longer across the screen) and the
+/// contents cross-fade over the middle half.
 pub struct Zoom;
 
 impl Zoom {
@@ -720,11 +655,9 @@ impl Zoom {
         shortcut: Shortcut::Lands,
     };
 
-    /// The workspace overview: every window flying from its place on its
-    /// strip into the overview's picture of the workspace, and back. Where
-    /// the windows went is the whole point of the motion, so a shortcut
-    /// (Super+Tab) keeps it as spatial context, at `fast`: the overview is
-    /// on screen from the first frame and settles a few frames later.
+    /// The workspace overview: every window flying from its place on its strip into the overview's
+    /// picture of the workspace, and back. Where the windows went is the point, so a shortcut
+    /// (Super+Tab) keeps it as spatial context at `fast`.
     pub const OVERVIEW: MotionSpec = MotionSpec {
         enter: Pace::Slow,
         exit: Pace::Base,
@@ -732,8 +665,7 @@ impl Zoom {
         shortcut: Shortcut::Context,
     };
 
-    /// A corner radius between `from` (0) and `to` (1) at `progress`, for
-    /// a shape whose rect is [`Self::rect_at`].
+    /// A corner radius between `from` (0) and `to` (1) at `progress`.
     #[must_use]
     pub fn radius_at(from: f64, to: f64, progress: f64) -> f64 {
         let p = progress.clamp(0.0, 1.0);
@@ -776,8 +708,8 @@ impl Zoom {
         )
     }
 
-    /// The opacities of the source and destination content at `progress`:
-    /// the swap happens over the middle half.
+    /// The opacities of the source and destination content at `progress`: the swap is over the
+    /// middle half.
     #[must_use]
     pub fn contents(progress: f64) -> (f32, f32) {
         let p = progress.clamp(0.0, 1.0);
@@ -785,8 +717,8 @@ impl Zoom {
         (1.0 - incoming, incoming)
     }
 
-    /// How a travel from `from` to `to` is timed: distance-aware against the
-    /// larger of the two sizes.
+    /// How a travel from `from` to `to` is timed: distance-aware against the larger of the two
+    /// sizes.
     #[must_use]
     pub fn timing(
         from: Rect,
@@ -805,11 +737,9 @@ impl Zoom {
 // 9. Windows on the strip
 // ---------------------------------------------------------------------------
 
-/// Windows opening, closing, moving and resizing on the strip. Rects spring
-/// on `springs.heavy` (critically damped, mass you can feel), longer for a
-/// long move; an opening window's content fades in and scales 0.96 → 1 about
-/// its centre (`slow`); a closing one goes at `base`. A drag is welded to the hand.
-/// A shortcut lands at once; reduced motion lands, opening still fades.
+/// Windows opening, closing, moving and resizing on the strip: rects spring on `springs.heavy`
+/// (critically damped, mass you can feel), longer for a long move; an opening window's content
+/// fades in and scales 0.96 → 1 about its centre (`slow`); a drag is welded to the hand.
 pub struct WindowMotion;
 
 impl WindowMotion {
@@ -820,8 +750,8 @@ impl WindowMotion {
         reduced: Reduced::Lands,
         shortcut: Shortcut::Lands,
     };
-    /// A window's content arriving and leaving: arriving is a whole-view
-    /// change (`slow`, long enough to read where it went), leaving `base`.
+    /// A window's content arriving and leaving: arriving is a whole-view change (`slow`, long
+    /// enough to read where it went), leaving `base`.
     pub const OPEN: MotionSpec = MotionSpec {
         enter: Pace::Slow,
         exit: Pace::Base,
@@ -839,8 +769,7 @@ impl WindowMotion {
     };
     const START_SCALE: f64 = 0.96;
 
-    /// The pose of a window's content at `progress` of its opening, in a
-    /// frame `rect`.
+    /// The pose of a window's content at `progress` of its opening, in a frame `rect`.
     #[must_use]
     pub fn content_pose(progress: f64, rect: Rect, motion: EffectiveMotion) -> Pose {
         let p = progress.clamp(0.0, 1.0);
@@ -864,14 +793,9 @@ impl WindowMotion {
 // 9b. Ambient chrome
 // ---------------------------------------------------------------------------
 
-/// Chrome that comes back on its own and goes when it would be in the way:
-/// desk widgets, the Super surface's time card. Leaving is **instant** (it
-/// goes because the person started something; motion would draw the eye
-/// for nothing). Arriving unasked is **slow** and opacity only, too gentle
-/// to pull the eye from the line just written; arriving asked for (reached
-/// for, a key, a click) is `fast`. Reduced motion: arrivals fade at `fast`.
-/// Chrome that shows on activity and fades once quiet (a scroll bar) is
-/// [`crate::animation::IdleFade`].
+/// Chrome that comes back on its own and goes when it would be in the way: desk widgets, the Super
+/// surface's time card. Leaving is instant, since motion would draw the eye for nothing; arriving
+/// unasked is slow and opacity only; arriving asked for is `fast`.
 pub struct Ambient;
 
 impl Ambient {
@@ -897,13 +821,10 @@ impl Ambient {
     }
 }
 
-/// Something shown for a while that then goes on its own: a volume or
-/// brightness readout, an acknowledgement, a player's controls. A readout
-/// arrives at `fast`; a confirmation ("Link copied") is there at once, as
-/// feedback is. Both hold, then fade out over `base` so that they are gone
-/// exactly when they expire. Under reduced motion they are whole until they
-/// go. Pure functions of their two instants, so the owner keeps no motion
-/// state and sleeps until [`Self::exit_starts`].
+/// Something shown for a while that then goes on its own: a volume readout, an acknowledgement, a
+/// player's controls. A readout arrives at `fast`, a confirmation is there at once; both hold, then
+/// fade over `base` so they are gone exactly when they expire. Pure functions of two instants, so
+/// the owner keeps no motion state.
 pub struct Transient;
 
 impl Transient {
@@ -914,8 +835,8 @@ impl Transient {
         reduced: Reduced::Lands,
         shortcut: Shortcut::Context,
     };
-    /// A confirmation, there the moment the action is done; also chrome the
-    /// pointer wakes (a player's controls), there the moment it moves.
+    /// A confirmation, there the moment the action is done; also chrome the pointer wakes (a
+    /// player's controls).
     pub const CONFIRMATION: MotionSpec = MotionSpec {
         enter: Pace::Instant,
         exit: Pace::Base,
@@ -943,10 +864,8 @@ impl Transient {
             .unwrap_or(expires)
     }
 
-    /// How far through its exit fade something leaving at `since` is at `now`,
-    /// `0..=1` (1: gone). The fade takes the motion's own exit time, so a
-    /// leaving surface shrinks and fades at the motion's pace rather than a
-    /// span the call site chose.
+    /// How far through its exit fade something leaving at `since` is at `now`, `0..=1`: the fade
+    /// takes the motion's own exit time.
     #[must_use]
     pub fn exit_progress(
         spec: MotionSpec,
@@ -990,8 +909,7 @@ impl Transient {
         unit_opacity(arrived * (1.0 - left))
     }
 
-    /// Whether its opacity changes at `now` (arriving or fading), so its
-    /// owner needs frames.
+    /// Whether its opacity changes at `now` (arriving or fading), so its owner needs frames.
     #[must_use]
     pub fn is_moving(
         spec: MotionSpec,
@@ -1008,13 +926,10 @@ impl Transient {
     }
 }
 
-/// Something following a stream of samples it does not control: a peer's
-/// pointer heard about thirty times a second. Between two samples it glides
-/// over the gap between them, so it arrives as the next one is due, starting
-/// and landing gently ([`Self::glide`]); the pace is the data's own, so it
-/// has no token. When the stream goes quiet it fades over the caller's
-/// retirement window ([`Self::fading`]). Under reduced motion the raw
-/// position is the answer and nothing glides.
+/// Something following a stream of samples it does not control (a peer's pointer, heard about
+/// thirty times a second): between two samples it glides over the gap so it arrives as the next is
+/// due ([`Self::glide`]), and when the stream goes quiet it fades over the caller's retirement
+/// window. It has no token: the pace is the data's own.
 #[crate::component::not_a_component(framework, "motion the framework applies")]
 pub struct Follow;
 
@@ -1029,19 +944,16 @@ impl Follow {
         shortcut: Shortcut::Context,
     };
 
-    /// The longest a glide between two samples takes: a pointer that sat
-    /// still for a while goes to where it was just put without drifting
-    /// lazily there. A stream heard thirty times a second glides over the
-    /// gap between its samples (~33 ms), well under this.
+    /// The longest a glide between two samples takes, so a pointer that sat still goes where it was
+    /// just put without drifting lazily there; a stream heard thirty times a second glides about 33
+    /// ms.
     pub const GLIDE_MAX: crate::time::Duration = crate::time::Duration::from_millis(100);
 
-    /// How long something whose stream went quiet takes to fade out, at the
-    /// end of its owner's retirement window: a peer's pointer that stopped
-    /// being heard about, the name beside a pointer at rest.
+    /// How long something whose stream went quiet takes to fade out, at the end of its owner's
+    /// retirement window.
     pub const FADE: crate::time::Duration = crate::time::Duration::from_millis(400);
 
-    /// How far a glide that started at `since` and spans `span` has come at
-    /// `now`, eased, `0..=1`.
+    /// How far a glide that started at `since` and spans `span` has come at `now`, eased, `0..=1`.
     #[must_use]
     pub fn glide(since: Instant, span: crate::time::Duration, now: Instant) -> f32 {
         if span.is_zero() {
@@ -1052,8 +964,8 @@ impl Follow {
         unit_opacity(t * t * (3.0 - 2.0 * t))
     }
 
-    /// The opacity of something that goes `left` from now, fading over the
-    /// last `fade` of it; whole while `fade` is zero (reduced motion).
+    /// The opacity of something that goes `left` from now, fading over the last `fade` of it; whole
+    /// while `fade` is zero (reduced motion).
     #[must_use]
     pub fn fading(left: crate::time::Duration, fade: crate::time::Duration) -> f32 {
         if fade.is_zero() || left >= fade {
@@ -1063,13 +975,9 @@ impl Follow {
     }
 }
 
-/// A mark a collaborator just left (the run a peer typed) going on its own:
-/// whole when made, it steps down evenly over [`Self::LIFE`] in
-/// [`Self::STEPS`] steps. Each step is a wake deadline, so while a peer types
-/// the window repaints a few times a second rather than at every refresh; a
-/// slow taper reads the same in steps of a quarter second. Its life is fixed
-/// rather than a token pace: the mark says who wrote what just now, and has
-/// to stay long enough to be seen.
+/// A mark a collaborator just left (the run a peer typed) going on its own: whole when made, it
+/// steps down evenly over [`Self::LIFE`] in [`Self::STEPS`] steps, each step a wake deadline, so a
+/// typing window repaints a few times a second rather than at every refresh.
 pub struct Trace;
 
 impl Trace {
@@ -1091,15 +999,13 @@ impl Trace {
         })
     }
 
-    /// The opacity of a mark `age` old: `1.0` just made, down a step at a
-    /// time; `None` once it has gone.
+    /// The opacity of a mark `age` old, step by step; `None` once it has gone.
     #[must_use]
     pub fn alpha(age: crate::time::Duration) -> Option<f32> {
         Self::step(age).map(|step| (1.0 - step as f32 / Self::STEPS as f32).clamp(0.0, 1.0))
     }
 
-    /// When a mark made at `born` leaves the step it is in at `now` (steps
-    /// down, or goes); `None` once it has gone.
+    /// When a mark made at `born` leaves the step it is in at `now`; `None` once it has gone.
     #[must_use]
     pub fn next_step(born: Instant, now: Instant) -> Option<Instant> {
         let step = Self::step(now.saturating_duration_since(born))?;
@@ -1107,11 +1013,9 @@ impl Trace {
     }
 }
 
-/// A reaction floating up from the pointer it was sent from: it rises,
-/// slowing as it goes, and fades over the second half of its life. Its life
-/// is fixed rather than a token pace, because the reaction is the content of
-/// that moment and has to be readable before it goes. Under reduced motion it
-/// does not rise; it only fades. Never loops, never bounces.
+/// A reaction floating up from the pointer it was sent from: it rises, slowing as it goes, and
+/// fades over the second half of a fixed life, since the reaction is the content of that moment and
+/// has to be readable before it goes.
 pub struct Float;
 
 impl Float {
@@ -1120,8 +1024,8 @@ impl Float {
     /// How far it rises over its life, in logical pixels.
     pub const RISE_PX: f64 = 48.0;
 
-    /// How far above where it started it is drawn, and how opaque, at `age`;
-    /// `None` once it is gone.
+    /// How far above where it started it is drawn, and how opaque, at `age`; `None` once it is
+    /// gone.
     #[must_use]
     pub fn at(age: crate::time::Duration, motion: EffectiveMotion) -> Option<(f64, f32)> {
         if age >= Self::LIFE {
@@ -1138,10 +1042,9 @@ impl Float {
     }
 }
 
-/// A state that is live for as long as it lasts: the soft ring on the face
-/// of someone in a call. It breathes slowly between a quiet and a full
-/// level, the only motion that loops, so it is reserved for something that
-/// is happening right now. Where motion may not loop it holds at full.
+/// A state that is live for as long as it lasts: the soft ring on the face of someone in a call. It
+/// breathes slowly, the only motion that loops, so it is reserved for something happening right
+/// now; where motion may not loop it holds at full.
 pub struct Breathe;
 
 impl Breathe {
@@ -1159,8 +1062,7 @@ impl Breathe {
         unit_opacity(0.35 + 0.65 * wave)
     }
 
-    /// When to paint it next: a breath is drawn at a gentle frame rate, not
-    /// the display's, as it changes slowly.
+    /// When to paint it next: a breath is drawn at a gentle frame rate, not the display's.
     #[must_use]
     pub fn next_frame(now: Instant, motion: EffectiveMotion) -> Option<Instant> {
         motion
@@ -1173,10 +1075,9 @@ impl Breathe {
 // 10. Press and hover feedback
 // ---------------------------------------------------------------------------
 
-/// The pressed or hovered tint of a control. It comes **at once** (zero
-/// latency is the feedback) and goes over `fast`. List rows and menu items
-/// use the instant state directly: hovering across a list is too frequent to
-/// leave trails. Identical under reduced motion: nothing moves.
+/// The pressed or hovered tint of a control: it comes at once (zero latency is the feedback) and
+/// goes over `fast`; list rows and menu items use the instant state, as hovering across a list is
+/// too frequent to leave trails.
 #[derive(Clone, Copy, Debug)]
 pub struct Feedback {
     level: MotionValue<f64>,
@@ -1218,10 +1119,8 @@ impl Feedback {
     }
 }
 
-/// A person's voice on their face while they talk in a call: the ring is
-/// there the moment their voice is heard and eases out over `fast` when they
-/// pause, so it pulses with their speech and stops when they stop. It never
-/// loops by itself. Reduced motion: it shows while they talk and goes at once.
+/// A person's voice on their face while they talk in a call: the ring is there the moment their
+/// voice is heard and eases out over `fast` when they pause, so it pulses with their speech.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Speaking {
     level: Feedback,
@@ -1258,9 +1157,8 @@ impl Speaking {
 // 11. Attention
 // ---------------------------------------------------------------------------
 
-/// Calling the person's eye: a refusal shakes (a wrong password), something
-/// that needs them pulses once. Never loops. Reduced motion: a tint that
-/// fades out over `base` instead of any movement.
+/// Calling the person's eye: a refusal shakes (a wrong password), something that needs them pulses
+/// once; never loops.
 #[derive(Clone, Copy, Debug)]
 pub struct Attention {
     /// A horizontal offset in px (shake) or a scale above 1 (pulse).
@@ -1278,8 +1176,7 @@ impl Default for Attention {
 }
 
 impl Attention {
-    /// A highlight that flashes and fades over `base` (an agent's click
-    /// landing, the reduced-motion form of attention).
+    /// A highlight that flashes and fades over `base` (an agent's click landing).
     pub const FLASH: MotionSpec = MotionSpec {
         enter: Pace::Base,
         exit: Pace::Base,
@@ -1367,16 +1264,11 @@ impl Attention {
 // 12. Controls
 // ---------------------------------------------------------------------------
 
-/// A control showing its new value: a switch's knob and tint, a checkbox's
-/// fill and mark, a slider's thumb gliding to where its track was pressed,
-/// a badge's count.
-///
-/// [`Self::MOVE`] is where the moving part is: `fast`, critically damped;
-/// reduced motion and a shortcut land it. [`Self::SHOW`] is what the control
-/// shows for its state (a tint, a fill, a mark): `fast`, still a fade at
-/// `fast` under reduced motion; a shortcut lands it. Only a click or a
-/// finger moves a control: a key, an assistive action or a value the person
-/// did not just cause (a sync) shows on the next frame.
+/// A control showing its new value: a switch's knob and tint, a checkbox's fill and mark, a
+/// slider's thumb, a badge's count. [`Self::MOVE`] is where the moving part is (`fast`, critically
+/// damped); [`Self::SHOW`] is what the control shows for its state (`fast`, a fade under reduced
+/// motion too). Only a click or a finger moves a control; a key, an assistive action or a value the
+/// person did not just cause shows on the next frame.
 pub struct ControlChange;
 
 impl ControlChange {
@@ -1401,14 +1293,10 @@ fn ask_frames_until(settles: Option<Instant>) {
     }
 }
 
-/// A control's moving part (a switch's knob, a slider's thumb) as a share
-/// of its travel, `0..=1`.
-///
-/// Sent somewhere by a click it moves on [`ControlChange::MOVE`], and a
-/// second click mid-flight retargets from where it is drawn. Held by the
-/// hand it is exactly where the hand is ([`Self::track`]); let go, it
-/// settles carrying the hand's velocity ([`Self::release`]). At rest it
-/// asks for nothing.
+/// A control's moving part (a switch's knob, a slider's thumb) as a share of its travel, `0..=1`: a
+/// click sends it on [`ControlChange::MOVE`], a second click mid-flight retargets from where it is
+/// drawn, the hand holds it exactly where it is ([`Self::track`]), and let go it settles carrying
+/// the hand's velocity.
 #[derive(Clone, Copy, Debug)]
 pub struct Thumb {
     at: MotionValue<f64>,
@@ -1429,8 +1317,7 @@ impl Thumb {
         }
     }
 
-    /// Go to `to` as `source` asked: a click or a finger moves it, a key or
-    /// an action lands it.
+    /// Go to `to` as `source` asked: a click or a finger moves it, a key or an action lands it.
     #[track_caller]
     pub fn go(&mut self, to: f64, motion: EffectiveMotion, source: MotionSource, now: Instant) {
         let timing = ControlChange::MOVE.timing(Direction::Enter, motion, source);
@@ -1443,8 +1330,7 @@ impl Thumb {
         self.at.snap(to.clamp(0.0, 1.0));
     }
 
-    /// Let go, settling on `to` with the hand's `velocity` (travel per
-    /// second). Reduced motion lands it.
+    /// Let go, settling on `to` with the hand's `velocity`.
     #[track_caller]
     pub fn release(&mut self, to: f64, velocity: f64, motion: EffectiveMotion, now: Instant) {
         let timing = ControlChange::MOVE.timing(Direction::Enter, motion, MotionSource::Gesture);
@@ -1478,12 +1364,9 @@ impl Thumb {
     }
 }
 
-/// What a control shows for its state, `0` (off) to `1` (on): a switch's
-/// tint, a checkbox's fill and mark, a radio's dot.
-///
-/// It comes in over `fast` and goes quicker (exits are shorter), on
-/// [`ControlChange::SHOW`]; under reduced motion it still fades at `fast`;
-/// a shortcut lands it. A change mid-flight continues from what is drawn.
+/// What a control shows for its state, `0` off to `1` on (a switch's tint, a checkbox's fill and
+/// mark). It comes in over `fast` and goes quicker on [`ControlChange::SHOW`], continuing from what
+/// is drawn mid-flight.
 #[derive(Clone, Copy, Debug)]
 pub struct Mark {
     level: MotionValue<f64>,
@@ -1496,8 +1379,7 @@ impl Default for Mark {
 }
 
 impl Mark {
-    /// How much quicker the mark goes than it comes: the cross-fade's
-    /// outgoing share.
+    /// How much quicker the mark goes than it comes: the cross-fade's outgoing share.
     const OUT_BY: f64 = 0.6;
 
     /// Resting on or off.

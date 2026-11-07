@@ -1,7 +1,5 @@
-//! Tilo's standard motions: the one library every animation in the toolkit,
-//! the shell and the apps is composed from.
-//!
-//! A call site says **what** moves, never how:
+//! Tilo's standard motions: the one library every animation in the toolkit, the shell and the apps
+//! is composed from. A call site says **what** moves, never how:
 //!
 //! | Motion | For |
 //! |---|---|
@@ -26,25 +24,21 @@
 //! | [`Attention`] | a refusal's shake, a single pulse |
 //! | [`Beckon`] | a control hint arriving, showing its gesture, and acknowledged |
 //!
-//! Every motion runs on [`MotionValue`]: a spring solved in closed form, so it
-//! is exact at any frame rate, retargets from where it is drawn *and how fast
-//! it is moving there* (interruptible, never a jump, never a queue), and is
-//! exactly at rest once within tolerance (a settled motion asks for no
-//! frames). [`Presence`] is the openness of anything that comes and goes.
-//! Each named motion's [`MotionSpec`] decides its pace in and out, what a
-//! shortcut gets (the result lands at once) and what reduced motion becomes
-//! (spatial movement lands; changes of what is shown still fade).
+//! Every motion runs on [`MotionValue`]: a spring solved in closed form, so it is exact at any
+//! frame rate, retargets from where it is drawn *and how fast it is moving there* (interruptible,
+//! never a jump, never a queue), and is exactly at rest once within tolerance (a settled motion
+//! asks for no frames). [`Presence`] is the openness of anything that comes and goes. Each motion's
+//! [`MotionSpec`] decides its pace in and out, what a shortcut gets (the result lands at once) and
+//! what reduced motion becomes (spatial movement lands; changes of what is shown still fade).
 //!
-//! Rules every motion keeps (the design note is
-//! `HIG.md` §9.7): input never waits for a motion; routine motion never
-//! bounces; content is laid out once and moved by transform, clip and
-//! opacity; nothing moves under a pointer that is aiming at it
-//! ([`held_by_aim`]); a moving surface is hit-tested where it is drawn
-//! ([`Pose::to_local`]).
+//! Rules every motion keeps (`HIG.md` §9.7): input never waits for a motion; routine motion never
+//! bounces; content is laid out once and moved by transform, clip and opacity; nothing moves under
+//! a pointer that is aiming at it ([`held_by_aim`]); a moving surface is hit-tested where it is
+//! drawn ([`Pose::to_local`]).
 //!
-//! A motion that is genuinely new is added here, with its spec and pose,
-//! rather than written at its call site: `tools/policy/check_motion_library.py`
-//! rejects easing math, ad-hoc springs and lerp-over-time anywhere else.
+//! A motion that is genuinely new is added here, with its spec and pose, rather than written at its
+//! call site: `tools/policy/check_motion_library.py` rejects easing math, ad-hoc springs and
+//! lerp-over-time anywhere else.
 
 mod appearing;
 mod beckon;

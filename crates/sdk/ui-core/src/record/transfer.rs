@@ -1,39 +1,31 @@
 //! Transfer: the explicit verb that takes a record across a workspace boundary.
 //!
-//! A record id names a document only inside the workspace whose replica
-//! hydrates it ([`super::workspace_scope`]), so nothing crosses workspaces by
-//! reference. Transfer is the counterpart of [`super::index::duplicate`] for a
-//! document that already has content: the destination workspace receives the
-//! record's whole change graph under a fresh id of its own, scoped to that
-//! workspace, with the source id kept in its `formerly` list as provenance.
-//! Nothing ever looks a record up through that list.
+//! A record id names a document only inside the workspace whose replica hydrates it
+//! ([`super::workspace_scope`]), so nothing crosses workspaces by reference. Transfer is the
+//! counterpart of [`super::index::duplicate`] for a document that already has content: the
+//! destination workspace receives the record's whole change graph under a fresh id of its own,
+//! scoped to that workspace, with the source id kept in its `formerly` list as provenance. Nothing
+//! ever looks a record up through that list.
 //!
-//! A record's workspace is stored under `room`, the key every record is
-//! written with, so a document this module writes names it the way every
-//! reader knows; a document written while the field was named `workspace`
-//! holds [`super::WORKSPACE_ALIAS`] and is read where it is.
+//! A record's workspace is stored under `room`, the key every record is written with, so a document
+//! this module writes names it the way every reader knows; a document written while the field was
+//! named `workspace` holds [`super::WORKSPACE_ALIAS`] and is read where it is.
 //!
-//! Moving is transfer followed by [`retire`]: the source record gets one
-//! last change saying it left, which stays in its history the way a
-//! deletion does, and it is never opened as a live document again
-//! ([`super::RecordOpenError::Retired`]). Copying is transfer alone: the
-//! source keeps going and the two histories diverge from here.
+//! Moving is transfer followed by [`retire`]: the source record gets one last change saying it
+//! left, which stays in its history the way a deletion does, and it is never opened as a live
+//! document again ([`super::RecordOpenError::Retired`]). Copying is transfer alone: the source
+//! keeps going and the two histories diverge from here. An app that keeps one document for itself
+//! in a workspace (its record index) transfers the same way ([`Origin::AppDocument`]).
 //!
-//! An app that keeps one document for itself in a workspace (its record
-//! index) transfers the same way ([`Origin::AppDocument`]): its document
-//! arrives as a record, and a moved one is retired where it was.
+//! Every function works on the durable store a workspace's app profile keeps, through the same
+//! keys, leases and validation the record owners use. A write needs the key's exclusive lease, so
+//! it fails with [`TransferError::Busy`] while an app process still has the record open; a caller
+//! waits for that process to go rather than racing its writer.
 //!
-//! Every function works on the durable store a workspace's app profile keeps,
-//! through the same keys, leases and validation the record owners use. A
-//! write needs the key's exclusive lease, so it fails with
-//! [`TransferError::Busy`] while an app process still has the record open;
-//! a caller waits for that process to go rather than racing its writer.
-//!
-//! A write returns a [`Landing`] rather than waiting for the disk: the
-//! shell's frame loop drives transfers, and it never waits for a commit. The
-//! next process to open the record reads it from disk, so whatever hands
-//! the record over to one asks [`Landing::durability`] until the write has
-//! landed, while the store's own thread does the waiting.
+//! A write returns a [`Landing`] rather than waiting for the disk: the shell's frame loop drives
+//! transfers and never waits for a commit. The next process to open the record reads it from disk,
+//! so whatever hands the record over asks [`Landing::durability`] until the write has landed, while
+//! the store's own thread does the waiting.
 
 use std::rc::Rc;
 

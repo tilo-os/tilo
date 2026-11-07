@@ -1,29 +1,27 @@
 //! The colour half of the design language (`docs/design-language.md`).
 //!
-//! The interface is a quiet, near-colourless **neutral material**: every
-//! surface and every ink tier is an OKLCH lightness at one shared hue with
-//! chroma at or below [`NEUTRAL_MAX_CHROMA`]. Changing that hue (a theme's
-//! or a workspace's temperature, [`Colors::with_neutral_hue`]) never moves
+//! The interface is a quiet, near-colourless **neutral material**: every surface and every ink tier
+//! is an OKLCH lightness at one shared hue with chroma at or below [`NEUTRAL_MAX_CHROMA`]. Changing
+//! that hue (a theme's or a workspace's temperature, [`Colors::with_neutral_hue`]) never moves
 //! contrast, because lightness is what contrast is made of.
 //!
 //! Colour means that someone is there or that something is happening:
 //!
-//! - [`PresencePalette`]: twelve hues at equal lightness and chroma, one per
-//!   participant, so nobody looks more important than anybody else;
+//! - [`PresencePalette`]: twelve hues at equal lightness and chroma, one per participant, so nobody
+//!   looks more important than anybody else;
 //! - [`Intents::you`]: the local person's own presence colour;
-//! - the accent ([`Intents::accent`], [`Intents::accent_ink`]): one hue, by
-//!   default the person's own colour ([`Emphasis::You`]), for primary
-//!   actions, links, the focus ring, the caret, the text selection and the
-//!   selected row's tint;
+//! - the accent ([`Intents::accent`], [`Intents::accent_ink`]): one hue, by default the person's own
+//!   colour ([`Emphasis::You`]), for primary actions, links, the focus ring, the caret, the text
+//!   selection and the selected row's tint;
 //! - the on state ([`Intents::on_state`]): green, for what is switched on;
 //! - [`SemanticColors`]: muted status (danger, warning, success, info).
 //!
-//! Nothing else gains colour: hover, grips, window edges, icons at rest,
-//! sliders and progress are neutral.
+//! Nothing else gains colour: hover, grips, window edges, icons at rest, sliders and progress are
+//! neutral.
 //!
-//! Every colour here is derived from a [`Palette`] (what a theme document
-//! says) in [`Colors::as_authored`]; [`Colors::of_palette`] then repairs any
-//! pairing that misses a contrast floor (`super::contrast`).
+//! Every colour here is derived from a [`Palette`] (what a theme document says) in
+//! [`Colors::as_authored`]; [`Colors::of_palette`] then repairs any pairing that misses a contrast
+//! floor (`super::contrast`).
 
 use crate::color::{Oklch, oklch};
 use crate::color_compat::ColorCompat;

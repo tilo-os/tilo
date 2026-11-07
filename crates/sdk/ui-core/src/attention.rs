@@ -1,23 +1,18 @@
 //! Attention, and the ledger: the two places a thing the system says can go.
 //!
-//! A person has two questions about what the system is doing — **what wants
-//! me?** and **what happened?** — and this module is both answers, kept
-//! apart on one rule ([`publish`]):
+//! A person has two questions about what the system is doing — **what wants me?** and **what
+//! happened?** — and this module is both answers, kept apart on one rule ([`publish`]):
 //!
-//! * something that **needs a decision** waits in [`items`], one row each,
-//!   with the app that asks (icon *and* name), what it is about, since when,
-//!   and **one** thing the person can do about it. It never expires on its
-//!   own; it waits, it is seen, it is deferred (and the count of what is
-//!   deferred stays on screen), or it is acted on. A row that cannot act is
-//!   not a row: [`Action`] is required to make one.
-//! * something that **just happened** is written to the ledger
-//!   ([`ledger`]): append-only, attributed, never on a timer, never stealing
-//!   focus. Activity's History reads it beside the workspace's changes, so
-//!   "3 files moved to Trash" is where "the budget note was edited" is.
+//! * something that **needs a decision** waits in [`items`], one row each, with the app that
+//!   asks (icon *and* name), what it is about, since when, and **one** thing the person can do.
+//!   It never expires on its own; it waits, is seen, is deferred (and the count of what is
+//!   deferred stays on screen) or is acted on. A row that cannot act is not a row.
+//! * something that **just happened** is written to the ledger ([`ledger`]): append-only,
+//!   attributed, never on a timer, never stealing focus, read by Activity's History beside the
+//!   workspace's changes.
 //!
-//! Both are the system's, not a window's: the registries live in the
-//! process, so a row raised in one app is read in another and survives the
-//! window that raised it.
+//! Both are the system's, not a window's: the registries live in the process, so a row raised in
+//! one app is read in another and survives the window that raised it.
 //!
 //! ```ignore
 //! // An outcome that needs a person: it waits.
@@ -29,13 +24,10 @@
 //! ui::attention::publish(ui::attention::Notice::did(owner, "Moved 3 files to Trash"));
 //! ```
 //!
-//! This replaces the transient notice as a category. A toast claims
-//! something matters right now and will not matter in four seconds; both
-//! halves are usually false, and the timer teaches people not to read. What
-//! disappears is the timer, not the message.
-//!
-//! The surface is reachable from anywhere: [`CHORD`], [`open`], and the
-//! count ([`unseen`]) a window's bar can show.
+//! This replaces the transient notice as a category: a toast claims something matters right now
+//! and will not matter in four seconds, both halves usually false, and the timer teaches people
+//! not to read. What disappears is the timer, not the message. The surface is reachable from
+//! anywhere: [`CHORD`], [`open`], and the count ([`unseen`]) a window's bar can show.
 
 mod ledger;
 mod pane;

@@ -1,42 +1,27 @@
 //! Search in a window, in place.
 //!
-//! The window's bar carries one search control right after the window's
-//! place. Clicking it, or Ctrl+F (⌘F) in the window, expands it into a field
-//! where it stands, and what is typed acts on the window's app: a document
-//! highlights every match with "3 of 12" and steps through them (Enter,
-//! Shift+Enter, F3), a list narrows to what matches ("12 of 40"). The search
-//! widens step by step: this view, then the whole app ("Search Notes", or
-//! Ctrl+F again), then everywhere — both hand the query to the platform
-//! search ([`SearchHandoff`]), which stays the place for launching and for
-//! everything.
+//! The window's bar carries one search control after the window's place: a click or Ctrl+F
+//! (⌘F) expands it into a field where it stands, and what is typed acts on the window's app —
+//! a document highlights every match with "3 of 12" and steps through them (Enter,
+//! Shift+Enter, F3), a list narrows ("12 of 40"). The search widens step by step: this view,
+//! then the whole app, then everywhere, both handing the query to the platform search
+//! ([`SearchHandoff`]).
 //!
-//! The app draws no field and keeps no find state of its own: it provides
-//! the [`Findable`] document or the [`Filterable`](crate::widget::Filterable) list it already has, and
-//! the window reaches them through its tile ([`SearchableWindow`] for an app
-//! that runs inside its own runtime). An app in a process of its own is
-//! reached over its shell connection instead: the search sends it the query,
-//! the steps and the close ([`WindowSearch::take_remote_events`]) and shows
-//! the count it answers with, and the app's runtime runs the same
-//! [`SearchDriver`] on its widgets. An app with neither opens the platform
-//! search narrowed to itself, as the control always did.
+//! The app draws no field and keeps no find state: it provides the [`Findable`] document or
+//! the [`Filterable`](crate::widget::Filterable) list it already has, reached through the
+//! window's tile ([`SearchableWindow`]): an app in a process of its own is sent the query, the
+//! steps and the close ([`WindowSearch::take_remote_events`]) and answers with a count, its
+//! runtime running the same [`SearchDriver`] on its widgets. An app with neither opens the
+//! platform search narrowed to itself.
 //!
-//! An app whose views are queries over its resources offers more than a
-//! list: what is typed turns the window's view into a query view of the
-//! app's resources ([`Queryable`], [`InPlace::Query`]). The field then
-//! searches the whole app in place ("Search Music"), so it offers no
-//! widening to the app; Enter or Down hands the keyboard to the results, and
-//! Escape returns the window to the view it showed before. An app that is a
-//! widget implements [`Queryable`] itself; one whose view is a function
-//! wraps that view in a [`QueryView`].
+//! An app whose views are queries over its resources offers more than a list: what is typed
+//! turns the window's view into a query view of them ([`Queryable`], [`InPlace::Query`]), so
+//! Enter or Down hands the keyboard to the results and Escape returns to the previous view.
 //!
-//! On a document the open search carries one more control after the steps:
-//! the find's options (`options`), a panel under the field with Match case
-//! and Whole word, Regular expression or Text / Hex where the document
-//! offers them ([`FindAbilities`]), and for a document that can replace, the
-//! replacement with Replace and Replace all. The replace chord (Ctrl+H,
-//! ⌘⌥F) opens the search there. Each of them is a semantic action too, so
-//! assistive technology and agents set the options and replace without the
-//! panel.
+//! On a document the open search carries the find's options after the steps (`options`): Match
+//! case and Whole word, Regular expression or Text / Hex where the document offers them
+//! ([`FindAbilities`]), and for a document that can replace, Replace and Replace all. Each is a
+//! semantic action too, so assistive technology and agents set them without the panel.
 
 mod options;
 mod query_view;

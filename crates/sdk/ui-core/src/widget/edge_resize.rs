@@ -1,28 +1,22 @@
-//! Resizing windows from their edges: which edge an edge drag changes, and
-//! how.
+//! Resizing windows from their edges: which edge an edge drag changes, and how.
 //!
-//! The strip is infinitely wide, so a resize is never zero-sum unless the
-//! person asks for it. Every pointer path goes through the same few rules:
-//! [`crate::widget::GroupRow`]'s hover, press and drag for a window on a
-//! strip, and [`crate::widget::FloatingWindow`]'s for a free one.
+//! The strip is infinitely wide, so a resize is never zero-sum unless the person asks for it.
+//! Every pointer path goes through the same few rules: [`crate::widget::GroupRow`]'s hover, press
+//! and drag for a window on a strip, [`crate::widget::FloatingWindow`]'s for a free one.
 //!
-//! - [`seam_owner`] — **who owns an edge on a strip.** Every window owns both
-//!   of its edges. The seam between two windows is split down the middle, the
-//!   half nearest each window being its edge, except that the window you are
-//!   working in (the focused one) owns the whole seam. Hovering shows that
-//!   owner's edge before anything is pressed.
-//! - [`RectEdge::at`] — **which sides a point on a free rect grabs**: a side,
-//!   the bottom, or a corner, never the top where the title bar drags.
-//! - [`EdgeDrag::resize`] and [`RectEdge::resize`] — **what a drag does**, both
-//!   on `dragged_span`: the grabbed side follows the pointer 1:1 and its
-//!   *opposite* side holds still, so everything beyond the dragged edge is
-//!   pushed away or pulled along at its own size. On a strip, Shift+drag is
-//!   zero-sum between the two windows sharing that seam and nothing else. A
-//!   limit (the app's real minimum, a client's maximum) stops the edge;
+//! - [`seam_owner`] — **who owns an edge on a strip.** Every window owns both edges; the seam
+//!   between two is split down the middle, except that the focused window owns the whole seam.
+//!   Hovering shows that owner's edge before anything is pressed.
+//! - [`RectEdge::at`] — **which sides a point on a free rect grabs**: a side, the bottom or a
+//!   corner, never the top where the title bar drags.
+//! - [`EdgeDrag::resize`] and [`RectEdge::resize`] — **what a drag does** on `dragged_span`: the
+//!   grabbed side follows the pointer 1:1 and its *opposite* holds still, so everything beyond is
+//!   pushed away or pulled along at its own size. On a strip, Shift+drag is zero-sum between the
+//!   two windows sharing that seam. A limit (the app's minimum, a client's maximum) stops the edge;
 //!   nothing else is resized to make up for it.
 //!
-//! This is a design rule, not a tuning: `docs/architecture/window-management.md`
-//! ("Resizing a window") is its contract, and the tests below pin each case.
+//! This is a design rule, not a tuning: `docs/architecture/window-management.md` ("Resizing a
+//! window") is its contract.
 
 use vello::kurbo::{Point, Rect};
 

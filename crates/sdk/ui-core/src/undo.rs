@@ -1,45 +1,33 @@
 //! Seeing and driving undo from inside a widget.
 //!
-//! Undo itself lives on [`State`](crate::state::State) / [`UndoLog`](crate::state::UndoLog),
-//! and the host ([`App`](crate::app::App)) drives it from Ctrl+Z. A
-//! [`Widget`](crate::widget::Widget), though, only ever receives
-//! `&mut AutoCommit` — so on its own it can neither ask *"is there anything to
-//! undo?"* nor *do* it. That is why apps shipped a shortcut hint instead of an
-//! Undo button: not because nobody wanted one, but because a widget had no way
-//! to render one or make it work.
+//! Undo itself lives on [`State`](crate::state::State) / [`UndoLog`](crate::state::UndoLog), and
+//! the host ([`App`](crate::app::App)) drives it from Ctrl+Z. A [`Widget`](crate::widget::Widget)
+//! only ever receives `&mut AutoCommit`, so on its own it can neither ask *"is there anything to
+//! undo?"* nor *do* it — which is why apps shipped a shortcut hint instead of an Undo button.
 //!
-//! This module is the missing channel, and it is deliberately two one-way
-//! halves rather than a handle onto the whole `State`:
+//! This module is the missing channel, deliberately two one-way halves rather than a handle onto
+//! the whole `State`:
 //!
-//! * **Host → widget.** Once per frame the host publishes an [`UndoStatus`] to
-//!   every laid-out widget via
-//!   [`UndoControl::set_undo_status`]. A
-//!   widget stores it (embed an [`UndoAccess`]) and reads it from `draw` and —
-//!   the part that matters for assistive technology — from `accessibility`,
-//!   which only gets `&self`.
-//! * **Widget → host.** A widget records an [`UndoRequest`], and the host
-//!   drains it via
-//!   [`UndoControl::take_undo_request`]
-//!   and performs it through `App::perform_undo`
-//!   — the *same* method the Ctrl+Z key handler calls. There is one undo
-//!   implementation, so a button and the shortcut cannot drift apart.
+//! * **Host → widget.** Once per frame the host publishes an [`UndoStatus`] to every laid-out
+//!   widget via [`UndoControl::set_undo_status`]; a widget stores it (embed an [`UndoAccess`]) and
+//!   reads it from `draw` and, the part that matters for assistive technology, from
+//!   `accessibility`, which only gets `&self`.
+//! * **Widget → host.** A widget records an [`UndoRequest`] and the host drains it via
+//!   [`UndoControl::take_undo_request`] and performs it through `App::perform_undo` — the *same*
+//!   method the Ctrl+Z key handler calls, so a button and the shortcut cannot drift apart.
 //!
-//! Both halves sweep the host's `node_map`, which every laid-out widget
-//! registers itself in during `build_layout`. So a control works at any depth
-//! with no container forwarding — the same mechanism
-//! [`Widget::cursor_shape`](crate::widget::Widget::cursor_shape) and
+//! Both halves sweep the host's `node_map`, which every laid-out widget registers itself in during
+//! `build_layout`, so a control works at any depth with no container forwarding — the same
+//! mechanism [`Widget::cursor_shape`](crate::widget::Widget::cursor_shape) and
 //! [`Widget::tooltip`](crate::widget::Widget::tooltip) already use.
 //!
-//! There is a third channel in the same family, one step earlier: an app whose
-//! edits are dispatched [`tilo_actions`](crate::local_dispatch) actions reports the
-//! bracket around them through
-//! [`CommittedActions::take_committed_action`],
-//! and [`record_dispatched_action`] is where a host turns that into the undo
-//! entry the two halves above then see. It sweeps `node_map` for the same
-//! reason they do.
+//! A third channel one step earlier: an app whose edits are dispatched
+//! [`tilo_actions`](crate::local_dispatch) actions reports the bracket around them through
+//! [`CommittedActions::take_committed_action`], and [`record_dispatched_action`] is where a host
+//! turns that into the undo entry the two halves see.
 //!
-//! Most apps need none of this directly: drop an
-//! [`UndoButton`](crate::widget::UndoButton) into a toolbar and it is wired.
+//! Most apps need none of this directly: drop an [`UndoButton`](crate::widget::UndoButton) into a
+//! toolbar and it is wired.
 
 // Canonical Edit operation identity is shared with portable widget dispatch.
 pub(crate) const EDIT_OPERATION: &str = "tilo.host.edit";

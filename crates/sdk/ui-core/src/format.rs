@@ -1,13 +1,11 @@
 //! The one way Tilo shows dates, times, numbers, sizes and durations.
 //!
-//! Every app and the shell format what a person reads through this module.
-//! It follows their Region & Formats settings (date style, 12/24-hour clock,
-//! number style, first day of the week; [`region`]) and the desktop's
-//! language (month and weekday names, word order, plurals), and it follows
-//! them live: a change re-renders every view without a restart (see
-//! [`region::refresh`]). A policy check (`tools/policy/check_formats.py`)
-//! keeps hand-built formatting (`strftime` patterns, `{:02}:{:02}` clocks,
-//! ad-hoc size units) out of everything else.
+//! Every app and the shell format what a person reads through this module. It follows the person's
+//! Region & Formats settings (date style, 12/24-hour clock, number style, first day of the week;
+//! [`region`]) and the desktop's language (month and weekday names, word order, plurals), and it
+//! follows them live: a change re-renders every view without a restart ([`region::refresh`]). A
+//! policy check (`tools/policy/check_formats.py`) keeps hand-built formatting (`strftime` patterns,
+//! `{:02}:{:02}` clocks, ad-hoc size units) out of everything else.
 //!
 //! The named styles:
 //!
@@ -30,17 +28,15 @@
 //! | money | [`money`] | `$5`, `$0.42`, `$1,250` | `$5`, `$0,42`, `$1.250` |
 //! | decimal | [`decimal`] | `3.14` | `3,14` |
 //!
-//! [`size`] uses SI decimal units and [`memory`] IEC binary units. The
-//! platform's rule, shared with Files, Disks and the Storage pane: anything
-//! stored or transferred (files, downloads, caches, packages, drives and
-//! partitions) is a [`size`], the way drives are sold and file managers count;
-//! memory is a [`memory`]. A flow whose requirements are themselves stated in
-//! binary units (the installer's GiB partition minimums) stays binary
-//! throughout so its numbers compare.
+//! [`size`] uses SI decimal units and [`memory`] IEC binary ones, the platform's rule shared with
+//! Files, Disks and the Storage pane: anything stored or transferred (files, downloads, caches,
+//! packages, drives, partitions) is a [`size`] and memory a [`memory`], while a flow whose
+//! requirements are themselves stated in binary units (the installer's GiB partition minimums)
+//! stays binary throughout so its numbers compare.
 //!
-//! The free functions use the person's current formats ([`Formats::current`]);
-//! the same styles on [`Formats`] take explicit formats and a explicit `now`,
-//! for tests and for callers that format many values at once.
+//! The free functions use the person's current formats ([`Formats::current`]); the same styles on
+//! [`Formats`] take explicit formats and an explicit `now`, for tests and for callers formatting
+//! many values at once.
 
 mod dates;
 pub mod region;

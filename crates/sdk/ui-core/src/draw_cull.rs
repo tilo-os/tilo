@@ -1,30 +1,23 @@
 //! Drawing only what a frame repaints.
 //!
-//! A host that presents each frame over the pixels of the one before, makes
-//! its scroll copies and repaints only its damage from the scene, never
-//! shows what the scene holds outside that damage. Such a host draws the
-//! widgets inside a [`Frame`], bound to the scene they draw into. A scroller
-//! then says where the frame keeps the pixels of its content ([`keeping`]):
-//! where a copy moves what it showed, or, when it did not move, where it
-//! is. There, a widget with nothing new to paint whose paint lies wholly
-//! inside is not drawn at all ([`kept`]), and a widget that paints a long
-//! run of rows itself (a code editor) paints only those outside it
-//! ([`kept_band`]). A scroll then encodes the strip it exposed
-//! and what changed, not every row in view.
+//! A host that presents each frame over the pixels of the one before, makes its scroll copies
+//! and repaints only its damage never shows what the scene holds outside that damage, so it
+//! draws the widgets inside a [`Frame`]. A scroller says where the frame keeps the pixels of its
+//! content ([`keeping`]): where a copy moves what it showed or, when it did not move, where it
+//! is. There a widget with nothing new to paint whose paint lies wholly inside is not drawn
+//! ([`kept`]), and one that paints a long run of rows itself paints only those outside it
+//! ([`kept_band`]), so a scroll encodes the strip it exposed and what changed, not every row in
+//! view.
 //!
-//! The frame's damage is planned only once its widgets are drawn (a draw
-//! may move what they damage), so what is left undrawn rests on a guess:
-//! where the copies land, less what the last frame that copied repainted
-//! besides ([`Frame::expect`]), which is where overlays, a scroll bar and
-//! the edges of what surrounds a scroller repaint again. The host checks
-//! the guess once the damage is planned ([`Frame::holds`]): every place left
-//! undrawn must lie outside the damage it repaints from this scene, or it
-//! draws the widgets again in full. The damage is planned exactly as for a
-//! full draw, so it is never less than one would report.
+//! Damage is planned only once the widgets are drawn, so what is left undrawn rests on a guess:
+//! where the copies land, less what the last copying frame repainted besides
+//! ([`Frame::expect`]). The host checks it once the damage is planned ([`Frame::holds`]): every
+//! place left undrawn must lie outside the damage repainted from this scene, or the widgets are
+//! drawn again in full. Damage is planned exactly as for a full draw, so it is never less.
 //!
-//! Only the scene the frame is bound to is ever left short. A widget's own
-//! cache, a row's scene, a capture and any host that splits scenes into
-//! damage parts ([`crate::scene_parts`]) are always drawn whole.
+//! Only the scene the frame is bound to is ever left short: a widget's own cache, a row's scene,
+//! a capture and any host that splits scenes into damage parts ([`crate::scene_parts`]) are
+//! drawn whole.
 
 use std::cell::RefCell;
 

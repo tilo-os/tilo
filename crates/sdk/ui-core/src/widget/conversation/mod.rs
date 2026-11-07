@@ -1,22 +1,16 @@
-//! `conversation`: what a conversation is made of, once for every app that has
-//! one.
+//! `conversation`: what a conversation is made of, once for every app that has one.
 //!
-//! Chat and Messages both talk to people, and they stay two apps because their
-//! primary object differs: Chat's is a **channel** (a room with a history, a
-//! membership and a mood) and Messages' is a **person** (a private thread that
-//! may arrive by SMS, Signal or WhatsApp). Neither is a subset of the other.
+//! Chat and Messages both talk to people, and stay two apps because their primary object differs:
+//! Chat's is a **channel** (a room with a history, a membership and a mood), Messages' is a
+//! **person** (a private thread that may arrive by SMS, Signal or WhatsApp). Neither is a subset of
+//! the other.
 //!
-//! What they do *not* differ in is the mechanics underneath: when a day
-//! starts, what time a line was said, whether it arrived, what happens to the
-//! draft you were typing, which key sends, and what an attachment does when you
-//! touch it. Each app used to invent those separately, which is why the same
-//! gesture behaved differently in the two windows — Chat had a day divider for
-//! the oldest loaded message and a clock with no date, Messages had no
-//! timestamps at all and no keyboard.
-//!
-//! This module is that substrate. It is deliberately made of small, separately
-//! usable pieces, because the two apps paint differently: Chat composes the
-//! whole window immediately, Messages builds a widget tree.
+//! What they do *not* differ in is the mechanics underneath — when a day starts, what time a line
+//! was said, whether it arrived, what happens to the draft you were typing, which key sends, what
+//! an attachment does when you touch it. Each app used to invent those separately, which is why the
+//! same gesture behaved differently in the two windows. This module is that substrate, made of
+//! small, separately usable pieces, because the two apps paint differently: Chat composes the whole
+//! window immediately, Messages builds a widget tree.
 //!
 //! | Piece | What it settles |
 //! |---|---|
@@ -29,11 +23,8 @@
 //! | [`unread`] | Where the reader's unread lines start: the "New messages" divider |
 //! | [`jump`] | The pill that takes the reader back to what is unread or to what is now |
 //!
-//! A host that adopts a piece keeps its own identity: a channel still shows
-//! authors and avatars, a private thread still shows one person and their
-//! transport. What the person gets is a time on every message, a divider
-//! whenever the day changes, one meaning for "delivered", a draft that is still
-//! there tomorrow, and Enter that sends.
+//! A host that adopts a piece keeps its own identity: a channel still shows authors and avatars, a
+//! private thread still shows one person and their transport.
 
 pub mod attachment;
 pub mod composer;

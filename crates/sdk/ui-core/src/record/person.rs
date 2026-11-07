@@ -1,29 +1,23 @@
 //! Records an app holds beside the one it shows.
 //!
-//! Some of an app's state is still data rather than a preference — what was
-//! watched, the words taught to the keyboard, where reading stopped — and is
-//! one record of its kind: it grows, it has history, edits to it are undone.
-//! That record is kept with the app's other records in the workspace it is
-//! open in ([`PersonRecords::in_workspace`]), and syncs with the workspace like
-//! any of them. It is each member's own there ([`RecordId::of_member`]): one
-//! per member, read and changed by that person's devices alone.
+//! Some of an app's state is data rather than a preference — what was watched, the words taught to
+//! the keyboard, where reading stopped — and is one record of its kind: it grows, it has history,
+//! edits to it are undone. It is kept with the app's other records in the workspace it is open in
+//! ([`PersonRecords::in_workspace`]) and syncs with the workspace, each member's own there
+//! ([`RecordId::of_member`]): one per member, read and changed by that person's devices alone.
 //!
-//! The person's shared records — their accounts, which Settings keeps for
-//! all of their apps, their contacts — and the settings sections belong to
-//! the person rather than to any workspace: they are kept in the person's
-//! own scope ([`PERSONAL_SCOPE`]), not in a workspace and not in an id
-//! derived from their key. [`PersonRecords`] is where they are kept on this
-//! device for one app; [`StoredRecord`] is one of them, opened, edited with
+//! The person's shared records — their accounts, their contacts — and the settings sections belong
+//! to the person, not to any workspace: they are kept in the person's own scope
+//! ([`PERSONAL_SCOPE`]), not in an id derived from their key. [`PersonRecords`] is where they are
+//! kept on this device for one app; [`StoredRecord`] is one of them, opened, edited with
 //! attribution and undo, and sent on to the person's other devices
 //! ([`StoredRecord::history_owner`]).
 //!
-//! A record of that scope carries one route per app and record
-//! ([`StoredRecord::route`]), and it names the person's own cluster: the
-//! cluster every device of theirs derives from their identity root alone,
-//! and the one their store carries between them. The same record opened by
-//! the same app on another device is therefore the same document. On a
-//! device whose identity derives no cluster they have no route, and are kept
-//! on that device alone.
+//! Such a record carries one route per app and record ([`StoredRecord::route`]) naming the
+//! person's own cluster — the one every device of theirs derives from their identity root alone,
+//! and the one their store carries between them — so the same record opened by the same app on
+//! another device is the same document. On a device whose identity derives no cluster they have no
+//! route and stay on that device alone.
 
 use std::rc::Rc;
 

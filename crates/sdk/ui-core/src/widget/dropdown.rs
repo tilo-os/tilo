@@ -1,40 +1,30 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
 //!
-//! Closed it reads like a button: the current selection plus a chevron. Open
-//! it reveals a scrollable list that composites *on top of* following content
-//! via the App's top-layer [`Widget::draw_overlay`] pass — a real overlay,
-//! not an inline expander that shoves siblings down.
+//! Closed it reads like a button (the current selection plus a chevron); open it reveals a
+//! scrollable list that composites *on top of* following content through the App's top-layer
+//! [`Widget::draw_overlay`] pass — a real overlay, not an inline expander that shoves siblings
+//! down.
 //!
-//! Like [`crate::widget::TextInput`], the chosen value can live in either an
-//! explicit durable or process-local model. [`Dropdown::new`] binds a
-//! document key; [`Dropdown::from_state`] binds a typed
-//! [`crate::LocalState<String>`]. In both forms `sync` mirrors model changes
-//! back without app-owned fan-out.
+//! The chosen value lives in an explicit durable or process-local model: [`Dropdown::new`]
+//! binds a document key, [`Dropdown::from_state`] a typed [`crate::LocalState<String>`], and
+//! `sync` mirrors model changes back without app-owned fan-out.
 //!
-//! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
-//! highlight; Enter selects + closes; Esc dismisses. In a list of
-//! [`FILTER_MIN_OPTIONS`] or more, printable characters drive an
-//! incremental, case-insensitive substring filter (Backspace edits it) so
-//! hundred-entry lists stay usable without endless scrolling. Opening a
-//! searchable list shows its search prompt and caret immediately. A
-//! shorter list never filters: letters typed in quick succession arm the
-//! first option their name begins, one letter again steps on through the
-//! options it begins ([`crate::type_ahead`], as every list answers typing).
+//! Keyboard while focused: Enter/Space/Down open, Up/Down move the highlight, Enter selects and
+//! closes, Esc dismisses. In a list of [`FILTER_MIN_OPTIONS`] or more, printable characters
+//! drive an incremental, case-insensitive substring filter (Backspace edits it); a shorter list
+//! never filters, and letters typed in quick succession arm the first option their name begins
+//! ([`crate::type_ahead`], as every list answers typing).
 //!
-//! Closed, the control is as wide as its widest option (`fill` spans the
-//! parent). Inside a [`crate::widget::Section`] or
-//! [`crate::widget::FormSection`] the section's choosers share one width:
-//! the widest option among them, capped at the theme's chooser width, so a
-//! column of trailing dropdowns has two straight edges. [`DropdownFace`]
-//! paints the same closed control for a painted host, paired with an option
-//! [`crate::widget::Popover`].
+//! Closed, the control is as wide as its widest option (`fill` spans the parent); inside a
+//! [`crate::widget::Section`] or [`crate::widget::FormSection`] the section's choosers share one
+//! width, capped at the theme's chooser width, so a column of trailing dropdowns has two
+//! straight edges. [`DropdownFace`] paints the same closed control for a painted host, paired
+//! with an option [`crate::widget::Popover`]. [`Dropdown::as_menu`] makes it a menu button
+//! instead: an icon opening a list of choices, each a command rather than a value it keeps.
 //!
-//! [`Dropdown::as_menu`] makes it a menu button instead: an icon that opens
-//! a list of choices, each one a command rather than a value it keeps.
-//!
-//! While open the widget reports [`Widget::wants_pointer_capture`] so its
-//! container routes all events to it exclusively — how the out-of-layout
-//! list becomes hit-testable and click-outside dismissal works.
+//! While open the widget reports [`Widget::wants_pointer_capture`] so its container routes all
+//! events to it exclusively — how the out-of-layout list becomes hit-testable and click-outside
+//! dismissal works.
 
 use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};

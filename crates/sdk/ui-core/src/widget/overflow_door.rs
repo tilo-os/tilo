@@ -1,31 +1,20 @@
-//! The overflow door: the named place a control goes when the row it belongs
-//! to has no room for it.
+//! The overflow door: the named place a control goes when the row it belongs to has no room.
 //!
-//! A toolbar, a header row or a bar of the app's own holds commands. Windows
-//! change size, text changes size, and a row that simply draws fewer controls
-//! at a narrow width silently takes capabilities away: the person sees a
-//! toolbar that no longer offers Undo, with nothing saying where it went. The
-//! rule is the opposite — a control that does not fit becomes a *named* entry
-//! behind the row's door ([`OverflowDoor`], the trailing "More actions"
-//! button), so every command is reachable at every width, and the door itself
-//! is only there when something is behind it.
+//! A row that simply draws fewer controls at a narrow width silently takes capabilities away:
+//! the person sees a toolbar that no longer offers Undo, with nothing saying where it went. The
+//! rule is the opposite — a control that does not fit becomes a *named* entry behind the row's
+//! door ([`OverflowDoor`], the trailing "More actions" button), so every command is reachable at
+//! every width, and the door is there only when something is behind it.
 //!
-//! Two pieces make that up:
+//! - [`give_way`] — which of a row's items give way to the door, given their widths and ranks;
+//!   [`Toolbar`](crate::widget::Toolbar) and `NavShell`'s header both fit by it, and it never
+//!   decides to drop one.
+//! - [`OverflowDoor`] — the button and the menu of what the plan put behind it, with its rows
+//!   named to assistive technology. `NavShell`'s header row uses the same door, so an app's own
+//!   row and the shell's header overflow the same way, into the same face.
 //!
-//! - [`give_way`] — which of a row's items give way to the door, given their
-//!   widths and ranks; [`Toolbar`](crate::widget::Toolbar) and `NavShell`'s
-//!   header both fit by it. It never decides to drop one: what does not fit
-//!   is behind the door, not discarded.
-//! - [`OverflowDoor`] — the button and the menu of what the plan put behind
-//!   it. `NavShell`'s header row uses the same door for actions that do not
-//!   fit ([`crate::widget::NavShell`]), so an app's own row and the shell's
-//!   header overflow the same way, into the same face. While the menu is up
-//!   its rows are named to assistive technology, so a command a row keeps
-//!   behind the door stays reachable without a pointer.
-//!
-//! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar)
-//! instead, which does its own overflow; this door is for the rows a painted
-//! app lays out by hand.
+//! A composed row usually wants the shared [`Toolbar`](crate::widget::Toolbar) instead, which
+//! does its own overflow; this door is for the rows a painted app lays out by hand.
 
 use std::cell::Cell;
 use std::collections::HashMap;

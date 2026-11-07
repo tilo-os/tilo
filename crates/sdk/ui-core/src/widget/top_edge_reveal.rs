@@ -1,72 +1,33 @@
-//! Pointer intent for chrome that hides along a window's top edge until the
-//! person reaches for it: the decorations of a maximized window (its title,
-//! Full screen, Restore and close) and, in a Tilo app that puts its header
-//! there, the app's header row with them as one bar.
+//! Pointer intent for chrome that hides along a window's top edge until the person reaches for
+//! it: the decorations of a maximized window (its title, Full screen, Restore and close) and,
+//! in a Tilo app that puts its header there, the app's header row with them as one bar.
 //!
-//! A maximized window gives its whole height to the app, so the bar hides at
-//! rest and appears *over* the window's top edge. The top of an app is also
-//! where the app keeps its own controls (a browser's tabs, an editor's
-//! toolbar, a terminal's first line), so the hard part is telling "click
-//! something at the top of the app" from "reach the window's bar". The rules,
-//! in priority order:
+//! A maximized window gives its whole height to the app, so the bar hides at rest and appears
+//! *over* the window's top edge; the hard part is telling "click something at the top of the
+//! app" from "reach the window's bar". The rules, in priority order:
 //!
-//! 1. **Only the very top asks for the bar.** The bar is summoned from the
-//!    reveal band, the top [`REVEAL_BAND_PX`] of the window: above every
-//!    control an app puts in its top row (a header row keeps its buttons
-//!    `spacing.s3` in; the bar's own controls start below the band too).
-//!    Resting on, or aiming at, anything below the band is pointing at the
-//!    app and never shows the bar.
-//! 2. **Transit is not aim.** Passing over the band, the bar or one of its
-//!    controls on the way somewhere else means nothing: a sample is *transit*
-//!    while the pointer moves faster than [`TRANSIT_SPEED`] without braking
-//!    (its speed still above [`BRAKE_RATIO`] of its recent peak). Only a
-//!    pointer that decelerates and settles counts as aiming at what it is on.
-//! 3. **Pushing to the edge is intent.** A pointer that brakes in the band
-//!    after a fast climb — it left the app's content at least
-//!    [`PUSH_TRAVEL_PX`] below within [`PUSH_WINDOW`], on a path steeper than
-//!    45° — was not slowing down for anything in the app's top row: it is
-//!    aiming at the edge (Fitts; where the window's top is the screen's, the
-//!    edge itself stops it), and the bar shows at once.
-//! 4. **Otherwise it takes a short rest** in the band, [`DWELL`], counted
-//!    from when the pointer settled there. A pointer that came down into the
-//!    band from the desktop's top bar is on its way into the app and gets no
-//!    push credit.
-//! 5. **A click in the band while the bar is hidden belongs to the app.** It
-//!    cancels a pending reveal until the pointer leaves the band, so a person
-//!    clicking a tab at the very top never gets the bar dropped over it.
-//! 6. **While shown, the bar stays** while the pointer settles on it (its chips, or
-//!    the whole header row of a Tilo app's merged bar) or in the band, and
-//!    while the pointer heads for one of its controls (menu aim: inside the
-//!    hull from a recent position to the control, re-checked on every sample,
-//!    lapsing [`AIM_HOLD`] after the last confirming one) — so crossing the
-//!    app's top row from the title to Close keeps it, while stopping on the
-//!    app's content between them hides it, and so does crossing the bar in
-//!    transit. A
-//!    pointer that overshoots up into the desktop's top bar gets
-//!    [`OVERSHOOT_GRACE`] to come back. Anything else hides it at once.
-//! 7. **Aimed-at controls don't move.** Showing and hiding only fade the
-//!    bar in place; nothing it covers or uncovers shifts, and its controls sit
-//!    below the band, so the reveal never puts a control under a resting
-//!    pointer. The bar never hides while the pointer has settled on (or is
-//!    heading for) one of its controls; a pointer merely crossing one does
-//!    not hold it.
-//! 8. **Keyboard and touch reach it too.** [`TopEdgeReveal::pin`] shows it for
-//!    keyboard use until [`TopEdgeReveal::unpin`]; a touch that starts in the
-//!    band and drags down [`TOUCH_SWIPE_PX`] shows it.
+//! 1. **Only the very top asks for the bar**: the reveal band, the top [`REVEAL_BAND_PX`] of
+//!    the window, above every control an app puts in its top row.
+//! 2. **Transit is not aim**: a sample is *transit* while the pointer moves faster than
+//!    [`TRANSIT_SPEED`] without braking (still above [`BRAKE_RATIO`] of its recent peak).
+//! 3. **Pushing to the edge is intent**: braking in the band after a fast climb (from
+//!    [`PUSH_TRAVEL_PX`] below within [`PUSH_WINDOW`], steeper than 45°) shows the bar at once.
+//! 4. **Otherwise it takes a short rest** in the band, [`DWELL`]; a pointer coming down from
+//!    the desktop's top bar gets no push credit.
+//! 5. **A click in the band while the bar is hidden belongs to the app**, cancelling a
+//!    pending reveal until the pointer leaves the band.
+//! 6. **While shown, the bar stays** while the pointer settles on it or in the band, or heads
+//!    for one of its controls (menu aim, lapsing [`AIM_HOLD`] after the last confirming
+//!    sample); an overshoot into the desktop's top bar gets [`OVERSHOOT_GRACE`] to come back.
+//! 7. **Aimed-at controls don't move**: showing and hiding only fade the bar in place.
+//! 8. **Keyboard and touch reach it too**: [`TopEdgeReveal::pin`] until
+//!    [`TopEdgeReveal::unpin`], or a touch that drags down [`TOUCH_SWIPE_PX`].
 //!
-//! The desktop's own top bar may hide too. Both share this one model so they
-//! never fight over the edge: when both are hidden, approaching the top
-//! reveals the top stack together — the desktop's bar and the window's bar
-//! under it — the way a person reads them, top to bottom. While the
-//! desktop's bar shows over the window's top edge, the window's bar stands
-//! below it (`WindowGroup::set_top_overlay_inset`), never under it.
-//!
-//! Transit, braking and heading are read from the system's one pointer
-//! predictor, [`super::aim::Trajectory`], the same reading the tab row and
-//! the desk widgets use.
-//!
-//! The state is pure: every method takes the instant it reasons about, so
-//! fast and slow pointer paths are tested against a synthetic timeline.
+//! The desktop's own top bar shares this model so the two never fight over the edge: both
+//! hidden, approaching the top reveals the top stack together, and while the desktop's bar
+//! shows over the window's top edge the window's bar stands below it. Transit, braking and
+//! heading come from [`super::aim::Trajectory`]. The state is pure: every method takes the
+//! instant it reasons about, so pointer paths are tested against a synthetic timeline.
 
 use super::aim::{Trajectory, in_aim_hull};
 use crate::time::{Duration, Instant};

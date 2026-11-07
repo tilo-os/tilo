@@ -1,26 +1,17 @@
 //! Drag-to-arrange canvas for the Displays pane.
 //!
-//! Each attached, enabled display is drawn at its size on the shared desktop
-//! (mode, rotation and scale), numbered the way the compositor numbers it
-//! when asked to identify screens. The canvas is the page's one display
-//! selection: pressing or tapping a display chooses it, as do the arrow
-//! keys once the canvas has focus and a screen reader's activation of a
-//! display's tile. Dragging one moves it 1:1 under the pointer or finger,
-//! by transform alone: nothing is laid out or stored while it moves. The
-//! canvas holds its frame while a display is held, so nothing but the held
-//! tile moves while the hand does; a display taken past the edge is cut
-//! there, and the frame refits the arrangement after the drop. Within a few
-//! pixels its edges snap
-//! magnetically onto another display's edges and its centre onto another's
-//! centre, and an alignment guide shows each line it lines up with
-//! ([`placement::snap_with_guides`]). On release it settles into the
-//! nearest place where it touches another display and covers none
-//! ([`placement::settle`]) with the paged-strip settle spring
-//! (`motion::Snap`), carrying the hand's velocity; the drop is sent once, as
-//! the output's exported `move` action, so a drag is exactly what an agent
-//! or script can do. Ctrl with an arrow key moves the chosen display to the
-//! next place that way ([`placement::step`]), settling as a drop does. At
-//! rest the canvas asks for no frames.
+//! Each attached, enabled display is drawn at its size on the shared desktop (mode, rotation and
+//! scale), numbered the way the compositor numbers it when asked to identify screens. Pressing,
+//! tapping, an arrow key or a screen reader's activation of a tile chooses the display; dragging
+//! one moves it 1:1 under the pointer by transform alone, nothing laid out or stored while it
+//! moves, and the canvas holds its frame so only the held tile moves. Within a few pixels its
+//! edges snap onto another display's edges and its centre onto another's, with an alignment
+//! guide for each line ([`placement::snap_with_guides`]). On release it settles where it touches
+//! another display and covers none ([`placement::settle`]) with the paged-strip spring
+//! (`motion::Snap`), carrying the hand's velocity, and the drop is sent once as the output's
+//! exported `move` action, so a drag is what an agent or script can do. Ctrl with an arrow key
+//! moves the chosen display the same way ([`placement::step`]). At rest the canvas asks for no
+//! frames.
 //!
 //! [`placement::snap_with_guides`]: crate::widget::display_arrangement::placement::snap_with_guides
 //! [`placement::settle`]: crate::widget::display_arrangement::placement::settle

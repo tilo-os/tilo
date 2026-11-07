@@ -1,21 +1,17 @@
-//! Search as a platform service.
+//! Search as a platform service: apps never draw a search field or a result list, they declare
+//! what they can find and the platform presents it.
 //!
-//! Apps never draw a search field or a result list. An app declares what it
-//! can find and the platform presents it:
-//!
-//! - **Providers.** A [`SearchProvider`] per findable kind answers bounded,
-//!   paged queries ([`SearchQuery`]: text, [`Facet`] filters, scope). A slow
-//!   source returns [`SearchPage::pending`] and finishes through
-//!   [`SearchProvider::poll_page`].
-//! - **Rows.** A hit says what it is with a [`SearchRow`] (a message, a video,
-//!   a file hit); the generic row is the fallback.
-//! - **Opening search.** [`search_button`] / [`open_search_binding`] open the
-//!   one platform palette narrowed to the app or one of its parts
-//!   ([`SearchRequest`], [`ScopeDecl`]); `/` and Ctrl+K do the same.
-//! - **In-content narrowing** is a [`SearchField`](crate::widget::SearchField)
-//!   bound to a [`Filterable`](crate::widget::Filterable) list, and **find in
-//!   a document** is the [`FindBar`](crate::widget::FindBar) over a
-//!   [`Findable`](crate::widget::Findable) view. Neither searches the app.
+//! - **Providers.** A [`SearchProvider`] per findable kind answers bounded, paged queries
+//!   ([`SearchQuery`]: text, [`Facet`] filters, scope); a slow source returns
+//!   [`SearchPage::pending`] and finishes through [`SearchProvider::poll_page`].
+//! - **Rows.** A hit says what it is with a [`SearchRow`]; the generic row is the fallback.
+//! - **Opening search.** [`search_button`] / [`open_search_binding`] open the one platform
+//!   palette narrowed to the app or one of its parts ([`SearchRequest`], [`ScopeDecl`]); `/`
+//!   and Ctrl+K do the same.
+//! - **In-content narrowing** is a [`SearchField`](crate::widget::SearchField) bound to a
+//!   [`Filterable`](crate::widget::Filterable) list, and **find in a document** is the
+//!   [`FindBar`](crate::widget::FindBar) over a [`Findable`](crate::widget::Findable) view;
+//!   neither searches the app.
 //!
 //! ```
 //! use tilo_ui::search::{SearchRegistry, SearchResult};
