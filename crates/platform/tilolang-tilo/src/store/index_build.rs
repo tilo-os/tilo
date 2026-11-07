@@ -3,7 +3,7 @@
 //! reflects, and putting a fresh one in place of a broken one. What is built here is what the
 //! store's reads answer from ([`Inner::view`]).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -188,6 +188,36 @@ impl TiloStore {
             inner.rebuild_overlay();
             inner.changed();
             inner.notify_all();
+        }
+        // An index built over fewer chunks than the manifest names answers no row in the ones
+        // it does not, and a window would show a list shorter than the workspace's: a store
+        // that can load them loads every chunk, as one that was sent them opens. An index kept
+        // from an open over every chunk needs none of this.
+        drop(inner);
+        let short: Vec<ChunkNo> = {
+            let held = self.held();
+            let reflected: BTreeSet<ChunkNo> = held
+                .apps
+                .values()
+                .filter(|app| app.ready())
+                .flat_map(|app| app.heads.keys().copied())
+                .collect();
+            if held.chunk_loader.is_none() || !held.chunks.has_record() {
+                Vec::new()
+            } else {
+                held.chunks
+                    .placement()
+                    .chunks()
+                    .iter()
+                    .copied()
+                    .filter(|chunk| !reflected.contains(chunk))
+                    .collect()
+            }
+        };
+        for chunk in short {
+            if let Err(error) = self.load_chunk(chunk) {
+                tracing::warn!(%error, chunk, "a chunk the index does not reflect is not loaded");
+            }
         }
         any
     }

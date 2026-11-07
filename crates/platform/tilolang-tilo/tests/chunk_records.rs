@@ -1100,44 +1100,81 @@ fn a_window_opens_over_the_manifest_and_its_index_and_reads_only_the_chunks_it_s
     );
 }
 
+/// A workspace of `cards` cards over its chunks, in a directory of its own: what its first open
+/// reads, and what an open over the index that first one keeps reads.
+fn opens_at(cards: usize) -> (usize, usize, Duration, Duration, Vec<ChunkNo>, Vec<ChunkNo>) {
+    let (_host, mut docs, meta, root, ids) = board();
+    bulk(&mut docs, &meta, &root, cards);
+    let filled = usize::try_from(u64::try_from(cards).unwrap().div_ceil(chunk::ITEMS)).unwrap();
+    assert_eq!(
+        docs.chunks().numbers().count(),
+        filled,
+        "the first run is written in the record's own chunk, the rest above it"
+    );
+    let dir = TempDir::new(&format!("open-{cards}"));
+
+    // With no index kept over its chunks, a window reads every one of them: the workspace is
+    // derived whole, as a store sent them all would have it, and keeps that index for the next
+    // open.
+    let first = Instant::now();
+    let (cold, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let cold_open = first.elapsed();
+    let cold_held = holding(&cold);
+    let loaded = asked.borrow().len();
+    assert_eq!(cold_held.len(), filled, "every chunk the manifest names");
+    assert_eq!(loaded, filled - 1, "the record was opened with");
+    cold.persist_index();
+    drop(cold);
+
+    // With one, it opens over the record and the index, reading a chunk as a row shows it.
+    let warm = Instant::now();
+    let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
+    let warm_open = warm.elapsed();
+    let held = holding(&lazy);
+    assert_eq!(
+        held,
+        [chunk::FIRST],
+        "the window opened over the record alone"
+    );
+    assert!(asked.borrow().is_empty(), "no chunk was read");
+    assert_eq!(lazy.store().stats().attaches, 1, "the record, once");
+    assert_eq!(
+        lazy.store().stats().builds,
+        0,
+        "the index was kept, not built"
+    );
+    assert!(
+        lazy.store().record(&root).is_ok(),
+        "the board reads from the index"
+    );
+    // A row far down the board reads its own chunk, and only that one.
+    let board = board_schema(&meta).id;
+    if cards > usize::try_from(chunk::ITEMS).unwrap() {
+        let (card, number) = card_at(&meta, &root, &board, &ids_of(cards, cards - 1), cards - 1);
+        assert!(lazy.store().record_at(&card).is_ok());
+        assert_eq!(*asked.borrow(), [number], "the row's chunk alone");
+    }
+    (filled, loaded, cold_open, warm_open, cold_held, held)
+}
+
+/// The id `bulk` gives the card at `at`.
+fn ids_of(_cards: usize, at: usize) -> String {
+    format!("c{at}")
+}
+
 #[test]
-fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_a_hundred_thousand_cards() {
-    let per = chunk::ITEMS;
-    for cards in [1_000_usize, 10_000, 100_000] {
-        let (_host, mut docs, meta, root, ids) = board();
-        bulk(&mut docs, &meta, &root, cards);
-        let filled = u64::try_from(cards).unwrap().div_ceil(per);
-        assert_eq!(
-            docs.chunks().numbers().count(),
-            usize::try_from(filled).unwrap(),
-            "the first run is written in the record's own chunk, the rest above it"
-        );
-        let dir = TempDir::new(&format!("open-{cards}"));
-        let open = Instant::now();
-        let (lazy, asked) = opened(&mut docs, dir.path(), &ids, false);
-        let open = open.elapsed();
-        let held = holding(&lazy);
-        println!("{cards} cards over {filled} chunks: opened in {open:?}, holding {held:?}");
-        assert_eq!(
-            held,
-            [chunk::FIRST],
-            "the window opened over the record alone"
-        );
-        assert!(asked.borrow().is_empty(), "{cards}: no chunk was read");
-        assert_eq!(
-            lazy.store().stats().attaches,
-            1,
-            "{cards}: the record, once"
+fn a_workspace_opens_with_the_same_chunks_at_a_thousand_and_ten_thousand_cards() {
+    for cards in [1_000_usize, 10_000] {
+        let (filled, loaded, cold, warm, _, held) = opens_at(cards);
+        println!(
+            "{cards} cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
+             opened over the index in {warm:?} holding {held:?}"
         );
         // What a window shows is the record and the chunks its rows are in, which it reads as
-        // they scroll: an open that read every chunk took minutes at this size.
+        // they scroll: an open that read every chunk took minutes at ten thousand.
         assert!(
-            open < Duration::from_secs(10),
-            "{cards} cards opened in {open:?}"
-        );
-        assert!(
-            lazy.store().record(&root).is_ok(),
-            "{cards}: the board reads"
+            warm < Duration::from_secs(10),
+            "{cards} cards opened in {warm:?}"
         );
     }
 }
@@ -1289,4 +1326,17 @@ fn a_card_written_into_a_chunk_is_there_when_the_record_opens_again_from_disk() 
     instance.sync_chunks(reopened.chunks());
     instance.update();
     assert_eq!(left(&instance.host().unwrap(), &root, &field), [card]);
+}
+
+/// The same at a hundred thousand cards: minutes under a debug build, seconds under a release
+/// one.
+#[test]
+#[ignore = "a hundred thousand cards take minutes to derive under a debug build"]
+fn a_hundred_thousand_cards_open_over_their_index() {
+    let (filled, loaded, cold, warm, _, held) = opens_at(100_000);
+    println!(
+        "100000 cards over {filled} chunks: first open read {loaded} chunks in {cold:?}, \
+         opened over the index in {warm:?} holding {held:?}"
+    );
+    assert!(warm < Duration::from_secs(10), "opened in {warm:?}");
 }
