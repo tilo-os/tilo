@@ -3,11 +3,13 @@
 //!
 //! Open, it is a small popover in the bar's own band, hanging left from the
 //! avatar and sized to its words: the question, what answering brings where
-//! there is room, "Not now" and the answer. It stays inside the bar, so it
-//! never covers a window's bar or content and never takes a click meant for
-//! a window: a press anywhere else folds it into a dot on the avatar and
-//! still reaches what it was pressed on. Escape folds it too. A click on
-//! the avatar while it waits as the dot opens it again.
+//! there is room, "Not now" and the answer. Where it does not fit beside the
+//! clock's lane it takes that lane too, over the glance value it covers, so
+//! the question is always shown where it can be answered. It stays inside
+//! the bar, so it never covers a window's bar or content and never takes a
+//! click meant for a window: a press anywhere else folds it into a dot on
+//! the avatar and still reaches what it was pressed on. Escape folds it too.
+//! A click on the avatar while it waits as the dot opens it again.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, TextRole, Theme,
     TopBarChrome, t,
@@ -64,19 +66,28 @@ impl TopBarChrome {
         text_renderer: &mut TextRenderer,
         center_y: f64,
         right_x: f64,
-    ) -> f64 {
+    ) {
         use ui::widget::{ChipFace, ChipStyle};
 
         self.ask = AskRects::default();
         let Some(ask) = self.chrome_avatar_ask().filter(|ask| ask.open) else {
-            return right_x;
+            return;
         };
-        if self.own_avatar_rect.is_zero_area() {
-            return right_x;
+        // It hangs from the avatar the bar draws for the person's own chip,
+        // before that avatar is painted: the chip, not last frame's rect.
+        if self.own_chip().is_none() {
+            return;
         }
-        let left_limit = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
-        let Some(words) = AskWords::fit(&ask, right_x - left_limit, theme, text_renderer) else {
-            return right_x;
+        // Beside the clock where its words fit there; a question the bar
+        // cannot hold beside the lane takes the lane too, over the glance
+        // value it covers, rather than waiting where it cannot be read or
+        // answered.
+        let aside = self.center_lane.x1 + f64::from(theme.tokens.spacing.s4);
+        let across = self.center_lane.x0 + f64::from(theme.tokens.spacing.s4);
+        let Some(words) = AskWords::fit(&ask, right_x - aside, theme, text_renderer)
+            .or_else(|| AskWords::fit(&ask, right_x - across, theme, text_renderer))
+        else {
+            return;
         };
         let pad = f64::from(theme.tokens.spacing.s2);
         let gap = f64::from(theme.tokens.spacing.s1);
@@ -123,13 +134,16 @@ impl TopBarChrome {
             answer,
             later,
         };
-        pill.x0 - f64::from(theme.tokens.spacing.s3)
     }
 
-    /// The dot on the avatar while an ask waits there folded.
+    /// The dot on the avatar while an ask waits there folded: put off by the
+    /// person, or one the bar had no room to open.
     pub(super) fn draw_avatar_ask_dot(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
         if self.own_avatar_rect.is_zero_area()
-            || self.chrome_avatar_ask().is_none_or(|ask| ask.open)
+            || self.chrome_avatar_ask().is_none_or(|ask| {
+                // The pill drawn beside the avatar this frame speaks for it.
+                ask.open && !self.ask.pill.is_zero_area()
+            })
         {
             return;
         }

@@ -760,15 +760,19 @@ impl TopBarChrome {
             - f64::from(theme.tokens.spacing.s3)
             - tray_w
             - f64::from(theme.tokens.spacing.s4);
-        let stack_right_x = self.draw_own_avatar(
+        // The ask hangs left of the avatar, so it is laid out before it: the
+        // dot the avatar draws knows whether the ask's words stand beside it
+        // this frame.
+        let avatar_left_x = stack_right_x - BAR_CONTROL_PX - f64::from(theme.tokens.spacing.s3);
+        self.draw_avatar_ask(
             scene,
             transform,
             theme,
             text_renderer,
             center_y,
-            stack_right_x,
+            avatar_left_x,
         );
-        let stack_right_x = self.draw_avatar_ask(
+        let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
             theme,
@@ -1450,6 +1454,19 @@ impl Widget for TopBarChrome {
                 // Each face in the people control is someone here: say who.
                 if target == Self::CONTROL_COLLABORATORS {
                     node = node.with_children(self.face_accessibility());
+                }
+                // An ask waiting on their own avatar: beside it as the pill
+                // when the bar has room, and as the dot on the avatar when
+                // it has none or the person folded it. Folded, the dot says
+                // here what a sighted person sees.
+                if target == Self::CONTROL_PROFILE
+                    && self.ask.pill.is_zero_area()
+                    && let Some(ask) = self.chrome_avatar_ask()
+                {
+                    let asking = format!("{}: {}", ask.question, ask.answer);
+                    node = node
+                        .with_description(asking.clone())
+                        .with_children(vec![AccessNode::new(Role::StaticText).with_name(asking)]);
                 }
                 // The pill names the workspace; where it stands among the
                 // others is said to a reader, as the menu lists them.
