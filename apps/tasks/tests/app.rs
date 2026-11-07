@@ -287,7 +287,8 @@ fn a_link_opens_in_the_record_it_names() {
 }
 
 /// The assignee is picked among the workspace's people and agents by name,
-/// never typed as an id; Nobody clears it.
+/// never typed as an id, and reads back as the person's name and face; the
+/// "Nobody" choice clears it.
 #[test]
 fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
     let mut app = open();
@@ -314,21 +315,36 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
             .and_then(|issue| issue.assignee.clone())
             .map(|assignee| assignee.0)
     };
-    let pick = |app: &mut TestApp<App>, name: &str| {
+    let pick = |app: &mut TestApp<App>, entry: &str| {
         app.harness()
-            .perform_named(
-                "tasks-issue-assignee",
-                &ui::a11y::Action::SetValue(name.into()),
-            )
-            .unwrap_or_else(|error| panic!("pick {name}: {error:?}"));
+            .perform_named("tasks-issue-assignee", &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("open the assignee: {error:?}"));
+        app.settle();
+        app.harness()
+            .perform_named(entry, &ui::a11y::Action::Activate)
+            .unwrap_or_else(|error| panic!("pick {entry}: {error:?}"));
         app.settle();
     };
-    pick(&mut app, "Bob");
+    pick(&mut app, "tasks-issue-assignee-bob");
     assert_eq!(assignee(&app).as_deref(), Some("person:bob"));
-    pick(&mut app, "Scribe");
+    assert!(
+        app.harness().a11y_node_named("Assignee: Bob").is_some(),
+        "the chip says the person's name, never the record's spelling"
+    );
+    pick(&mut app, "tasks-issue-assignee-agent:scribe");
     assert_eq!(assignee(&app).as_deref(), Some("agent:scribe"));
-    pick(&mut app, "Nobody");
+    assert!(
+        app.harness()
+            .a11y_node_named("Assignee: Scribe · Agent")
+            .is_some(),
+        "an agent reads by name, and as an agent"
+    );
+    pick(&mut app, "tasks-issue-assignee-none");
     assert_eq!(assignee(&app), None);
+    assert!(
+        app.harness().a11y_node_named("Assignee: Nobody").is_some(),
+        "clearing says nobody is doing it"
+    );
 }
 
 /// Each semantics node of an inspection, outer and nested, with the rect it

@@ -15,11 +15,12 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_resource::{Binds, Resource};
+use tilo_resource::{ActionKey, Binds, Resource};
 use ui_core::LocalState;
-use ui_core::presence::PresenceCtx;
+use ui_core::icons::Icon;
+use ui_core::presence::{ParticipantKind, PresenceCtx};
 use ui_core::widget::mention_picker::{MentionCandidate, merged_roster};
-use ui_core::widget::{Dropdown, Element};
+use ui_core::widget::{Button, ButtonRole, Element, Stack, Tone};
 
 use super::ViewCx;
 
@@ -44,6 +45,21 @@ struct Roster {
     own: Option<String>,
     /// Everyone the workspace names, by name, as `@` offers them.
     members: Vec<MentionCandidate>,
+}
+
+/// A participant as a view shows them: what the workspace calls the id an
+/// action recorded, the id presence knows them by (which a face takes its
+/// colour and photograph from), and whether the workspace offers them as an
+/// agent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Actor {
+    /// The id presence names them by: an agent's `agent:<id>`, a person's
+    /// bare id.
+    pub id: String,
+    /// What the workspace calls them, or their id where it names them not.
+    pub name: String,
+    /// Whether they are an agent of the workspace, not a person in it.
+    pub agent: bool,
 }
 
 impl People {
@@ -80,9 +96,34 @@ impl People {
 
     /// The workspace's people and agents, this window's own participant among
     /// them, sorted by name: whom a picker of members offers
-    /// ([`ViewCx::member_picker`]).
+    /// ([`ViewCx::person_picker`]).
     pub fn members(&self) -> Vec<MentionCandidate> {
         self.roster.borrow().members.clone()
+    }
+
+    /// Who the id an action recorded names, however the record spells it: a
+    /// person as an assignee holds them (`person:<id>`), an agent as the
+    /// action door names it (`agent:<id>`), or the bare id. The name is the
+    /// workspace's, else the id without its prefix: a view never shows a
+    /// record's spelling of a participant.
+    pub fn actor(&self, id: &str) -> Actor {
+        let (identity, bare, agent) = if let Some(bare) = id.strip_prefix("person:") {
+            (bare, bare, false)
+        } else if let Some(bare) = id.strip_prefix("agent:") {
+            (id, bare, true)
+        } else {
+            (id, id, false)
+        };
+        let name = [identity, bare]
+            .into_iter()
+            .map(|key| self.name(key))
+            .find(|name| name != identity && name != bare)
+            .unwrap_or_else(|| bare.to_owned());
+        Actor {
+            id: identity.to_owned(),
+            name,
+            agent,
+        }
     }
 
     /// Whether another person is in the workspace with this window now.
@@ -137,45 +178,136 @@ impl People {
 }
 
 impl<R: Resource, T: 'static> ViewCx<R, T> {
-    /// A dropdown of the workspace's people and agents by name, bound to a verb
-    /// as [`Self::control_with`] binds a control: it shows `read` of the
-    /// resource and invokes `action` with the value of the one picked.
-    /// `first` are the options before the members (nobody, say); `value_of`
-    /// is how the record names a member, `None` leaving one out; `make`
-    /// dresses the bound dropdown (its id, its label). Built again as the roster
-    /// changes, so it offers whom the workspace names now.
-    pub fn member_picker<B: Binds<R, String> + Clone>(
+    /// A chip showing whom the resource assigns `read` to — their avatar and
+    /// name, or `nobody` while it names no one — that opens the workspace's
+    /// people and agents, each with their avatar, and invokes `action` with
+    /// the value the record stores for the one picked (`None` for nobody).
+    /// `value_of` is how the record names a member, `None` leaving one out;
+    /// `label` names the control for assistive technology. Built again as the
+    /// roster changes, so it offers whom the workspace names now, and as the
+    /// record's value changes, so the chip follows an assignment made
+    /// anywhere.
+    pub fn person_picker<B: Binds<R, Option<String>> + Clone>(
         &self,
-        first: Vec<(String, String)>,
+        id: &'static str,
+        label: String,
+        nobody: String,
         value_of: impl Fn(&MentionCandidate) -> Option<String> + 'static,
-        make: impl Fn(Dropdown) -> Element + 'static,
-        read: impl Fn(&T) -> String + 'static,
+        read: impl Fn(&T) -> Option<String> + 'static,
         action: B,
     ) -> Element {
         let people = self.people();
+        let revision = people.revision();
+        let label = Rc::new(label);
+        let nobody = Rc::new(nobody);
+        let value_of = Rc::new(value_of);
         let read = Rc::new(read);
-        self.switch(&people.revision(), move |cx, _| {
-            let options = first
-                .iter()
-                .cloned()
-                .chain(
-                    people
-                        .members()
-                        .iter()
-                        .filter_map(|member| Some((value_of(member)?, member.name.clone()))),
-                )
-                .collect();
-            let read = Rc::clone(&read);
-            make(cx.control_with(
-                |state| {
-                    let mut picker = Dropdown::from_state(Vec::new(), state);
-                    picker.set_value_options(options);
-                    picker
-                },
-                move |state| read(state),
-                action.clone(),
-            ))
+        self.switch(&revision, move |cx, _| {
+            let members = people.members();
+            let held = {
+                let read = Rc::clone(&read);
+                cx.value(move |state: &T| read(state))
+            };
+            let people = people.clone();
+            let (label, nobody, value_of) =
+                (Rc::clone(&label), Rc::clone(&nobody), Rc::clone(&value_of));
+            let held_action = action.clone();
+            cx.switch(&held, move |cx, held| {
+                let who = held.as_deref().map(|value| people.actor(value));
+                let mut choices = Stack::new();
+                choices = choices.push(cx.person_choice(
+                    &format!("{id}-none"),
+                    &nobody,
+                    None,
+                    None,
+                    false,
+                    held_action.clone(),
+                ));
+                for member in &members {
+                    let Some(value) = value_of(member) else {
+                        continue;
+                    };
+                    choices = choices.push(cx.person_choice(
+                        &format!("{id}-{}", member.id),
+                        &member.name,
+                        Some(value),
+                        Some((&member.name, &member.id)),
+                        member.kind == ParticipantKind::Agent,
+                        held_action.clone(),
+                    ));
+                }
+                let (name, agent, chip) = match &who {
+                    Some(who) => (
+                        who.name.clone(),
+                        who.agent,
+                        Button::new(id, &who.name)
+                            .with_avatar(&who.name, &who.id)
+                            .showing_choice(),
+                    ),
+                    None => (
+                        nobody.to_string(),
+                        false,
+                        Button::new(id, nobody.as_str())
+                            .with_icon(Icon::User)
+                            .with_placeholder()
+                            .showing_choice(),
+                    ),
+                };
+                let chip = chip.with_accessible_name(&format!("{label}: {name}"));
+                let chip = if agent { chip.tone(Tone::Info) } else { chip };
+                Box::new(chip.with_popover(choices)) as Element
+            })
         })
+    }
+
+    /// One person the picker offers: their face and name, invoking `action`
+    /// with `value` when they are pressed.
+    fn person_choice<B: Binds<R, Option<String>>>(
+        &self,
+        id: &str,
+        label: &str,
+        value: Option<String>,
+        face: Option<(&str, &str)>,
+        agent: bool,
+        action: B,
+    ) -> Element {
+        let mut button = Button::new(id, label).role(ButtonRole::Plain);
+        button = match face {
+            Some((name, identity)) => button.with_avatar(name, identity),
+            None => button.with_icon(Icon::User).with_placeholder(),
+        };
+        if agent {
+            button = button.tone(Tone::Info);
+        }
+        let binding = self.actions().binding(Chosen {
+            binds: action,
+            value,
+        });
+        match binding {
+            Some(binding) => Box::new(button.on_action(binding)),
+            None => Box::new(button.with_enabled(false)),
+        }
+    }
+}
+
+/// [`Binds`] for a button that names one value of an action taking an optional
+/// one: the picker's choices.
+struct Chosen<B> {
+    binds: B,
+    value: Option<String>,
+}
+
+impl<R: Resource, B: Binds<R, Option<String>>> Binds<R, ()> for Chosen<B> {
+    fn action_id(&self) -> &'static str {
+        self.binds.action_id()
+    }
+
+    fn action_key(&self) -> ActionKey {
+        self.binds.action_key()
+    }
+
+    fn arguments(&self, (): ()) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+        self.binds.arguments(self.value.clone())
     }
 }
 
@@ -226,5 +358,44 @@ mod tests {
         assert!(people.follow(&presence));
         assert_eq!(people.name("me-id"), "Ada (1)");
         assert_eq!(people.name("peer-id"), "ada (2)");
+    }
+
+    #[test]
+    fn an_actors_record_spelling_reads_as_the_name_the_workspace_gives() {
+        let people = People::new(None);
+        let mut presence = PresenceCtx::default();
+        presence.set_display_name(UserId("bob".into()), "Bob");
+        presence.set_display_name(UserId("agent:scribe".into()), "Scribe");
+        presence.set_participant_kind(UserId("agent:scribe".into()), ParticipantKind::Agent);
+        assert!(people.follow(&presence));
+
+        assert_eq!(
+            people.actor("person:bob"),
+            Actor {
+                id: "bob".into(),
+                name: "Bob".into(),
+                agent: false,
+            },
+            "an assignee's spelling is not a name"
+        );
+        assert_eq!(
+            people.actor("agent:scribe"),
+            Actor {
+                id: "agent:scribe".into(),
+                name: "Scribe · Agent".into(),
+                agent: true,
+            },
+            "an agent keeps the id presence colours its face by"
+        );
+        assert_eq!(
+            people.actor("person:stranger"),
+            Actor {
+                id: "stranger".into(),
+                name: "stranger".into(),
+                agent: false,
+            },
+            "an id the workspace names not reads without its prefix"
+        );
+        assert_eq!(people.actor("bob").name, "Bob", "a bare id reads the same");
     }
 }
