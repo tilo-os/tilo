@@ -38,6 +38,10 @@ pub trait Words {
     }
 }
 
+/// The catalogues of one loaded package, `(locale, Fluent text)` each, and which package of the
+/// window they belong to: what the runtime keeps to hand them to the words a host sets later.
+pub type LoadedCatalogues = (WordsRole, Vec<(String, String)>);
+
 /// Which package of a window a catalogue belongs to.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WordsRole {

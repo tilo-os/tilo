@@ -107,7 +107,7 @@ pub struct Core {
     pub words: RefCell<Box<dyn crate::words::Words>>,
     /// Every loaded package's catalogues and which package of the window they belong to,
     /// handed to the words the host sets later too.
-    pub catalogues: RefCell<Vec<(crate::words::WordsRole, Vec<(String, String)>)>>,
+    pub catalogues: RefCell<Vec<crate::words::LoadedCatalogues>>,
     /// Compiled embedded blocks.
     pub embeds: RefCell<crate::embed::EmbedState>,
     /// The view state of every view, and the platform's own readings.
