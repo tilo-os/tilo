@@ -1160,7 +1160,7 @@ impl BrowserShell {
 
     /// Tell the person why a fixed chord the desk left to the page did not
     /// run here.
-    fn answer_fixed_shortcut(&mut self, action: ui::shortcut_table::FixedAction) {
+    fn answer_fixed_shortcut(&self, action: ui::shortcut_table::FixedAction) {
         let Some(outcome) = crate::fixed_chords::unserved(action) else {
             return;
         };

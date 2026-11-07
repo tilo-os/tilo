@@ -31,6 +31,7 @@ fn name<A: ResourceApp>(state: &dyn std::any::Any) -> Option<String> {
 /// The same set [`register`] hosts for the process, built without depending on
 /// a definition having been created: a host that reads a record of an app that
 /// is not running ([`super::record_index`]) reads it by these.
+#[cfg(not(target_arch = "wasm32"))]
 #[must_use]
 pub fn kinds_of<A: ResourceApp>() -> Kinds {
     let mut declared = super::Records::declaring();
