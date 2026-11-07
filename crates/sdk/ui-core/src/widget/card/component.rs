@@ -81,4 +81,41 @@ impl Described for Card {
             _ => card,
         }
     }
+
+    /// What the card is called, how many it holds, whether it is the chosen one and what a press
+    /// on it does change where the card stands: its body, and where the person has scrolled it,
+    /// stay.
+    fn set_props(&mut self, props: CardProps) -> bool {
+        let CardProps {
+            title,
+            count,
+            item: _,
+            selected,
+            body: _,
+            activate,
+        } = props;
+        self.set_selected(selected);
+        let title = title.filter(|title| !title.is_empty());
+        let count = count.map(|count| usize::try_from(count.max(0)).unwrap_or(0));
+        if title != self.title || count != self.header_count {
+            match &title {
+                Some(title) => {
+                    self.header_count = count;
+                    let header = SectionHeader::group(title.as_str());
+                    let header = match count {
+                        Some(count) => header.count(count),
+                        None => header,
+                    };
+                    self.set_header(header);
+                }
+                None => {
+                    self.header_count = None;
+                    self.remove_header();
+                }
+            }
+        }
+        let label = self.title.clone().unwrap_or_default();
+        self.activation.set_event(activate, &label);
+        true
+    }
 }

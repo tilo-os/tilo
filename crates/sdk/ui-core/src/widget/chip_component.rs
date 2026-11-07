@@ -63,4 +63,43 @@ impl Described for Chip {
         }
         chip
     }
+
+    /// What it names, the glyph or tone it reads in, whether it is chosen and what its press and
+    /// its "×" do change where the chip stands: a chip under the pointer keeps its hover.
+    fn set_props(&mut self, props: ChipProps) -> bool {
+        let ChipProps {
+            label,
+            icon,
+            tone,
+            selected,
+            press,
+            remove,
+        } = props;
+        if label != self.label {
+            self.label.clone_from(&label);
+            self.footprint = None;
+        }
+        // A face leads the chip it names; another glyph leads one that names no face.
+        if icon.is_some() || !matches!(self.lead, ChipLead::Face(_)) {
+            self.lead = icon.map_or(ChipLead::None, ChipLead::Glyph);
+        }
+        self.style = if tone == Tone::Neutral {
+            ChipStyle::Neutral
+        } else {
+            ChipStyle::Tinted(tone)
+        };
+        self.selectable = selected.is_some();
+        self.set_selected(selected.unwrap_or(false));
+        self.activation.set_event(press, &label);
+        match remove.handler() {
+            Some(mut run) => self.set_on_remove_view(move || run()),
+            None => {
+                self.removable = false;
+                self.on_remove = None;
+                self.remove_verb = None;
+            }
+        }
+        self.dirty = true;
+        true
+    }
 }

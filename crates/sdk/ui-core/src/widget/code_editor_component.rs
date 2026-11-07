@@ -71,4 +71,31 @@ impl Described for CodeEditor {
         }
         editor
     }
+
+    /// The code it edits, what it says about it and how it shows it change where the editor
+    /// stands: it keeps the keyboard, the caret and whatever is being composed into it.
+    fn set_props(&mut self, props: CodeEditorProps) -> bool {
+        let CodeEditorProps {
+            value,
+            placeholder,
+            language,
+            min_lines,
+            max_lines,
+            gutter,
+            read_only,
+        } = props;
+        if !self.inner.follows(&value.state) {
+            self.inner.follow(&value.state);
+        }
+        self.inner.set_gutter(gutter);
+        self.inner
+            .set_placeholder(placeholder.as_deref().unwrap_or_default());
+        if let Some(language) = language {
+            self.inner.set_highlighter(language.highlighter());
+        }
+        self.set_read_only(read_only);
+        self.min_lines = min_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
+        self.max_lines = max_lines.map(|lines| usize::try_from(lines.max(1)).unwrap_or(1));
+        true
+    }
 }

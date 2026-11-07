@@ -62,6 +62,7 @@ impl Described for Breadcrumb {
         }
         let goes = handlers.iter().any(Option::is_some);
         let mut trail = Self::new(labels);
+        trail.key = key.to_owned();
         if let Some(icon) = root_icon {
             trail = trail.root_icon(icon);
         }
@@ -76,5 +77,49 @@ impl Described for Breadcrumb {
             trail = trail.on_edit_requested(move || edit());
         }
         trail
+    }
+
+    /// The path the trail shows, its root glyph and what its places cost change where it
+    /// stands: the trail keeps its place and the view it names.
+    fn set_props(&mut self, props: BreadcrumbProps) -> bool {
+        let BreadcrumbProps {
+            segments,
+            root_icon,
+            edit,
+        } = props;
+        let mut labels = Vec::with_capacity(segments.len());
+        let mut handlers = Vec::with_capacity(segments.len());
+        for segment in segments {
+            labels.push(segment.label);
+            handlers.push(segment.activate.handler());
+        }
+        if labels != self.segments {
+            self.segments = labels;
+            self.segment_rects.clear();
+            self.visible_origin.clear();
+            self.cached_visible.clear();
+            self.hover_idx = None;
+            self.dirty = true;
+        }
+        self.root_icon = root_icon;
+        if handlers.iter().any(Option::is_some) {
+            if self.choice.is_none() {
+                self.choice = Some(crate::widget::view_choice::ViewChoice::new(
+                    self.key.clone(),
+                    "Go to",
+                ));
+            }
+            self.on_navigate = Some(Box::new(move |index| {
+                if let Some(Some(go)) = handlers.get_mut(index) {
+                    go();
+                }
+            }));
+        } else {
+            self.choice = None;
+            self.on_navigate = None;
+        }
+        self.on_edit_requested = edit.handler();
+        self.dirty = true;
+        true
     }
 }

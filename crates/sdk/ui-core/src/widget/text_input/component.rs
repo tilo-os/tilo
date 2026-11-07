@@ -139,4 +139,62 @@ impl Described for TextInput {
         }
         input
     }
+
+    /// The text it edits, what it says and how it behaves change where the field stands: it
+    /// keeps the keyboard, the caret and whatever is being composed into it.
+    fn set_props(&mut self, props: TextInputProps) -> bool {
+        let TextInputProps {
+            value,
+            placeholder,
+            lines,
+            title,
+            enabled,
+            autofocus,
+            changed_by,
+            previous,
+            entry,
+            key: _,
+            submit,
+        } = props;
+        if !self.follows(&value.state) {
+            self.follow(&value.state);
+        }
+        self.path.clone_from(&value.path);
+        self.change = changed_by.map(|by| {
+            let note = change_note(&by, previous.as_deref());
+            (by.identity, note)
+        });
+        let edits = value.clone();
+        self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
+        let placeholder = placeholder.unwrap_or_default();
+        let name = if value.name.is_empty() {
+            placeholder.clone()
+        } else {
+            value.name.clone()
+        };
+        self.set_accessible_name(name);
+        self.set_placeholder(&placeholder);
+        self.set_disabled(!enabled);
+        if autofocus {
+            self.focus_wanted = true;
+        }
+        // Room for as many lines as it is given, or the wrapping line of a title.
+        self.set_multiline(title || lines.is_some());
+        self.min_lines = lines.map_or(0, |lines| usize::try_from(lines.max(1)).unwrap_or(1));
+        self.set_text_role(if title {
+            TextRole::LargeTitle
+        } else {
+            TextRole::Body
+        });
+        self.set_plain_chrome(title);
+        self.entry = entry;
+        match submit {
+            Event::None => self.set_on_submit(None),
+            event => self.set_on_submit(Some(Box::new(move |text: &str| {
+                event.fire(Some(Value::Text(text.to_owned())));
+            }))),
+        }
+        self.enter_submits = self.enter_submits || title || entry;
+        true
+    }
 }

@@ -179,7 +179,6 @@ fn every_described_widget_builds_from_its_required_props() {
 /// what the person was doing with it — the focus in a field, a drag under a finger, the menu a
 /// press opened. A widget that answers no type of its own, or refuses every change, is built
 /// again each time its props are told to it.
-const NOT_YET_IN_PLACE: &str = include_str!("not_yet_in_place.txt");
 
 #[test]
 fn every_described_widget_takes_its_props_where_it_stands() {
@@ -221,46 +220,13 @@ fn every_described_widget_takes_its_props_where_it_stands() {
          again: declare `described!();` inside their `impl Widget`:\n  {}",
         no_type.join("\n  ")
     );
-    let owed = owed_in_place();
-    let paid: Vec<&String> = built_again
-        .iter()
-        .filter(|name| !owed.iter().any(|o| o == *name))
-        .collect();
     assert!(
-        paid.is_empty(),
+        built_again.is_empty(),
         "these described widgets are built again when their own props are given to them, which \
          loses the person's focus, press and whatever they opened: take the props in place in \
          `set_props`:\n  {}",
-        paid.iter()
-            .map(|name| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\n  ")
+        built_again.join("\n  ")
     );
-    let settled: Vec<&String> = owed
-        .iter()
-        .filter(|name| !built_again.contains(name))
-        .collect();
-    assert!(
-        settled.is_empty(),
-        "these take their props where they stand now, so remove them from \
-         component/not_yet_in_place.txt:\n  {}",
-        settled
-            .iter()
-            .map(|name| name.as_str())
-            .collect::<Vec<_>>()
-            .join("\n  ")
-    );
-}
-
-/// The described widgets still built again on a change to their props
-/// ([`NOT_YET_IN_PLACE`]).
-fn owed_in_place() -> Vec<String> {
-    NOT_YET_IN_PLACE
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty() && !line.starts_with('#'))
-        .map(str::to_owned)
-        .collect()
 }
 
 #[test]

@@ -139,71 +139,119 @@ impl Described for NavList {
             items,
             select,
         } = props;
-        // What choosing each place does, by its key.
-        let chosen: std::collections::HashMap<String, Event> = items
-            .iter()
-            .flat_map(NavEntry::places)
-            .filter(|item| !item.select.is_none())
-            .map(|item| (item.key.clone(), item.select.clone()))
-            .collect();
-        // Places outside a section run together under the list's title; each section is its
-        // own, in order. A section's add is the heading's trailing action, which runs it.
-        let mut sections: Vec<NavSection> = Vec::new();
-        let mut adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
-        let mut loose: Vec<NavItem> = Vec::new();
-        let mut title = title;
-        let mut flush = |loose: &mut Vec<NavItem>, sections: &mut Vec<NavSection>| {
-            if loose.is_empty() {
-                return;
-            }
-            let id = format!("{key}/{}", sections.len());
-            let items = std::mem::take(loose);
-            sections.push(match title.take() {
-                Some(title) => NavSection::new(id, title, items),
-                None => NavSection::untitled(id, items),
-            });
-        };
-        for entry in items {
-            match entry {
-                NavEntry::Item(item) => loose.push(NavItem::from(item)),
-                NavEntry::Section(section) => {
-                    flush(&mut loose, &mut sections);
-                    let id = format!("{key}/{}", sections.len());
-                    let places = section.items.into_iter().map(NavItem::from).collect();
-                    let mut built = NavSection::new(id.clone(), section.title, places);
-                    if section.collapsible {
-                        built = built.collapsible();
-                    }
-                    if let Some(add) = section.add {
-                        let icon = add.icon.unwrap_or(crate::icons::Icon::Plus);
-                        built = built
-                            .trailing_action(crate::widget::NavAction::new("add", icon, add.label));
-                        adds.insert(id, add.run);
-                    }
-                    sections.push(built);
-                }
-            }
-        }
-        flush(&mut loose, &mut sections);
-        if sections.is_empty() {
-            sections.push(match title {
-                Some(title) => NavSection::new(key, title, Vec::new()),
-                None => NavSection::untitled(key, Vec::new()),
-            });
-        }
-        let mut list = Self::new(sections).with_id(key);
+        let placed = place(key, title, items, select);
+        let mut list = Self::new(placed.sections.clone()).with_id(key);
         if let Some(selected) = selected {
             list = list.selected(&selected);
         }
         if rail {
             list = list.rail();
         }
-        if !adds.is_empty() {
-            let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = adds
-                .into_iter()
-                .filter_map(|(id, event)| Some((id, event.handler()?)))
+        list.report(key, &placed);
+        list
+    }
+
+    /// The places, their headings and what choosing one does change where the list stands: the
+    /// rows whose content changed are built again, and every other keeps its place, its focus
+    /// and what was folded.
+    fn set_props(&mut self, props: NavListProps) -> bool {
+        let NavListProps {
+            title,
+            selected,
+            rail,
+            items,
+            select,
+        } = props;
+        let placed = place(&self.key, title, items, select);
+        self.set_sections(placed.sections.clone());
+        self.set_selected(selected.as_deref());
+        self.set_rail_rows(rail);
+        self.report(&self.key.clone(), &placed);
+        true
+    }
+}
+
+/// A list's places as they stand, and what choosing one or pressing a section's add does.
+struct Placed {
+    sections: Vec<NavSection>,
+    /// What choosing a place does beside the place's own event: the list's selection.
+    select: Event,
+    /// What each place's own selection does, by its key.
+    chosen: std::collections::HashMap<String, Event>,
+    /// What each section's add does, by the section's id.
+    adds: std::collections::HashMap<String, Event>,
+}
+
+/// The sections `items` stand for under `title`, in order: places outside a section run
+/// together under the list's title, each section is its own under its heading.
+fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) -> Placed {
+    let chosen: std::collections::HashMap<String, Event> = items
+        .iter()
+        .flat_map(NavEntry::places)
+        .filter(|item| !item.select.is_none())
+        .map(|item| (item.key.clone(), item.select.clone()))
+        .collect();
+    let mut sections: Vec<NavSection> = Vec::new();
+    let mut adds: std::collections::HashMap<String, Event> = std::collections::HashMap::new();
+    let mut loose: Vec<NavItem> = Vec::new();
+    let mut title = title;
+    let mut flush = |loose: &mut Vec<NavItem>, sections: &mut Vec<NavSection>| {
+        if loose.is_empty() {
+            return;
+        }
+        let id = format!("{key}/{}", sections.len());
+        let items = std::mem::take(loose);
+        sections.push(match title.take() {
+            Some(title) => NavSection::new(id, title, items),
+            None => NavSection::untitled(id, items),
+        });
+    };
+    for entry in items {
+        match entry {
+            NavEntry::Item(item) => loose.push(NavItem::from(item)),
+            NavEntry::Section(section) => {
+                flush(&mut loose, &mut sections);
+                let id = format!("{key}/{}", sections.len());
+                let places = section.items.into_iter().map(NavItem::from).collect();
+                let mut built = NavSection::new(id.clone(), section.title, places);
+                if section.collapsible {
+                    built = built.collapsible();
+                }
+                if let Some(add) = section.add {
+                    let icon = add.icon.unwrap_or(crate::icons::Icon::Plus);
+                    built = built
+                        .trailing_action(crate::widget::NavAction::new("add", icon, add.label));
+                    adds.insert(id, add.run);
+                }
+                sections.push(built);
+            }
+        }
+    }
+    flush(&mut loose, &mut sections);
+    if sections.is_empty() {
+        sections.push(match title {
+            Some(title) => NavSection::new(key, title, Vec::new()),
+            None => NavSection::untitled(key, Vec::new()),
+        });
+    }
+    Placed {
+        sections,
+        select,
+        chosen,
+        adds,
+    }
+}
+
+impl NavList {
+    /// Answer choosing a place and pressing a section's add with the events `placed` carries.
+    fn report(&mut self, key: &str, placed: &Placed) {
+        if !placed.adds.is_empty() {
+            let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = placed
+                .adds
+                .iter()
+                .filter_map(|(id, event)| Some((id.clone(), event.clone().handler()?)))
                 .collect();
-            list = list.on_section_action(move |section, action| {
+            self.set_section_action(move |section, action| {
                 if action == "add"
                     && let Some(run) = runs.get_mut(section)
                 {
@@ -211,19 +259,22 @@ impl Described for NavList {
                 }
             });
         }
-        if select.is_none() && chosen.is_empty() {
-            return list;
+        if placed.chosen.is_empty() && placed.select.is_none() {
+            return;
         }
-        let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = chosen
-            .into_iter()
-            .filter_map(|(key, event)| Some((key, event.handler()?)))
+        let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = placed
+            .chosen
+            .iter()
+            .filter_map(|(key, event)| Some((key.clone(), event.clone().handler()?)))
             .collect();
-        list.on_view(key, move |id| {
+        // The list's own selection reports what each place's event says, then the list's.
+        let select = placed.select.clone();
+        self.set_on_view(key, move |id| {
             if let Some(run) = runs.get_mut(&id) {
                 run();
             }
             select.fire(Some(Value::Text(id)));
-        })
+        });
     }
 }
 

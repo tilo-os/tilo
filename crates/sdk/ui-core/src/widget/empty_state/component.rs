@@ -55,4 +55,35 @@ impl Described for EmptyState {
         }
         if inline { state.inline() } else { state }
     }
+
+    /// What the place says and offers changes where it stands: the sentence, the glyph, the one
+    /// action and its event.
+    fn set_props(&mut self, props: EmptyStateProps) -> bool {
+        let EmptyStateProps {
+            title,
+            message,
+            icon,
+            action,
+            inline,
+            act,
+        } = props;
+        self.title = title;
+        self.message = message;
+        self.icon = icon;
+        self.inline = inline;
+        self.action_id = action.as_ref().map(|_| self.id.clone().unwrap_or_default());
+        self.action_label = action;
+        self.handler = match act {
+            Event::None => None,
+            Event::Action(binding) => Some(super::Handler::Binding(binding)),
+            Event::View(intent) => Some(super::Handler::View(std::rc::Rc::new(
+                std::cell::RefCell::new(Box::new(intent.sender())),
+            ))),
+        };
+        self.resolve();
+        self.rebuild_engine();
+        self.layout_dirty = true;
+        self.drawn = None;
+        true
+    }
 }

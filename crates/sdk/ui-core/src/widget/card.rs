@@ -364,6 +364,8 @@ pub struct Card {
     activation: Activation,
     dirty: bool,
     title: Option<String>,
+    /// How many its header says it holds, when it says.
+    header_count: Option<usize>,
     accessible_name: Option<String>,
     selected: bool,
 }
@@ -380,6 +382,7 @@ impl Card {
             activation: Activation::new("card"),
             dirty: true,
             title: None,
+            header_count: None,
             accessible_name: None,
             selected: false,
         }
@@ -461,10 +464,36 @@ impl Card {
     #[must_use]
     pub fn with_section_header(mut self, header: super::SectionHeader) -> Self {
         self.title = Some(header.title().to_owned());
+        self.header_count = header.stated_count();
         self.with_header_parts(header.into_element(), None)
     }
 
     fn with_header_parts(mut self, title: Element, action: Option<Element>) -> Self {
+        self.set_header_parts(title, action);
+        self
+    }
+
+    /// Show `header` where the card's header stands: the card keeps its body, its place and what
+    /// a press on it does.
+    pub(crate) fn set_header(&mut self, header: super::SectionHeader) {
+        self.title = Some(header.title().to_owned());
+        self.header_count = header.stated_count();
+        self.set_header_parts(header.into_element(), None);
+    }
+
+    /// Take the header away: a card that names nothing.
+    pub(crate) fn remove_header(&mut self) {
+        if !self.has_header {
+            return;
+        }
+        self.parts.children.remove(usize::from(self.media_first));
+        self.has_header = false;
+        self.title = None;
+        self.header_count = None;
+        self.dirty = true;
+    }
+
+    fn set_header_parts(&mut self, title: Element, action: Option<Element>) {
         let mut children = vec![title];
         if let Some(action) = action {
             children.push(action);
@@ -482,7 +511,7 @@ impl Card {
             self.parts.children.insert(at, header);
             self.has_header = true;
         }
-        self
+        self.dirty = true;
     }
 
     /// The card's actions, at its foot, trailing.

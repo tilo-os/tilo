@@ -1157,8 +1157,16 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// An icon before the title naming who asks.
     #[must_use]
     pub fn with_icon(mut self, icon: Icon) -> Self {
-        self.icon = Some(icon);
+        self.set_icon(Some(icon));
         self
+    }
+
+    /// [`Self::with_icon`] after construction; `None` takes it away.
+    pub fn set_icon(&mut self, icon: Option<Icon>) {
+        if self.icon != icon {
+            self.icon = icon;
+            self.invalidate_layout();
+        }
     }
 
     /// A strip of the sheet's own below the title: it stays where it is
@@ -1184,8 +1192,25 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// what is going on in it, and how its keys work.
     #[must_use]
     pub fn with_description(mut self, description: impl Into<String>) -> Self {
-        self.description = Some(description.into());
+        self.set_description(Some(description.into()));
         self
+    }
+
+    /// [`Self::with_description`] after construction; `None` takes it away.
+    pub fn set_description(&mut self, description: Option<String>) {
+        if self.description != description {
+            self.description = description;
+            self.invalidate_layout();
+        }
+    }
+
+    /// What the dialog is, as its title: the question it asks.
+    pub fn set_title(&mut self, title: impl Into<String>) {
+        let title = title.into();
+        if self.title != title {
+            self.title = title;
+            self.invalidate_layout();
+        }
     }
 
     /// A stable address for inspection, headless scenarios and `tilo-control`.
@@ -1232,9 +1257,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.primary_action = Some(DialogAction::new(label, on_click));
-        self.as_dyn_mut().footer_changed();
+        self.set_primary_action(Some(DialogAction::new(label, on_click)));
         self
+    }
+
+    /// [`Self::primary_action`] after construction; `None` takes it away.
+    pub fn set_primary_action(&mut self, action: Option<DialogAction>) {
+        self.primary_action = action;
+        self.as_dyn_mut().footer_changed();
     }
 
     /// The other action, usually Cancel. Escape fires it when the dialog
@@ -1245,9 +1275,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.secondary_action = Some(DialogAction::new(label, on_click));
-        self.as_dyn_mut().footer_changed();
+        self.set_secondary_action(Some(DialogAction::new(label, on_click)));
         self
+    }
+
+    /// [`Self::secondary_action`] after construction; `None` takes it away.
+    pub fn set_secondary_action(&mut self, action: Option<DialogAction>) {
+        self.secondary_action = action;
+        self.as_dyn_mut().footer_changed();
     }
 
     /// A third answer for a three-way question: Save / Don't save / Cancel
@@ -1260,9 +1295,14 @@ impl<C: Widget + 'static> ModalDialog<C> {
         label: impl Into<String>,
         on_click: impl FnMut() + 'static,
     ) -> Self {
-        self.tertiary_action = Some(DialogAction::new(label, on_click));
-        self.as_dyn_mut().footer_changed();
+        self.set_tertiary_action(Some(DialogAction::new(label, on_click)));
         self
+    }
+
+    /// [`Self::tertiary_action`] after construction; `None` takes it away.
+    pub fn set_tertiary_action(&mut self, action: Option<DialogAction>) {
+        self.tertiary_action = action;
+        self.as_dyn_mut().footer_changed();
     }
 
     /// The tertiary action discards something ("Don't save"): danger ink on
@@ -1279,8 +1319,13 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// destructive action takes a click, or Tab and Space.
     #[must_use]
     pub fn with_destructive(mut self, on: bool) -> Self {
-        self.destructive = on;
+        self.set_destructive(on);
         self
+    }
+
+    /// [`Self::with_destructive`] after construction.
+    pub fn set_destructive(&mut self, on: bool) {
+        self.destructive = on;
     }
 
     /// Whether the primary action can be taken. A disabled primary action
@@ -1295,6 +1340,18 @@ impl<C: Widget + 'static> ModalDialog<C> {
     pub fn with_primary_enabled(mut self, enabled: bool) -> Self {
         self.primary_enabled = enabled;
         self
+    }
+
+    /// Replace the gate [`Self::primary_enabled_if`] installed, or take it away.
+    pub fn set_primary_gate(&mut self, gate: Option<Box<dyn Fn(&C) -> bool + 'static>>) {
+        self.primary_gate = gate.map(|gate| {
+            let gate: Box<dyn Fn(&dyn Widget) -> bool> = Box::new(move |content: &dyn Widget| {
+                // SAFETY: the gate is only ever called with this dialog's content
+                // (`primary_enabled_now`), and the content of a `ModalDialog<C>` is a `C`.
+                gate(unsafe { &*std::ptr::from_ref(content).cast::<C>() })
+            });
+            gate
+        });
     }
 
     /// Enable the primary action only while `gate` holds, read every time

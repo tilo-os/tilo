@@ -119,9 +119,19 @@ impl ControlRow {
     /// What a screen reader announces for the row.
     #[must_use]
     pub fn with_accessible_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
-        self.publish_choose();
+        self.set_name(Some(name.into()));
         self
+    }
+
+    /// What it is announced by, where it stands.
+    pub(crate) fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
+        self.publish_choose();
+    }
+
+    /// What stands in it, to change in place.
+    pub(crate) fn content_mut(&mut self) -> &mut crate::widget::Row {
+        &mut self.content
     }
 
     pub fn is_selected(&self) -> bool {

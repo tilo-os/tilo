@@ -301,11 +301,13 @@ impl<C: Widget> Popover<C> {
     /// is open, so agents and scripts close it as a person does.
     #[must_use]
     pub fn on_dismiss<F: FnMut() + 'static>(mut self, f: F) -> Self {
-        self.dismiss = Some(super::dismissal::Dismissal::published(
-            self.surface_id(),
-            Box::new(f),
-        ));
+        self.set_on_dismiss(Some(Box::new(f)));
         self
+    }
+
+    /// [`Self::on_dismiss`] after construction; `None` takes it away.
+    pub fn set_on_dismiss(&mut self, f: Option<Box<dyn FnMut()>>) {
+        self.dismiss = f.map(|f| super::dismissal::Dismissal::published(self.surface_id(), f));
     }
 
     /// What the popover's close control is named after.
@@ -327,8 +329,13 @@ impl<C: Widget> Popover<C> {
     }
 
     pub fn set_label(&mut self, label: impl Into<String>) {
+        self.set_label_option(Some(label.into()));
+    }
+
+    /// Take the popover's accessible name away, or give it another.
+    pub fn set_label_option(&mut self, label: Option<String>) {
         self.dirty = true;
-        self.label = Some(label.into());
+        self.label = label;
         if let Some(dismiss) = self.dismiss.take() {
             self.dismiss = Some(dismiss.renamed(self.surface_id()));
         }

@@ -1635,6 +1635,21 @@ impl TextInput {
         input
     }
 
+    /// Whether the field follows `state` now.
+    pub(crate) fn follows(&self, state: &crate::LocalState<String>) -> bool {
+        self.local_state
+            .as_ref()
+            .is_some_and(|binding| binding.follows(state))
+    }
+
+    /// Follow the state a binding now names: the field shows what it holds and writes each
+    /// edit back to it, keeping the keyboard and, where the two hold the same text, the caret.
+    pub(crate) fn follow(&mut self, state: &crate::LocalState<String>) {
+        let (value, binding) = crate::local_state::LocalBinding::new(state);
+        self.local_state = Some(binding);
+        self.set_text(&value);
+    }
+
     /// Someone else (`identity`, by their presence) changed what the field holds and the person
     /// has not seen it: the field is tinted in their colour, and hovering it says `note` (who
     /// changed it, and what it held before). `None` once it is seen.
@@ -3982,6 +3997,12 @@ impl TextInput {
     /// has not collected yet reports once, with the text it now holds.
     #[must_use]
     pub fn on_change_view(mut self, callback: impl FnMut(&str) + 'static) -> Self {
+        self.set_on_change_view(callback);
+        self
+    }
+
+    /// [`Self::on_change_view`] on a field already built.
+    pub fn set_on_change_view(&mut self, callback: impl FnMut(&str) + 'static) {
         let id = self.test_id().unwrap_or("text_input").to_owned();
         self.change_verb = Some(super::control_verb::ControlVerb::new(
             &id,
@@ -3992,7 +4013,6 @@ impl TextInput {
         ));
         self.on_change = Some(Box::new(callback));
         self.last_notified_text.clone_from(&self.text);
-        self
     }
 
     /// A trailing clear button inside the field while it holds text.

@@ -289,43 +289,138 @@ fn face_colour(hue: PresenceHue) -> vello::peniko::Color {
     PALETTE.tokens.colors.presence.hue(hue)
 }
 
-/// The described entry of `ChangeMark`: the pill, built anew when its props change.
+/// What a mark shows: a pill in a window's header, the catch-up it opens, or nothing while
+/// nothing is unseen.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Shape {
+    Nothing,
+    Pill,
+    CatchUp,
+}
+
+/// A change mark as a widget: the faces and the label, kept where they stand while what they
+/// say changes, and the catch-up a window's mark opens.
+pub struct ChangeMark {
+    /// What it is addressed by.
+    key: String,
+    shape: Shape,
+    /// The pill, the catch-up, or the empty stack of a mark with nothing to say.
+    element: Element,
+}
+
+impl ChangeMark {
+    /// The mark `props` describe, addressed by `key`.
+    fn build(key: &str, mut props: ChangeMarkProps) -> Self {
+        let catch_up = props.catch_up(key);
+        let (shape, element) = match catch_up {
+            Some(catch_up) => (Shape::CatchUp, catch_up),
+            None => match props.chip(key) {
+                Some(chip) => (Shape::Pill, chip),
+                // Nothing unseen: nothing to show.
+                None => (
+                    Shape::Nothing,
+                    Box::new(crate::widget::arrange::Stack::stack()) as Element,
+                ),
+            },
+        };
+        Self {
+            key: key.to_owned(),
+            shape,
+            element,
+        }
+    }
+
+    /// What `props` would show, as a shape.
+    fn shape_of(props: &ChangeMarkProps) -> Shape {
+        if props.window && !props.content.is_empty() {
+            Shape::CatchUp
+        } else if props.by.is_some() {
+            Shape::Pill
+        } else {
+            Shape::Nothing
+        }
+    }
+}
+
+impl crate::widget::Decorator for ChangeMark {
+    type Inner = dyn crate::widget::Widget;
+
+    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+        self.element.as_ref()
+    }
+
+    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+        self.element.as_mut()
+    }
+
+    fn name(&self) -> &'static str {
+        "ChangeMark"
+    }
+}
+
+impl component::Described for ChangeMark {
+    type Props = ChangeMarkProps;
+
+    fn from_props(key: &str, props: ChangeMarkProps) -> Self {
+        Self::build(key, props)
+    }
+
+    /// Who changed what, what they did and what pressing it does change where the mark stands,
+    /// so the catch-up it opened stays open. Another shape of mark is built again.
+    fn set_props(&mut self, props: ChangeMarkProps) -> bool {
+        if Self::shape_of(&props) != self.shape {
+            return false;
+        }
+        let Some(pill) = props.pill(&self.key) else {
+            return true;
+        };
+        match self.shape {
+            Shape::Nothing => true,
+            Shape::Pill => {
+                let Some(button) = self
+                    .element
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<Button>())
+                else {
+                    return false;
+                };
+                button.take_words(&pill)
+            }
+            Shape::CatchUp => {
+                let Some(pair) = self
+                    .element
+                    .as_any_mut()
+                    .and_then(|any| any.downcast_mut::<crate::widget::PopoverButton<Container>>())
+                else {
+                    return false;
+                };
+                pair.button_mut().take_words(&pill)
+            }
+        }
+    }
+
+    /// A window mark's catch-up views change by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn component::SlotViews> {
+        if slot != "content" || self.shape != Shape::CatchUp {
+            return None;
+        }
+        let pair = self
+            .element
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::PopoverButton<Container>>()?;
+        let column = pair
+            .popover_mut()
+            .content_mut()
+            .child_mut()?
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
+            )?;
+        Some(column)
+    }
+}
+
+/// The described entry of `ChangeMark`.
 #[must_use]
 pub fn entry() -> component::Entry {
-    fn build(source: &mut dyn component::Source) -> Result<Element, component::Error> {
-        let key = source.key().to_owned();
-        let mut props = ChangeMarkProps::from_source(source)?;
-        Ok(match props.catch_up(&key) {
-            Some(catch_up) => catch_up,
-            None => match props.chip(&key) {
-                Some(chip) => chip,
-                // Nothing unseen: nothing to show.
-                None => Box::new(crate::widget::arrange::Stack::stack()),
-            },
-        })
-    }
-    fn update(_: &mut Element, _: &mut dyn component::Source) -> Result<bool, component::Error> {
-        Ok(false)
-    }
-    fn slot_views<'a>(_: &'a mut Element, _: &str) -> Option<&'a mut dyn component::SlotViews> {
-        None
-    }
-    fn part_views<'a>(
-        _: &'a mut Element,
-        _: &str,
-        _: &str,
-        _: &str,
-    ) -> Option<&'a mut dyn component::SlotViews> {
-        None
-    }
-    component::Entry {
-        name: ChangeMarkProps::NAME,
-        describe: ChangeMarkProps::describe,
-        build,
-        update,
-        slot_views,
-        part_views,
-        // A mark is shown, never pressed.
-        press_events: || &[],
-    }
+    component::entry::<ChangeMark>()
 }

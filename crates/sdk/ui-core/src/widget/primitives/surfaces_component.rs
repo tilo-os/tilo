@@ -11,7 +11,11 @@
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::component::{Component, Described, Event};
-use crate::widget::{Container, Element, FloatingPanel, ModalDialog, Popover, PopoverSide, Widget};
+use crate::widget::modal_dialog::DialogAction;
+use crate::widget::{
+    Button, Container, Element, FloatingPanel, ModalDialog, PanelAlign, Popover, PopoverSide,
+    Widget,
+};
 
 /// The views of a slot in a column, the column filling its width.
 fn column(views: Vec<Element>) -> Container {
@@ -217,6 +221,64 @@ impl Described for DeclaredModal {
     fn from_props(_key: &str, props: ModalProps) -> Self {
         Self::new(props)
     }
+
+    /// What it asks, how it is answered and whether it is open change where the dialog stands,
+    /// so a field in its sheet keeps what was typed in it.
+    fn set_props(&mut self, props: ModalProps) -> bool {
+        let ModalProps {
+            title,
+            icon,
+            description,
+            open,
+            primary,
+            secondary,
+            tertiary,
+            destructive,
+            primary_enabled,
+            body: _,
+            act_primary,
+            act_secondary,
+            act_tertiary,
+            dismiss,
+        } = props;
+        let dialog = &mut self.dialog;
+        dialog.set_title(title);
+        dialog.set_icon(icon);
+        dialog.set_description(description);
+        dialog.set_open(open);
+        let answer = |label: Option<String>, event: &Event| {
+            label.map(|label| {
+                let event = event.clone();
+                DialogAction::new(label, move || event.fire(None))
+            })
+        };
+        dialog.set_primary_action(answer(primary, &act_primary));
+        dialog.set_secondary_action(answer(secondary, &act_secondary));
+        dialog.set_tertiary_action(answer(tertiary, &act_tertiary));
+        dialog.set_destructive(destructive);
+        dialog.set_primary_gate(None);
+        dialog.set_primary_enabled(primary_enabled);
+        dialog.set_on_dismiss((!dismiss.is_none()).then(|| {
+            let close = dismiss.clone();
+            Box::new(move || close.fire(None)) as Box<dyn FnMut()>
+        }));
+        true
+    }
+
+    /// The sheet's content changes by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
+        if slot != "body" {
+            return None;
+        }
+        let column = self
+            .dialog
+            .content_mut()
+            .child_mut()?
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
+        )?;
+        Some(column)
+    }
 }
 
 /// A floating panel a view places itself: a header slot, a body and a footer slot, on the
@@ -378,6 +440,14 @@ impl Described for DeclaredPanel {
 
     fn from_props(_key: &str, props: FloatingPanelProps) -> Self {
         Self::new(props)
+    }
+
+    /// The panel's width changes where it stands; its body, header and footer change by key
+    /// through [`Self::slot_views`], so a field in the header keeps what was typed in it.
+    fn set_props(&mut self, props: FloatingPanelProps) -> bool {
+        self.panel
+            .set_width(props.width.map(crate::num::f32_of_f64));
+        true
     }
 
     /// Each slot's views change by key in place, so a change of what the body or footer
@@ -591,6 +661,42 @@ impl Described for DeclaredPopover {
     fn from_props(_key: &str, props: PopoverProps) -> Self {
         Self::new(props)
     }
+
+    /// Whether it is open, what it is called and where it opens change where it stands: a
+    /// popover the person opened stays open, and a field in it keeps what was typed in it.
+    fn set_props(&mut self, props: PopoverProps) -> bool {
+        let PopoverProps {
+            label,
+            open,
+            side,
+            dismiss,
+            content: _,
+        } = props;
+        let popover = &mut self.popover;
+        popover.set_label_option(label);
+        popover.set_side(side.unwrap_or_default());
+        popover.set_open(open);
+        popover.set_on_dismiss((!dismiss.is_none()).then(|| {
+            let close = dismiss.clone();
+            Box::new(move || close.fire(None)) as Box<dyn FnMut()>
+        }));
+        true
+    }
+
+    /// Its content changes by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
+        if slot != "content" {
+            return None;
+        }
+        let column = self
+            .popover
+            .content_mut()
+            .child_mut()?
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
+        )?;
+        Some(column)
+    }
 }
 
 /// A button that opens a popover anchored to itself: a filter's options, a share sheet, a
@@ -741,5 +847,48 @@ impl Described for DeclaredPopoverButton {
 
     fn from_props(key: &str, props: PopoverButtonProps) -> Self {
         Self::new(key, props)
+    }
+
+    /// The button's words and glyph, the side it opens on and its alignment change where the
+    /// pair stands, so a popover it opened stays open.
+    fn set_props(&mut self, props: PopoverButtonProps) -> bool {
+        let PopoverButtonProps {
+            label,
+            icon,
+            side,
+            trailing,
+            content: _,
+        } = props;
+        let words = match icon {
+            Some(icon) => Button::icon_only("", icon, &label),
+            None => Button::new("", &label),
+        };
+        if !self.pair.button_mut().take_words(&words) {
+            return false;
+        }
+        let popover = self.pair.popover_mut();
+        popover.set_side(side.unwrap_or_default());
+        popover.set_align(if trailing {
+            PanelAlign::Trailing
+        } else {
+            PanelAlign::Leading
+        });
+        true
+    }
+
+    /// Its content changes by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
+        if slot != "content" {
+            return None;
+        }
+        let column = self
+            .pair
+            .popover_mut()
+            .content_mut()
+            .child_mut()?
+            .as_any_mut()?
+            .downcast_mut::<crate::widget::arrange::Arranged<crate::widget::arrange::FlexLayout>>(
+            )?;
+        Some(column)
     }
 }

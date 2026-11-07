@@ -1,7 +1,11 @@
 //! [`Section`] as a described component.
 
+use std::rc::Rc;
+
+use vello::kurbo::Point;
+
 use crate::component::{Component, Described, Event, SlotViews, Value};
-use crate::widget::Element;
+use crate::widget::{Element, Interaction};
 
 use super::Section;
 
@@ -54,12 +58,95 @@ impl Described for Section {
         if !collapsible {
             return section;
         }
-        let on_toggle: Option<Box<dyn FnMut(bool)>> = if toggle.is_none() {
-            None
-        } else {
-            Some(Box::new(move |open| toggle.fire(Some(Value::Bool(open)))))
-        };
+        let on_toggle = reports(toggle);
         section.collapsible_with(expanded.unwrap_or(true), on_toggle)
+    }
+
+    /// What the group is called, whether its title opens and closes it, and how fast what it
+    /// holds arrives change where the section stands: a section the person closed stays closed.
+    fn set_props(&mut self, props: SectionProps) -> bool {
+        let SectionProps {
+            title,
+            collapsible,
+            content: _,
+            expanded,
+            motion,
+            toggle,
+        } = props;
+        self.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
+        let title = title.filter(|title| !title.is_empty());
+        if title != self.header {
+            self.header.clone_from(&title);
+            match &title {
+                Some(title) => {
+                    self.set_header_row(super::SectionHeader::heading(title.as_str()).into_widget(
+                        self.expanded.as_ref().map(|state| super::Disclosure {
+                            id: format!("disclosure:{title}"),
+                            expanded: Rc::clone(state),
+                            on_toggle: None,
+                            interaction: Interaction::default(),
+                            press: crate::pointer_replay::HeldPress::default(),
+                            cursor: Point::ZERO,
+                            toggled: false,
+                        }),
+                    ))
+                }
+                None => {
+                    if self.has_header {
+                        self.parts.children.remove(0);
+                        self.has_header = false;
+                    }
+                }
+            }
+        }
+        let on_toggle = reports(toggle);
+        if collapsible {
+            if self.expanded.is_none() {
+                self.make_collapsible(expanded.unwrap_or(true), on_toggle);
+            } else {
+                if let Some(disclosure) = self.header_disclosure() {
+                    disclosure.on_toggle = on_toggle;
+                }
+                if let Some(expanded) = expanded {
+                    self.set_expanded(expanded);
+                }
+            }
+        } else if self.expanded.is_some() {
+            self.expanded = None;
+            if let Some(row) = self.header_row() {
+                row.disclosure = None;
+                if row.has_chevron {
+                    row.parts.children.pop();
+                    row.has_chevron = false;
+                }
+            }
+        }
+        true
+    }
+}
+
+/// A collapsible section opened or closed: carries whether it is open now.
+fn reports(toggle: Event) -> Option<Box<dyn FnMut(bool)>> {
+    if toggle.is_none() {
+        None
+    } else {
+        Some(Box::new(move |open| toggle.fire(Some(Value::Bool(open)))))
+    }
+}
+
+impl Section {
+    /// The disclosure its header carries, when it is collapsible.
+    fn header_disclosure(&mut self) -> Option<&mut super::Disclosure> {
+        self.header_row()?.disclosure.as_mut()
+    }
+
+    /// Its header's row, when it has a header.
+    fn header_row(&mut self) -> Option<&mut super::HeaderRow> {
+        self.parts
+            .children
+            .first_mut()?
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<super::HeaderRow>())
     }
 }
 

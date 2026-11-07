@@ -230,6 +230,13 @@ impl Flow {
         self.cache_present = false;
     }
 
+    /// The children changed where they stand: the next pass lays them out anew, and the frame
+    /// draws them rather than the scene it kept.
+    pub fn children_changed(&mut self) {
+        self.child_nodes.clear();
+        self.invalidate();
+    }
+
     pub fn take_children(&mut self) -> Vec<Box<dyn Widget>> {
         self.keep_ghosts();
         self.child_nodes.clear();

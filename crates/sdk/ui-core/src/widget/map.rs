@@ -411,6 +411,31 @@ impl Described for Map {
         map
     }
 
+    /// Where the pins stand and which ground the map is on change where it stands: the camera
+    /// keeps its place, and the pins keep their views (the pins themselves arrive by key).
+    fn set_props(&mut self, props: MapProps) -> bool {
+        let MapProps {
+            name: _,
+            ground,
+            pins,
+        } = props;
+        self.ground = ground;
+        for pin in pins {
+            let place = PinPlace {
+                x: pin.x.unwrap_or(0) as f64,
+                y: pin.y.unwrap_or(0) as f64,
+                width: (pin.width.unwrap_or(360) as f64).max(1.0),
+                height: pin.height.map(|height| (height as f64).max(1.0)),
+            };
+            if let Some((_, held, _)) = self.pins.iter_mut().find(|(key, _, _)| *key == pin.key) {
+                *held = place;
+            }
+        }
+        self.dirty = true;
+        self.invalidation.invalidate();
+        true
+    }
+
     fn slot_views(&mut self, slot: &str) -> Option<&mut dyn SlotViews> {
         (slot == "pins").then_some(self as &mut dyn SlotViews)
     }

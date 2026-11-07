@@ -44,12 +44,22 @@ impl Described for ControlRow {
         row
     }
 
-    /// What is chosen changes in place; other content is built again.
+    /// What it is called and what a press does change where the row stands; its content changes
+    /// by key through [`Self::slot_views`]. A row that gains or loses its press is built again.
     fn set_props(&mut self, props: ControlRowProps) -> bool {
-        if props.choose.is_none() != self.has_choose() {
+        if props.choose.is_none() == self.has_choose() {
             return false;
         }
         self.set_selected(props.selected);
+        self.set_name(props.label);
         true
+    }
+
+    /// What stands in the row changes by key in place.
+    fn slot_views(&mut self, slot: &str) -> Option<&mut dyn crate::component::SlotViews> {
+        if slot != "children" {
+            return None;
+        }
+        Some(self.content_mut())
     }
 }
