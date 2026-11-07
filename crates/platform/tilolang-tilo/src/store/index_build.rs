@@ -190,10 +190,18 @@ impl TiloStore {
             inner.notify_all();
         }
         // An index built over fewer chunks than the manifest names answers no row in the ones
-        // it does not, and a window would show a list shorter than the workspace's: a store
-        // that can load them loads every chunk, as one that was sent them opens. An index kept
-        // from an open over every chunk needs none of this.
+        // it does not, and a window would show a list shorter than the workspace's.
         drop(inner);
+        self.load_short();
+        any
+    }
+
+    /// Read every chunk the record's manifest names that no index read from reflects: an index
+    /// built over fewer chunks answers no row in the missing ones, and a window would show a
+    /// list shorter than the workspace's. A store that can load them loads them, as one that
+    /// was sent every chunk opens; an index kept from an open over all of them needs none.
+    /// Returns whether a chunk was read.
+    pub fn load_short(&self) -> bool {
         let short: Vec<ChunkNo> = {
             let held = self.held();
             let reflected: BTreeSet<ChunkNo> = held
@@ -214,12 +222,16 @@ impl TiloStore {
                     .collect()
             }
         };
+        let mut loaded = false;
         for chunk in short {
-            if let Err(error) = self.load_chunk(chunk) {
-                tracing::warn!(%error, chunk, "a chunk the index does not reflect is not loaded");
+            match self.load_chunk(chunk) {
+                Ok(()) => loaded = true,
+                Err(error) => {
+                    tracing::warn!(%error, chunk, "a chunk the index does not reflect is not loaded");
+                }
             }
         }
-        any
+        loaded
     }
 
     /// Everything the index of `app` holds now (the store's open writes apart): what tests

@@ -59,7 +59,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value as Json, json};
-use tilo_actions::{ActionContext, ActionInvoker};
+use tilo_actions::{Action as _, ActionContext, ActionInvoker};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Collection, Edit, EditOp, Id, Segment};
 use tilolang::source::{compile_dirs, dependency_order};
@@ -71,6 +71,7 @@ use tilolang_runtime::{
 };
 
 use crate::action::{Authorship, DynAction, DynEdit};
+use crate::chunk::{self, Chunks};
 use crate::host::{Host, Opening};
 use crate::publish::{Planner, Publications};
 use crate::record::{DynRecord, DynValue};
@@ -608,6 +609,11 @@ fn item_id(i: usize) -> String {
 /// A list inside holders is filled from the bottom up: the holders hold one record each (the
 /// workspace's mail accounts; a workspace has a few), and what grows is the collection in it.
 fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
+    with_holders(list, seeded_items(list, n, meta)?, meta)
+}
+
+/// `n` items of [`List`], as its collection holds them, outside any holder.
+fn seeded_items(list: &List, n: usize, meta: &Meta) -> Result<Collection<DynRecord>, String> {
     let n = if list.places { n.min(PLACES) } else { n };
     let mut items = Collection::default();
     for i in 0..n {
@@ -633,7 +639,7 @@ fn seeded_collection(list: &List, n: usize, meta: &Meta) -> Result<Collection<Dy
         }
         items.push(Id::from_raw(item_id(i)), item);
     }
-    with_holders(list, items, meta)
+    Ok(items)
 }
 
 /// `items` of the list's collection, wrapped in the records the collection is inside: each
@@ -820,6 +826,99 @@ pub fn seeded_record_by(packages: &[Compiled], n: usize, who: &str) -> Result<Do
         .filter(|m| m.app != main.meta.app)
         .collect();
     seeded_workspace(&shape_of(&main.meta, &others)?, n, &main.meta, who)
+}
+
+/// The workspace the last of `packages` seeds `n` items of, held as the chunks the store writes:
+/// the record's own document ([`chunk::FIRST`]) names in its manifest the run each chunk of items
+/// is, and the chunks above it hold the runs' items — [`chunk::ITEMS`] items an action, one
+/// action an item, as a person adding them makes.
+///
+/// The items are those of the root's own collection. A collection inside holders (a mail
+/// account's conversations) is seeded as one document, in the record.
+///
+/// # Errors
+/// The package's root has nothing to seed, seeding fails, or the collection grows inside holders.
+pub fn seeded_chunks(packages: &[Compiled], n: usize) -> Result<Chunks, String> {
+    for compiled in packages {
+        crate::meta::MetaExt::register_schemas(&compiled.meta);
+    }
+    let main = packages.last().ok_or("no package")?;
+    let others: Vec<&Meta> = packages
+        .iter()
+        .map(|p| &p.meta)
+        .filter(|m| m.app != main.meta.app)
+        .collect();
+    let shape = shape_of(&main.meta, &others)?;
+    // The root and the roots it links, their collections empty: the items come as the action
+    // that adds each does, one change an item in the chunk its run is in.
+    let mut record = Doc::new();
+    seed(&mut record, &shape, 0, &main.meta, "seed")?;
+    let mut chunks = Chunks::of(record);
+    let Some(list) = &shape.list else {
+        return Ok(chunks);
+    };
+    if !list.holders.is_empty() {
+        return Err("the items of a collection inside holders are seeded as one document".into());
+    }
+    let items = seeded_items(list, n, &main.meta)?;
+    let root = root_id(&shape);
+    let field = list.field.clone();
+    let per = usize::try_from(chunk::ITEMS).map_err(|e| e.to_string())?;
+    for (at, (id, item)) in items.iter().enumerate() {
+        let run = at
+            .checked_div(per)
+            .and_then(|run| run.checked_add(1))
+            .ok_or("the items do not fit their chunks")?;
+        let number = chunk::FIRST.saturating_add(u64::try_from(run).map_err(|e| e.to_string())?);
+        let in_run = at.checked_rem(per).ok_or("a chunk holds no items")?;
+        let key = format!("{at:010}");
+        let at_place = tilolang_runtime::place::Placement::At {
+            place: tilolang_runtime::place::Place {
+                parent: None,
+                field: field.clone(),
+                key: key.clone(),
+            },
+            was: None,
+        };
+        let action = DynAction {
+            app: shape.app.clone(),
+            kind: list.item_ty.clone(),
+            action_id: "add".into(),
+            args: Json::Null,
+            authorship: Authorship {
+                at: Some(BENCH_TIME.to_owned()),
+                ..Authorship::default()
+            },
+            edits: vec![
+                // The run's entry in the record, which the insert into its chunk goes with.
+                DynEdit::RunChunk {
+                    holder: root.clone(),
+                    field: field.clone(),
+                    chunk: number,
+                    last: key,
+                    len: u64::try_from(in_run.saturating_add(1)).map_err(|e| e.to_string())?,
+                },
+                DynEdit::Insert {
+                    id: root.clone(),
+                    item: id.as_str().to_owned(),
+                    record: tilo_resource::Model::to_json(item),
+                    at: at_place.encode(),
+                }
+                .in_chunk(number),
+            ],
+        };
+        for edit in &action.edits {
+            let target = edit.chunk().unwrap_or(chunk::FIRST);
+            let one = DynAction {
+                edits: vec![edit.clone()],
+                ..action.clone()
+            };
+            one.apply(chunks.open(target)).map_err(|e| e.to_string())?;
+            chunks.open(target).commit();
+        }
+    }
+    chunks.reread_placement();
+    Ok(chunks)
 }
 
 fn root_id(shape: &Shape) -> String {

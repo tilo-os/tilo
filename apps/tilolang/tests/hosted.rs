@@ -461,7 +461,7 @@ impl Session {
             &route,
             NOTES,
             "ada",
-            automerge::AutoCommit::new(),
+            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
             None,
             (Box::new(()), Rc::default()),
             |hosted| {
@@ -500,19 +500,20 @@ impl Session {
             &route,
             app,
             person,
-            automerge::AutoCommit::new(),
+            tilolang_tilo::chunk::Chunks::of(automerge::AutoCommit::new()),
             None,
             (Box::new(inbox), sent),
             window,
         )
     }
 
-    /// A person at a Tasks window over the workspace record `doc`, opened on `route`, whose
-    /// package keeps what it keeps in `storage`: the indexes an earlier window of the same
-    /// route left there are read, not built. The window settles before it is handed over.
+    /// A person at a Tasks window over the workspace record `chunks` (its own chunk and the
+    /// chunks above it this replica holds), opened on `route`, whose package keeps what it
+    /// keeps in `storage`: the indexes an earlier window of the same route left there are read,
+    /// not built. The window settles before it is handed over.
     fn tasks_over_in(
         route: &RouteSpec,
-        doc: ui::tilo_resource::Doc,
+        chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -527,7 +528,7 @@ impl Session {
             route,
             TASKS,
             "ada",
-            doc,
+            chunks,
             storage,
             (Box::new(inbox), sent),
             |hosted| {
@@ -544,7 +545,7 @@ impl Session {
     /// frame.
     fn tasks_over_launched(
         route: &RouteSpec,
-        doc: ui::tilo_resource::Doc,
+        chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
     ) -> Self {
         let (sent, inbox): (Sent, Inbox) = (Rc::default(), Rc::default());
@@ -559,7 +560,7 @@ impl Session {
             route,
             TASKS,
             "ada",
-            doc,
+            chunks,
             storage,
             (Box::new(inbox), sent),
             |hosted| {
@@ -574,7 +575,7 @@ impl Session {
 
     /// `person` at the window `window` makes of the hosted window of the app `app`, whose
     /// package [`package_of`] names, whose instance's connection is `manager`, on `route`;
-    /// `wire` is what the broker's end holds and what the instance sends it, `doc` the
+    /// `wire` is what the broker's end holds and what the instance sends it, `chunks` the
     /// workspace record the instance runs over, and `storage` where the package keeps what it
     /// keeps (nothing: in memory). The window settles before it is handed over.
     fn over(
@@ -582,12 +583,12 @@ impl Session {
         route: &RouteSpec,
         app: &str,
         person: &str,
-        doc: ui::tilo_resource::Doc,
+        chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
         wire: (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
     ) -> Self {
-        let mut session = Self::launch(manager, route, app, person, doc, storage, wire, window);
+        let mut session = Self::launch(manager, route, app, person, chunks, storage, wire, window);
         session.settle();
         session
     }
@@ -598,7 +599,7 @@ impl Session {
         route: &RouteSpec,
         app: &str,
         person: &str,
-        doc: ui::tilo_resource::Doc,
+        chunks: tilolang_tilo::chunk::Chunks,
         storage: Option<std::path::PathBuf>,
         (broker, sent): (Box<dyn std::any::Any>, Sent),
         window: impl FnOnce(HostedWindow) -> Window,
@@ -611,7 +612,7 @@ impl Session {
             handle: Some(person.to_owned()),
         }));
         let _ = manager.poll();
-        let record = InstanceRecord::new(doc, manager, route.clone(), person);
+        let record = InstanceRecord::of(chunks, manager, route.clone(), person);
         let woken = Arc::new(Woken::default());
         let wake: tilolang_tilo::background::Waker = woken.waker();
         let mut host = TilolangHost::new(storage, Arc::clone(&wake));
@@ -735,6 +736,14 @@ impl Session {
         let hosted = self.host.instances().next().expect("the window's instance");
         let host = hosted.instance().host().expect("the instance's store");
         host.store().stats().builds
+    }
+
+    /// Hand the window's store every chunk of `chunks`, as a replica that joined each chunk's
+    /// route holds them: what a window that reads only the chunks it shows is compared with.
+    fn held_every_chunk(&self, chunks: &tilolang_tilo::chunk::Chunks) {
+        let hosted = self.host.instances().next().expect("the window's instance");
+        let host = hosted.instance().host().expect("the instance's store");
+        host.sync(chunks);
     }
 
     fn hosted(&mut self) -> &HostedWindow {

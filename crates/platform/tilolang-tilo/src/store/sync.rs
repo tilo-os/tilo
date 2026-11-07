@@ -47,6 +47,25 @@ impl TiloStore {
         moved
     }
 
+    /// [`Self::sync`] of the chunks the store already holds of `record`: a chunk it was not
+    /// sent is left out, and is read from the chunk loader when a read or a write reaches it
+    /// ([`TiloStore::set_chunk_loader`]). Returns whether any chunk had moved.
+    pub fn sync_held(&self, record: &Chunks) -> bool {
+        let held: Vec<ChunkNo> = self.held().chunks.numbers().collect();
+        let mut moved = false;
+        for chunk in held.into_iter().filter(|chunk| *chunk != chunk::FIRST) {
+            if let Some(doc) = record.mirror(chunk) {
+                moved |= self.sync_document(chunk, doc);
+            }
+        }
+        if self.held().chunks.has_record()
+            && let Some(doc) = record.first()
+        {
+            moved |= self.sync_document(chunk::FIRST, doc);
+        }
+        moved
+    }
+
     /// [`Self::sync`] of a record the caller hands over as one document: the store takes it as
     /// chunk [`chunk::FIRST`]. A record whose manifest names chunks above it is synced through
     /// [`Self::sync`] instead, which takes those chunks in too; a write the store routed to one
@@ -111,6 +130,12 @@ impl TiloStore {
             return true;
         };
         inner.stats.incremental_syncs = inner.stats.incremental_syncs.saturating_add(1);
+        if chunk == chunk::FIRST {
+            // The record's manifest is where every other chunk's resources are placed: the
+            // record's changes may have started a run in a chunk, and a read or a write there
+            // routes by what it says now.
+            inner.chunks.reread_placement();
+        }
         // The record's new changes are on the mirror; what an origin derives is written onto
         // them again, as the rollback took it out.
         inner.reapply_derived(chunk);

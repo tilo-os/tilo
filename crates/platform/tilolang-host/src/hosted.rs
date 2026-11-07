@@ -58,10 +58,12 @@ thread_local! {
     static CALLER: RefCell<Option<Caller>> = const { RefCell::new(None) };
 }
 
-/// Bring `host` up to date with the record and every chunk of it a replica holds: the store reads
-/// and writes the resources each chunk holds where the record's manifest places them.
+/// Bring `host` up to date with the record and the chunks of it this replica holds: the store reads
+/// and writes the resources each chunk holds where the record's manifest places them, and reads
+/// the chunks it was not sent if something reads or writes in them.
 fn sync_record(host: &Host, record: &InstanceRecord) {
-    host.sync(record.chunks());
+    host.sync_chunks(record.chunks());
+    host.sync_from(record.doc());
 }
 
 /// Who invokes, as the runtime reads the invoker the broker admitted.

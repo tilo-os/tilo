@@ -1467,7 +1467,8 @@ impl<'d> Derive<'d> {
     }
 
     /// Where the resource at `path` is in the record, and its type: `None` when it is not
-    /// there.
+    /// there. The chunk holding the item's map is kept with it: it is where its fields are read
+    /// and its writes go, and an item of a run is in a chunk above the record's.
     fn locate(&mut self, path: &str) -> Option<(Option<ObjId>, &'static TypeSchema)> {
         let doc = doc_of(path);
         let (root, schema) = self.record_of(doc)?;
@@ -1476,6 +1477,7 @@ impl<'d> Derive<'d> {
         };
         let (app, _) = self.docs.get(doc)?;
         let found = crate::items::find_across(self.chunks, app, doc, schema, self.nested, item)?;
+        self.chunks_of.insert(path.to_owned(), found.chunk);
         Some((found.obj, found.ty.as_deref().and_then(lookup)?))
     }
 
@@ -1640,6 +1642,7 @@ impl<'d> Derive<'d> {
                 let chunk = found
                     .as_ref()
                     .map_or_else(|| self.chunk_of(&path), |found| found.chunk);
+                self.chunks_of.insert(path.clone(), chunk);
                 let before = placed_in(sink, &path)?;
                 match (before, target) {
                     (None, None) => {}
@@ -1798,7 +1801,6 @@ impl<'d> Derive<'d> {
             return Ok(());
         };
         let holder = place_holder(doc_of(path), place);
-        self.chunks_of.insert(path.to_owned(), chunk);
         sink.put_text(path, KEY, &place.key)?;
         sink.put_text(path, IN, &in_of(&holder, &place.field))?;
         // An item moved into a run of another chunk is read and written there now.

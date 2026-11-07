@@ -1909,18 +1909,18 @@ impl Instance {
 
     /// The first half of a frame over the record's chunks: every chunk of the record this
     /// replica holds into the store, which reads and writes there the resources the record's
-    /// manifest places in it ([`Host::sync`]), and the record's frame
-    /// ([`Self::sync`]).
+    /// manifest places in it, and reads the ones it was not sent when a read or a write reaches
+    /// them ([`Host::sync_chunks`]); and the record's frame ([`Self::sync`]).
     pub fn sync_chunks(&mut self, chunks: &crate::chunk::Chunks) {
         let mut moved = false;
         if let Some(host) = self.host.borrow().as_ref().cloned() {
-            moved |= host.sync(chunks);
+            moved |= host.sync_chunks(chunks);
         }
         // The record's frame reads the store the chunks were brought into, and opens the host
         // when it was not there yet: the chunks go in again after it, then.
         self.sync(chunks.first());
         if let Some(host) = self.host.borrow().as_ref().cloned() {
-            moved |= host.sync(chunks);
+            moved |= host.sync_chunks(chunks);
         }
         if moved {
             self.moved = true;
