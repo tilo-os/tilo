@@ -837,6 +837,32 @@ impl Core {
         aref: &ActionRef,
         from: Option<&ResourceRef>,
     ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as(None, invoker, aref, from)
+    }
+
+    /// [`Core::invoke_direct_from`] as the run `run`: an invocation whose run every replica can
+    /// name the same way (a trigger, run for a record at an instant, on whichever device comes
+    /// to run it) runs as that run on each of them, so what it queues and writes is held once.
+    ///
+    /// # Errors
+    ///
+    /// As [`Core::invoke_direct`].
+    pub fn invoke_direct_named(
+        &self,
+        run: &RunId,
+        invoker: &Principal,
+        aref: &ActionRef,
+    ) -> Result<InvokeOutcome, RuntimeError> {
+        self.invoke_direct_as(Some(run), invoker, aref, aref.from.as_ref())
+    }
+
+    fn invoke_direct_as(
+        &self,
+        identity: Option<&RunId>,
+        invoker: &Principal,
+        aref: &ActionRef,
+        from: Option<&ResourceRef>,
+    ) -> Result<InvokeOutcome, RuntimeError> {
         // One action over many items is one change: its references are the change's own.
         if aref.action == MANY_ACTION {
             return self.invoke_many(invoker, aref, from);
@@ -856,7 +882,7 @@ impl Core {
             chain,
             approved_by: None,
             suggested_by: None,
-            identity: None,
+            identity: identity.cloned(),
             from: from.cloned(),
             at: None,
         };
@@ -2445,39 +2471,48 @@ impl Core {
             body,
             opens,
         };
-        let mut txn = None;
-        {
+        let (txn, id) = {
             let mut frames = self.frames.borrow_mut();
-            let Some(run) = frames.run_mut() else {
-                return trap("a notification is only sent in an action");
-            };
-            if let Some(entry) = run.journal.entries.get(run.cursor) {
-                if !matches!(entry, crate::run::JournalEntry::Notified) {
-                    return trap(
-                        "the run diverged from its journal: expected a notification's entry",
-                    );
+            let id = {
+                let Some(run) = frames.run_mut() else {
+                    return trap("a notification is only sent in an action");
+                };
+                if let Some(entry) = run.journal.entries.get(run.cursor) {
+                    if !matches!(entry, crate::run::JournalEntry::Notified) {
+                        return trap(
+                            "the run diverged from its journal: expected a notification's entry",
+                        );
+                    }
+                    run.cursor = run.cursor.saturating_add(1);
+                    return ret_void();
                 }
-                run.cursor = run.cursor.saturating_add(1);
-                return ret_void();
-            }
-        }
-        if let Ok(frame) = self.frames.borrow().top()
-            && let FrameKind::Action(state) = &frame.kind
-        {
-            txn = Some(state.txn);
-        }
-        let Some(txn) = txn else {
-            return trap("a notification is only sent in an action");
+                // The notice is an outside effect of the run like any other (`outside`), and
+                // the record it is takes that effect's key for its id: a replica that runs the
+                // invocation again — one that holds no journal of the run, before or after a
+                // person was asked — writes the one record, so the person is told once.
+                crate::notify::record_id(&run.next_effect_key())
+            };
+            let txn = match &frames.top()?.kind {
+                FrameKind::Action(state) => state.txn,
+                _ => return trap("a notification is only sent in an action"),
+            };
+            (txn, id)
         };
-        self.write_notice(txn, &notice)?;
+        self.write_notice(txn, &id, &notice)?;
         self.journal_push(crate::run::JournalEntry::Notified)?;
         ret_void()
     }
 
-    /// Write the notice `notice` as a record of this action's change, in the transaction
+    /// Write the notice `notice` as the record `id` of this action's change, in the transaction
     /// `txn`: creating a resource writes nothing of the app's own, so the change takes its app
-    /// and kind from what else the action wrote.
-    fn write_notice(&self, txn: crate::store::Txn, notice: &crate::notify::Notice) -> HResult<()> {
+    /// and kind from what else the action wrote. A record already under `id` is that notice,
+    /// written by a replica of the run before this one: it is not written again.
+    fn write_notice(
+        &self,
+        txn: crate::store::Txn,
+        id: &str,
+        notice: &crate::notify::Notice,
+    ) -> HResult<()> {
         use tilolang::{NOTICE_BODY, NOTICE_OPENS, NOTICE_TITLE, NOTICE_TO, NOTICE_TYPE};
 
         let record = self
@@ -2486,9 +2521,12 @@ impl Core {
             .new_record(NOTICE_TYPE)
             .ok_or_else(|| HostFail::Trap("the host keeps no notice type".into()))?;
         let mut store = self.store.borrow_mut();
-        let id = store.fresh_id("notice");
+        let at = ResourceRef::root(id.to_owned(), NOTICE_TYPE.to_owned());
+        if store.type_of(&at).is_ok() {
+            return Ok(());
+        }
         let at = store
-            .create_in(txn, &record, &id)
+            .create_in(txn, &record, id)
             .map_err(|error| HostFail::Trap(error.to_string()))?;
         let scalar = |value: &Value, ty: &crate::meta::Ty| {
             crate::host_res::to_scalar(value, ty)

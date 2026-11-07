@@ -7,7 +7,9 @@
 //! ([`crate::action::TRIGGERS_KEY`]): the period it ran in, or the instant it fired at. A second
 //! run of the same period or instant is refused there, so a trigger runs once across the
 //! workspace's devices, and a run a device missed while everything was off runs once when one
-//! comes up.
+//! comes up. The run it is is named by the trigger, the record and the instant ([`Due::run`]),
+//! so two devices that each come to run that instant before they have met — a workspace whose
+//! origin moved — write one notice and queue one effect between them.
 
 use serde_json::Value as Json;
 use tilolang::calendar::instant;
@@ -30,10 +32,11 @@ pub fn run(host: &Host, now: i64) -> usize {
             continue;
         }
         let by = crate::authority::trigger_principal(&due.app);
-        host.store().set_triggering(Some(due.triggering));
-        let outcome = host
-            .runtime()
-            .invoke_action(&by, (due.action.as_str(), due.args));
+        host.store().set_triggering(Some(due.triggering.clone()));
+        let run = due.run();
+        let outcome =
+            host.runtime()
+                .invoke_action_named(&run, &by, (due.action.as_str(), due.args));
         host.store().set_triggering(None);
         match outcome {
             Ok(InvokeOutcome::Done(_)) => ran = ran.saturating_add(1),
@@ -122,6 +125,18 @@ struct Due {
     action: String,
     args: Vec<Value>,
     triggering: Triggering,
+}
+
+impl Due {
+    /// The run this is, by name: the trigger, the record it runs for and the instant it fires
+    /// at. A device that comes to run the same one runs the same run, so the notice it tells
+    /// and the effects it queues are the ones the device that ran it first made, held once.
+    fn run(&self) -> String {
+        format!(
+            "trigger:{}:{}:{}",
+            self.triggering.key, self.triggering.doc, self.triggering.value
+        )
+    }
 }
 
 /// What `host`'s packages have due at `now`, each to run once.
