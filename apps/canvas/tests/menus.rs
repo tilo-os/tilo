@@ -110,7 +110,7 @@ fn rename_chosen_with_the_pointer_takes_the_typed_name() {
 }
 
 #[test]
-fn a_sentence_typed_into_a_context_menu_asks_an_agent_about_where_it_was_opened() {
+fn a_sentence_typed_into_a_context_menu_opens_the_box_about_where_it_was_opened() {
     let mut app = TestApp::<App>::new().unwrap();
     app.call(
         "draw",
@@ -118,21 +118,23 @@ fn a_sentence_typed_into_a_context_menu_asks_an_agent_about_where_it_was_opened(
     )
     .unwrap();
     app.harness().key("v");
-    let _ = ui::shared_selection::take_agent_requests();
-    // The toolkit's menu offers it while a desktop agent can be told, with
+    let _ = ui::shared_selection::take_send_to();
+    // The toolkit's menu offers it while a desktop can send from it, with
     // no code of the app's own.
-    ui::shared_selection::set_agent_host_available(true);
+    ui::shared_selection::set_send_host_available(true);
     let canvas = app.harness().targets()["canvas"];
     let at = (canvas.center().x, canvas.center().y);
     right_click(&mut app, at);
-    // A sentence none of its rows answers asks an agent about where the
-    // menu was opened.
+    // A sentence none of its rows answers goes into the box, about where
+    // the menu was opened.
     app.harness().type_text("make the sun warmer");
     app.harness().key("Enter");
-    ui::shared_selection::set_agent_host_available(false);
-    let asked = ui::shared_selection::take_agent_requests();
-    assert_eq!(asked.len(), 1, "one request to tell an agent");
-    assert_eq!(asked[0].at, Some(ui::kurbo::Point::new(at.0, at.1)));
-    assert_eq!(asked[0].ask.as_deref(), Some("make the sun warmer"));
+    let box_ = ui::shared_selection::box_open();
+    ui::shared_selection::set_send_host_available(false);
+    assert!(box_, "the box is open with the sentence in it");
+    assert!(
+        ui::shared_selection::take_send_to().is_empty(),
+        "nothing sent yet: the person sends it"
+    );
     assert_eq!(app.state().marks.len(), 1, "no app entry ran");
 }

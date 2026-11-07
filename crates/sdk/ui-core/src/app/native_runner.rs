@@ -2009,6 +2009,7 @@ impl AppHandler {
                 | crate::floating_surface::FloatingSurfaceHostMessage::EmbedStates { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::OpenWindows { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::WindowShareAsk { .. }
+                | crate::floating_surface::FloatingSurfaceHostMessage::Recipients { .. }
                 | crate::floating_surface::FloatingSurfaceHostMessage::Unanswered { .. }
                 // Never delivered: the client's `pump` ends on it.
                 | crate::floating_surface::FloatingSurfaceHostMessage::VersionMismatch {

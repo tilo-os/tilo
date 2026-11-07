@@ -726,6 +726,12 @@ impl super::Decorator for ContextMenuArea {
                 self.pending = None;
             }
         }
+        if !self.menu.is_open() && self.menu.send_to_alone_open() {
+            self.menu.handle_event(event, ctx);
+            if *ctx.handled {
+                return;
+            }
+        }
         if self.menu.is_open() {
             // The menu itself tells the host's replay of the still opening
             // pointer from a real move, so the keyboard keeps its row.
@@ -801,6 +807,7 @@ impl super::Decorator for ContextMenuArea {
 
     fn wants_pointer_capture(&self) -> bool {
         self.menu.is_open()
+            || self.menu.send_to_alone_open()
             || self.pending.is_some()
             || self.picker.is_some()
             || self.content.wants_pointer_capture()
@@ -820,6 +827,8 @@ impl super::Decorator for ContextMenuArea {
 
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()
+            || self.menu.needs_redraw()
+            || self.menu.send_to_alone_open()
             || self.content.needs_animation_frame()
             || self.picker_wanted.is_some()
             || self
@@ -860,10 +869,22 @@ impl super::Decorator for ContextMenuArea {
             // have changed: the menu stands where what opened it is now.
             self.place_menu();
         }
+        // A box the window or the shell asked for with no menu around it:
+        // it stands where its anchor does, until it sends.
+        if let Some((about, bounds, draft)) = crate::shared_selection::take_open_send_box()
+            && !self.menu.is_open()
+        {
+            if self.viewport.is_none() {
+                self.viewport = presence.viewport.get();
+            }
+            self.menu.set_viewport(self.viewport);
+            self.menu
+                .open_send_to_alone(about, bounds, draft.as_deref());
+        }
         self.content
             .draw_overlay(scene, transform, text_renderer, theme, presence);
         // The menu paints in the overlay pass, over everything.
-        if self.menu.is_drawn() {
+        if self.menu.is_drawn() || self.menu.send_to_alone_open() {
             self.menu
                 .draw_overlay(scene, transform, text_renderer, theme, presence);
         }

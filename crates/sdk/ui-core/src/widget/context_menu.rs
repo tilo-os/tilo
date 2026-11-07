@@ -32,6 +32,7 @@ mod folding;
 mod placement;
 mod published;
 mod query;
+mod send_to_box;
 
 pub use emoji_row::EmojiRow;
 pub use folding::MenuPick;
@@ -570,6 +571,12 @@ pub struct ContextMenu {
     /// A menu that has settled says so, and the window it floats in stops
     /// asking for frames.
     dirty: bool,
+    /// The send-to box beside it: a menu opened on something carries the
+    /// sentence typed into it there, and sends it ([`super::SendToBox`]).
+    send_to: super::SendToBox,
+    /// Where a box opened with no menu around it stands: beside this rect,
+    /// which is what the window pointed at or its pointer's place.
+    alone: Option<Rect>,
 }
 
 impl Default for ContextMenu {
@@ -618,6 +625,8 @@ impl ContextMenu {
             pinned_top: None,
             emoji_cell: 0,
             dirty: true,
+            send_to: super::SendToBox::new(),
+            alone: None,
         }
     }
 
@@ -672,6 +681,7 @@ impl ContextMenu {
     /// Without it the app attaches what is under the pointer, else its
     /// window.
     pub fn set_about(&mut self, about: Option<crate::shared_selection::SharedSelection>) {
+        self.send_to.set_about(about.clone());
         self.about = about;
     }
 
@@ -746,6 +756,12 @@ impl ContextMenu {
         self.measured_width = MENU_WIDTH * self.text_scale;
         self.row_height = self.row_floor();
         self.layout_at_position();
+        // A menu opened on something carries what is typed into it: the box
+        // stands beside it with that subject.
+        if self.about.is_some() && crate::shared_selection::send_host_available() {
+            self.send_to.open(None);
+            self.send_to.place(self.rect, self.viewport);
+        }
         self.dirty = true;
     }
 
@@ -787,9 +803,12 @@ impl ContextMenu {
         let viewport = viewport.filter(|rect| rect.width() > 0.0 && rect.height() > 0.0);
         if self.viewport != viewport {
             self.viewport = viewport;
+            self.send_to.set_viewport(viewport);
             self.dirty = true;
         }
         self.layout_at_position();
+        self.send_to
+            .place(self.alone.unwrap_or(self.rect), viewport);
     }
 
     /// Open a shared menu inside a host viewport. Geometry is immediately usable;
@@ -819,9 +838,12 @@ impl ContextMenu {
         if self.anchor != Some(anchor) || self.viewport != Some(viewport) {
             self.anchor = Some(anchor);
             self.viewport = Some(viewport);
+            self.send_to.set_viewport(Some(viewport));
             self.dirty = true;
         }
         self.layout_at_position();
+        self.send_to
+            .place(self.alone.unwrap_or(self.rect), Some(viewport));
     }
 
     fn has_leading_gutter(&self) -> bool {
@@ -1060,6 +1082,8 @@ impl ContextMenu {
 
     /// Safe to call when already closed.
     pub fn close(&mut self) {
+        self.send_to.close();
+        self.alone = None;
         self.pinned_top = None;
         self.open = false;
         self.appear.show(false);
@@ -1075,6 +1099,8 @@ impl ContextMenu {
     /// menu was (a sheet under its scrim): a menu fading out there shows
     /// through it. Safe to call when already closed.
     pub fn close_at_once(&mut self) {
+        self.send_to.close();
+        self.alone = None;
         self.close();
         self.appear.snap(false);
     }
@@ -1140,6 +1166,9 @@ impl ContextMenu {
 
     /// For dismiss-on-click-outside routing.
     pub fn contains(&self, point: [f64; 2]) -> bool {
+        if self.send_to.contains(Point::new(point[0], point[1])) {
+            return true;
+        }
         self.open
             && self
                 .rect
@@ -1739,6 +1768,7 @@ impl Widget for ContextMenu {
     /// or one nested in it, which it paints too — has changed.
     fn needs_redraw(&self) -> bool {
         self.dirty
+            || self.send_to.needs_redraw()
             || self
                 .submenu
                 .as_ref()
@@ -1853,6 +1883,14 @@ impl Widget for ContextMenu {
     ) {
         self.set_text_scale(theme.text_scale);
         self.cache_theme(theme);
+        // A box with no menu around it stands on its own: the menu's
+        // arriving and leaving is not its.
+        if self.send_to_alone_open() {
+            self.send_to.drain_answer();
+            let anchor = self.alone.unwrap_or(self.rect);
+            self.send_to.place(anchor, self.viewport);
+            self.send_to.paint(scene, transform, text_renderer, theme);
+        }
         // It comes from where it was opened and goes back
         // (`motion::Appear`); a closing menu is drawn until it has gone but
         // takes no input.
@@ -1893,6 +1931,11 @@ impl Widget for ContextMenu {
         if let Some((_, menu)) = self.submenu.as_mut() {
             menu.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
+        if self.send_to.is_open() {
+            self.send_to.drain_answer();
+            self.send_to.place(self.rect, self.viewport);
+            self.send_to.paint(scene, transform, text_renderer, theme);
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -1914,6 +1957,12 @@ impl Widget for ContextMenu {
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if !self.open {
+            if self.send_to_alone_open() {
+                self.handle_alone(event, ctx);
+            }
+            return;
+        }
+        if self.route_to_send_to(event, ctx) {
             return;
         }
         if self.route_to_submenu(event, ctx) {
@@ -2140,7 +2189,18 @@ impl Widget for ContextMenu {
     /// Participates in the App's modal-capture contract — suppressing focus
     /// shortcuts while up.
     fn modal_capture(&self) -> Option<Rect> {
-        if self.open { Some(self.rect) } else { None }
+        if self.send_to_alone_open() {
+            return Some(self.send_to.rect());
+        }
+        if !self.open {
+            return None;
+        }
+        let box_rect = self.send_to.rect();
+        Some(if self.send_to.is_open() {
+            self.rect.union(box_rect)
+        } else {
+            self.rect
+        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -2234,7 +2294,11 @@ impl Widget for ContextMenu {
                 }
                 Some(node)
             });
-        let children = field.into_iter().chain(rows).collect();
+        let children = field
+            .into_iter()
+            .chain(rows)
+            .chain(self.send_to.accessibility())
+            .collect();
         Some(
             AccessNode::new(Role::Menu)
                 .with_state(AccessState {
@@ -2255,6 +2319,9 @@ impl Widget for ContextMenu {
     ) -> bool {
         if !self.open {
             return false;
+        }
+        if self.send_to.perform_semantic_action(target, action) {
+            return true;
         }
         if target == "context-menu:query" {
             let crate::a11y::Action::SetValue(text) = action else {
