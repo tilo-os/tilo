@@ -2471,20 +2471,44 @@ fn reminder_of(hosted: &Hosted, task: &Value) -> String {
 
 const TASKS: &str = "so.tilo.lang.tasks";
 
-/// What the clock reads now, in the seconds a moment is held as.
-fn now_secs() -> i64 {
-    let at = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .expect("the clock is after the epoch");
-    i64::try_from(at.as_secs()).expect("the seconds fit")
+/// The node of the form's tree at `key`.
+fn form_node<'a>(window: &'a Window, key: &str) -> Option<&'a patch::Node> {
+    fn at<'a>(node: &'a patch::Node, key: &str) -> Option<&'a patch::Node> {
+        if node.key == key {
+            return Some(node);
+        }
+        node.children.iter().find_map(|child| at(child, key))
+    }
+    at(&window.form.as_ref()?.tree, key)
+}
+
+/// The choices a `choice` node offers, as the value a pick holds and the words it reads as.
+fn choices_of(node: &patch::Node) -> Vec<(String, String)> {
+    let Some(patch::Value::List(cases)) = node.props.get("cases") else {
+        panic!("a choice with cases: {node:?}");
+    };
+    cases
+        .iter()
+        .map(|case| {
+            let patch::Value::List(parts) = case else {
+                panic!("a case: {case:?}");
+            };
+            match (&parts[0], &parts[1]) {
+                (patch::Value::Text(value), patch::Value::Text(label)) => {
+                    (value.clone(), label.clone())
+                }
+                other => panic!("a case's value and label: {other:?}"),
+            }
+        })
+        .collect()
 }
 
 /// The palette runs an action whose arguments it does not give, and the form asks for them by
-/// their types: a task is added by typing its title, and its reminder set by a segment of a
-/// length of time, both through the invocation the palette sends for any command
+/// their types: a task is added by typing its title, and its reminder set by picking the moment
+/// it names, both through the invocation the palette sends for any command
 /// (forms-and-diagrams.md §1).
 #[test]
-fn the_palette_asks_the_form_for_a_title_and_a_length_of_time() {
+fn the_palette_asks_the_form_for_a_title_and_a_moment() {
     let (app, bundle) = shipped(&shipped_dir().join("tasks"));
     assert_eq!(app, TASKS);
     let (mut host, mut window, _sent, _inbox, _route) = running_app("ada", &app, bundle);
@@ -2525,8 +2549,8 @@ fn the_palette_asks_the_form_for_a_title_and_a_length_of_time() {
         window.form.as_ref().map(|form| form.error.clone())
     );
 
-    // The window holds the task, and offers its actions: "Remind me", which takes a length of
-    // time, asks for it the same way.
+    // The window holds the task, and offers its actions: "Remind me" asks when, the moments a
+    // person names offered to pick from.
     let (task, remind) = {
         let hosted = host.instances().next().expect("the instance runs");
         let task = tasks_of(hosted).first().cloned().expect("the task it made");
@@ -2550,28 +2574,55 @@ fn the_palette_asks_the_form_for_a_title_and_a_length_of_time() {
         "the reminder's form asks when"
     );
     assert_eq!(
-        form_text(&window, "form~after").as_deref(),
+        form_text(&window, "form~when").as_deref(),
         Some(""),
-        "it starts with no length of time, the task having no reminder"
+        "it starts with no moment, the task having no reminder"
     );
-    type_into(&mut window, "form~after~quick", "15m");
+    assert!(
+        !window.form.as_ref().expect("the form").ready,
+        "a moment is required: nothing reads yet, so submit waits"
+    );
+    assert!(
+        !form_node(&window, "form~when~field")
+            .expect("the moment's field")
+            .props
+            .contains_key("label"),
+        "a form of one question says what it asks in its title"
+    );
+    let choices = choices_of(form_node(&window, "form~when~quick").expect("the moments offered"));
+    assert!(
+        choices.iter().all(|(_, label)| label != "None"),
+        "a required moment offers no way to leave it unanswered: {choices:?}"
+    );
+    let (moment, _) = choices
+        .iter()
+        .find(|(_, label)| label == "Tomorrow morning")
+        .unwrap_or_else(|| panic!("tomorrow morning is offered: {choices:?}"));
+    assert_eq!(
+        window.form.as_ref().expect("the form").answers,
+        [form_node(&window, "form~when~quick")
+            .expect("its choices")
+            .key
+            .clone()],
+        "picking a moment answers the form by itself"
+    );
+    type_into(&mut window, "form~when~quick", moment);
     settle(&mut host, &mut window);
     assert_eq!(
-        form_text(&window, "form~after").as_deref(),
-        Some("15m"),
-        "the segment reads as the length of time it offers"
+        form_text(&window, "form~when").as_deref(),
+        Some(moment.as_str()),
+        "the field reads as the moment the pick names"
     );
-    let before = now_secs();
     submit_form(&mut window);
     settle(&mut host, &mut window);
-    let after = now_secs();
-    let at = tilolang::calendar::instant(&reminder_of(
-        host.instances().next().expect("the instance runs"),
-        &task,
-    ))
-    .expect("the reminder reads as a moment");
     assert!(
-        at >= before + 900 && at <= after + 900,
-        "the task is reminded a quarter of an hour on: {at}, {before}..{after}"
+        window.form.is_none(),
+        "the form closes once the action runs: {:?}",
+        window.form.as_ref().map(|form| form.error.clone())
+    );
+    assert_eq!(
+        reminder_of(host.instances().next().expect("the instance runs"), &task),
+        *moment,
+        "the task is reminded at the moment picked"
     );
 }

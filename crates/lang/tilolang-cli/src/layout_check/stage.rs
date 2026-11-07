@@ -1128,6 +1128,96 @@ mod tests {
             || node.children.iter().any(|child| shows_dialog(child, label))
     }
 
+    /// How many of the tasks of `app` the window's workspace reminds anyone of.
+    fn reminded(staged: &Staged, app: &str) -> usize {
+        let host = staged.instance.host().expect("a host");
+        let root = host.root_of(app).expect("the tasks root");
+        let tilolang_tilo::runtime::Value::List(items) =
+            host.runtime().read(&root, "items").expect("the items")
+        else {
+            panic!("the tasks are a list");
+        };
+        items
+            .into_iter()
+            .filter(|item| {
+                let tilolang_tilo::runtime::Value::Ref(task) = item else {
+                    return false;
+                };
+                matches!(
+                    host.runtime().read(&task.target, "remind"),
+                    Ok(tilolang_tilo::runtime::Value::Opt(Some(_)))
+                )
+            })
+            .count()
+    }
+
+    /// The reminder's form, opened from a task's row menu as a finger opens it: the menu's
+    /// "Remind me…" row asks when.
+    fn open_reminder_form(staged: &mut Staged) {
+        let reminder = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
+        };
+        staged.press(&reminder, true).expect("its menu opens");
+        staged.freshen().expect("the menu comes to rest");
+        let row = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::painted_row_named(root, "Remind me…")
+                .expect("the menu offers its row")
+        };
+        press_at(staged, row);
+        assert!(
+            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the row opens the reminder's form"
+        );
+    }
+
+    /// A form of one question is answered by the choice a person picks: the pick submits it, so
+    /// it closes with the task reminded, with nothing else to press.
+    #[test]
+    fn a_quick_choice_answers_a_one_question_form_in_one_press() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let before = reminded(&staged, &app);
+        open_reminder_form(&mut staged);
+        let choice = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Tomorrow morning")
+                .expect("the form offers the moments a person names")
+        };
+        staged.press(&choice, true).expect("the choice presses");
+        staged.freshen().expect("the window comes to rest");
+        assert!(
+            !shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "picking when answers the form: it closes"
+        );
+        assert_eq!(
+            reminded(&staged, &app),
+            before + 1,
+            "and the task is reminded"
+        );
+    }
+
     /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
     /// only dismisses the menu the finger opened, and the row runs nothing.
     #[test]
@@ -1154,25 +1244,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
-        let reminder = {
-            let root = &staged.harness().inspection().root;
-            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
-        };
-        staged.press(&reminder, true).expect("its menu opens");
-        staged.freshen().expect("the menu comes to rest");
-        let row = {
-            let root = &staged.harness().inspection().root;
-            crate::layout_check::painted_row_named(root, "Remind me…")
-                .expect("the menu offers its row")
-        };
-        let center = row.center();
-        staged
-            .press_at(center.x, center.y)
-            .expect("the row presses");
-        assert!(
-            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
-            "the row opens the reminder's form"
-        );
+        open_reminder_form(&mut staged);
     }
 
     /// Press `bounds` as a person presses them, and let the window and its app answer.

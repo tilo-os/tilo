@@ -41,6 +41,10 @@ pub struct Shown {
     tree: UiNode,
     /// Whether submit can be taken: what the app said last.
     ready: Rc<Cell<bool>>,
+    /// The controls whose choice answers the form by itself, by key.
+    completes: Vec<String>,
+    /// Whether such a choice was made and the form is not read whole yet.
+    picked: Cell<bool>,
     answers: Rc<Answers>,
 }
 
@@ -76,6 +80,8 @@ impl Shown {
                 id: form.id,
                 tree,
                 ready,
+                completes: form.answers.clone(),
+                picked: Cell::new(false),
                 answers,
             },
             sheet,
@@ -99,11 +105,18 @@ impl Shown {
         sheet.invalidate_layout();
         self.tree = tree;
         self.ready.set(form.ready);
+        self.completes.clone_from(&form.answers);
     }
 
     /// What the person answered since this was last asked: submit, or cancel (Escape, or the
     /// Cancel button).
     pub fn take_answer(&self) -> Option<ToApp> {
+        // A quick choice that says everything the form asks is answered as soon as the form
+        // reads whole: choosing it is the answer, with no second press.
+        if self.picked.get() && self.ready.get() {
+            self.picked.set(false);
+            return Some(ToApp::FormSubmit { form: self.id });
+        }
         if self.answers.submit.take() && self.ready.get() {
             return Some(ToApp::FormSubmit { form: self.id });
         }
@@ -123,12 +136,19 @@ impl Shown {
             UiEvent::Fire(key, event, _) => (key.clone(), event.strip_prefix("pick.")?.to_owned()),
             _ => return None,
         };
+        let answered = self.completes.iter().any(|key| *key == field);
         let edit = ToApp::FormEdit {
             form: self.id,
             field,
             text,
         };
-        matches!(&edit, ToApp::FormEdit { field, .. } if field.starts_with(KEY)).then_some(edit)
+        if !matches!(&edit, ToApp::FormEdit { field, .. } if field.starts_with(KEY)) {
+            return None;
+        }
+        if answered {
+            self.picked.set(true);
+        }
+        Some(edit)
     }
 }
 
@@ -175,4 +195,123 @@ fn tree_of(form: &wire::Form) -> UiNode {
 /// The dialog `widget` is, when it is a form's.
 pub fn sheet_of(widget: &mut dyn Widget) -> Option<&mut Sheet> {
     widget.as_any_mut()?.downcast_mut::<Sheet>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A form asking one question: the moment the person is to be reminded, the quick choices
+    /// standing beside it, and whether the app reads an answer yet.
+    fn moment_form(ready: bool) -> wire::Form {
+        let mut props = BTreeMap::new();
+        props.insert(
+            "cases".to_owned(),
+            Value::List(vec![Value::List(vec![
+                Value::text("2026-11-08T17:00:00Z"),
+                Value::text("Tomorrow morning"),
+                Value::Opt(None),
+            ])]),
+        );
+        wire::Form {
+            id: 7,
+            title: "Remind me…".to_owned(),
+            submit: "Remind me".to_owned(),
+            destructive: false,
+            ready,
+            error: None,
+            from: None,
+            fields: vec![(
+                "form~when~quick".to_owned(),
+                if ready { "2026-11-08T17:00:00Z" } else { "" }.to_owned(),
+            )],
+            short: false,
+            answers: vec!["form~when~quick".to_owned()],
+            tree: UiNode {
+                kind: "form".to_owned(),
+                key: KEY.to_owned(),
+                props: BTreeMap::new(),
+                binding: None,
+                events: BTreeMap::new(),
+                anchor: None,
+                children: vec![UiNode {
+                    kind: "choice".to_owned(),
+                    key: "form~when~quick".to_owned(),
+                    props,
+                    binding: None,
+                    events: BTreeMap::new(),
+                    anchor: None,
+                    children: Vec::new(),
+                }],
+            },
+        }
+    }
+
+    /// Picking the quick choice of a form that asks one thing answers it: the app reads the
+    /// pick, and the window submits as soon as it reads whole, with no second press.
+    #[test]
+    fn a_picked_quick_choice_answers_the_form() {
+        let mut reconciler = Reconciler::new(Rc::default());
+        let (mut shown, mut sheet) = Shown::build(&moment_form(false), &mut reconciler);
+        assert_eq!(
+            shown.take_answer(),
+            None,
+            "nothing is answered before a pick"
+        );
+
+        let pick = UiEvent::Fire(
+            "form~when~quick".to_owned(),
+            "pick.2026-11-08T17:00:00Z".to_owned(),
+            None,
+        );
+        assert_eq!(
+            shown.edit(&pick),
+            Some(ToApp::FormEdit {
+                form: 7,
+                field: "form~when~quick".to_owned(),
+                text: "2026-11-08T17:00:00Z".to_owned(),
+            }),
+            "the pick is the field's answer"
+        );
+        assert_eq!(
+            shown.take_answer(),
+            None,
+            "the form does not read whole yet: the app has not answered the edit"
+        );
+
+        shown.update(&moment_form(true), &mut sheet, &mut reconciler);
+        assert_eq!(
+            shown.take_answer(),
+            Some(ToApp::FormSubmit { form: 7 }),
+            "the pick submits once the form reads whole"
+        );
+        assert_eq!(shown.take_answer(), None, "a form answers once");
+    }
+
+    /// A form asking more than one thing is submitted by its button: a pick answers one field,
+    /// not the whole form.
+    #[test]
+    fn a_pick_does_not_answer_a_form_asking_more_than_one_thing() {
+        let mut asked = moment_form(false);
+        asked.answers.clear();
+        let mut reconciler = Reconciler::new(Rc::default());
+        let (mut shown, mut sheet) = Shown::build(&asked, &mut reconciler);
+        let pick = UiEvent::Fire(
+            "form~when~quick".to_owned(),
+            "pick.2026-11-08T17:00:00Z".to_owned(),
+            None,
+        );
+        assert!(
+            shown.edit(&pick).is_some(),
+            "the pick still reaches the app"
+        );
+        let mut read = moment_form(true);
+        read.answers.clear();
+        shown.update(&read, &mut sheet, &mut reconciler);
+        assert_eq!(
+            shown.take_answer(),
+            None,
+            "a form with a field left to fill waits for its submit"
+        );
+    }
 }

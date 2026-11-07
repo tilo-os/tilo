@@ -1007,8 +1007,10 @@ fn primary_labels(meta: &tilolang::PackageMeta) -> Vec<&str> {
 /// The test id of the first button under `node` named `label` that a person can press.
 fn button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
     let pressable = node.semantics.as_ref().is_some_and(|access| {
-        access.role == ui::a11y::Role::Button
-            && !access.state.disabled
+        matches!(
+            access.role,
+            ui::a11y::Role::Button | ui::a11y::Role::ToggleButton
+        ) && !access.state.disabled
             && access.name.as_deref() == Some(label)
     });
     if pressable
@@ -1067,8 +1069,10 @@ fn row_named(access: &ui::a11y::AccessNode, label: &str) -> Option<ui::kurbo::Re
 fn painted_button_named(node: &ui::headless::InspectionNode, label: &str) -> Option<String> {
     let painted = node.semantics.as_ref().is_some_and(|access| {
         access.children.iter().any(|child| {
-            child.role == ui::a11y::Role::Button
-                && !child.state.disabled
+            matches!(
+                child.role,
+                ui::a11y::Role::Button | ui::a11y::Role::ToggleButton
+            ) && !child.state.disabled
                 && child.name.as_deref() == Some(label)
         })
     });

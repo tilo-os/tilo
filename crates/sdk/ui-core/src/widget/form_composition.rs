@@ -383,6 +383,12 @@ impl Field {
     fn row(content: Element) -> Self {
         Self::with_parts(FieldKind::Row, Box::new(super::Absent::new()), content)
     }
+    /// Content with no label of its own, across the field's whole width: a form of one
+    /// question says what it asks in its title, so its field carries no second label.
+    #[must_use]
+    pub fn unlabeled(content: Element) -> Self {
+        Self::row(content)
+    }
     fn with_parts(kind: FieldKind, label: Element, content: Element) -> Self {
         Self {
             parts: Parts::new(vec![

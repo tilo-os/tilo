@@ -158,7 +158,10 @@ d-x5xnqddo = No date
     .doc = Clears the day a task is due by: it waits in the inbox, undated.
 
 d-3qq23ybf = Remind me
-    .doc = Sets when to remind whoever is doing a task of it, counted from now, or clears the reminder.
+    .doc = Sets the moment whoever is doing a task is reminded of it.
+
+d-vjsjvx7u = No reminder
+    .doc = Clears a task's reminder: it is not told of again.
 
 d-7vjyuy7c = Remind
     .doc = Tells whoever is doing a task, or the one who made it, what the task is and when it is due or which project it is in, and opens the task when they choose the notice.
@@ -236,6 +239,8 @@ d-rnagsir2 = Due tomorrow~present
 d-fym3mxqc = Due next week~present
 
 d-ohw2ks6t = Due clear~present
+
+d-g7kx77ng = Remind clear~present
 
 d-dpworviv = Set priority none~present
 
