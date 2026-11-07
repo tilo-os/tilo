@@ -6,7 +6,8 @@
 //!
 //! The pictures are written to `$FLOAT_WINDOWS_OUT` (default
 //! `~/.cache/float-snap/shots`): the desk with the conversation floating
-//! over its strip in both themes and the gap it snaps into.
+//! over its strip, carried over the windows it covers, and the gap it snaps
+//! into, in both themes.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -527,6 +528,13 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     let grab = (over.x1 - 220.0, over.y0 + 22.0);
     pointer_at(&mut session, grab);
     button(&mut session, true);
+    // Over the letter it covers, the float stands on its own ground and its
+    // own elevation: its bar reads as its own, never as the letter's.
+    pointer_at(&mut session, (letter.center().x, letter.center().y));
+    for _ in 0..4 {
+        step(&mut session);
+    }
+    capture(&mut session, "carried-dark");
     // The hand goes where the window would land: in the gap between the
     // letter and the note, still on the strip, so the strip shows it.
     let gap = f64::midpoint(letter.x1, note.x0);
@@ -578,4 +586,29 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
         "and nothing of the desk floats"
     );
     capture(&mut session, "snapped-dark");
+
+    // The same, in the light theme.
+    light(&mut session);
+    press(&mut session, ShortcutAction::ToggleFloat);
+    until(&mut session, "the window floats again", |session| {
+        held(session, chat).floating
+    });
+    let over = rect(&session, chat);
+    let letter = rect(&session, mail);
+    let note = rect(&session, notes);
+    pointer_at(&mut session, (over.x1 - 220.0, over.y0 + 22.0));
+    button(&mut session, true);
+    pointer_at(
+        &mut session,
+        (f64::midpoint(letter.x1, note.x0), letter.y0 + 22.0),
+    );
+    for _ in 0..4 {
+        step(&mut session);
+    }
+    capture(&mut session, "carried-light");
+    button(&mut session, false);
+    until(&mut session, "the window snaps back", |session| {
+        !held(session, chat).floating
+    });
+    capture(&mut session, "snapped-light");
 }
