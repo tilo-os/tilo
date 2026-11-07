@@ -88,6 +88,30 @@ pub fn hosted_by(hint: &crate::join::TransportHint, device: &[u8; 32]) -> bool {
     &hint.host.device_public_key == device
 }
 
+/// Check `hint` as the address of `device`'s own host of `room`, the
+/// workspace `workspace_id`: the host signed it, and it names the workspace it
+/// keeps and the device that signed it.
+pub(crate) fn validate_host_hint(
+    hint: &crate::join::TransportHint,
+    room: &str,
+    workspace_id: u64,
+    device: &DeviceCert,
+) -> Result<(), String> {
+    if !hosted_by(hint, &device.device_public_key) {
+        return Err("the workspace's host hint is not this device's own".into());
+    }
+    let (payload, _) = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::
+        authenticate_transport_hint(hint)
+        .map_err(|error| error.to_string())?;
+    if payload.room != room || payload.workspace_id != workspace_id {
+        return Err("the workspace's host hint names another workspace".into());
+    }
+    if payload.host_device_certificate != *device {
+        return Err("the workspace's host hint is not the host's own signed address".into());
+    }
+    Ok(())
+}
+
 /// Where an owner's record is durable. A page's store lives on its one
 /// thread, so only a device with threads shares it between them.
 pub trait Store: std::any::Any + collab_types::signer::MaybeSendSync {
@@ -225,17 +249,19 @@ impl NativeCommittedView {
         self.record.continuity
     }
     /// Where the host that governs this workspace is reached: the hint its
-    /// enrollment carries, or, for a workspace this device holds as a further
-    /// device of its person, the one the host's own answer named.
+    /// enrollment carries, the one the host's own answer named for a workspace
+    /// this device holds as a further device of its person, or, for a
+    /// workspace founded here, the one its own host recorded as it founded it.
     ///
     /// # Errors
-    /// The workspace's record holds neither.
+    /// The workspace's record holds none of them.
     pub fn transport_hint(&self) -> Result<&crate::join::TransportHint, String> {
         self.record
             .enrollment
             .as_ref()
             .map(|enrollment| &enrollment.transport_hint)
             .or_else(|| self.record.vouched.as_ref()?.hint.as_ref())
+            .or(self.record.host_hint.as_ref())
             .ok_or_else(|| "the workspace's record holds no host hint".to_owned())
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
@@ -439,6 +465,27 @@ impl NativeWorkspaceOwner {
     #[must_use]
     pub fn contains_workspace(&self, workspace: WorkspaceId) -> bool {
         self.0.current.read().required.contains(&workspace) || self.0.store.uncertain(workspace)
+    }
+
+    /// Whether `workspace`'s record says where its host is reached: through
+    /// the enrollment or vouch this device entered it by, or, for a workspace
+    /// this device founded, through the hint it keeps of its own host.
+    #[must_use]
+    pub fn names_host(&self, workspace: WorkspaceId) -> bool {
+        self.0
+            .current
+            .read()
+            .workspaces
+            .get(&workspace)
+            .is_some_and(|view| {
+                view.record.enrollment.is_some()
+                    || view
+                        .record
+                        .vouched
+                        .as_ref()
+                        .is_some_and(|vouched| vouched.hint.is_some())
+                    || view.record.host_hint.is_some()
+            })
     }
 
     /// Store availability only; workspace authority still requires `with_current`.

@@ -44,7 +44,7 @@ use tilo_peer_state::join::invitations::IssueInvitationRequest;
 use tilo_peer_state::join::{self, MemberRole, TransportHint};
 use tilo_peer_state::join_answer::JoinAnswer;
 use tilo_peer_state::owner::{
-    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file,
+    ApplicationRecord, NativeWorkspaceOwner, OwnerJoinWorkspaces, open_file, testing,
 };
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
 use tilo_peer_state::workspace_membership::WorkspaceMembershipCommand;
@@ -237,9 +237,7 @@ async fn a_short_lived_workspace_is_held_by_a_store_device() {
     // A makes the workspace on its own device: no host service, no host of
     // anyone else's.
     let a = open_file(&directory.path().join("a.json")).unwrap();
-    let workspace_id = a
-        .create_workspace(WorkspaceId::new(), "Launch review", &a_cert, &a_key, now)
-        .unwrap();
+    let workspace_id = testing::founded(&a, "Launch review", &a_cert, &a_key, now).unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     assert!(
         a.with_current(workspace_id, |view| Ok(view.hosted_here()))
@@ -502,9 +500,7 @@ async fn a_shared_app_is_a_workspace_its_guests_write_in() {
 
     // The sharer founds the workspace and writes what it shares.
     let a = open_file(&directory.path().join("a.json")).unwrap();
-    let workspace_id = a
-        .create_workspace(WorkspaceId::new(), "Shared notes", &a_cert, &a_key, now)
-        .unwrap();
+    let workspace_id = testing::founded(&a, "Shared notes", &a_cert, &a_key, now).unwrap();
     let workspace = workspace_of(&workspace_id.to_string()).unwrap();
     let record = ApplicationRecord::host(APP, RECORD).unwrap();
     a.prepare_application_record(workspace_id, &a_cert, &a_key, &record, now)

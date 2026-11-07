@@ -104,6 +104,13 @@ pub(crate) struct StoredWorkspace {
     /// this or an enrollment, never both.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vouched: Option<StoredVouch>,
+    /// Where this device's own host of the workspace is reached, for a
+    /// workspace founded here: the signed address its host keeps the
+    /// workspace's records at ([`crate::NativeWorkspaceOwner`] founded it, so
+    /// no other device admitted this one and its record holds neither an
+    /// enrollment nor a vouch to say where the host is).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_hint: Option<TransportHint>,
     /// `StatePeer::durable()`: the largest field by far.
     #[serde(with = "base64_bytes")]
     pub peer: Vec<u8>,

@@ -30,6 +30,65 @@ pub(crate) fn record_on_disk(path: &std::path::Path) -> Vec<(std::path::PathBuf,
 pub const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub const APP: &str = "so.tilo.chat";
 
+/// Where `certificate`'s device keeps a workspace it founds on itself:
+/// `workspace`'s own host, reached at `endpoint`, signed by the device.
+pub fn own_host_hint(
+    workspace: WorkspaceId,
+    endpoint: iroh_base::EndpointAddr,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    let room = workspace.to_string();
+    IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        workspace_id: join::room_workspace_id(&room).unwrap(),
+        room,
+        endpoint_addr: endpoint,
+        host_user_public_key: certificate.user_public_key,
+        host_device_certificate: certificate.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(key)
+    .unwrap()
+}
+
+/// [`own_host_hint`] for a device reached at its own endpoint id.
+pub fn own_host_hint_here(
+    workspace: WorkspaceId,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+) -> join::TransportHint {
+    own_host_hint(
+        workspace,
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&certificate.device_public_key).unwrap(),
+        ),
+        certificate,
+        key,
+    )
+}
+
+/// Found `name` on `owner` as `certificate`'s device, naming its own host.
+pub fn founded(
+    owner: &NativeWorkspaceOwner,
+    name: &str,
+    certificate: &DeviceCert,
+    key: &SigningKey,
+    now: SystemTime,
+) -> Result<WorkspaceId, String> {
+    let workspace = WorkspaceId::new();
+    owner.create_workspace(
+        workspace,
+        name,
+        certificate,
+        key,
+        own_host_hint_here(workspace, certificate, key),
+        now,
+    )?;
+    Ok(workspace)
+}
+
 /// Enroll an empty interactive workspace through the real signed join protocol.
 /// This helper neither seeds application records nor grants capabilities.
 pub fn enroll_interactive_governor(
