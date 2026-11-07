@@ -54,33 +54,33 @@ for (( index = 0; index < ${#arguments[@]}; index++ )); do
         break
     fi
 done
+# What a `-p`/`--package` value names: a package's name, or t's package id spec for a run that
+# asks for a few packages (`path+file:///src/crates/system/settings-store#settings-store@0.1.0`).
+package_name() {
+    local spec=${1:-}
+    spec=${spec##*#}
+    printf '%s' "${spec%%@*}"
+}
 for (( index = 0; index < ${#arguments[@]}; index++ )); do
     case ${arguments[index]} in
-        -p|--package) tested+="${arguments[index + 1]:-} " ;;
+        -p|--package) tested+="$(package_name "${arguments[index + 1]}") " ;;
         -E|--filterset|--filter-expr) explicit=1 ;;
     esac
 done
 tests() { local name; for name; do [[ $tested == *" $name "* ]] && return 0; done; return 1; }
 
-# In CI, a build of named packages resolves every member's features as the whole workspace does,
-# its tests' features included (tools/ci/workspace_unify.py), so jobs testing different packages
-# share each member's unit. That build compiles every member, so outside CI (a developer's
-# `cargo test -p NAME` on one incremental target) an edit would rebuild every package that
-# depends on the edited one; there the named packages build alone.
-unify=()
-[[ -n ${CI:-} ]] && unify=(-p workspace-unify)
-
-if (( nextest )); then
-    if [[ " $* " == *" -p "* || " $* " == *" --package "* ]]; then
-        # Not as --features: `tilo-media/decode` there also turns on the optional tilo-media of
-        # every package selected beside it.
-        arguments+=("${unify[@]}")
-    else
-        # Package-qualified features: never enable inference for client-only apps.
-        feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
-        read -r -a features <<<"$feature_flags"
-        arguments+=("${features[@]}")
-    fi
+# A run that names the packages it asks for builds those beside the family's `unify` member,
+# which t selects itself (t.toml's `unify`): its manifest declares each member's features as the
+# whole family's build resolves them, tests' features included (tools/ci/workspace_unify.py), so
+# the selection's units are the ones a whole-family job made and shares, and nothing is added
+# here. A run of the whole family selects `--workspace --exclude`, with no unify member to
+# resolve its features, and gets them package-qualified: `tilo-media/decode` as `--features`
+# also turns on the optional tilo-media of every package selected beside it, and never enables
+# inference for client-only apps.
+if (( nextest )) && [[ " $* " != *" -p "* && " $* " != *" --package "* ]]; then
+    feature_flags=$(python3 "$root/tools/ci/package_features.py" "$@")
+    read -r -a features <<<"$feature_flags"
+    arguments+=("${features[@]}")
 fi
 
 # Only the NTFS helper's own tests read the native images, which take minutes to build.
@@ -103,10 +103,10 @@ fi
 
 # The shell's sandbox and desktop tests drive a Wayland client from its own
 # package, so a shell edit does not rebuild it; cargo only hands a test its own
-# package's binaries. It resolves as the test build does (with workspace-unify in
-# CI), so its units are the ones that build already made.
+# package's binaries. It resolves as a narrowed test build does (with workspace-unify beside it),
+# so its units are the ones that build already made.
 if (( nextest )) && tests shell; then
-    cargo build --locked -p click-test-client "${unify[@]}" --bin click_test_client
+    cargo build --locked -p click-test-client -p workspace-unify --bin click_test_client
     export TILO_CLICK_TEST_CLIENT="${CARGO_TARGET_DIR:-$root/target}/debug/click_test_client"
 fi
 

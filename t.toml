@@ -62,6 +62,13 @@ name = "test"
 tool = "nextest"
 wrapper = ["bash", "tools/ci/nextest.sh"]
 args = ["--locked", "--profile", "ci", "--tests"]
+# A run that asks less than the whole family (`t test test/settings-store` after an edit) builds
+# just the packages it asks for, and this one beside them: its manifest declares every member's
+# features as the family's whole build resolves them (tools/ci/workspace_unify.py generates it
+# over the family's members, the test features included), so the narrowed selection's units are
+# the units the whole build makes and its tests are the family's tests, not a feature-starved
+# subset. t selects this package itself for such a run; a whole-family run has no use for it.
+unify = "workspace-unify"
 # What does not run here: the per-arch packages (their own families), `workspace-unify` (a
 # generated crate, checked by `workspace-unify-<arch>`), the idle packages (their own family) and
 # the two whose tests need a disk of their own (`imager-tests-<arch>`, VM steps).
