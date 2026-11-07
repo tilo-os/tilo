@@ -38,6 +38,7 @@ tasks-field-status = Status
 tasks-field-assignee = Assignee
 tasks-assignee-nobody = Nobody
 tasks-issue-add-label = Add label
+tasks-issue-new-label = New label
 tasks-issue-label-placeholder = Label
 tasks-issue-gone-title = This issue was deleted
 tasks-issue-gone-message = Undo brings it back.

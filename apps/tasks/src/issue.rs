@@ -247,58 +247,115 @@ impl Plan {
     }
 }
 
-/// The issue's labels, and a field to add one.
+/// The issue's labels, as the chips it carries, and the chip that opens the
+/// ones the workspace already uses and the field that makes a new one.
 fn labels(cx: &ViewCx<Tracker>, id: &Id) -> Element {
-    let current = cx.value({
-        let id = id.clone();
-        move |tracker: &Tracker| {
-            tracker
-                .issues
-                .get(&id)
-                .map(|issue| issue.labels.iter().cloned().collect::<Vec<_>>())
-                .unwrap_or_default()
-        }
-    });
-    let shown = cx.switch(&current, |_, labels| {
+    let read_id = id.clone();
+    let shown = cx.value(move |tracker: &Tracker| Labels::of(tracker, &read_id));
+    let id = id.clone();
+    cx.switch(&shown, move |cx, shown| {
         let mut row = Row::new().with_rhythm(ui::tokens::Rhythm::Tight);
-        for label in labels {
+        for label in &shown.mine {
             row = row.push(Box::new(Badge::text(label.clone())));
         }
+        row = row.push(add_label(cx, &id, &shown.others));
         Box::new(row) as Element
-    });
+    })
+}
+
+/// The issue's labels, and the ones the rest of the workspace carries.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct Labels {
+    /// The issue's own, in the order it holds them.
+    mine: Vec<String>,
+    /// Every label another issue carries, sorted: what the picker offers
+    /// that this issue does not have yet.
+    others: Vec<String>,
+}
+
+impl Labels {
+    fn of(tracker: &Tracker, id: &Id) -> Self {
+        let mine: Vec<String> = tracker
+            .issues
+            .get(id)
+            .map(|issue| issue.labels.iter().cloned().collect())
+            .unwrap_or_default();
+        let mut others: Vec<String> = tracker
+            .issues
+            .iter()
+            .flat_map(|(_, issue)| issue.labels.iter().cloned())
+            .filter(|label| !mine.contains(label))
+            .collect();
+        others.sort();
+        others.dedup();
+        Self { mine, others }
+    }
+}
+
+/// The `+` after the labels: it opens the labels the workspace already uses,
+/// each one adding it to the issue, and a field whose text makes a new one.
+fn add_label(cx: &ViewCx<Tracker>, id: &Id, others: &[String]) -> Element {
     let draft = cx.local(String::new());
     let label_id = id.clone();
-    let label = Tracker::ADD_LABEL.try_map(move |label: String| {
+    let add = Tracker::ADD_LABEL.try_map(move |label: String| {
         Some(tracker::AddLabel {
             issue: label_id.clone(),
             label: NonBlank::parse(&label)?,
         })
     });
+    let mut content = Column::new()
+        .with_no_padding()
+        .with_intrinsic_height()
+        .with_rhythm(ui::tokens::Rhythm::Tight);
+    for label in others {
+        let issue = id.clone();
+        let name = label.clone();
+        let add_one = Tracker::ADD_LABEL.try_map(move |()| {
+            Some(tracker::AddLabel {
+                issue: issue.clone(),
+                label: NonBlank::parse(&name)?,
+            })
+        });
+        let button =
+            Button::new(&format!("tasks-issue-label-{label}"), label).role(ButtonRole::Plain);
+        content = content.push(Box::new(match cx.actions().binding(add_one) {
+            Some(binding) => button.on_action(binding),
+            None => button.with_enabled(false),
+        }));
+    }
     let input = cx.actions().submit_draft(
         TextInput::from_state(&draft)
-            .with_id("tasks-issue-label")
-            .with_accessible_name(tr("tasks-issue-add-label"))
+            .with_id("tasks-issue-label-new")
+            .with_accessible_name(tr("tasks-issue-new-label"))
             .with_placeholder("tasks-issue-label-placeholder"),
         &draft,
-        label.clone(),
+        add.clone(),
     );
-    let add = cx.actions().bind_draft(
-        Button::new("tasks-issue-add-label", "tasks-issue-add-label"),
+    let create = cx.actions().bind_draft(
+        Button::new("tasks-issue-label-create", "tasks-create-button"),
         &draft,
-        label,
+        add,
     );
-    Box::new(
+    content = content.push(Box::new(
         Row::new()
             .with_rhythm(ui::tokens::Rhythm::Tight)
-            .push(shown)
             .push(Box::new(
                 Container::new()
                     .with_no_padding()
-                    .with_width(140.0)
+                    .with_width(160.0)
                     .with_child(Box::new(input)),
             ))
-            .push(Box::new(add)),
+            .push(Box::new(create)),
+    ));
+    let chip = Button::icon_only(
+        "tasks-issue-add-label",
+        ui::icons::Icon::Plus,
+        &tr("tasks-issue-add-label"),
     )
+    // The chip's face, as the fields before it wear: a bare glyph would read
+    // as a mark on the row, not a control of it.
+    .role(ButtonRole::Secondary);
+    Box::new(chip.with_popover(content))
 }
 
 /// The issue's sub-issues, each opening its own page, and a field to add

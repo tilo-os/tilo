@@ -347,6 +347,177 @@ fn an_issues_assignee_is_picked_among_the_rooms_people_and_agents() {
     );
 }
 
+/// An issue's labels are the chips it carries and one `+` that opens the
+/// labels the workspace already uses and the field that makes a new one.
+#[test]
+fn an_issues_labels_are_added_from_one_chip() {
+    let mut app = open();
+    app.call("create", json!({ "title": "Draft the agenda" }))
+        .expect("create");
+    let issue = only(&app);
+    // An issue already labelled makes that label one the picker offers.
+    app.call("create", json!({ "title": "Book the room" }))
+        .expect("create");
+    let other = app
+        .state()
+        .issues
+        .iter()
+        .find(|(_, shown)| shown.title == "Book the room")
+        .map(|(id, _)| id.clone())
+        .expect("the other issue");
+    app.call("add-label", json!({ "issue": other, "label": "launch" }))
+        .expect("label it");
+    app.call_on(&issue_resource(&issue), "open", json!({}))
+        .expect("open the issue");
+    app.settle();
+
+    // One control in the row, not three: the chips and the `+`; the field
+    // waits in what the `+` opens.
+    assert!(
+        app.harness()
+            .targets()
+            .contains_key("tasks-issue-add-label"),
+        "the labels end in one chip"
+    );
+    assert!(
+        !app.harness()
+            .targets()
+            .contains_key("tasks-issue-label-new"),
+        "no field stands in the row"
+    );
+
+    let labels_of = |app: &TestApp<App>| -> Vec<String> {
+        app.state()
+            .issues
+            .get(&issue)
+            .map(|shown| shown.labels.iter().cloned().collect())
+            .unwrap_or_default()
+    };
+
+    // The `+` offers the label the workspace already uses.
+    app.harness()
+        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+        .expect("open the labels");
+    app.settle();
+    app.harness()
+        .perform_named("tasks-issue-label-launch", &ui::a11y::Action::Activate)
+        .expect("pick launch");
+    app.settle();
+    assert_eq!(labels_of(&app), ["launch"], "the label lands on the issue");
+
+    // Typing a new one in its field makes that one too.
+    app.harness()
+        .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+        .expect("open the labels");
+    app.settle();
+    app.harness()
+        .click_named("tasks-issue-label-new")
+        .expect("the field takes the click");
+    app.harness().type_text("venue");
+    app.settle();
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        labels_of(&app),
+        ["launch", "venue"],
+        "a typed label is made on the issue"
+    );
+}
+
+/// The fields stay one row at any width: they wrap rather than leave the
+/// window or cover each other, and what the `+` opens fits in the window
+/// too.
+#[test]
+fn the_issue_fields_wrap_instead_of_leaving_the_window() {
+    for (width, height) in [(1240_u32, 780_u32), (520, 700)] {
+        let mut app =
+            TestApp::<App>::capture_at(Some("issue"), (width, height)).expect("the capture opens");
+        app.settle();
+        let fields = [
+            "tasks-issue-status",
+            "tasks-issue-assignee",
+            "tasks-issue-add-label",
+        ];
+        let targets = app.harness().targets();
+        let rects: Vec<(&str, ui::kurbo::Rect)> = fields
+            .iter()
+            .map(|id| {
+                let rect = targets
+                    .get(*id)
+                    .unwrap_or_else(|| panic!("{id} is laid out at {width}: {:?}", targets.keys()));
+                (*id, *rect)
+            })
+            .collect();
+        for (id, rect) in &rects {
+            assert!(
+                rect.x0 >= 0.0
+                    && rect.y0 >= 0.0
+                    && rect.x1 <= f64::from(width)
+                    && rect.y1 <= f64::from(height),
+                "{id} stays in the {width} wide window: {rect:?}"
+            );
+        }
+        for (at, (one, a)) in rects.iter().enumerate() {
+            for (other, b) in &rects[at + 1..] {
+                assert!(
+                    a.x1 <= b.x0 || b.x1 <= a.x0 || a.y1 <= b.y0 || b.y1 <= a.y0,
+                    "{one} and {other} do not cover each other at {width}: {a:?} {b:?}"
+                );
+            }
+        }
+        app.harness()
+            .perform_named("tasks-issue-add-label", &ui::a11y::Action::Activate)
+            .expect("open the labels");
+        app.settle();
+        let targets = app.harness().targets();
+        let mut opened = Vec::new();
+        for id in ["tasks-issue-label-new", "tasks-issue-label-create"] {
+            let rect = targets
+                .get(id)
+                .unwrap_or_else(|| panic!("{id} is laid out at {width}: {:?}", targets.keys()));
+            assert!(
+                rect.x0 >= 0.0
+                    && rect.y0 >= 0.0
+                    && rect.x1 <= f64::from(width)
+                    && rect.y1 <= f64::from(height),
+                "{id} fits the {width} wide window: {rect:?}"
+            );
+            opened.push((id, *rect));
+        }
+        // Every field is drawn where it is laid out, and so is what the `+`
+        // opened: the frame's own pixels say so, on both grounds.
+        for theme in [ui::Theme::dark(), ui::Theme::light()] {
+            app.harness().set_theme(theme);
+            app.settle();
+            let pixels = app.harness().render_rgba();
+            let stride = usize::try_from(width).expect("a width that fits an index") * 4;
+            let pixel = |x: f64, y: f64| {
+                let column = ui::num::usize_of_f64(x);
+                let row = ui::num::usize_of_f64(y);
+                let offset = row * stride + column * 4;
+                [
+                    pixels[offset],
+                    pixels[offset + 1],
+                    pixels[offset + 2],
+                    pixels[offset + 3],
+                ]
+            };
+            let ground = pixel(f64::from(width) - 2.0, f64::from(height) - 2.0);
+            for (id, rect) in rects.iter().chain(opened.iter()) {
+                let centre = pixel(
+                    f64::midpoint(rect.x0, rect.x1),
+                    f64::midpoint(rect.y0, rect.y1),
+                );
+                assert!(
+                    centre != ground && centre[3] != 0,
+                    "{id} is drawn at {width} on the {} ground: {centre:?}",
+                    app.harness().theme().name
+                );
+            }
+        }
+    }
+}
+
 /// Each semantics node of an inspection, outer and nested, with the rect it
 /// stands for: its own bounds, else the area of what it is drawn in, as the
 /// browser's accessibility mirror places it.
