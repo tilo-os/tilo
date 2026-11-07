@@ -1,13 +1,10 @@
 //! The portable query model: sources answer a needle with hits, and
-//! [`search_stream`] merges them on the shared ranking into kind groups,
-//! a frame at a time.
-//!
-//! No source runs on the frame thread. A frame hands the sources that can
-//! move ([`Source::shared`]) to a pool of workers ([`crate::workers`]) and
-//! takes the answers that are in, so a source reading a disk index over a
-//! large home, a mailbox or a service never holds up the frame that typed
-//! into it. A frame never waits for a source: an answer wakes the desk,
-//! which draws the frame that shows it.
+//! [`search_stream`] merges them on the shared ranking into kind groups, a frame at
+//! a time.
+//! No source runs on the frame thread: a frame hands the sources that can move
+//! ([`Source::shared`]) to a pool of workers and takes the answers that are in, so a
+//! source reading a disk index, a mailbox or a service never holds up the frame that
+//! typed into it.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -19,11 +16,10 @@ use ui::search::system::{self, KindGroup, ResourceKind};
 
 use crate::workers::{Answer, SearchWorkers};
 
-/// Where the view of an application a row opens goes: what a modifier held
-/// as the row is chosen asks of it ([`ActivationModifier`]), and what the
-/// selected row says it will do before it is.
-///
-/// [`ActivationModifier`]: ui::search::ActivationModifier
+/// Where the view of an application a row opens goes: what a modifier held as the row
+/// is chosen asks of it ([`ActivationModifier`]), and what the selected row says it
+/// will do before it is.
+// [`ActivationModifier`]: ui::search::ActivationModifier
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum LaunchPlace {
     /// In the window the app already has, raised, or a window of its own
@@ -261,11 +257,10 @@ pub struct Hit {
     /// What choosing the row gets you, when it is worth saying ("Open",
     /// "Join"); the kind's own outcome otherwise.
     pub outcome: Option<String>,
-    /// The row its app draws for the hit, when its source says: a shaped
-    /// row (a message, a video, a match in a line), or the reference to the
-    /// item its app keeps ([`ui::search::SearchRow::Item`]), which the
-    /// palette draws as that app's list draws the item. `None` draws the
-    /// generic row, as does a row the palette cannot paint.
+    /// The row its app draws for the hit, when its source says: a shaped row, or the
+    /// reference to the item its app keeps ([`ui::search::SearchRow::Item`]), which the
+    /// palette draws as that app's list draws the item. `None` draws the generic row, as
+    /// does a row the palette cannot paint.
     pub row: Option<ui::search::SearchRow>,
     /// What the hit looks like in its app, for the band under the list.
     pub preview: Option<ui::search::SearchPreview>,
@@ -329,11 +324,10 @@ impl Hit {
             Target::Launch { app, .. } if self.kind == ResourceKind::Application => {
                 Thing::App(app_identity(app))
             }
-            // The window row is the window, and so is the place the person
-            // continues from when that place is the window still open: one
-            // row, the one offering most. A row that only goes to a window
-            // when chosen (a note shown in it) is its own thing, or every
-            // item one window shows would be one row.
+            // The window row is the window, and so is the place the person continues from when
+            // that place is the window still open: one row, the one offering most. A row that
+            // only goes to a window when chosen is its own thing, or every item one window
+            // shows would be one row.
             Target::Window { tab, .. }
                 if self.kind == ResourceKind::Custom(crate::providers::WINDOWS_KIND.into())
                     || self.kind == crate::providers::places::continue_kind() =>
@@ -389,11 +383,9 @@ pub fn store_page_app(uri: &str) -> Option<&str> {
         .filter(|id| !id.is_empty())
 }
 
-/// The identity of the application `app` is started by: its package id, or
-/// the machine's desktop entry (a row of the desktop's apps names it
-/// `host:<entry>`), without the `.desktop` a launch adds and in one case,
-/// so the app is one [`Thing::App`] whichever row starts it and whichever
-/// source names it.
+/// The identity of the application `app` is started by: its package id, or the
+/// machine's desktop entry (`host:<entry>`), without the `.desktop` a launch adds and
+/// in one case, so the app is one [`Thing::App`] whichever row starts it.
 #[must_use]
 pub fn app_identity(app: &str) -> String {
     let app = app.trim();
@@ -445,11 +437,10 @@ pub trait Source {
     }
     /// Hits for `needle`. An empty needle asks for the source's browse set.
     fn query(&self, needle: &str) -> Vec<Hit>;
-    /// Where its rows stand in the empty palette, lowest first: the search
-    /// with nothing typed lists what is happening now before what the person
-    /// reached for last, and the ways into everything else after. Sources
-    /// that tie keep the order they are asked in. It says nothing about a
-    /// typed query, which is ranked by the match.
+    /// Where its rows stand in the empty palette, lowest first: what is happening now
+    /// before what the person reached for last, and the ways into everything else after.
+    /// Sources that tie keep the order they are asked in; a typed query is ranked by the
+    /// match.
     fn browse_rank(&self) -> u8 {
         BROWSE_RANK_LATER
     }
@@ -472,17 +463,12 @@ pub trait Source {
     fn poll(&self) -> bool {
         false
     }
-    /// This source as a worker asks it, when nothing in it belongs to the
-    /// frame thread: a query then runs off the frame, and a frame merely
-    /// collects what came back.
-    ///
-    /// `None` (the default) means the source holds frame state — a running
-    /// app's own providers, reached through component proxies that hold
-    /// `Rc`s and enter thread-local callback scopes — and is asked on the
-    /// frame, in a frame of its own, one source at a time.
-    ///
-    /// A desktop keeps what it built once in an [`Arc`], and [`Source`] is
-    /// implemented for one: that is how a source moves to a worker.
+    /// This source as a worker asks it, when nothing in it belongs to the frame thread:
+    /// a query then runs off the frame, and a frame merely collects what came back.
+    /// `None` (the default) means the source holds frame state — a running app's own
+    /// providers, through component proxies that hold `Rc`s — and is asked on the frame,
+    /// one source at a time. A desktop keeps what it built once in an [`Arc`], and
+    /// [`Source`] is implemented for one: that is how a source moves to a worker.
     fn shared(&self) -> Option<Arc<dyn Source + Send + Sync>> {
         None
     }
@@ -521,16 +507,11 @@ impl<S: Source + Send + Sync + 'static> Source for Arc<S> {
     }
 }
 
-/// One search, as it fills in: the hits of the sources whose answers came
-/// back, merged on the shared ranking, one row per [`Thing`]. The palette
-/// asks for another frame's worth with [`resume`](Self::resume) until
-/// nothing is [`pending`](Self::pending); the rows it has are always the
-/// best answer of what came in.
-///
-/// A source that can move ([`Source::shared`]) never runs on this thread:
-/// [`resume`](Self::resume) hands it to the search's worker pool, and each
-/// frame only collects the answers that arrived, so a source reading a disk
-/// index or a mail server never holds up the frame that typed into it.
+/// One search, as it fills in: the hits of the sources whose answers came back,
+/// merged on the shared ranking, one row per [`Thing`]. The palette asks for another
+/// frame's worth with [`resume`](Self::resume) until nothing is
+/// [`pending`](Self::pending); the rows it has are always the best answer of what
+/// came in.
 pub struct SearchStream {
     needle: String,
     row_budget: usize,
@@ -682,16 +663,11 @@ impl SearchStream {
             .collect()
     }
 
-    /// Hand the sources not asked yet to the workers, ask one source that
-    /// stays on the frame, and take the answers that came. Never waits for a
-    /// source: an answer that is not in yet wakes the desk when it is, and
-    /// shows on the frame that wake draws.
-    ///
-    /// `sources` is the same slice the search was made from: the sources
-    /// that cannot move are asked from it, on the frame, at the end.
-    ///
-    /// Returns whether the rows changed, so a host knows the frame it draws
-    /// has different rows.
+    /// Hand the sources not asked yet to the workers, ask one source that stays on the
+    /// frame, and take the answers that came. Never waits for a source: an answer that is
+    /// not in yet wakes the desk when it is. `sources` is the slice the search was made
+    /// from, and a source that cannot move is asked from it at the end. Returns whether
+    /// the rows changed.
     pub fn resume(
         &mut self,
         sources: &[&dyn Source],
@@ -879,16 +855,12 @@ pub fn search_stream(
     stream
 }
 
-/// Fan `needle` out to `sources`, merge their hits on the shared ranking
-/// and group them by kind under a shared `row_budget` (zero keeps all).
-///
-/// Each hit's strength is raised by `used`: what the person's earlier
-/// choices add to it ([`crate::usage::Usage::strength`]).
-///
-/// The sources answer on the workers, as they do for a palette: this caller
-/// has no frame to keep, so it waits for them all, which is the one place
-/// waiting for a source is right (an agent's find, text placed on the
-/// canvas).
+/// Fan `needle` out to `sources`, merge their hits on the shared ranking and group
+/// them by kind under a shared `row_budget` (zero keeps all). Each hit's strength is
+/// raised by `used`: what the person's earlier choices add to it
+/// ([`crate::usage::Usage::strength`]).
+/// This caller has no frame to keep, so it waits for every source, which is the one
+/// place waiting for a source is right (an agent's find, text placed on the canvas).
 pub fn search(
     needle: &str,
     sources: &[&dyn Source],

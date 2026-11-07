@@ -1,9 +1,8 @@
 //! Policy and convergent state for one person's certified Tilo devices.
-//!
-//! Tilo does not equate proximity, Bluetooth pairing, or a shared network with
-//! trust. The private same-identity lane authenticates and encrypts peers; this
-//! module applies one policy model to media, clipboard, roaming preferences,
-//! secret references and cross-screen input.
+//! Tilo does not equate proximity, Bluetooth pairing or a shared network with trust.
+//! The private same-identity lane authenticates and encrypts peers; this module
+//! applies one policy model to media, clipboard, roaming preferences, secret
+//! references and cross-screen input.
 
 pub mod clock;
 mod i18n {
@@ -678,11 +677,10 @@ pub enum PersonalFabricAction {
     SpeakerIdentify {
         output: crate::speaker_group::EndpointSelector,
     },
-    /// The group's leader, calibrating, asks a member to play the
-    /// measurement sweep so its first sample leaves the speaker at `start_ns`
-    /// on the member's own `CLOCK_MONOTONIC`. The leader converts its
-    /// schedule through its estimate of the member's clock, and refuses to
-    /// calibrate without one.
+    /// The group's leader, calibrating, asks a member to play the measurement sweep so
+    /// its first sample leaves the speaker at `start_ns` on the member's own
+    /// `CLOCK_MONOTONIC`. The leader converts its schedule through its estimate of the
+    /// member's clock, and refuses to calibrate without one.
     SpeakerSweep {
         group: crate::speaker_group::SpeakerGroupId,
         start_ns: i64,
@@ -701,11 +699,9 @@ pub enum PersonalFabricAction {
         group: crate::speaker_group::SpeakerGroupId,
         accepted: bool,
     },
-    /// The calibrating leader asks a consenting device to record around one
-    /// member's sweep, whose first sample leaves the speaker at `start_ns` on
-    /// the listening device's own `CLOCK_MONOTONIC`. The leader converts its
-    /// schedule through the fabric clock estimate it holds of that device, so
-    /// the listener needs no estimate of its own.
+    /// The calibrating leader asks a consenting device to record around one member's
+    /// sweep, whose first sample leaves the speaker at `start_ns` on the listening
+    /// device's own clock. The listener needs no estimate of its own.
     SpeakerListen {
         group: crate::speaker_group::SpeakerGroupId,
         sweep: [u8; 16],
@@ -719,12 +715,11 @@ pub enum PersonalFabricAction {
         sweep: [u8; 16],
         hearing: crate::speaker_group::SpeakerHearing,
     },
-    /// The legacy app windows this device shows right now, each at the size
-    /// it shows it. The device running a listed window streams that one
-    /// window here, and stops once a refresh no longer lists it or the
-    /// refreshes stop. An empty list ends every stream to this device.
-    /// `decode` is what this device's hardware decoders take, so the host
-    /// encodes nothing they would hand back to the CPU.
+    /// The legacy app windows this device shows right now, each at the size it shows it.
+    /// The device running a listed window streams that one window here and stops once a
+    /// refresh no longer lists it or the refreshes stop. `decode` is what this device's
+    /// hardware decoders take, so the host encodes nothing they would hand back to the
+    /// CPU.
     WindowViews {
         views: Vec<WindowView>,
         decode: Vec<HardwareDecode>,
@@ -851,12 +846,9 @@ pub struct PersonalFabricActionEnvelope {
 }
 
 impl PersonalFabricActionEnvelope {
-    /// Validate transport-bound authorship, target, freshness, and payload.
-    ///
+    /// Validate transport-bound authorship, target, freshness and payload.
     /// # Errors
-    ///
-    /// Returns an error for a replay-shaped, misaddressed, oversized, or
-    /// semantically invalid action.
+    /// A replay-shaped, misaddressed, oversized or semantically invalid action.
     #[allow(
         clippy::too_many_lines,
         reason = "all authenticated action payload rules stay in one exhaustive validator so a new wire variant cannot bypass review"
@@ -1453,12 +1445,10 @@ pub struct ClipboardEntry {
 }
 
 impl ClipboardEntry {
-    /// Construct a content-addressed item after the caller has classified it
-    /// as safe to leave the originating device.
-    ///
+    /// Construct a content-addressed item the caller has classified as safe to leave the
+    /// originating device.
     /// # Errors
-    ///
-    /// Returns an error for an oversized/invalid payload or foreign stamp.
+    /// An oversized or invalid payload, or a foreign stamp.
     pub fn shareable(
         payload: ClipboardPayload,
         origin: DeviceId,
@@ -1519,11 +1509,9 @@ impl ClipboardHistory {
         self.entries.iter()
     }
 
-    /// Add or promote an item while enforcing the bounded history policy.
-    ///
+    /// Add or promote an item, enforcing the bounded history policy.
     /// # Errors
-    ///
-    /// Returns an error for an invalid item or when every history slot is pinned.
+    /// An invalid item, or every history slot pinned.
     pub fn push(&mut self, entry: ClipboardEntry) -> Result<bool, FabricError> {
         entry.payload.validate()?;
         if let Some(index) = self.entries.iter().position(|item| item.id == entry.id) {
@@ -1820,10 +1808,8 @@ impl InputLease {
     }
 
     /// Check the target-issued lease at the moment an input event is routed.
-    ///
     /// # Errors
-    ///
-    /// Returns an error when the lease shape is invalid or it has expired.
+    /// An invalid lease shape, or one that has expired.
     pub fn validate_at(&self, now_unix_ms: u64) -> Result<(), FabricError> {
         if self.controller == self.target
             || self.expires_unix_ms <= self.issued_unix_ms
@@ -1880,11 +1866,9 @@ pub struct DeviceFabricSnapshot {
 }
 
 impl DeviceFabricSnapshot {
-    /// Validate authorship, size, uniqueness, and feature-specific invariants.
-    ///
+    /// Validate authorship, size, uniqueness and feature-specific invariants.
     /// # Errors
-    ///
-    /// Returns the first violated fabric invariant.
+    /// The first violated fabric invariant.
     pub fn validate(&self) -> Result<(), FabricError> {
         if self.schema_version != FABRIC_SCHEMA_VERSION {
             return Err(FabricError::UnsupportedSchema(self.schema_version));
@@ -2011,10 +1995,8 @@ impl DeviceFabric {
     }
 
     /// Encode a validated, bounded aggregate for durable local storage.
-    ///
     /// # Errors
-    ///
-    /// Returns an error when retained state is invalid or exceeds its wire bound.
+    /// Retained state is invalid or exceeds its wire bound.
     pub fn encode_checkpoint(&self) -> Result<Vec<u8>, FabricError> {
         if self.snapshots.len() > MAX_DEVICES {
             return Err(FabricError::TooManyDevices);
@@ -2033,10 +2015,8 @@ impl DeviceFabric {
     }
 
     /// Decode and validate an aggregate before it reaches live fabric state.
-    ///
     /// # Errors
-    ///
-    /// Returns an error for malformed, oversized, or invariant-violating input.
+    /// Malformed, oversized or invariant-violating input.
     pub fn decode_checkpoint(bytes: &[u8]) -> Result<Self, FabricError> {
         if bytes.len() > MAX_FABRIC_CHECKPOINT_BYTES {
             return Err(FabricError::CheckpointTooLarge);
@@ -2053,11 +2033,9 @@ impl DeviceFabric {
     }
 
     /// Merge one device's newest self-authored snapshot.
-    ///
     /// # Errors
-    ///
-    /// Returns an error for invalid state, capacity exhaustion, or an equal
-    /// revision carrying conflicting content.
+    /// Invalid state, capacity exhaustion, or an equal revision with conflicting
+    /// content.
     pub fn upsert(&mut self, snapshot: DeviceFabricSnapshot) -> Result<bool, FabricError> {
         snapshot.validate()?;
         if !self.snapshots.contains_key(&snapshot.owner) && self.snapshots.len() >= MAX_DEVICES {
@@ -2276,11 +2254,9 @@ impl DeviceFabric {
     }
 
     /// Prepare an atomic output transfer for a logical media session.
-    ///
     /// # Errors
-    ///
-    /// Returns an error when the session/device is unknown or the online
-    /// target lacks the required media capabilities.
+    /// The session or device is unknown, or the online target lacks the media
+    /// capabilities the transfer needs.
     pub fn handoff_media(
         &self,
         session_id: &str,
@@ -2556,17 +2532,14 @@ impl DeviceFabric {
             .collect()
     }
 
-    /// Admission rules for a group its leader is about to publish: every
-    /// member is one of this person's certified devices, can join speaker
-    /// groups (the leader's own outputs always can), and offers the named
-    /// output.
-    ///
+    /// Admission rules for a group its leader is about to publish: every member is one of
+    /// this person's certified devices, can join speaker groups (the leader's own outputs
+    /// always can), and offers the named output.
     /// # Errors
-    ///
     /// [`FabricError::InvalidSpeakerGroup`] for a structural problem,
     /// [`FabricError::UnknownDevice`] for a device outside the fabric, and
-    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot
-    /// join or does not offer that output.
+    /// [`FabricError::IneligibleSpeakerMember`] for a device that cannot join or does not
+    /// offer that output.
     pub fn admit_speaker_group(
         &self,
         group: &crate::speaker_group::SpeakerGroup,

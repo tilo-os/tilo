@@ -61,37 +61,29 @@ pub trait FabricLink {
         None
     }
     /// Send `action` to `target`, returning its request id.
-    ///
     /// # Errors
-    ///
-    /// Returns why the transport refused the action.
+    /// Why the transport refused the action.
     fn send_personal_fabric_action(
         &self,
         target: &DeviceId,
         action: PersonalFabricAction,
     ) -> Result<[u8; 16], String>;
     /// Send `action` to `target`, telling a full queue apart from a refusal.
-    ///
     /// # Errors
-    ///
-    /// Returns [`PersonalFabricSendError::Backpressure`] while the queue is
-    /// full, otherwise why the transport refused the action.
+    /// [`PersonalFabricSendError::Backpressure`] while the queue is full, otherwise why
+    /// the transport refused the action.
     fn try_send_personal_fabric_action(
         &self,
         target: &DeviceId,
         action: PersonalFabricAction,
     ) -> Result<[u8; 16], PersonalFabricSendError>;
     /// Whether the person lets media move between their devices.
-    ///
     /// # Errors
-    ///
-    /// Returns why media continuity is off.
+    /// Why media continuity is off.
     fn require_media(&self) -> Result<(), String>;
     /// Whether the person lets Wi-Fi credentials move between their devices.
-    ///
     /// # Errors
-    ///
-    /// Returns why Wi-Fi continuity is off.
+    /// Why Wi-Fi continuity is off.
     fn require_wifi_settings(&self) -> Result<(), String> {
         Ok(())
     }
@@ -105,14 +97,11 @@ pub trait FabricLink {
         let _ = (ssid, security);
         None
     }
-    /// Seal `password`, which this device learned for `ssid`, to this device
-    /// and every device of the person's in the fabric, as this device's own
-    /// record in its next snapshot.
-    ///
+    /// Seal `password`, which this device learned for `ssid`, to this device and every
+    /// device of the person's in the fabric.
     /// # Errors
-    ///
-    /// Returns why the passphrase is not one to carry between the person's
-    /// devices, or why this session takes no part in a fabric to carry it on.
+    /// Why the passphrase is not one to carry between the person's devices, or why this
+    /// session takes no part in a fabric to carry it on.
     fn share_wifi_password(
         &self,
         ssid: &str,
@@ -122,50 +111,31 @@ pub trait FabricLink {
         let _ = (ssid, security, password);
         Err("this session's fabric carries no Wi-Fi credentials".to_owned())
     }
-    /// Offer what this device copies to the person's other devices, as this
-    /// device's own entry in its next snapshot.
-    ///
-    /// A link whose transport does not carry the clipboard yet ignores the
-    /// offer; what their devices shared still merges in from
-    /// [`Self::device_fabric`].
+    /// Offer what this device copies to the person's other devices. A link whose
+    /// transport does not carry the clipboard yet ignores the offer; what their devices
+    /// shared still merges in from [`Self::device_fabric`].
     fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
         let _ = entries;
     }
-    /// Offer the ways this device's interfaces can be woken to the person's
-    /// other devices, as this device's own record in its next snapshot.
-    ///
-    /// A link whose transport does not carry wake routes yet ignores the
-    /// offer; what their devices offered still merges in from
-    /// [`Self::device_fabric`].
+    /// Offer the ways this device's interfaces can be woken to the person's other
+    /// devices. A link whose transport does not carry wake routes yet ignores the offer.
     fn share_wake_routes(&self, routes: Vec<WakeRoute>) {
         let _ = routes;
     }
-    /// Offer the person's settings this device holds to their other devices,
-    /// as this device's own records in its next snapshot.
-    ///
-    /// A link whose transport does not carry settings yet ignores the offer;
-    /// what their devices set still merges in from [`Self::device_fabric`].
+    /// Offer the person's settings this device holds to their other devices. A link
+    /// whose transport does not carry settings yet ignores the offer.
     fn share_settings(&self, settings: Vec<RoamingSetting>) {
         let _ = settings;
     }
-    /// Say the person's session on this device to their other devices, as
-    /// this device's own record in its next snapshot: whether it is locked,
-    /// when they last locked or unlocked it themselves, and when they last
-    /// used it. Their devices read it from [`Self::device_fabric`].
-    ///
-    /// A link whose transport does not carry this yet ignores it.
+    /// Say the person's session on this device to their other devices: whether it is
+    /// locked, when they last locked or unlocked it themselves, and when they last used
+    /// it. A link whose transport does not carry it yet ignores it.
     fn publish_owner_session(&self, session: OwnerSession) {
         let _ = session;
     }
-    /// Offer the displays this device shows now to the person's other
-    /// devices and to the shared arrangement, replacing what it offered
-    /// before: where each connector's output stands on the plane they make
-    /// and what each output's hardware says. Returns whether this device's
-    /// record changed.
-    ///
-    /// A link whose transport does not carry displays yet ignores the
-    /// offer; what their devices show still merges in from
-    /// [`Self::device_fabric`].
+    /// Offer the displays this device shows now to the person's other devices and to the
+    /// shared arrangement, replacing what it offered before. A link whose transport does
+    /// not carry displays yet ignores the offer.
     fn share_display(
         &self,
         rect: DisplayRect,
@@ -177,14 +147,8 @@ pub trait FabricLink {
         false
     }
 
-    /// Offer what this device publishes about disk unlock to the person's
-    /// other devices, as this device's own record in its next snapshot: the
-    /// sibling halves it holds for the person's other devices, and the
-    /// auto-approvals they set here. Replaces what it offered before.
-    ///
-    /// A link whose transport does not carry this yet ignores the offer;
-    /// what their devices published still merges in from
-    /// [`Self::device_fabric`].
+    /// Offer what this device publishes about disk unlock to the person's other devices:
+    /// the sibling halves it holds for them, and the auto-approvals they set here.
     fn share_unlock(&self, unlock: crate::unlock::UnlockFabricState) {
         let _ = unlock;
     }
@@ -196,17 +160,11 @@ pub trait FabricLink {
         Vec::new()
     }
 
-    /// Stream one of this device's staged spool objects to `target`: the
-    /// bytes of an offer already sent to it, from the checkpoint it confirmed.
-    ///
-    /// A link whose transport does not carry files yet ignores the stream; the
-    /// offer itself (an ordinary personal fabric action) still reaches its
-    /// device.
-    ///
+    /// Stream one of this device's staged spool objects to `target`: the bytes of an
+    /// offer already sent to it, from the checkpoint it confirmed.
     /// # Errors
-    ///
-    /// Returns [`PersonalFabricSendError::Backpressure`] while the transport's
-    /// command queue is full, otherwise why it refused the stream.
+    /// [`PersonalFabricSendError::Backpressure`] while the transport's command queue is
+    /// full, otherwise why it refused the stream.
     fn share_nearby_spool(
         &self,
         target: &DeviceId,

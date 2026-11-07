@@ -1,18 +1,11 @@
 //! The session's live copy of the person's device fabric.
-//!
-//! [`DeviceFabric`] is the model: what each of the person's devices last said
-//! about itself. This is the state a running session keeps around it — this
-//! device's own record, which endpoint each of the person's other devices is
-//! reached on, and the actions it was handed — so a service on the fabric
-//! ([`crate::link::FabricLink`]) can be answered and the transport can be
-//! told what to send next.
-//!
-//! There is no transport and no async here: the session hands this what
-//! arrived, first a device proving itself ([`FabricRuntime::sibling`]) and
-//! then whatever that device sent, and asks it for the frames to publish. So
-//! the rules below — whose record a snapshot may carry, which actions are
-//! addressed here, which were already acted on — are decided once, in one
-//! place, whatever carries them.
+//! [`DeviceFabric`] is the model: what each of the person's devices last said about
+//! itself. This is the state a running session keeps around it — this device's own
+//! record, the endpoint each of the person's other devices is reached on, and the
+//! actions it was handed. There is no transport and no async here: the session
+//! hands this what arrived and asks it for the frames to publish, so the rules —
+//! whose record a snapshot may carry, which actions are addressed here, which were
+//! already acted on — are decided once, in one place.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -25,11 +18,9 @@ use crate::{
     OwnerSession, PersonalFabricAction, PersonalFabricActionEnvelope, WakeRoute,
 };
 
-/// Request ids remembered so a replayed action is refused.
-///
-/// An envelope older than [`crate::MAX_FABRIC_ACTION_AGE_MS`] is refused
-/// anyway, so remembering the newest actions' ids covers every replay the
-/// wire lets through.
+/// Request ids remembered so a replayed action is refused. An envelope older than
+/// [`crate::MAX_FABRIC_ACTION_AGE_MS`] is refused anyway, so the newest ids cover
+/// every replay the wire lets through.
 const REMEMBERED_ACTIONS: usize = 8192;
 
 /// One of the person's other devices, as this session reaches it.
@@ -71,19 +62,14 @@ pub struct FabricRuntime {
 }
 
 impl FabricRuntime {
-    /// The fabric this device kept, if it kept one, and this device's own
-    /// record authored afresh: what a device says of itself holds only while
-    /// it can say it, so every other device starts out offline
-    /// ([`DeviceFabric::restored`]).
-    ///
-    /// The new record carries a revision newer than anything in the
-    /// checkpoint, so the person's other devices take it over the one they
-    /// kept from this device's last run.
-    ///
+    /// The fabric this device kept, if it kept one, and this device's own record
+    /// authored afresh: what a device says of itself holds only while it can say it, so
+    /// every other device starts out offline ([`DeviceFabric::restored`]). The new
+    /// record's revision is newer than anything in the checkpoint, so the person's
+    /// other devices take it over what they kept from this device's last run.
     /// # Errors
-    ///
-    /// Returns why the checkpoint does not decode as a fabric, or why this
-    /// device's own record is not a valid snapshot.
+    /// Why the checkpoint does not decode as a fabric, or the record is not a valid
+    /// snapshot.
     pub fn restored(
         local: Option<(DeviceId, String)>,
         checkpoint: Option<&[u8]>,
@@ -114,15 +100,11 @@ impl FabricRuntime {
         Ok(runtime)
     }
 
-    /// One of the person's devices proved itself on its session with this
-    /// one: from now on its frames are attributed to the device its
-    /// certificate names, and actions to it leave the same way.
-    ///
-    /// The certificates are the ones the transport verified against this
-    /// device's roots ([`tilo_network_actor::NetEvent::Sibling`]); this only
-    /// reads who they name. A device an entry in `revocations` covers is no
-    /// device of the person's any more, so what it said is dropped rather
-    /// than kept as theirs.
+    /// One of the person's devices proved itself on its session with this one: from now
+    /// on its frames are attributed to the device its certificate names, and actions to
+    /// it leave the same way. The certificates are the ones the transport verified
+    /// ([`tilo_network_actor::NetEvent::Sibling`]). A device an entry in `revocations`
+    /// covers is no device of the person's any more, so what it said is dropped.
     pub fn sibling(
         &mut self,
         peer: EndpointId,
@@ -174,17 +156,11 @@ impl FabricRuntime {
         }
     }
 
-    /// Take the fabric one of the person's devices announced.
-    ///
-    /// A device announces its own record and nothing else: a frame carrying
-    /// another device's state would forge it, so it is refused rather than
-    /// merged. What a device sends is the encoded aggregate
-    /// ([`DeviceFabric::encode_checkpoint`]) carrying its one record, as the
-    /// person's other devices publish it. Returns whether the fabric moved.
-    ///
+    /// Take the fabric one of the person's devices announced. A device announces its own
+    /// record and nothing else: a frame carrying another device's state would forge it,
+    /// so it is refused rather than merged. Returns whether the fabric moved.
     /// # Errors
-    ///
-    /// Returns why the frame is not one device's own valid record.
+    /// Why the frame is not one device's own valid record.
     pub fn snapshot(&mut self, peer: EndpointId, bytes: &[u8]) -> Result<bool, FabricError> {
         let incoming = DeviceFabric::decode_checkpoint(bytes)?;
         let mut records = incoming.snapshots().values();
@@ -207,18 +183,13 @@ impl FabricRuntime {
         Ok(merged)
     }
 
-    /// Take one action a device addressed to this one.
-    ///
-    /// The action counts only when the device that sent it over the
-    /// transport is the device the envelope names, when it is addressed to
-    /// this device, and when it is neither stale nor a replay of one already
-    /// delivered: anything else is refused here rather than acted on.
+    /// Take one action a device addressed to this one. It counts only when the device
+    /// that sent it is the device the envelope names, when it is addressed here, and when
+    /// it is neither stale nor a replay: anything else is refused rather than acted on.
     /// Returns the action once, for the session's next pass to route.
-    ///
     /// # Errors
-    ///
-    /// Returns why the frame is not an action addressed to this device, or
-    /// why it was delivered already.
+    /// Why the frame is not an action addressed to this device, or why it was delivered
+    /// already.
     pub fn action(
         &mut self,
         peer: EndpointId,
@@ -248,12 +219,10 @@ impl FabricRuntime {
         Ok(Some(envelope.action))
     }
 
-    /// This device's own record as the frame that announces it: only what
-    /// this device authors, never another one's state.
-    ///
+    /// This device's own record as the frame that announces it: only what this device
+    /// authors.
     /// # Errors
-    ///
-    /// Returns why this device's record cannot be encoded.
+    /// Why this device's record cannot be encoded.
     pub fn own_snapshot(&self) -> Result<Vec<u8>, FabricError> {
         let Some(local) = &self.local else {
             return Err(FabricError::UnknownDevice);
@@ -275,14 +244,11 @@ impl FabricRuntime {
         std::mem::take(&mut self.actions)
     }
 
-    /// Take what this device's clipboard now offers the person's other
-    /// devices, replacing what it offered before: a copy removed from the
-    /// history stops being shared. Returns whether this device's record
-    /// changed.
-    ///
+    /// Take what this device's clipboard now offers the person's other devices,
+    /// replacing what it offered before: a copy removed from the history stops being
+    /// shared. Returns whether this device's record changed.
     /// # Errors
-    ///
-    /// Returns why the offered copies do not make a valid record.
+    /// Why the offered copies do not make a valid record.
     pub fn share_clipboard(&mut self, entries: Vec<ClipboardEntry>) -> Result<bool, FabricError> {
         let Some(local) = &mut self.local else {
             return Ok(false);
@@ -294,16 +260,13 @@ impl FabricRuntime {
         self.revise()
     }
 
-    /// Seal the Wi-Fi passphrase this device learned for `ssid` to itself and
-    /// to every device of the person's in this fabric, as this device's own
-    /// record in its next snapshot: the passphrase itself never leaves the
-    /// sealed envelopes. A network this device already shared is replaced.
-    /// Returns whether this device's record changed.
-    ///
+    /// Seal the Wi-Fi passphrase this device learned for `ssid` to itself and to every
+    /// device of the person's in this fabric, as this device's own record in its next
+    /// snapshot: the passphrase itself never leaves the sealed envelopes. A network this
+    /// device already shared is replaced. Returns whether the record changed.
     /// # Errors
-    ///
-    /// Returns why the passphrase is not one to carry between the person's
-    /// devices, or why the record does not make a valid snapshot.
+    /// Why the passphrase is not one to carry between the person's devices, or why the
+    /// record does not make a valid snapshot.
     pub fn share_wifi_password(
         &mut self,
         ssid: &str,
@@ -347,13 +310,10 @@ impl FabricRuntime {
         self.revise()
     }
 
-    /// Take the wake routes this device's interfaces now offer, replacing
-    /// what it offered before: an interface that went away stops being a way
-    /// to wake this machine. Returns whether this device's record changed.
-    ///
+    /// Take the wake routes this device's interfaces now offer, replacing what it offered
+    /// before. Returns whether this device's record changed.
     /// # Errors
-    ///
-    /// Returns why the routes do not make a valid record.
+    /// Why the routes do not make a valid record.
     pub fn set_wake_routes(&mut self, routes: Vec<WakeRoute>) -> Result<bool, FabricError> {
         let Some(local) = &mut self.local else {
             return Ok(false);
@@ -365,14 +325,11 @@ impl FabricRuntime {
         self.revise()
     }
 
-    /// Say the person's session on this device to their other devices:
-    /// whether it is locked, when they last locked or unlocked it themselves
-    /// and when they last used it. Returns whether this device's record
-    /// changed.
-    ///
+    /// Say the person's session on this device to their other devices: whether it is
+    /// locked, when they last locked or unlocked it themselves, and when they last used
+    /// it. Returns whether this device's record changed.
     /// # Errors
-    ///
-    /// Returns why the record does not make a valid snapshot.
+    /// Why the record does not make a valid snapshot.
     pub fn set_owner_session(&mut self, session: OwnerSession) -> Result<bool, FabricError> {
         let Some(local) = &mut self.local else {
             return Ok(false);
@@ -384,13 +341,10 @@ impl FabricRuntime {
         self.revise()
     }
 
-    /// Take what this device publishes about disk unlock: its enrolments,
-    /// one per slot, and the auto-approvals the person made here. Returns
-    /// whether this device's record changed.
-    ///
+    /// Take what this device publishes about disk unlock: its enrolments, one per slot,
+    /// and the auto-approvals the person made here.
     /// # Errors
-    ///
-    /// Returns why the state does not make a valid record.
+    /// Why the state does not make a valid record.
     pub fn set_unlock(
         &mut self,
         unlock: crate::unlock::UnlockFabricState,
@@ -405,15 +359,12 @@ impl FabricRuntime {
         self.revise()
     }
 
-    /// Take the displays this device shows now, replacing what it showed
-    /// before: where each connector's output stands, how big the plane they
-    /// make is, and what the hardware behind each one says. A display that
-    /// left stops being listed. Returns whether this device's record changed.
-    ///
+    /// Take the displays this device shows now, replacing what it showed before: where
+    /// each connector's output stands, how big the plane they make is, and what the
+    /// hardware behind each one says. Returns whether this device's record changed.
     /// # Errors
-    ///
-    /// Returns why the placement and the facts do not make a valid record, or
-    /// do not agree with each other.
+    /// Why the placement and the facts do not make a valid record, or do not agree with
+    /// each other.
     pub fn set_display(
         &mut self,
         rect: crate::DisplayRect,
@@ -480,14 +431,12 @@ impl FabricRuntime {
         ))
     }
 
-    /// Take the outputs one of the person's devices says it shows, in the
-    /// revision of its record it says it for. The device is the one behind
-    /// `peer`: another device's state cannot be put under its name.
-    ///
+    /// Take the outputs one of the person's devices says it shows, in the revision of its
+    /// record it says it for. The device is the one behind `peer`: another device's
+    /// state cannot be put under its name.
     /// # Errors
-    ///
-    /// Returns why `peer` names no device of the person's, or why the
-    /// observation is not for its current revision.
+    /// Why `peer` names no device of the person's, or why the observation is not for its
+    /// current revision.
     pub fn observe_display_connectors(
         &mut self,
         peer: EndpointId,
@@ -501,13 +450,11 @@ impl FabricRuntime {
             .observe_display_connectors(&owner, stamp, outputs)
     }
 
-    /// Take what the hardware behind one of the person's devices' outputs
-    /// says, in the revision of its record it says it for.
-    ///
+    /// Take what the hardware behind one of the person's devices' outputs says, in the
+    /// revision of its record it says it for.
     /// # Errors
-    ///
-    /// Returns why `peer` names no device of the person's, or why the facts
-    /// are not for its current revision.
+    /// Why `peer` names no device of the person's, or why the facts are not for its
+    /// current revision.
     pub fn observe_display_outputs(
         &mut self,
         peer: EndpointId,
@@ -621,11 +568,9 @@ fn own_record(
             label: label.to_owned(),
             kind: DeviceKind::Desktop,
             capabilities: FabricCapabilities {
-                // What this session does with the fabric: what the person
-                // copies here reaches their other devices, and what they
-                // play here can go on playing on them. Input, display,
-                // speaker groups and the rest are not offered, so they are
-                // not claimed.
+                // What this session does with the fabric: what the person copies here reaches
+                // their other devices, and what they play here can go on playing on them. Input,
+                // display and speaker groups are not offered, so they are not claimed.
                 clipboard: true,
                 audio_output: true,
                 video_output: true,
