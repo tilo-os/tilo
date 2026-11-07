@@ -17,8 +17,23 @@
 //! sandboxed app cannot write it.
 
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tilo_files::native::checked::Identity;
+
+/// Directory under the user's data home that holds the records: beside the
+/// other per-user state the launcher keeps, and outside every directory a
+/// launch makes writable for a sandboxed app.
+pub const DIRECTORY_NAME: &str = "tilo-runtime-verified";
+
+/// Answer [`DIRECTORY_NAME`], creating it if needed, or `None` where the data
+/// home is unknown or the directory cannot be made — a launch then verifies
+/// in full, as it did before records, and an install leaves none.
+#[must_use]
+pub fn directory() -> Option<PathBuf> {
+    let dir = tilo_paths::xdg::data_home()?.join(DIRECTORY_NAME);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
 
 /// Bumped whenever what a record holds, or what a hit relies on, changes. A
 /// record of another version is ignored and the bundle verified in full.

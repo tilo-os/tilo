@@ -1092,7 +1092,7 @@ fn verified_bundle(
         // by the kernel without being read, and files a launch already
         // proved are proven to be the same files (same inode, size, times)
         // by the record it left. Everything else is hashed in full.
-        let records = crate::appdir::prepare_runtime_records();
+        let records = runtime_bundle::record::directory();
         runtime_bundle::verify_bundle_recorded_with(path, &verify_opts, records.as_deref()).map(
             |(manifest, check)| {
                 tracing::debug!(
