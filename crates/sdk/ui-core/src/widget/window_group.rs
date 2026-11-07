@@ -20,7 +20,6 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::Key;
 
-use crate::tokens::TextRole;
 /// Immutable presentation inspection in root logical coordinates.
 /// Reading this does not lay out, paint, reveal controls or drain input edges.
 /// An edge drag a [`WindowGroup`]'s row is carrying out on it.
@@ -113,9 +112,6 @@ impl WindowGroup {
         }
         let shift = vello::kurbo::Vec2::new(dx, 0.0);
         self.rect = self.rect + shift;
-        self.restore_rect = self.restore_rect + shift;
-        self.fullscreen_rect = self.fullscreen_rect + shift;
-        self.close_rect = self.close_rect + shift;
         self.bar.offset_layout(dx);
         self.search.offset_layout(dx);
         for (_, host) in &mut self.hosts {
@@ -148,10 +144,6 @@ impl WindowGroup {
 /// and the gap before it.
 const SEARCH_CONTROL_ROOM: f64 =
     super::window_controls::CONTROL_PX + super::window_controls::CONTROL_GAP;
-
-const RESTORE_TARGET: &str = "window.restore";
-const CLOSE_TARGET: &str = "window.close";
-const FULLSCREEN_TARGET: &str = "window.fullscreen";
 
 // Each bool below is an independent UI flag (resize-hover, maximized,
 // search-open, focus, ...), not a bitset encoding related states, and the
@@ -214,27 +206,6 @@ pub struct WindowGroup {
     /// the window's own edge/shadow rather than the group drawing a ring
     /// around both the tab row and the card.
     pub focused: bool,
-    maximized_controls: crate::widget::PaintedTargets,
-    registered_controls: Option<(Rect, Rect, Rect)>,
-    restore_rect: Rect,
-    restore_hover: bool,
-    /// The `[Full screen]` chip beside Restore, and its pending request.
-    fullscreen_rect: Rect,
-    fullscreen_hover: bool,
-    pending_fullscreen_request: bool,
-    close_rect: Rect,
-    close_hover: bool,
-    /// The painted `[app title]` chip of the floating bar; zero when hidden
-    /// or when the app's header row holds the bar.
-    title_rect: Rect,
-    /// Whether the person reached for a maximized window's bar
-    /// (`widget::top_edge_reveal`): the bar hides at rest and appears over
-    /// the window's top edge.
-    top_edge: crate::widget::TopEdgeReveal,
-    /// The active host's header row took the window's bar: the host the
-    /// offer went to, and the slot its row reported after layout.
-    bar_offered_to: Option<u64>,
-    bar_slot: Option<crate::widget::WindowBarSlot>,
     /// The motion the bar's fade plays, latched from the theme at draw.
     chrome_motion: crate::tokens::EffectiveMotion,
     /// Height of what overlays the window's top edge now (the desktop's top
@@ -350,25 +321,6 @@ pub struct WindowGroup {
     /// action lands at once. Set by the row, see
     /// [`GroupRow::set_motion_source`](super::GroupRow::set_motion_source).
     motion_source: crate::tokens::MotionSource,
-}
-
-/// Height of the floating maximized-chrome chips. Off the 4 px grid, and
-/// short of HIG §9.6's 28 px Selector: the row overlays app content, so it
-/// is kept as slim as its `scale.xs` label allows. Recorded rather than
-/// rounded — the row's geometry is what the maximize tests pin.
-const MAXIMIZED_CHIP_H: f64 = 22.0;
-
-fn maximized_chip_height(theme: &Theme) -> f64 {
-    let caption = theme.text(TextRole::Caption);
-    MAXIMIZED_CHIP_H
-        .max(f64::from(caption.size * caption.line_height) + f64::from(theme.tokens.spacing.s1))
-}
-
-/// Height of the floating bar a maximized window shows over its top edge
-/// when the person reaches for it: its chips and their inset. The bar takes
-/// no room from the client, which fills the window.
-pub fn maximized_chrome_height(theme: &Theme) -> f64 {
-    (maximized_chip_height(theme) + 2.0 * crate::widget::tabs::TAB_PILL_INSET_Y).ceil()
 }
 
 /// Room the window's controls (Full screen, Restore, close) take at the
@@ -491,19 +443,6 @@ impl WindowGroup {
             maximized: false,
             search_active: false,
             focused: false,
-            maximized_controls: crate::widget::PaintedTargets::new(),
-            registered_controls: None,
-            restore_rect: Rect::ZERO,
-            restore_hover: false,
-            fullscreen_rect: Rect::ZERO,
-            fullscreen_hover: false,
-            pending_fullscreen_request: false,
-            close_rect: Rect::ZERO,
-            close_hover: false,
-            title_rect: Rect::ZERO,
-            top_edge: crate::widget::TopEdgeReveal::default(),
-            bar_offered_to: None,
-            bar_slot: None,
             chrome_motion: crate::tokens::EffectiveMotion::default(),
             top_overlay_inset: 0.0,
             top_slide_from: 0.0,
@@ -574,9 +513,6 @@ impl WindowGroup {
     }
 
     pub fn set_focused(&mut self, focused: bool) -> bool {
-        if !focused {
-            self.maximized_controls.cancel_pointer_press();
-        }
         if self.focused == focused {
             return false;
         }
@@ -865,75 +801,6 @@ impl WindowGroup {
         }
     }
 
-    /// Whether a maximized window's bar shows: the person reached for it
-    /// (`widget::top_edge_reveal`). It hides at rest.
-    pub fn maximized_chrome_shown(&self) -> bool {
-        self.maximized_chrome_live() && self.top_edge.shown()
-    }
-
-    fn maximized_chrome_live(&self) -> bool {
-        // A maximized window keeps its bar: the same bar, in the same place,
-        // as when it isn't.
-        false
-    }
-
-    /// What the bar covers and which of its controls a pointer may head for.
-    fn edge_rects(&self) -> (Vec<Rect>, Vec<Rect>) {
-        let controls: Vec<Rect> = [self.fullscreen_rect, self.restore_rect, self.close_rect]
-            .into_iter()
-            .filter(|r| r.area() > 0.0)
-            .collect();
-        let mut bar = controls.clone();
-        match self.bar_slot {
-            Some(slot) => bar.push(slot.row),
-            None if self.title_rect.area() > 0.0 => bar.push(self.title_rect),
-            None => {}
-        }
-        (bar, controls)
-    }
-
-    /// Feed the top-edge intent a pointer sample in the group's coordinates.
-    /// The group sees its own pointer motion; a host whose client surface
-    /// takes the pointer (a foreign window) reports it here too. Returns
-    /// whether the bar showed or hid.
-    pub fn note_maximized_pointer(&mut self, p: Point) -> bool {
-        self.note_maximized_pointer_at(p, crate::time::now())
-    }
-
-    /// [`Self::note_maximized_pointer`] on a given timeline (tests drive
-    /// slow and fast paths with it).
-    pub(crate) fn note_maximized_pointer_at(&mut self, p: Point, now: Instant) -> bool {
-        if !self.maximized_chrome_live() {
-            return false;
-        }
-        let (bar, controls) = self.edge_rects();
-        let geo = crate::widget::EdgeGeometry {
-            window: self.rect,
-            bar: &bar,
-            controls: &controls,
-        };
-        let changed = self.top_edge.on_motion(p, &geo, now);
-        if changed {
-            self.top_edge_changed();
-        }
-        changed
-    }
-
-    /// A press at `p`: in the reveal band while the bar hides it is the
-    /// app's, and no reveal follows until the pointer leaves the band.
-    pub fn note_maximized_press(&mut self, p: Point) {
-        if !self.maximized_chrome_live() {
-            return;
-        }
-        let (bar, controls) = self.edge_rects();
-        let geo = crate::widget::EdgeGeometry {
-            window: self.rect,
-            bar: &bar,
-            controls: &controls,
-        };
-        self.top_edge.on_press(p, &geo);
-    }
-
     /// Tell the group how much of its top edge something overlays now — the
     /// desktop's top bar while it shows over a window that reaches under an
     /// auto-hiding top bar — so the window's bar stands below it instead of
@@ -952,10 +819,6 @@ impl WindowGroup {
             self.top_overlay_inset = inset;
             self.style_dirty = true;
             self.grip_dirty = true;
-            if self.bar_offered_to.is_some() {
-                self.style_dirty = true;
-            }
-            self.clear_maximized_controls();
         }
     }
 
@@ -989,64 +852,6 @@ impl WindowGroup {
 
     fn top_slide_in_flight(&self) -> bool {
         (self.top_slide_now() - self.top_overlay_inset).abs() > 0.25
-    }
-
-    /// Test and shot fixture: as if the person had reached for the bar
-    /// (`true`) or left it (`false`).
-    #[cfg(any(test, debug_assertions, feature = "test-support"))]
-    pub fn set_maximized_chrome_shown_for_tests(&mut self, shown: bool) {
-        self.top_edge.force_shown(shown);
-        self.top_edge_changed();
-    }
-
-    /// Test and shot clock control: settle the bar's pending dwell or hold
-    /// as if it had run out. Returns whether the bar shows.
-    #[cfg(any(test, debug_assertions))]
-    pub fn elapse_maximized_chrome_intent(&mut self) -> bool {
-        let before = self.top_edge.shown();
-        let shown = self.top_edge.elapse();
-        if shown != before {
-            self.top_edge_changed();
-        }
-        shown
-    }
-
-    /// Offer the active app's header row the window's bar while maximized,
-    /// and take it back from a host that no longer should hold it.
-    fn offer_window_bar(&mut self, active_id: u64, theme: &Theme) {
-        let now = crate::time::now();
-        if !self.maximized_chrome_live() {
-            self.top_edge.reset();
-        } else if self.top_edge.settle(now) {
-            self.grip_dirty = true;
-        }
-        let want = self
-            .maximized_chrome_live()
-            .then(|| crate::widget::WindowBar {
-                controls_width: merged_controls_width(theme),
-                revealed: self.top_edge.shown(),
-                top_inset: self.top_overlay_inset,
-                // A maximized window's group lists none of its app's actions.
-                lists_actions: false,
-            });
-        if let Some(previous) = self.bar_offered_to
-            && (want.is_none() || previous != active_id)
-        {
-            if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == previous) {
-                h.offer_window_bar(None);
-            }
-            self.bar_offered_to = None;
-            self.bar_slot = None;
-        }
-        if want.is_some()
-            && let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id)
-            && h.offer_window_bar(want)
-        {
-            self.bar_offered_to = Some(active_id);
-        } else if want.is_some() {
-            self.bar_offered_to = None;
-            self.bar_slot = None;
-        }
     }
 
     /// The window presents its tabs' History: each tab's pill carries the
@@ -1097,18 +902,6 @@ impl WindowGroup {
             pressed = true;
         }
         pressed
-    }
-
-    /// The bar showed or hid: repaint, and rebuild where an app's header
-    /// lives in the bar (it stands in the tree only while shown).
-    fn top_edge_changed(&mut self) {
-        self.grip_dirty = true;
-        if !self.top_edge.shown() {
-            self.maximized_controls.cancel_pointer_press();
-        }
-        if self.bar_slot.is_some_and(|slot| slot.hides_with_bar) {
-            self.style_dirty = true;
-        }
     }
 
     pub fn strip_usable_px(&self) -> f64 {
@@ -1724,7 +1517,6 @@ impl WindowGroup {
         self.style_dirty = false;
         self.prepare_layout(theme);
         self.offer_history_controls();
-        self.offer_window_bar(active_id, theme);
         let flush = self.external_navigation || self.fullscreen_presentation;
         if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active_id) {
             host.set_flush_edges(flush);
@@ -1771,16 +1563,6 @@ impl WindowGroup {
     /// release point against sibling bars to find a target.
     pub fn take_tab_detach(&mut self) -> Option<(u64, Point)> {
         self.bar.take_detach()
-    }
-
-    /// The person asked, from the maximized chrome, for real fullscreen.
-    pub fn take_pending_fullscreen_request(&mut self) -> bool {
-        std::mem::take(&mut self.pending_fullscreen_request)
-    }
-
-    /// Painted `[Full screen]` chip of a maximized group; zero when hidden.
-    pub fn fullscreen_rect(&self) -> Rect {
-        self.fullscreen_rect
     }
 
     pub fn take_pending_maximize_change(&mut self) -> Option<bool> {
@@ -2396,12 +2178,8 @@ impl WindowGroup {
                         .and_then(painted)
                 })
             },
-            restore: if self.maximized {
-                toggle.or_else(|| painted(self.restore_rect))
-            } else {
-                None
-            },
-            close: painted(controls.close).or_else(|| painted(self.close_rect)),
+            restore: if self.maximized { toggle } else { None },
+            close: painted(controls.close),
         }
     }
 
@@ -2415,12 +2193,6 @@ impl WindowGroup {
             .iter()
             .position(|tab| tab.id == active)
             .and_then(|index| self.bar.max_rects_internal().get(index).copied())
-    }
-
-    /// Painted restore target for a maximized group. A zero rectangle means
-    /// the control is not currently visible.
-    pub fn restore_rect(&self) -> Rect {
-        self.restore_rect
     }
 
     /// Drain an explicit user selection from the tab bar. Model-driven
@@ -2588,126 +2360,6 @@ impl WindowGroup {
         self.closing_at = Some(t);
     }
 
-    fn clear_maximized_controls(&mut self) {
-        self.maximized_controls.cancel_pointer_press();
-        self.maximized_controls.begin_frame();
-        self.registered_controls = None;
-        self.restore_rect = Rect::ZERO;
-        self.close_rect = Rect::ZERO;
-        self.fullscreen_rect = Rect::ZERO;
-        self.title_rect = Rect::ZERO;
-        self.restore_hover = false;
-        self.close_hover = false;
-        self.fullscreen_hover = false;
-    }
-
-    /// The group's own pointer and touch input, for the top-edge intent.
-    fn feed_top_edge(&mut self, event: &WindowEvent, scale_factor: f64) {
-        if !self.maximized_chrome_live() {
-            return;
-        }
-        let scale = if scale_factor > 0.0 {
-            scale_factor
-        } else {
-            1.0
-        };
-        let changed = match event {
-            WindowEvent::CursorMoved { position, .. } => {
-                self.note_maximized_pointer(Point::new(position.x / scale, position.y / scale))
-            }
-            WindowEvent::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } => {
-                self.note_maximized_press(self.last_cursor);
-                false
-            }
-            WindowEvent::CursorLeft { .. } => self.top_edge.on_leave(),
-            WindowEvent::Touch(touch) => {
-                let p = Point::new(touch.location.x / scale, touch.location.y / scale);
-                match touch.phase {
-                    winit::event::TouchPhase::Started => {
-                        let (bar, controls) = self.edge_rects();
-                        let geo = crate::widget::EdgeGeometry {
-                            window: self.rect,
-                            bar: &bar,
-                            controls: &controls,
-                        };
-                        self.top_edge.on_touch_start(p, &geo);
-                        false
-                    }
-                    winit::event::TouchPhase::Moved => self.top_edge.on_touch_move(p),
-                    winit::event::TouchPhase::Ended | winit::event::TouchPhase::Cancelled => {
-                        self.top_edge.on_touch_end();
-                        false
-                    }
-                }
-            }
-            _ => false,
-        };
-        if changed && !matches!(event, WindowEvent::CursorMoved { .. }) {
-            self.top_edge_changed();
-        }
-    }
-
-    fn handle_maximized_controls(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) {
-        if !self.maximized || !self.navigation_bar_visible() {
-            self.clear_maximized_controls();
-        }
-        self.feed_top_edge(event, ctx.scale_factor);
-        // System chrome keeps the active client's keyboard focus. It only
-        // owns the pointer gesture, including its cancelled eventual release.
-        let prior_focus = *ctx.focus_target;
-        self.grip_dirty |= self.maximized_controls.handle_event(event, ctx);
-        *ctx.focus_target = prior_focus;
-        if matches!(
-            event,
-            WindowEvent::CursorLeft { .. } | WindowEvent::Focused(false)
-        ) {
-            self.restore_hover = false;
-            self.close_hover = false;
-        }
-        if matches!(event, WindowEvent::CursorLeft { .. }) {
-            self.last_cursor = Point::new(self.rect.x0, self.rect.y1 + 1.0);
-            self.clear_maximized_controls();
-        }
-        for action in self.maximized_controls.take_activated() {
-            // A used control is done with the bar.
-            if self.top_edge.hide() {
-                self.top_edge_changed();
-            }
-            if action == CLOSE_TARGET && self.bar.is_held(self.bar.active_id()) {
-                // Someone else's window is not this person's to close.
-            } else if action == CLOSE_TARGET {
-                let active = self.bar.active_id();
-                self.bar.start_closing(active);
-                let _ = self.bar.take_close();
-                let started = self.close_started();
-                self.closing_hosts.entry(active).or_insert(started);
-                if !self.pending_close_commit.contains(&active) {
-                    self.pending_close_commit.push(active);
-                }
-            } else if action == RESTORE_TARGET {
-                self.begin_rect_spring_from_current();
-            } else if action == FULLSCREEN_TARGET {
-                // Real fullscreen keeps the group maximized underneath; the
-                // host leaves it when fullscreen ends.
-                self.pending_fullscreen_request = true;
-                continue;
-            } else {
-                continue;
-            }
-            self.maximized = false;
-            self.style_dirty = true;
-            self.pending_maximize_change = Some(false);
-            self.clear_maximized_controls();
-        }
-    }
-
     /// The event kinds a group's maximized-chrome close/restore chips and
     /// pin shortcut own outright — decided before the tab bar or active tile
     /// ever see the event. Returns whether the event was fully consumed (the
@@ -2724,9 +2376,6 @@ impl WindowGroup {
             WindowEvent::CursorMoved { position, .. } => {
                 let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
                 self.last_cursor = pt;
-                self.restore_hover = self.maximized && self.restore_rect.contains(pt);
-                self.fullscreen_hover = self.maximized && self.fullscreen_rect.contains(pt);
-                self.close_hover = self.maximized && self.close_rect.contains(pt);
                 false
             }
             WindowEvent::KeyboardInput {
@@ -3361,15 +3010,9 @@ impl Widget for WindowGroup {
         self.children().into_iter().find_map(Widget::modal_capture)
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
-        // The bar's dwell or hold runs out with no further input.
-        let reveal = self
-            .maximized_chrome_live()
-            .then(|| self.top_edge.deadline())
-            .flatten();
         self.children()
             .into_iter()
             .filter_map(Widget::next_wake_deadline)
-            .chain(reveal)
             .chain(self.edge_reveal_at())
             .min()
     }
@@ -3546,7 +3189,6 @@ impl Widget for WindowGroup {
         // See `built_active`'s field doc: forces a rebuild when the
         // active tab switches.
         self.built_active = Some(active_id);
-        self.offer_window_bar(active_id, theme);
         let tile_node = if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_flush_edges(self.external_navigation || self.fullscreen_presentation);
             h.build_layout(taffy, theme, node_map)
@@ -3566,7 +3208,6 @@ impl Widget for WindowGroup {
         node
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let previous = (self.rect, self.active_host().map(Widget::get_rect));
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.retarget_rect_spring();
         let children = taffy.children(node).unwrap_or_default();
@@ -3584,14 +3225,6 @@ impl Widget for WindowGroup {
             children.get(tile_index),
         ) {
             h.apply_layout(taffy, tile_child, new_origin);
-        }
-        self.bar_slot = self
-            .bar_offered_to
-            .filter(|id| *id == active_id)
-            .and_then(|id| self.hosts.iter().find(|(i, _)| *i == id))
-            .and_then(|(_, h)| h.window_bar_slot());
-        if previous != (self.rect, self.active_host().map(Widget::get_rect)) {
-            self.clear_maximized_controls();
         }
     }
     fn draw(
@@ -3751,10 +3384,6 @@ impl Widget for WindowGroup {
             self.draw_size_label(scene, transform, tr, theme);
         }
 
-        // No outline rings around `self.rect` for drag/search/maximize:
-        // per `crates/sdk/ui-core/HIG.md` §9.4 the accent means *live*, not *chosen*.
-        self.clear_maximized_controls();
-
         if frame_clip.is_some() {
             scene.pop_layer();
         }
@@ -3781,10 +3410,6 @@ impl Widget for WindowGroup {
         ) {
             // The active tab may have changed since the window was focused.
             self.sync_host_keyboard();
-        }
-        self.handle_maximized_controls(event, ctx);
-        if *ctx.handled {
-            return;
         }
         if self.handle_edge_input(event, ctx.scale_factor, *ctx.modifiers) {
             *ctx.handled = true;
@@ -3871,8 +3496,7 @@ impl Widget for WindowGroup {
         }
     }
     fn wants_pointer_capture(&self) -> bool {
-        self.maximized_controls.wants_pointer_capture()
-            || self.edge_drag.is_some()
+        self.edge_drag.is_some()
             || self
                 .active_host()
                 .is_some_and(super::Widget::wants_pointer_capture)
@@ -3887,11 +3511,6 @@ impl Widget for WindowGroup {
         // Every child's flag is drained, but only the active host's counts:
         // inactive hosts have no layout nodes (see `is_layout_dirty`), and
         // selecting one rebuilds through `active_switched` anyway.
-        // A bar dwell that matured since the last frame shows the bar in
-        // this frame's layout (an app header in the bar joins the tree).
-        if self.maximized_chrome_live() && self.top_edge.settle(crate::time::now()) {
-            self.top_edge_changed();
-        }
         self.style_dirty |= self.fullscreen_bar.laid_out != self.bar_over_content();
         let bar = self.bar.take_structure_dirty();
         let active = self.bar.active_id();
@@ -3938,17 +3557,10 @@ impl Widget for WindowGroup {
         // Redraw follows the presentation tree. Retained inactive hosts still
         // participate in resources, lifecycle, components and ownership, but
         // they are not drawn or marked drawn until selected.
-        // A matured bar dwell or hold is settled by the next draw.
-        let reveal_due = self.maximized_chrome_live()
-            && self
-                .top_edge
-                .deadline()
-                .is_some_and(|due| crate::time::now() >= due);
         let edge_due = self
             .edge_reveal_at()
             .is_some_and(|due| crate::time::now() >= due);
         self.grip_dirty
-            || reveal_due
             || edge_due
             || (self.navigation_bar_visible()
                 && ((self.bar.needs_redraw() || self.bar.needs_animation_frame())
@@ -4172,7 +3784,6 @@ mod tests {
         assert_eq!(tree.children(node).unwrap().len(), 1);
         assert_eq!(group.children().len(), 1);
         assert_eq!(group.tabs().len(), 2);
-        assert!(!group.maximized_chrome_shown());
     }
     #[test]
     fn external_windows_paint_to_their_border_without_spilling_into_neighbors() {

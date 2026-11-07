@@ -3351,8 +3351,8 @@ mod window_group;
 pub use window_group::{
     DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
     WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, maximized_chrome_height,
-    merged_controls_width, min_group_px, permille_for_px,
+    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, merged_controls_width, min_group_px,
+    permille_for_px,
 };
 pub mod cursor;
 pub mod edge_resize;
