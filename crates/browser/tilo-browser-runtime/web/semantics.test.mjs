@@ -444,6 +444,32 @@ test('a node a widget lends to two places is its own element in each',()=>{
   bridge.close();
 });
 
+test('a row drawn again inside itself is its own element',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>true,()=>{});
+  document.activeElement=document.body;
+  // A widget's test ID covers the layer tree, and the layer's row holds the
+  // same layer again: one key would put the row's element inside itself.
+  const view=()=>({root:{path:'desk',children:[
+    {path:'desk/layers',test_id:'layer-tree',semantics:{role:'Group',name:'Layers',children:[
+      {role:'TreeItem',name:'Layer 1',semantic_key:'1',action_target:'key:1',children:[
+        {role:'ListItem',name:'Layer 1',semantic_key:'1'}]}]}},
+  ]}});
+  const collect=(node,depth=0,out=[])=>{if(depth>20)return out;out.push(node);for(const child of node.children)collect(child,depth+1,out);return out;};
+  bridge.update(view());
+  const layers=root.children.find(node=>node.getAttribute('aria-label')==='Layers');
+  assert.ok(layers,'the layers mirror');
+  const row=layers.children.find(node=>node.getAttribute('aria-label')==='Layer 1');
+  assert.ok(row,'the row mirrors');
+  const inside=row.children.find(node=>node.getAttribute('aria-label')==='Layer 1');
+  assert.ok(inside,'the row inside it mirrors too');
+  assert.notEqual(inside,row,'and in an element of its own');
+  assert.equal(collect(root).filter(node=>node.getAttribute?.('aria-label')==='Layer 1').length,2);
+  bridge.update(view());
+  assert.equal(layers.children[0],row,'the row keeps its element across updates');
+  assert.equal(row.children[0],inside,'and so does the row inside it');
+  bridge.close();
+});
+
 test('caller palette keeps test IDs for identity while actions route by canonical paths',()=>{
   const calls=[];const reports=[];const root=new Element('div');
   const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},report=>reports.push(report));
