@@ -376,19 +376,15 @@ impl<'a> ChipFace<'a> {
         );
         paint_pill(
             &PillPaint {
-                rect: self.rect,
-                label: self.label,
-                face: "",
                 lead: self.lead,
-                style: self.style,
                 selected: self.selected,
                 hovered: self.hovered,
                 remove: self.removable.then_some(self.remove_hovered),
                 menu: self.menu,
                 bare: self.bare,
                 opacity: self.opacity,
-                role: TextRole::Label,
                 centred: !self.removable && !self.menu && self.rect.width() > intrinsic + 1.0,
+                ..PillPaint::new(self.rect, self.label, self.style)
             },
             scene,
             transform,
@@ -423,6 +419,29 @@ pub(crate) struct PillPaint<'a> {
     pub role: TextRole,
     /// Centre the content (a badge) instead of starting it at the inset.
     pub centred: bool,
+}
+
+impl<'a> PillPaint<'a> {
+    /// A pill that shows `label` in `style`, at rest: no lead, not chosen,
+    /// not hovered, no trailing control, opaque, in the label role, starting
+    /// at the inset.
+    pub(crate) fn new(rect: Rect, label: &'a str, style: ChipStyle) -> Self {
+        Self {
+            rect,
+            label,
+            face: "",
+            lead: ChipLead::None,
+            style,
+            selected: false,
+            hovered: false,
+            remove: None,
+            menu: false,
+            bare: false,
+            opacity: 1.0,
+            role: TextRole::Label,
+            centred: false,
+        }
+    }
 }
 
 /// The one pill painter.
@@ -1211,19 +1230,13 @@ impl Widget for Chip {
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
         paint_pill(
             &PillPaint {
-                rect: pill,
-                label: &self.label,
                 face: &self.face,
                 lead: self.lead,
-                style: self.style,
                 selected: self.shows_chosen(),
                 hovered: self.pressable() && self.hovered && !remove_hovered,
                 remove: self.removable.then_some(remove_hovered),
                 menu: self.menu,
-                bare: false,
-                opacity: 1.0,
-                role: TextRole::Label,
-                centred: false,
+                ..PillPaint::new(pill, &self.label, self.style)
             },
             scene,
             transform,

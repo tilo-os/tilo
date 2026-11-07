@@ -68,11 +68,6 @@ pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
     radius(theme).min(rect.height() / 2.0)
 }
 
-#[must_use]
-pub fn card_shadow(theme: &Theme) -> crate::tokens::Shadow {
-    theme.tokens.elevation.floating
-}
-
 /// A floating card's ground ([`card_radius`]): the panel ground.
 #[must_use]
 pub fn card_ground(theme: &Theme) -> Color {

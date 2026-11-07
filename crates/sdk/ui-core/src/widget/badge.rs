@@ -25,7 +25,7 @@ use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use crate::widget::chip::{ChipLead, ChipStyle, PillPaint, paint_pill};
+use crate::widget::chip::{ChipStyle, PillPaint, paint_pill};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -215,12 +215,10 @@ impl<'a> BadgeFace<'a> {
             self.rect.x1,
             cy + height / 2.0,
         );
-        paint_badge_pill(
+        paint_pill(
+            &badge_pill(rect, self.label, self.style, false, 1.0),
             scene,
             transform,
-            rect,
-            self.label,
-            self.style,
             text_renderer,
             theme,
         );
@@ -237,52 +235,12 @@ fn badge_pill(
     opacity: f32,
 ) -> PillPaint<'_> {
     PillPaint {
-        rect,
-        label,
-        face: "",
-        lead: ChipLead::None,
-        style,
-        selected: false,
-        hovered: false,
-        remove: None,
-        menu: false,
         bare,
         opacity,
         role: TextRole::Caption,
         centred: true,
+        ..PillPaint::new(rect, label, style)
     }
-}
-
-fn paint_badge_pill(
-    scene: &mut Scene,
-    transform: Affine,
-    rect: Rect,
-    label: &str,
-    style: ChipStyle,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-) {
-    paint_pill(
-        &PillPaint {
-            rect,
-            label,
-            face: "",
-            lead: ChipLead::None,
-            style,
-            selected: false,
-            hovered: false,
-            remove: None,
-            menu: false,
-            bare: false,
-            opacity: 1.0,
-            role: TextRole::Caption,
-            centred: true,
-        },
-        scene,
-        transform,
-        text_renderer,
-        theme,
-    );
 }
 
 pub struct Badge {
@@ -775,12 +733,10 @@ impl Widget for Badge {
                 paint_dot(cached, transform, self.rect, self.style, modified, theme);
             }
             Some(label) => {
-                paint_badge_pill(
+                paint_pill(
+                    &badge_pill(self.rect, &label, self.style, false, 1.0),
                     cached,
                     transform,
-                    self.rect,
-                    &label,
-                    self.style,
                     text_renderer,
                     theme,
                 );
