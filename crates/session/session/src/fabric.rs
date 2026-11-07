@@ -555,17 +555,19 @@ impl crate::Session {
             | PersonalFabricAction::BluetoothHandoffPairingOffered { .. }
             | PersonalFabricAction::BluetoothHandoffPairingCommit { .. }
             | PersonalFabricAction::BluetoothHandoffCancel { .. }
-            | PersonalFabricAction::RealtimeOffer { .. }
-            | PersonalFabricAction::RealtimeAccept { .. }
-            | PersonalFabricAction::RealtimeMediaReady { .. }
-            | PersonalFabricAction::RealtimeStopSource { .. }
-            | PersonalFabricAction::RealtimeCancel { .. }
+            // What no build sends and the fabric refuses before it reaches
+            // here; the variants stay for the wire's numbering alone.
+            | PersonalFabricAction::RetiredRealtimeOffer
+            | PersonalFabricAction::RetiredRealtimeAccept
+            | PersonalFabricAction::RetiredRealtimeMediaReady
+            | PersonalFabricAction::RetiredRealtimeStopSource
+            | PersonalFabricAction::RetiredRealtimeCancel
+            | PersonalFabricAction::RetiredRemoteCaptureSignal
+            | PersonalFabricAction::RetiredRemoteCaptureChunk
             | PersonalFabricAction::GamepadForwardRequest { .. }
             | PersonalFabricAction::GamepadForwardGrant { .. }
             | PersonalFabricAction::GamepadForwardEvent { .. }
             | PersonalFabricAction::GamepadForwardStop { .. }
-            | PersonalFabricAction::RemoteCaptureSignal { .. }
-            | PersonalFabricAction::RemoteCaptureChunk { .. }
             | PersonalFabricAction::DeviceHealthProbe { .. }
             | PersonalFabricAction::DeviceHealthReport { .. }
             | PersonalFabricAction::FabricClockProbe { .. }

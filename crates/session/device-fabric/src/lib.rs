@@ -11,8 +11,6 @@ mod i18n {
 pub mod link;
 pub mod notification;
 pub mod random;
-pub mod realtime_session;
-pub mod remote_capture;
 pub mod runtime;
 pub mod secrets;
 pub mod spatial_calibration;
@@ -476,23 +474,18 @@ pub enum PersonalFabricAction {
         id: crate::notification::ContinuityNotificationId,
         action_key: String,
     },
-    /// Metadata-only realtime handoff offer. Capture grants, media handles,
-    /// and join URLs are deliberately not representable on this wire.
-    RealtimeOffer {
-        offer: crate::realtime_session::RealtimeFabricOffer,
-    },
-    RealtimeAccept {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeMediaReady {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeStopSource {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
-    RealtimeCancel {
-        session_id: crate::realtime_session::RealtimeFabricSessionId,
-    },
+    /// Retired: a metadata-only realtime handoff offer. No build produced
+    /// one; a call's continuity is the live plane's, so the variant stays only
+    /// so every later Postcard discriminant keeps its value.
+    RetiredRealtimeOffer,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeAccept,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeMediaReady,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeStopSource,
+    /// Retired with [`Self::RetiredRealtimeOffer`].
+    RetiredRealtimeCancel,
     /// Request one fixed-profile virtual gamepad on the exact target. The
     /// payload contains semantic controls only: descriptors, HID reports,
     /// serials, and arbitrary evdev codes are not representable.
@@ -563,17 +556,13 @@ pub enum PersonalFabricAction {
     RemoteAudioCancel {
         session_id: [u8; 16],
     },
-    /// Bounded semantic negotiation for a camera, microphone, or document
-    /// scanner. PipeWire/V4L2 identities and local app approvals never appear
-    /// in this payload.
-    RemoteCaptureSignal {
-        signal: crate::remote_capture::RemoteCaptureSignal,
-    },
-    /// One bounded media or scanner chunk. The runtime validates it again
-    /// against the exact authenticated peer/session/grant/profile binding.
-    RemoteCaptureChunk {
-        chunk: crate::remote_capture::RemoteCaptureChunk,
-    },
+    /// Retired: negotiation for using another of the person's devices as a
+    /// camera, microphone or scanner. No build produced one, and there is no
+    /// capture path to hand it to; the variant stays only so every later
+    /// Postcard discriminant keeps its value.
+    RetiredRemoteCaptureSignal,
+    /// Retired with [`Self::RetiredRemoteCaptureSignal`].
+    RetiredRemoteCaptureChunk,
     /// Shell-owned liveness and RTT probe. The random nonce is bound to the
     /// exact authenticated peer and is never exposed through an app contract.
     DeviceHealthProbe {
@@ -1094,20 +1083,6 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RemoteCaptureSignal { signal } => {
-                if !signal.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::RemoteCaptureChunk { chunk } => {
-                use crate::remote_capture::RemoteCaptureKind;
-                if !chunk.valid_for(RemoteCaptureKind::Camera)
-                    && !chunk.valid_for(RemoteCaptureKind::Microphone)
-                    && !chunk.valid_for(RemoteCaptureKind::DocumentScanner)
-                {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
             PersonalFabricAction::ShowTab { tab } => {
                 if *tab == 0 {
                     return Err(FabricError::InvalidAction);
@@ -1280,18 +1255,14 @@ impl PersonalFabricActionEnvelope {
                     return Err(FabricError::InvalidAction);
                 }
             }
-            PersonalFabricAction::RealtimeOffer { offer } => {
-                if !offer.valid_at(now_unix_ms) {
-                    return Err(FabricError::InvalidAction);
-                }
-            }
-            PersonalFabricAction::RealtimeAccept { session_id }
-            | PersonalFabricAction::RealtimeMediaReady { session_id }
-            | PersonalFabricAction::RealtimeStopSource { session_id }
-            | PersonalFabricAction::RealtimeCancel { session_id } => {
-                if !session_id.valid() {
-                    return Err(FabricError::InvalidAction);
-                }
+            PersonalFabricAction::RetiredRealtimeOffer
+            | PersonalFabricAction::RetiredRealtimeAccept
+            | PersonalFabricAction::RetiredRealtimeMediaReady
+            | PersonalFabricAction::RetiredRealtimeStopSource
+            | PersonalFabricAction::RetiredRealtimeCancel
+            | PersonalFabricAction::RetiredRemoteCaptureSignal
+            | PersonalFabricAction::RetiredRemoteCaptureChunk => {
+                return Err(FabricError::InvalidAction);
             }
             PersonalFabricAction::GamepadForwardRequest {
                 forwarding_id,
@@ -4097,51 +4068,12 @@ mod tests {
             })
             .unwrap();
             assert_eq!(notification.first(), Some(&21));
-            let realtime_id = crate::realtime_session::RealtimeFabricSessionId {
-                broker: [1; 16],
-                nonce: [2; 16],
-            };
             for (action, index) in [
-                (
-                    PersonalFabricAction::RealtimeOffer {
-                        offer: crate::realtime_session::RealtimeFabricOffer {
-                            session_id: realtime_id,
-                            app_id: "so.tilo.chat".into(),
-                            workspace_id: "room".into(),
-                            provider: "chat".into(),
-                            room_id: "call".into(),
-                            semantic_position: None,
-                            media_bits: 1,
-                            controls: crate::realtime_session::RealtimeControlState::default(),
-                            expires_unix_ms: 20_000,
-                        },
-                    },
-                    24,
-                ),
-                (
-                    PersonalFabricAction::RealtimeAccept {
-                        session_id: realtime_id,
-                    },
-                    25,
-                ),
-                (
-                    PersonalFabricAction::RealtimeMediaReady {
-                        session_id: realtime_id,
-                    },
-                    26,
-                ),
-                (
-                    PersonalFabricAction::RealtimeStopSource {
-                        session_id: realtime_id,
-                    },
-                    27,
-                ),
-                (
-                    PersonalFabricAction::RealtimeCancel {
-                        session_id: realtime_id,
-                    },
-                    28,
-                ),
+                (PersonalFabricAction::RetiredRealtimeOffer, 24),
+                (PersonalFabricAction::RetiredRealtimeAccept, 25),
+                (PersonalFabricAction::RetiredRealtimeMediaReady, 26),
+                (PersonalFabricAction::RetiredRealtimeStopSource, 27),
+                (PersonalFabricAction::RetiredRealtimeCancel, 28),
             ] {
                 assert_eq!(
                     postcard::to_allocvec(&action).unwrap().first(),
@@ -4237,64 +4169,9 @@ mod tests {
             );
         }
 
-        fn realtime_offer_rejects_spoofing_urls_and_stale_metadata() {
-            let source = id("source");
-            let target = id("target");
-            let mut offer = crate::realtime_session::RealtimeFabricOffer {
-                session_id: crate::realtime_session::RealtimeFabricSessionId {
-                    broker: [1; 16],
-                    nonce: [2; 16],
-                },
-                app_id: "so.tilo.chat".into(),
-                workspace_id: "room".into(),
-                provider: "chat".into(),
-                room_id: "call-7".into(),
-                semantic_position: Some("stage".into()),
-                media_bits: 1,
-                controls: crate::realtime_session::RealtimeControlState::default(),
-                expires_unix_ms: 20_000,
-            };
-            let envelope = PersonalFabricActionEnvelope {
-                request_id: [9; 16],
-                source: source.clone(),
-                target: target.clone(),
-                issued_unix_ms: 10_000,
-                action: PersonalFabricAction::RealtimeOffer {
-                    offer: offer.clone(),
-                },
-            };
-            assert!(envelope.validate_at(&source, &target, 10_000).is_ok());
-            assert_eq!(
-                envelope.validate_at(&id("spoof"), &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-            offer.room_id = "https://secret.example/join?token=x".into();
-            assert_eq!(
-                PersonalFabricActionEnvelope {
-                    action: PersonalFabricAction::RealtimeOffer {
-                        offer: offer.clone(),
-                    },
-                    ..envelope.clone()
-                }
-                .validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-            offer.room_id = "call-7".into();
-            offer.expires_unix_ms = 9_999;
-            assert_eq!(
-                PersonalFabricActionEnvelope {
-                    action: PersonalFabricAction::RealtimeOffer { offer },
-                    ..envelope
-                }
-                .validate_at(&source, &target, 10_000),
-                Err(FabricError::InvalidAction)
-            );
-        }
-
         ephemeral_actions_are_transport_bound_and_fresh();
         new_action_variants_do_not_renumber_existing_wire_actions();
         notification_actions_are_source_bound_bounded_and_fresh();
-        realtime_offer_rejects_spoofing_urls_and_stale_metadata();
     }
 
     #[test]
