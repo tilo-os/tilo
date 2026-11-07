@@ -491,13 +491,13 @@ fn preferred_locale() -> Option<LanguageIdentifier> {
 pub fn follow_configured_language() {
     match preferred_locale() {
         Some(locale) => {
-            // A language chosen just after its pack was installed has no
-            // catalogue loaded yet: read the packs again.
+            // A language chosen just after its pack was installed is in no
+            // catalogue the window speaks yet: read the packs again.
             let loaded = MANAGER.with(|manager| {
                 manager
                     .borrow()
                     .as_ref()
-                    .is_none_or(|manager| manager.has_catalog(&locale))
+                    .is_none_or(|manager| manager.speaks(&locale))
             });
             if !loaded {
                 refresh_language_packs();
@@ -704,9 +704,12 @@ impl I18nManager {
         tilo_resource::label::install_noun(resource_noun);
     }
 
-    /// Whether a catalogue was added for `locale`, parsed or not.
-    fn has_catalog(&self, locale: &LanguageIdentifier) -> bool {
-        self.catalogs.iter().any(|(held, _)| held == locale)
+    /// Whether this window speaks `locale`'s language: a catalogue of its own
+    /// is in it (see [`Self::window_locale`]).
+    fn speaks(&self, locale: &LanguageIdentifier) -> bool {
+        self.spoken
+            .iter()
+            .any(|spoken| spoken.language == locale.language)
     }
 
     /// Parse the catalogues of the locales shown that are not parsed yet,
@@ -1040,11 +1043,7 @@ impl I18nManager {
     /// whenever the window's own German is not installed (an app that ships
     /// English only, a device whose language pack is missing).
     fn window_locale(&self) -> &LanguageIdentifier {
-        let speaks = self
-            .spoken
-            .iter()
-            .any(|spoken| spoken.language == self.current_locale.language);
-        if speaks {
+        if self.speaks(&self.current_locale) {
             &self.current_locale
         } else {
             &self.source_locale

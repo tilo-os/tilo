@@ -127,7 +127,12 @@ fn resolved(
     catalogues: &[(&str, &str)],
     device: &str,
 ) -> BTreeMap<String, String> {
-    I18nManager::install("en-US", device, catalogues).expect("the window's catalogue installs");
+    let installed = I18nManager::install("en-US", device, catalogues);
+    assert!(
+        installed.is_ok(),
+        "{}'s catalogue installs: {installed:?}",
+        window.name
+    );
     INDEX.ensure();
     keys(window)
         .into_iter()
