@@ -236,6 +236,14 @@ impl SendToBox {
         }
     }
 
+    /// Open without the keyboard: a menu opened on something carries the box
+    /// beside it, and the person's typing still narrows the menu's rows until
+    /// they send or Tab into it.
+    pub fn unfocus(&mut self) {
+        self.focused = false;
+        self.dirty = true;
+    }
+
     /// Put it away with its menu.
     pub fn close(&mut self) {
         if !self.open {

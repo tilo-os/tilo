@@ -760,6 +760,7 @@ impl ContextMenu {
         // stands beside it with that subject.
         if self.about.is_some() && crate::shared_selection::send_host_available() {
             self.send_to.open(None);
+            self.send_to.unfocus();
             self.send_to.place(self.rect, self.viewport);
         }
         self.dirty = true;

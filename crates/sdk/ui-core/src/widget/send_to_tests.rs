@@ -170,10 +170,24 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
         "the subject is read where it stands"
     );
 
-    // Typing narrows the recipients to what was found for it.
+    // Typing asks the one search for what matches, and the answer is what
+    // the rows show.
     send_to.focus_first();
     type_text(&mut send_to, "ad");
-    assert_eq!(send_to.hovered_row(), Some(0));
+    assert!(
+        send_to.rows().is_empty(),
+        "what was found for an earlier query is not what this one finds"
+    );
+    let (request, query) = crate::shared_selection::take_recipient_searches()
+        .pop()
+        .expect("the box asked the search");
+    assert_eq!(query, "ad");
+    crate::shared_selection::answer_recipients(
+        request,
+        vec![Recipient::found(RecipientKind::Agent, "agent:4", "Adrien")],
+    );
+    assert!(send_to.drain_answer());
+    assert_eq!(send_to.hovered_row(), Some(0), "Enter would pick it");
 
     // Tab: the recipient field, the message, then the menu's own stops.
     assert_eq!(send_to.focus(), SendToFocus::Recipients);
