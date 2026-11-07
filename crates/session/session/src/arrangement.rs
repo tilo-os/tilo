@@ -1927,12 +1927,6 @@ impl ArrangementDoor {
             find,
         }
     }
-
-    /// Arrange as `actor` from now on: what the person's own input does, so
-    /// their drag, their resize and their close are attributed to them.
-    pub fn arrange_as(&self, actor: &str) {
-        actor.clone_into(&mut self.actor.borrow_mut());
-    }
 }
 
 impl Published for ArrangementDoor {

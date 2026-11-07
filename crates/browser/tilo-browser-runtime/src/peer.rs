@@ -1302,17 +1302,6 @@ pub fn encode_live_preview_end(record_json: &str) -> Result<Vec<u8>, JsError> {
         .map_err(js_error)
 }
 
-/// The `ops/<record digest>` track name of a record (JSON).
-///
-/// # Errors
-///
-/// Throws for a malformed record.
-#[wasm_bindgen(js_name = liveRecordTrack)]
-pub fn live_record_track(record_json: &str) -> Result<String, JsError> {
-    let record = record_from_js(serde_json::from_str(record_json).map_err(js_error)?);
-    Ok(format!("ops/{}", hex::encode(record.digest())))
-}
-
 /// One of [`WasmPeer::here`]'s actions as the page sends it.
 #[derive(serde::Deserialize)]
 struct JsHereAction {

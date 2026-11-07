@@ -1209,13 +1209,8 @@ notification-preview-hidden = Benachrichtigungsvorschau verborgen
 
 activity-acknowledge-viewed = Als gesehen markieren
 activity-acknowledge-description = Markiert die hier gezeigten Änderungen als gesehen. Wartende Aufgaben bleiben offen.
-notification-alarm-snoozed = Um 5 Minuten verschoben. Verwirf diesen Eintrag, um die ausstehende Erinnerung abzubrechen.
 notification-alarm-dismiss = Verwerfen
 notification-alarm-snooze = In 5 Minuten erneut erinnern
-notification-alarm-action-failed = Dieser Wecker konnte nicht geändert werden
-notification-alarm-action-title = { $action }: { $title }
-notification-alarm-action-subtitle = Für dieses Weckereignis
-notification-alarm-action-retry = Behalte diese Benachrichtigung und versuche es erneut.
 notification-sender-claims = App sagt: { $name }
 notification-open = Öffnen
 notification-quiet-do-not-disturb = Nicht stören

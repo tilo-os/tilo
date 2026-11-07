@@ -262,9 +262,9 @@ struct Shared {
     /// The reason a row the host carried out did not happen, for the search
     /// opened again over it to say on that row.
     search_refusal: Option<(tilo_desktop_search::Target, String)>,
-    /// What a caller of the published search asked of it, taken on the
-    /// next update pass.
-    search_asks: Vec<search::SearchAsk>,
+    /// The rows a caller of the published search chose, with the argument
+    /// each one's action asks for, taken on the next update pass.
+    search_asks: Vec<(usize, Option<String>)>,
     /// The open search, as last shown: its query and rows, and whether it
     /// is still filling in.
     shown_search: search::ShownSearch,

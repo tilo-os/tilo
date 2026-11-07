@@ -31,7 +31,6 @@ use tilo_desktop_surface::outcome::{Closed, Outcome};
 use tilo_surface_host::{DesktopHost, WidgetHost};
 
 use crate::agents::Kept;
-use crate::mount::connectors::ConnectorHost;
 use crate::search::AppActions;
 
 /// The agent the person's workspace records name: a participant without a
@@ -308,33 +307,9 @@ impl Apps {
         state.doors = Some(doors);
     }
 
-    /// Start the connector `origin` of `app` in `workspace`, as the app's own launch with
-    /// the origin named and no window: its manifest's sandbox for that origin, which a
-    /// window and the tilolang host never have (`docs/architecture/apps.md` §1, §8). It
-    /// is left running when every window of the app closes.
-    /// # Errors
-    /// The app is not installed here, its manifest does not declare the origin, it
-    /// names no tilolang runtime, or the connector could not be started.
-    pub fn start_connector(
-        &self,
-        app: &str,
-        origin: &str,
-        workspace: &Workspace,
-        host: &ConnectorHost,
-    ) -> Result<(), DoorError> {
-        let connection = host
-            .connection(app, origin, &workspace.id, &|origin| {
-                self.plan_connector(app, origin, workspace)
-            })
-            .map_err(DoorError::Failed)?;
-        // The connection is the caller's to read: here nothing does, since the reader that
-        // needed it attached through its own call. Dropped, it is the connector's alone.
-        drop(connection);
-        Ok(())
-    }
-
-    /// The connector of `app` for `origin` in `workspace`, planned as the app's own
-    /// launch with the origin named and no window.
+    /// The connector of `app` for `origin` in `workspace`, planned as the app's own launch with
+    /// the origin named and no window: the sandbox the app's manifest declares for that origin.
+    ///
     /// # Errors
     /// The package is not installed here, its manifest does not declare `origin`, or no
     /// launcher can start it.

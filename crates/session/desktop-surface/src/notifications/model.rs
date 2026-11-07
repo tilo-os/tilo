@@ -362,12 +362,6 @@ impl Notification {
         self
     }
 
-    #[must_use]
-    pub fn bypassing_dnd(mut self) -> Self {
-        self.bypass_dnd = true;
-        self
-    }
-
     /// Backdate when it arrived (a notification restored from an earlier
     /// session keeps its age in the centre).
     #[must_use]

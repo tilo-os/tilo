@@ -186,31 +186,3 @@ pub fn alarm_action_labels() -> Vec<(String, String)> {
         ("snooze".into(), crate::i18n::t("notification-alarm-snooze")),
     ]
 }
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_action_failed_label() -> String {
-    crate::i18n::t("notification-alarm-action-failed")
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_action_retry_label() -> String {
-    crate::i18n::t("notification-alarm-action-retry")
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_action_title(action: &str, title: &str) -> String {
-    crate::i18n::t_args(
-        "notification-alarm-action-title",
-        &[("action", action.into()), ("title", title.into())],
-    )
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_action_subtitle() -> String {
-    crate::i18n::t("notification-alarm-action-subtitle")
-}
-
-#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
-pub fn alarm_snoozed_label() -> String {
-    crate::i18n::t("notification-alarm-snoozed")
-}

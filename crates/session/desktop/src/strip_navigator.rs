@@ -376,17 +376,6 @@ impl StripNavigator {
         }
     }
 
-    /// The strip whose ribbon mark is at `p`: what a press there is about
-    /// (a press itself opens the labels, [`Self::open_from_ribbon`]).
-    pub fn ribbon_target(frame: &StripFrame, p: Point) -> Option<StripNavigation> {
-        let i = frame
-            .ribbon_offered
-            .then(|| frame.ribbon.hit(p))
-            .flatten()?;
-        let strip = *frame.strips.get(i)?;
-        Some(StripNavigation::Strip(Command::Focus(strip)))
-    }
-
     /// The window a press at `p` on a rail segment focuses.
     pub fn rail_target(frame: &StripFrame, p: Point) -> Option<StripNavigation> {
         let i = frame.rail_offered.then(|| frame.rail.hit(p)).flatten()?;
@@ -556,12 +545,6 @@ impl StripNavigator {
         self.indicators.alpha_at(now, reduce_motion).max(rest)
     }
 
-    /// Where the ribbon's long segment is drawn at `now` while it slides to
-    /// the strip that took focus; `None` at rest.
-    pub fn ribbon_focus_at(&self, now: Instant) -> Option<f64> {
-        self.ribbon_focus.sliding_at(now)
-    }
-
     /// Paint the open labels; their extent, for damage, when painted.
     pub fn draw_labels(
         &mut self,
@@ -652,11 +635,6 @@ impl StripNavigator {
         self.draw_rail(frame, &mut cx, now);
     }
 
-    /// The open labels' extent, shadows included.
-    pub fn labels_bounds(&self) -> Rect {
-        self.switcher.bounds()
-    }
-
     /// The ribbon's extent: its marks, and nothing beside them.
     pub fn ribbon_bounds(&self, frame: &StripFrame) -> Option<Rect> {
         segments_bounds([
@@ -717,12 +695,6 @@ impl StripNavigator {
         .min()
     }
 
-    /// Everything the open labels would take beside the ribbon: where
-    /// nothing else may wait at that edge, open or not.
-    pub fn labels_extent(&self, frame: &StripFrame) -> Rect {
-        self.switcher.extent_beside(&frame.ribbon)
-    }
-
     /// The labels for assistive technology, while open.
     pub fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.switcher.accessibility()
@@ -746,12 +718,6 @@ impl StripNavigator {
             Press::Command(command) => Some(StripNavigation::Strip(command)),
             Press::Consumed | Press::Outside => None,
         })
-    }
-
-    /// The switcher laid out beside `frame`'s ribbon, for tests.
-    pub fn switcher_for_tests(&mut self, frame: &StripFrame) -> &mut StripSwitcher {
-        self.switcher.place(&frame.ribbon);
-        &mut self.switcher
     }
 }
 

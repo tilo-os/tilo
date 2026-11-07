@@ -70,20 +70,8 @@ impl OverviewView {
         self.active = Some(tree.active);
     }
 
-    pub fn card_count(&self) -> usize {
-        self.cards.len()
-    }
-
     pub fn cards(&self) -> &[CardCache] {
         &self.cards
-    }
-
-    /// Out-of-range indices are ignored.
-    pub fn click_card(&mut self, idx: usize, tree: &mut DesktopTree) {
-        if let Some(card) = self.cards.get(idx) {
-            tree.set_active(card.id);
-            self.active = Some(tree.active);
-        }
     }
 
     pub fn is_active(&self, idx: usize) -> bool {

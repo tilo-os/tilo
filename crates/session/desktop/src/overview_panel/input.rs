@@ -633,17 +633,6 @@ impl OverviewPanel {
         }
     }
 
-    /// Start typing a new name for strip `strip` in place, as F2 or a press
-    /// on its name does; whether it can be named here.
-    pub fn rename_in_place(&mut self, strip: tilo_desktop_model::StripId) -> bool {
-        let picture = self.picture();
-        let Some(si) = picture.strips.iter().position(|s| s.id == strip) else {
-            return false;
-        };
-        self.begin_naming(&picture, si);
-        self.naming.is_some()
-    }
-
     /// Carry pictured window `tab` to `to`, as a drag that has not been let
     /// go yet; whether it is pictured.
     pub fn carry(&mut self, tab: TabId, to: Point) -> bool {
