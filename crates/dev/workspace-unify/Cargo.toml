@@ -1207,7 +1207,7 @@ doc = false
 "tilo-host" = { path = "../../../crates/sdk/tilo-host", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = ["test-support"] }
+"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony" }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-identity-host" = { path = "../../../crates/runtime/tilo-identity-host", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
@@ -3799,7 +3799,7 @@ doc = false
 "tilo-host" = { path = "../../../crates/sdk/tilo-host", default-features = false, features = ["mpris", "native", "portal", "test-support"] }
 "tilo-host-search" = { path = "../../../crates/platform/tilo-host-search", default-features = false, features = [] }
 "tilo-identity-authority" = { path = "../../../crates/session/identity-authority", default-features = false, features = [] }
-"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony", default-features = false, features = ["test-support"] }
+"tilo-identity-ceremony" = { path = "../../../crates/collab/tilo-identity-ceremony" }
 "tilo-identity-client" = { path = "../../../crates/runtime/tilo-identity-client", default-features = false, features = [] }
 "tilo-identity-host" = { path = "../../../crates/runtime/tilo-identity-host", default-features = false, features = [] }
 "tilo-image-codec" = { path = "../../../crates/platform/tilo-image-codec", default-features = false, features = [] }
