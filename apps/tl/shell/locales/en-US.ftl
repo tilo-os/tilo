@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-shell = Shell
+
 d-4jk2lkpt = Desk
     .doc = This device's desk as the session holds it: the time in the person's style, who they are, their notifications, the workspaces on this device, the tasks running for them and the surface the desk shows over its windows.
     .noun = { $count ->
@@ -90,6 +92,28 @@ d-5kokd6gv = Windows
 d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
+d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
+
+d-4jk2lkpt-filter-timer_paused = Timer paused
+
+d-4jk2lkpt-filter-timer_stopwatch = Timer stopwatch
+
+d-4jk2lkpt-filter-ask_open = Ask open
+
+d-4jk2lkpt-filter-unread = Unread
+
+d-4jk2lkpt-filter-quiet = Quiet
+
+d-4jk2lkpt-filter-status_panel = Status panel
+
+d-4jk2lkpt-filter-bar_reached = Bar reached
+
+d-4jk2lkpt-filter-bar_covered = Bar covered
+
+d-4jk2lkpt-filter-dock_reached = Dock reached
+
+d-4jk2lkpt-filter-dock_covered = Dock covered
+
 d-bynckgvt = Workspace
     .doc = A workspace on this device.
     .noun = { $count ->
@@ -103,6 +127,8 @@ d-nze6cia2 = Name
 
 d-ce523tqy = Current
 
+d-bynckgvt-filter-current = Current
+
 d-tlbg2fms = Tray item
     .doc = A running application's tray item: what the bar shows, and what a press on it reaches.
     .noun = { $count ->
@@ -115,6 +141,8 @@ d-o3wuotce = Key
 d-e5qbz5cz = Title
 
 d-lsd5bmss = Menu
+
+d-tlbg2fms-filter-menu = Menu
 
 d-bqittbss = Person
     .doc = Someone else here in the workspace in front.
@@ -185,6 +213,20 @@ d-tb2jierp = Preview
 d-4agha6k5 = Not responding
     .doc = Whether its app stopped answering: its card says so, and offers to keep waiting for the app or to quit it.
 
+d-r7dcmwzl-filter-tab_index = Tab index
+
+d-r7dcmwzl-filter-share = Share
+
+d-r7dcmwzl-filter-local = Local
+
+d-r7dcmwzl-filter-place = Place
+
+d-r7dcmwzl-filter-recency = Recency
+
+d-r7dcmwzl-filter-focused = Focused
+
+d-r7dcmwzl-filter-not_responding = Not responding
+
 d-labby3mp = Agent
     .doc = An agent here for the person, or that acted for them.
     .noun = { $count ->
@@ -207,6 +249,10 @@ d-gbehvj6x = Unseen
 d-p6gfsj72 = Seat
     .doc = Whether it is seated at the person's agent door now, a client they admitted, rather than a run's own agent.
 
+d-labby3mp-filter-unseen = Unseen
+
+d-labby3mp-filter-seat = Seat
+
 d-jlqw5py5 = Room
     .doc = A workspace the person is in, as the workspace overview names it.
     .noun = { $count ->
@@ -225,6 +271,10 @@ d-huv4cci3 = Members
 d-l4d25hj6 = Present
 
 d-no5yi6m7 = Activity
+
+d-jlqw5py5-filter-current = Current
+
+d-jlqw5py5-filter-present = Present
 
 d-zk7pzrt2 = Notice
     .doc = A notification in the centre, as its sender or its task named it.
@@ -250,6 +300,10 @@ d-z67wqj3i = Read
 d-uvxcllkj = Group
 
 d-b4i657ss = Wants reply
+
+d-zk7pzrt2-filter-read = Read
+
+d-zk7pzrt2-filter-wants_reply = Wants reply
 
 d-7rjfrgeo = Notice action
     .doc = One action a notification offers, as its sender named it.
@@ -341,6 +395,20 @@ d-4n7jst3f = Canvas height
 
 d-n2pmgnow = Shell
 
+d-vn23musu-filter-width = Width
+
+d-vn23musu-filter-maximized = Maximized
+
+d-vn23musu-filter-placed = Placed
+
+d-vn23musu-filter-canvas_x = Canvas x
+
+d-vn23musu-filter-canvas_y = Canvas y
+
+d-vn23musu-filter-canvas_width = Canvas width
+
+d-vn23musu-filter-canvas_height = Canvas height
+
 d-gpmk4o3r = Arrangement place
     .doc = A place: one window, showing a resource through a view.
     .noun = { $count ->
@@ -374,6 +442,8 @@ d-aonjenrr = Pinned
 d-rqrtd6vq = Shell
     .doc = The shell that made it; empty reads as this shell's.
 
+d-gpmk4o3r-filter-pinned = Pinned
+
 d-nkjtmr33 = Viewing
     .doc = What the person shows of their arrangement, and which strip stands in front: the shell's own view of it, in their own record (`records: .own`, `root viewing: Viewing`).
     .noun = { $count ->
@@ -386,6 +456,8 @@ d-nl27ikjq = Showing
 
 d-6b2coqll = Focused
     .doc = The strip in front, by its key; empty for none.
+
+d-nkjtmr33-filter-showing = Showing
 
 d-cejnvssb = Shell
     .doc = The person's own shell record, reached as `shell` (`root shell: Shell`).
@@ -442,6 +514,42 @@ d-h5oo7js2 = Dock launcher
 d-5n4s55tz = Dock zoom
     .doc = A click on the dock's icons magnifies the item under the pointer, as macOS's Dock does.
 
+d-cejnvssb-filter-preset = Preset
+
+d-cejnvssb-filter-based_on = Based on
+
+d-cejnvssb-filter-tuned = Tuned
+
+d-cejnvssb-filter-bar_shown = Bar shown
+
+d-cejnvssb-filter-bar_edge = Bar edge
+
+d-cejnvssb-filter-bar_fit = Bar fit
+
+d-cejnvssb-filter-bar_finish = Bar finish
+
+d-cejnvssb-filter-bar_showing = Bar showing
+
+d-cejnvssb-filter-bar_size = Bar size
+
+d-cejnvssb-filter-dock_shown = Dock shown
+
+d-cejnvssb-filter-dock_edge = Dock edge
+
+d-cejnvssb-filter-dock_fit = Dock fit
+
+d-cejnvssb-filter-dock_finish = Dock finish
+
+d-cejnvssb-filter-dock_showing = Dock showing
+
+d-cejnvssb-filter-dock_size = Dock size
+
+d-cejnvssb-filter-dock_running = Dock running
+
+d-cejnvssb-filter-dock_launcher = Dock launcher
+
+d-cejnvssb-filter-dock_zoom = Dock zoom
+
 d-sfhd6wko = Bar part
     .doc = One part of the top bar, in the person's order.
     .noun = { $count ->
@@ -457,6 +565,10 @@ d-v3iwpjov = Title
 
 d-pbly7ymy = Shown
     .doc = Whether it shows on the bar; a part off keeps its place in the record.
+
+d-sfhd6wko-filter-slot = Slot
+
+d-sfhd6wko-filter-shown = Shown
 
 d-bnfk7mx5 = Dock item
     .doc = One thing on the dock: a pinned app or resource, the launcher, or an app running now.
@@ -485,6 +597,14 @@ d-mgcmvxjx = Badge
 
 d-e7ft4mly = Attention
     .doc = Whether it wants the person: a pulsing badge, and an attention mark.
+
+d-bnfk7mx5-filter-pinned = Pinned
+
+d-bnfk7mx5-filter-running = Running
+
+d-bnfk7mx5-filter-badge = Badge
+
+d-bnfk7mx5-filter-attention = Attention
 
 d-clhqzrkb = Width
     .doc = How wide a strip stands within its row, as the record keeps it in per-mille (§2's strip widths: the presets and free widths).
@@ -780,7 +900,7 @@ d-t3cux3yd = Framed place
 d-s6b5stgz = Space content
 
 d-ymcmc5yv = Canvas entry
-    .w-find-something = Find something
+    .w-find-something-or-ask = Find something, or ask
 
 d-ewgdlyyr = Show app menus~present
 

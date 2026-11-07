@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-counter = Counter
+
 d-k3o4eblu = Counter
     .doc = A counter that several people can bump at once.
     .noun = { $count ->
@@ -10,6 +12,8 @@ d-k3o4eblu = Counter
 
 d-3wkdueca = Value
     .doc = The current value.
+
+d-k3o4eblu-filter-value = Value
 
 d-b3szqso2 = Increment
     .doc = Add one to the counter.
