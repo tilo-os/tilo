@@ -56,6 +56,47 @@ pub const SANDBOX_PERSON_DIR: &str = "/run/tilo/person";
 /// records there (`ui::application::PERSON_DIR_ENV`, the same name).
 pub const PERSON_DIR_ENV: &str = "TILO_PERSON_DIR";
 
+/// Where the shared font index appears inside the sandbox.
+pub const SANDBOX_FONT_INDEX: &str = "/run/tilo/font-index";
+
+/// Directory under the user's data home that holds the font index every app
+/// of a build shares, beside [`WORKSPACES_DIR`] and [`PERSON_DIR`].
+pub const FONT_INDEX_DIR: &str = "tilo-font-index";
+
+/// Create the shared font index directory and answer where it is: one per
+/// user, so the second app opened on the device reads the database the first
+/// one's launch built instead of parsing every face again.
+pub fn prepare_host_font_index() -> Option<PathBuf> {
+    let dir = tilo_paths::xdg::data_home()?.join(FONT_INDEX_DIR);
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Bind that directory into the sandbox and name it to the app.
+///
+/// Writable, because the first launch of a build is the one that records the
+/// database and the launcher cannot build it: the session and the apps see
+/// the catalog through different mounts, so only what a launch sees is a
+/// usable record. What a record may name is bounded by what the reading app
+/// can open — the catalog and the system's fonts, both outside anything an
+/// app can write — so a planted record costs a reader a rebuild, not a
+/// parse of another app's bytes.
+pub fn push_font_index(argv: &mut Vec<String>, dir: &Path) {
+    argv.push("--bind".to_string());
+    argv.push(dir.display().to_string());
+    argv.push(SANDBOX_FONT_INDEX.to_string());
+    argv.push("--setenv".to_string());
+    argv.push(tilo_process::environment::FONT_INDEX_ENV.to_string());
+    argv.push(SANDBOX_FONT_INDEX.to_string());
+}
+
+/// The Landlock grant for [`push_font_index`]'s bind, read and write: a
+/// bound tree the ruleset does not name is visible and unreadable.
+pub fn push_font_index_landlock(argv: &mut Vec<String>) {
+    argv.push("--rw".to_string());
+    argv.push(SANDBOX_FONT_INDEX.to_string());
+}
+
 /// Turn a workspace id into a single path component that cannot escape
 /// its parent.
 ///
@@ -491,6 +532,28 @@ mod tests {
             assert_eq!(workspace_slug(Some("")), PERSONAL_WORKSPACE);
             assert_eq!(workspace_slug(Some("   ")), PERSONAL_WORKSPACE);
         }
+    }
+
+    /// Every app of a build reads and writes one font index, bound where the
+    /// launcher names it, not in its own home.
+    #[test]
+    fn the_font_index_is_one_directory_for_every_app() {
+        let mut argv = Vec::new();
+        push_font_index(&mut argv, Path::new("/home/ada/.local/share/tilo-font-index"));
+        assert_eq!(
+            argv,
+            vec![
+                "--bind",
+                "/home/ada/.local/share/tilo-font-index",
+                SANDBOX_FONT_INDEX,
+                "--setenv",
+                tilo_process::environment::FONT_INDEX_ENV,
+                SANDBOX_FONT_INDEX,
+            ]
+        );
+        let mut rules = Vec::new();
+        push_font_index_landlock(&mut rules);
+        assert_eq!(rules, vec!["--rw", SANDBOX_FONT_INDEX], "the bind is writable");
     }
 
     #[test]

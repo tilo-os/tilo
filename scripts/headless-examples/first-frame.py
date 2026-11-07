@@ -16,9 +16,11 @@ chain (the app's clock starts inside it, the compositor's ends on screen):
     application first frame presented   request_to_first_present_us=<us>
 
 The budget is what a person can wait without noticing: well under a second
-for every app, quiet or on a loaded machine. It is loose against the numbers
-this was written for (chat and terminal around 1.5 s, Settings 1.85 s) and
-tight enough to catch them coming back.
+for every app, quiet or on a loaded machine. The open it was written for
+measured 0.22-0.37 s per app on a quiet machine and 0.62-1.39 s under hard
+load, so the budget leaves room for a loaded CI runner and still catches a
+return to the 1.5 s an audit of this desktop reported (most of that wait was
+the audit's own polling, not the app).
 
 Usage:
   ./first-frame.py                     # builds nothing; uses TILO_NESTED_SESSION_BUILD
@@ -28,6 +30,8 @@ A nested-session build is needed (`dist/dev/nested-session-build.sh`, or
 `TILO_NESTED_SESSION_BUILD_EXEC` where this machine cannot build it).
 """
 import os
+import shutil
+import subprocess
 import sys
 import time
 import pathlib
@@ -107,13 +111,21 @@ def main() -> int:
     built = "--build" in sys.argv[1:]
     if not (real_apps.BUILD / "bin/tilo-session").is_file() or built:
         real_apps.build(remote=os.environ.get("TILO_NESTED_SESSION_BUILD_EXEC"))
-    state = pathlib.Path(os.environ.get("TILO_FIRST_FRAME_STATE")
-                         or pathlib.Path.home() / ".cache" / "tilo-first-frame")
-    real_apps.prepare(state, apps=" ".join(APPS))
+    prepared = pathlib.Path(os.environ.get("TILO_FIRST_FRAME_STATE")
+                            or pathlib.Path.home() / ".cache" / "tilo-first-frame")
+    real_apps.prepare(prepared, apps=" ".join(APPS))
+    # A state that has run before brings back the desk it left, apps and all:
+    # this measures the open of an app that is not open yet, so the run gets
+    # its own copy of the prepared state and leaves it behind.
+    state = prepared.with_name(prepared.name + "-run")
+    shutil.rmtree(state, ignore_errors=True)
+    subprocess.run(["cp", "-a", "--reflink=auto", str(prepared), str(state)], check=True)
     session = real_apps.Session(state)
-    session.start(apps=" ".join(APPS), fresh=True, out=state / "logs",
+    session.start(apps=" ".join(APPS), fresh=True, out=prepared / "logs",
                   tag="first-frame", env={"TILO_APP_STDERR_DIR": str(state / "app-diag")})
     try:
+        open_at_start = [row.get("app_id") for row in session.windows()]
+        check("the desk starts with no window open", not open_at_start, str(open_at_start))
         for app in APPS:
             lines = opens(session, app)
             by_stage = {line["stage"]: line for line in lines
