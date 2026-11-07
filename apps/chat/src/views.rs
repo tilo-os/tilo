@@ -333,14 +333,15 @@ impl ViewResource for Channel {
 /// row and a reply's quote open `chat.workspace/messages/<id>`.
 const MESSAGES_KIND: &str = "chat.workspace";
 
-/// The channel's page: what it is called and about over a conversation — its messages filling
-/// the column with the composer docked at its foot, the box answering them.
+/// The channel's page: what it is called and about, its messages filling the column, and the
+/// composer at its foot — a conversation above the box that answers it.
 #[view(default)]
 fn page(c: &Channel, cx: &ViewCx) -> Node {
-    let docked = ui::DockedBuilder::new(&cx.key("conversation")).into();
-    let docked = node::slot(docked, "foot", vec![composer(c, cx)]);
-    let docked = node::slot(docked, "content", vec![messages(c, cx)]);
-    ui::column(&cx.key("page"), Gap::Sibling, vec![header(c, cx), docked])
+    ui::column(
+        &cx.key("page"),
+        Gap::Sibling,
+        vec![header(c, cx), messages(c, cx), composer(c, cx)],
+    )
 }
 
 /// Who the channel is: its name, and what it is about or that it is a call.

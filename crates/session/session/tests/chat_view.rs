@@ -187,6 +187,10 @@ fn typing_in_the_composer_and_pressing_send_posts_to_the_channel() {
         json!({"ok": {}}),
         "the text is typed"
     );
+    // What was typed stands in the field before it is sent: the draft the button reads.
+    common::until(&mut session, "the typed draft", |session| {
+        session.shell_says(TYPED)
+    });
     // Pressing send posts what was typed through Chat's own `post`: the channel then says it.
     let answer = common::control(
         &mut session,
