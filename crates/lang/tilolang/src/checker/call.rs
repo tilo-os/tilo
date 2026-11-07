@@ -386,7 +386,35 @@ impl Checker<'_> {
             .filter(|(at, (p, s))| s.is_none() && p.default.is_none() && !asked(*at))
             .map(|(_, (p, _))| p.name.as_str())
             .collect();
-        if !missing.is_empty() {
+        // A parameter a form cannot ask for says so, naming the action, the parameter and its
+        // type, rather than reading as one the person simply forgot: the action stays a command
+        // only an argument given here or a default reaches (forms-and-diagrams.md §1).
+        let unaskable: Vec<_> = params
+            .iter()
+            .zip(&slots)
+            .enumerate()
+            .filter(|(at, (p, s))| {
+                at_press
+                    && s.is_none()
+                    && p.default.is_none()
+                    && slots
+                        .get(*at..)
+                        .is_some_and(|rest| rest.iter().all(Option::is_none))
+                    && !p.ty.asked_by_form()
+            })
+            .map(|(_, (p, _))| p)
+            .collect();
+        if let Some(param) = unaskable.first() {
+            self.err(
+                "E022",
+                span,
+                format!(
+                    "`{name}` cannot be asked for `{}` of type `{}`: a form asks for text,                      numbers, flags, days, moments, lengths of time, accounts, people, resources                      and enum cases, so give it here or give the parameter a default",
+                    param.name,
+                    param.ty.display(&self.env.app)
+                ),
+            );
+        } else if !missing.is_empty() {
             self.err(
                 "E022",
                 span,

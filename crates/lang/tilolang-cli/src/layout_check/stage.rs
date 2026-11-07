@@ -499,6 +499,22 @@ impl Staged {
         self.settle()
     }
 
+    /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
+    /// reaches a row a menu paints, which has no node of its own to name.
+    pub fn press_at(&mut self, x: f64, y: f64) -> Result<(), String> {
+        self.harness.click_at(x, y);
+        self.exchange();
+        self.settle()
+    }
+
+    /// Lay the window out as it stands now, so that what a press opened over it — a menu, a
+    /// popover, a sheet — is there to be read and pressed in turn.
+    pub fn freshen(&mut self) -> Result<(), String> {
+        self.exchange();
+        self.harness.relayout();
+        self.settle()
+    }
+
     /// Press the action the control `id` publishes as a semantic child, as assistive technology
     /// activates it: a control a widget paints itself (an empty state's action) has no node of
     /// its own to tap, and the widget's own node is not where the action is.
@@ -1089,9 +1105,9 @@ mod tests {
     /// Press `bounds` as a person presses them, and let the window and its app answer.
     fn press_at(staged: &mut Staged, bounds: ui::kurbo::Rect) {
         let center = bounds.center();
-        staged.harness.click_at(center.x, center.y);
-        staged.exchange();
-        staged.settle().expect("the window comes to rest");
+        staged
+            .press_at(center.x, center.y)
+            .expect("the window comes to rest");
     }
 
     /// The first menu button of the window's composed tree whose rows `wanted` picks, with its

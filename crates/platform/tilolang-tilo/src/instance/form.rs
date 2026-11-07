@@ -30,9 +30,9 @@ pub const KEY: &str = "form~";
 /// A form open in the window.
 pub struct Pending {
     pub id: u64,
-    /// The view whose control ran the action, and the control.
-    pub lane: Lane,
-    pub from: String,
+    /// Where the form stands: the view and control that ran the action, when one did. A form
+    /// the palette ran stands on its own.
+    pub from: Option<(Lane, String)>,
     pub view: Rc<RefCell<ViewInstance>>,
     /// The action, with the arguments the control gave.
     pub aref: ActionRef,
@@ -61,7 +61,7 @@ impl Pending {
     #[must_use]
     pub fn new(
         id: u64,
-        (lane, from): (Lane, String),
+        from: Option<(Lane, String)>,
         view: Rc<RefCell<ViewInstance>>,
         aref: ActionRef,
         meta: Meta,
@@ -89,7 +89,6 @@ impl Pending {
             .collect();
         Some(Self {
             id,
-            lane,
             from,
             view,
             aref,
@@ -131,7 +130,11 @@ impl Pending {
 
     /// The field `key` now holds `text`: kept as the person's view state.
     pub fn edit(&mut self, key: &str, text: String) {
-        let Some(field) = self.fields.iter().find(|field| field.key == key) else {
+        // A field's control may be several parts (a day, a time of day, quick choices, free
+        // text), each its own key after the field's: what the person did is the field's.
+        let name = key.strip_prefix(KEY).unwrap_or(key);
+        let name = name.split('~').next().unwrap_or(name);
+        let Some(field) = self.fields.iter().find(|field| field.name == name) else {
             return;
         };
         let mut typed = self.typed();
@@ -167,7 +170,7 @@ impl Pending {
                     .default_argument(&self.aref.action, field.at, &before)
                     .ok()
                     .flatten()
-                    .map(|value| text_of(&self.meta, &value))
+                    .map(|value| text_of(&self.meta, &field.field_type, &value))
                     .unwrap_or_default()
             });
             match read(host, &self.meta, field, &text) {
@@ -208,6 +211,12 @@ impl Pending {
             let read = read(host, &self.meta, field, text);
             ready &= read.is_ok();
             short &= !matches!(inner(&field.field_type), FieldType::RichText);
+            // A form of a field or two stands beside the control that ran it; a day, a moment
+            // or a length of time asks in more than a line.
+            short &= !matches!(
+                inner(&field.field_type),
+                FieldType::Date | FieldType::Time | FieldType::Duration
+            );
             children.push(self.field_node(host, names, field, text, &read));
         }
         let title = crate::runtime::platform::label_of(&self.action);
@@ -223,12 +232,12 @@ impl Pending {
             destructive: self.action.role.as_deref() == Some("destructive"),
             ready,
             error: self.error.clone(),
-            from: Some((self.lane, self.from.clone())),
+            from: self.from.clone(),
             fields: self
                 .fields
                 .iter()
                 .zip(texts.iter())
-                .map(|(field, text)| (field.key.clone(), text.clone()))
+                .flat_map(|(field, text)| field_parts(field, text))
                 .collect(),
             short,
             tree: node("form", KEY, BTreeMap::new(), None, children),
@@ -247,7 +256,10 @@ impl Pending {
     ) -> ui::Node {
         let label = crate::runtime::platform::sentence(&field.name);
         let optional = matches!(field.field_type, FieldType::Option(_));
-        let control = match inner(&field.field_type) {
+        // The parts of the field's control, in the order a person meets them: the quick
+        // choices a type has, the control that picks a day or a moment, the field they type in.
+        let mut parts: Vec<ui::Node> = Vec::new();
+        match inner(&field.field_type) {
             FieldType::Bool => {
                 // A switch carries its own label.
                 let mut props = BTreeMap::new();
@@ -255,47 +267,51 @@ impl Pending {
                 return node("toggle", &field.key, props, None, Vec::new());
             }
             FieldType::Named(_) | FieldType::Principal | FieldType::Resource(_) => {
-                self.choice_node(host, names, field, text, optional)
+                parts.push(self.choice_node(host, names, field, text, optional));
+            }
+            FieldType::Date => {
+                parts.push(day_node(field, text, optional, false));
+                parts.push(text_node(field, "~text", Some("tomorrow"), &label, false));
+            }
+            FieldType::Time => {
+                parts.push(self.quick_node(field, text, moments(host), optional));
+                parts.push(day_node(field, text, optional, true));
+                parts.push(text_node(
+                    field,
+                    "~text",
+                    Some("tomorrow 9:30"),
+                    &label,
+                    false,
+                ));
+            }
+            FieldType::Duration => {
+                parts.push(self.quick_node(field, text, lengths(), optional));
+                parts.push(text_node(field, "~text", Some("1h 30m"), &label, false));
             }
             other => {
-                let mut props = BTreeMap::new();
                 let placeholder = match other {
-                    FieldType::Date => Some("tomorrow"),
-                    FieldType::Time => Some("tomorrow 9"),
+                    FieldType::Identifier => Some("jane@example.com"),
                     _ => None,
                 };
-                if let Some(placeholder) = placeholder {
-                    props.insert(
-                        "placeholder".to_owned(),
-                        ui::Value::some(ui::Value::text(placeholder)),
-                    );
-                }
-                if matches!(other, FieldType::RichText) {
-                    props.insert("lines".to_owned(), ui::Value::some(ui::Value::Int(4)));
-                }
-                node(
-                    "ui.TextInput",
-                    &field.key,
-                    props,
-                    Some(ui::Binding {
-                        field: None,
-                        name: label.clone(),
-                    }),
-                    Vec::new(),
-                )
+                let multiline = matches!(other, FieldType::RichText);
+                parts.push(text_node(field, "", placeholder, &label, multiline));
             }
-        };
+        }
+        // What the field reads as, or why it does not: a day, a moment or a length of time
+        // reads in the person's own words under the control.
         let note = match (read, inner(&field.field_type)) {
-            (Err(why), _) if !text.is_empty() => Some(why.clone()),
-            (Ok(Value::Text(day)), FieldType::Date | FieldType::Time) if !text.is_empty() => {
-                Some(day.clone())
+            (Err(why), _) if !text.is_empty() => Some(ui::Value::Text(why.clone())),
+            (Ok(Value::Text(said)), FieldType::Date | FieldType::Time) if !text.is_empty() => {
+                Some(ui::Value::Text(said.clone()))
+            }
+            (Ok(Value::Int(secs)), FieldType::Duration) if !text.is_empty() => {
+                Some(ui::Value::Int(*secs))
             }
             _ => None,
         };
-        let mut parts = vec![control];
         if let Some(note) = note {
             let mut props = BTreeMap::new();
-            props.insert("value".to_owned(), ui::Value::Text(note));
+            props.insert("value".to_owned(), note);
             props.insert("role".to_owned(), ui::Value::Enum("caption".to_owned()));
             props.insert(
                 "value:as".to_owned(),
@@ -323,6 +339,45 @@ impl Pending {
                 None,
                 parts,
             )],
+        )
+    }
+
+    /// The quick choices of `field` showing `text`: the few values the type is often given,
+    /// as segments, and none of them when the field may be empty.
+    fn quick_node(
+        &self,
+        field: &Field,
+        text: &str,
+        cases: Vec<(String, String)>,
+        optional: bool,
+    ) -> ui::Node {
+        let mut all: Vec<(String, String)> = Vec::new();
+        if optional {
+            all.push((String::new(), "None".to_owned()));
+        }
+        all.extend(cases);
+        let mut props = BTreeMap::new();
+        props.insert(
+            "cases".to_owned(),
+            ui::Value::List(
+                all.into_iter()
+                    .map(|(name, label)| {
+                        ui::Value::List(vec![
+                            ui::Value::Text(name),
+                            ui::Value::Text(label),
+                            ui::Value::Opt(None),
+                        ])
+                    })
+                    .collect(),
+            ),
+        );
+        props.insert("selected".to_owned(), ui::Value::text(text));
+        node(
+            "choice",
+            &format!("{}~quick", field.key),
+            props,
+            None,
+            Vec::new(),
         )
     }
 
@@ -434,6 +489,119 @@ impl Pending {
     }
 }
 
+/// The lengths of time a field is often given, as the segments offer them.
+fn lengths() -> Vec<(String, String)> {
+    [("15m", "15 minutes"), ("1h", "1 hour"), ("1d", "1 day")]
+        .into_iter()
+        .map(|(said, label)| (said.to_owned(), label.to_owned()))
+        .collect()
+}
+
+/// The moments a form offers a moment's field, resolved against the person's clock and zone:
+/// the value is the instant, so what the field reads after a choice is the moment itself.
+fn moments(host: &Host) -> Vec<(String, String)> {
+    [
+        ("later today", "Later today"),
+        ("tomorrow morning", "Tomorrow morning"),
+        ("next week 9am", "Next week"),
+    ]
+    .into_iter()
+    .map(|(said, label)| (host.runtime().dated(said).at, label))
+    .filter_map(|(at, label)| Some((at?, label.to_owned())))
+    .collect()
+}
+
+/// The parts of `field`'s control as the window keeps them: each key the app sent the field's
+/// text for, so a day, a moment's time of day and the field typed in all show it.
+fn field_parts(field: &Field, text: &str) -> Vec<(String, String)> {
+    let mut parts = vec![(field.key.clone(), text.to_owned())];
+    match inner(&field.field_type) {
+        FieldType::Time => {
+            parts.push((format!("{}~time", field.key), text.to_owned()));
+            parts.push((format!("{}~text", field.key), text.to_owned()));
+        }
+        FieldType::Date | FieldType::Duration => {
+            parts.push((format!("{}~text", field.key), text.to_owned()));
+        }
+        _ => {}
+    }
+    parts
+}
+
+/// The field `field` picking a day (a moment, when `time`) as the toolkit's own date field,
+/// with the time of day it is due at in its popover when the field is a moment.
+fn day_node(field: &Field, text: &str, optional: bool, time: bool) -> ui::Node {
+    let mut props = BTreeMap::new();
+    props.insert("at".to_owned(), ui::Value::text(text));
+    if optional {
+        props.insert("optional".to_owned(), ui::Value::Bool(true));
+    }
+    let children = if time {
+        let mut slot = BTreeMap::new();
+        slot.insert("name".to_owned(), ui::Value::text("time"));
+        let clock = node(
+            "ui.TimeField",
+            &format!("{}~time", field.key),
+            BTreeMap::new(),
+            Some(ui::Binding {
+                field: None,
+                name: "value".to_owned(),
+            }),
+            Vec::new(),
+        );
+        vec![node(
+            "slot",
+            &format!("{}~time-slot", field.key),
+            slot,
+            None,
+            vec![clock],
+        )]
+    } else {
+        Vec::new()
+    };
+    node(
+        "ui.DateField",
+        &field.key,
+        props,
+        Some(ui::Binding {
+            field: None,
+            name: "value".to_owned(),
+        }),
+        children,
+    )
+}
+
+/// The field `field` typed in: `suffix` tells it from the rest of the field's control.
+fn text_node(
+    field: &Field,
+    suffix: &str,
+    placeholder: Option<&str>,
+    label: &str,
+    multiline: bool,
+) -> ui::Node {
+    let mut props = BTreeMap::new();
+    if let Some(placeholder) = placeholder {
+        props.insert(
+            "placeholder".to_owned(),
+            ui::Value::some(ui::Value::text(placeholder)),
+        );
+    }
+    let lines = if multiline { 4 } else { 0 };
+    if multiline {
+        props.insert("lines".to_owned(), ui::Value::some(ui::Value::Int(lines)));
+    }
+    node(
+        "ui.TextInput",
+        &format!("{}{suffix}", field.key),
+        props,
+        Some(ui::Binding {
+            field: None,
+            name: label.to_owned(),
+        }),
+        Vec::new(),
+    )
+}
+
 /// The type a field's control is for: the value of an option.
 fn inner(ty: &FieldType) -> &FieldType {
     match ty {
@@ -447,6 +615,7 @@ fn as_of(ty: &FieldType) -> &'static str {
     match inner(ty) {
         FieldType::Date => "date",
         FieldType::Time => "time",
+        FieldType::Duration => "duration",
         _ => "text",
     }
 }
@@ -470,13 +639,17 @@ fn node(
 }
 
 /// The text a field shows for `value`, the way the person would type it.
-fn text_of(meta: &Meta, value: &Value) -> String {
+fn text_of(meta: &Meta, ty: &FieldType, value: &Value) -> String {
     match value {
         Value::Text(text) => text.clone(),
         Value::Bool(flag) => flag.to_string(),
+        // A length of time shows as the person would write it (`1h 30m`), not as its seconds.
+        Value::Int(number) if matches!(inner(ty), FieldType::Duration) => {
+            tilolang::duration::text(*number)
+        }
         Value::Int(number) => number.to_string(),
         Value::Float(number) => number.to_string(),
-        Value::Opt(Some(held)) => text_of(meta, held),
+        Value::Opt(Some(held)) => text_of(meta, ty, held),
         Value::Principal(who) => who.0.clone(),
         Value::Ref(r) => crate::publish::resource_id(&meta.app, &r.target.id_string()),
         Value::Enum(case) => meta
@@ -529,15 +702,27 @@ fn read(host: &Host, meta: &Meta, field: &Field, text: &str) -> Result<Value, St
             }
         }
         FieldType::Time => {
+            // A moment the person named ("tomorrow 9:30"), a day picked from the calendar
+            // (its morning), or the instant a choice or the picker holds.
             let said = host.runtime().dated(trimmed);
-            match said.at {
-                Some(at) if said.text.trim().is_empty() => Json::String(at),
-                _ if tilolang::calendar::instant(trimmed).is_some() => {
-                    Json::String(trimmed.to_owned())
+            if let Some(at) = said.at
+                && said.text.trim().is_empty()
+            {
+                Json::String(at)
+            } else if tilolang::calendar::instant(trimmed).is_some() {
+                Json::String(trimmed.to_owned())
+            } else {
+                let morning = host.runtime().dated(&format!("{trimmed} 9am"));
+                match morning.at {
+                    Some(at) if morning.text.trim().is_empty() => Json::String(at),
+                    _ => return Err("Not a time".to_owned()),
                 }
-                _ => return Err("Not a time".to_owned()),
             }
         }
+        FieldType::Duration => match tilolang::duration::secs(trimmed) {
+            Some(secs) => Json::from(secs),
+            None => return Err("Not a length of time".to_owned()),
+        },
         FieldType::Principal => match trimmed.strip_prefix("agent:") {
             Some(agent) => json!({ "agent": agent }),
             None => json!({ "person": trimmed }),

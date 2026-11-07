@@ -2459,3 +2459,67 @@ fn said_value(value: &Value) -> String {
         _ => String::new(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::form_asks;
+
+    fn meta() -> crate::meta::Meta {
+        tilolang::compile_package(
+            "app t.forms \"Forms\"\n\
+             enum Colour {\n    red,\n    green\n}\n\
+             type Thing {\n    name: Text\n}\n\
+             action touch(t: Thing) {\n}\n",
+            &tilolang::IdsLock::new(),
+            &[],
+        )
+        .expect("the package compiles")
+        .meta
+    }
+
+    /// A form asks for each type that has a control, and for none of the types only an
+    /// argument or a default reaches (forms-and-diagrams.md §1): an enum of this package's
+    /// plain cases, or none of what a form asks for.
+    #[test]
+    fn a_form_asks_for_every_type_it_has_a_control_for() {
+        let meta = meta();
+        for ty in [
+            "Int",
+            "Float",
+            "Bool",
+            "Text",
+            "RichText",
+            "Date",
+            "Time",
+            "Duration",
+            "std.Identifier",
+            "Principal",
+            "Thing",
+            "Option<Thing>",
+            "Option<Duration>",
+            "enum Colour",
+            "Option<enum Colour>",
+        ] {
+            assert!(form_asks(&meta, ty), "a form asks for {ty}");
+        }
+        for ty in [
+            "std.Repeat",
+            "std.Reminder",
+            "Bytes",
+            "Response",
+            "json.Value",
+            "()",
+            "Action",
+            "View",
+            "List<Text>",
+            "Set<Text>",
+            "Map<Text>",
+            "Collection<Thing>",
+            "Filter<Thing>",
+            "Option<List<Text>>",
+            "Option<Option<Text>>",
+        ] {
+            assert!(!form_asks(&meta, ty), "no form asks for {ty}");
+        }
+    }
+}

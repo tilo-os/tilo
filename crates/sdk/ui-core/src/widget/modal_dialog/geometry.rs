@@ -110,6 +110,14 @@ pub fn layout(
     } else {
         Rect::new(c.x - w / 2.0, top, c.x + w / 2.0, top + h)
     };
+    // The sheet's edges on whole pixels: half a pixel of centring blurs its border and the
+    // actions under it across two.
+    let card = Rect::new(
+        card.x0.round(),
+        card.y0.round(),
+        card.x1.round(),
+        card.y1.round(),
+    );
     let title_top = card.y0 + pad;
 
     let close = spec.closable.then(|| {
@@ -293,9 +301,10 @@ fn place_actions(
         }
         return actions;
     }
+    // A label measured to a fraction of a pixel leaves its action's edges between pixels.
     let mut bx = card.x1 - pad;
     for &index in trailing.iter().rev() {
-        let bw = footer.widths[index];
+        let bw = footer.widths[index].round();
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(bx - bw, by, bx, by + button_h);
         }
@@ -303,7 +312,7 @@ fn place_actions(
     }
     let mut lx = card.x0 + pad;
     for &index in &leading {
-        let bw = footer.widths[index];
+        let bw = footer.widths[index].round();
         if let Some(slot) = actions.get_mut(index) {
             *slot = Rect::new(lx, by, lx + bw, by + button_h);
         }

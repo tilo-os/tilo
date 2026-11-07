@@ -711,6 +711,7 @@ impl Reader<'_> {
             FieldType::Bool => "Bool".to_owned(),
             FieldType::Date => "Date".to_owned(),
             FieldType::Time => "Time".to_owned(),
+            FieldType::Duration => "Duration".to_owned(),
             FieldType::Identifier => "std.Identifier".to_owned(),
             FieldType::Principal => "Principal".to_owned(),
             FieldType::Resource(kind) => self.resource(kind)?,

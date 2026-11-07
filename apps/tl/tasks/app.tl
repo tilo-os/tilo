@@ -921,19 +921,14 @@ view task_page(t: Task) {
                         }
                     }
                 }
-                // When the person is told of it, or nothing while it is not.
+                // When the person is told of it, or nothing while it is not: the menu runs
+                // the action, and its form asks when.
                 ui.MenuButton(
                     if t.remind == .none { "Remind" } else { "Reminder set" },
                     icon: .bell,
                 ) {
-                    ui.MenuItem("In 10 minutes", icon: .clock) {
-                        on choose: remind_at(t, .some(10m))
-                    }
-                    ui.MenuItem("In an hour", icon: .clock) {
-                        on choose: remind_at(t, .some(1h))
-                    }
-                    ui.MenuItem("Tomorrow at this time", icon: .alarm_clock) {
-                        on choose: remind_at(t, .some(1d))
+                    ui.MenuItem("Remind me…", icon: .bell) {
+                        on choose: remind_at(t)
                     }
                     ui.MenuItem("No reminder", icon: .bell_off, checked: t.remind == .none) {
                         on choose: remind_at(t, .none)

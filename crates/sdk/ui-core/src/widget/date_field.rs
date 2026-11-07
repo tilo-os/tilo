@@ -252,6 +252,53 @@ impl DateField {
     }
 }
 
+/// The moment `text` holds with its day replaced by `day`, its time of day kept: the ISO text
+/// of the instant when it holds a time, the day alone when it holds none, and nothing for no
+/// day. A moment is one value whichever part of it the person changes.
+pub(crate) fn with_day(text: &str, day: Option<NaiveDate>) -> String {
+    let Some(day) = day else {
+        return String::new();
+    };
+    match time_in(Some(text)) {
+        Some(time) => instant_text(day, time),
+        None => day.format("%Y-%m-%d").to_string(),
+    }
+}
+
+/// The moment `text` holds with its time of day replaced by `time`, its day kept: the ISO text
+/// of the instant when it holds a day, the time of day alone when it holds none (the time of
+/// day of another field), and nothing for no time.
+pub(crate) fn with_time(text: &str, time: Option<NaiveTime>) -> String {
+    let Some(time) = time else {
+        return String::new();
+    };
+    match crate::component::moment_day(text) {
+        Some(day) => instant_text(day, time),
+        // The field's value is the clock a person picked, which reading the field back reads:
+        // machine text, not their clock style.
+        // format: machine
+        None => time.format("%H:%M").to_string(),
+    }
+}
+
+/// The instant `day` at `time` in the person's zone, as ISO-8601 UTC text.
+fn instant_text(day: NaiveDate, time: NaiveTime) -> String {
+    use chrono::TimeZone as _;
+    let local = day.and_time(time);
+    let at = match chrono::Local.from_local_datetime(&local) {
+        chrono::LocalResult::Single(at) | chrono::LocalResult::Ambiguous(at, _) => Some(at),
+        // ignored-failure: an hour the change of clocks skipped keeps its day
+        chrono::LocalResult::None => None,
+    };
+    at.map_or_else(
+        || day.format("%Y-%m-%d").to_string(),
+        |at| {
+            at.with_timezone(&chrono::Utc)
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+        },
+    )
+}
+
 /// The time of day `text` names: the time of day a field holds (`09:00`), or the time of day an
 /// instant falls on; `None` for no time.
 pub(crate) fn time_in(text: Option<&str>) -> Option<NaiveTime> {
