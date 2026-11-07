@@ -183,9 +183,7 @@ use std::time::Instant;
 
 use tilo_actions::remote::InvokeArgument;
 use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_compositor::{
-    Compositor, DisplayConfig, Error, KeyboardLayout, NestedConfig, OutputConfig, WindowPolicy,
-};
+use tilo_compositor::{Compositor, DisplayConfig, Error, NestedConfig, OutputConfig, WindowPolicy};
 use tilo_desktop::chrome::ChromeIntent;
 use tilo_desktop::desktop_host::DesktopAsk;
 use tilo_desktop::osd::{Hint, Osd, OsdKind};
@@ -324,10 +322,7 @@ struct Shared {
     triggered: PressedChords,
     /// What the session's own resources asked of the compositor.
     commands: Rc<RefCell<Vec<SessionCommand>>>,
-    /// What the session's own resources read of this device: whether the
-    /// screens are locked, the touchpad is on, the night light is on and how
-    /// far the magnifier zooms. The loop keeps it every pass, and the
-    /// controls' service publishes it.
+    /// What the session's own resources read of this device.
     controls: Rc<RefCell<controls::ControlsReading>>,
     /// The readouts of keys whose action a device took and has not answered
     /// yet.
@@ -336,11 +331,9 @@ struct Shared {
     /// sound and capture uses, its charge and what plays. The bar's status
     /// cluster, the lock screen and the desk read it.
     readings: status::Shared,
-    /// The system services, reached for their readings; their actions go
-    /// through the door like every other.
+    /// The system services, reached for their readings.
     services: Rc<RefCell<Services>>,
-    /// The services the session serves its apps and devices itself, kept for
-    /// as long as it runs (`mount::doors::TABLE` says which).
+    /// The services the session serves its apps itself.
     table: mount::doors::Doors,
     /// The windows this session shares with its workspaces, and the streams it receives from them.
     window_shares: Rc<RefCell<window_share::WindowShares>>,
@@ -376,9 +369,8 @@ struct Shared {
     handoff: Rc<std::cell::RefCell<Option<tilo_quick_settings::MediaOffer>>>,
     /// The wakes this session takes part in.
     waking: Rc<mount::wake::Wake>,
-    /// What plays, as the desk's music widget shows it: written from the
-    /// machine's reading every pass, the same one the bar and the lock screen
-    /// show.
+    wake_handle: tilo_service::Wake,
+    /// What plays, as the desk's music widget shows it.
     music: tilo_desktop::desk_widgets::DeskMusic,
     /// The power menu, workspace settings, and the questions the session
     /// asks for apps and services, by their seats.
@@ -541,17 +533,6 @@ struct Shared {
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
     folder_import: RefCell<Option<import_readiness::Continuation>>,
-}
-
-/// Type with `keyboard`: the compositor's keymap, and the words printed on
-/// the keys of what the session draws (the shortcut guide, the desk's
-/// chords), both follow it.
-pub(crate) fn apply_keyboard(compositor: &mut Compositor, keyboard: &KeyboardLayout) {
-    compositor.set_keyboard_layout(keyboard);
-    ui::keycaps::set_active(ui::keycaps::Keycaps::from_xkb(
-        &keyboard.layout,
-        &keyboard.variant,
-    ));
 }
 
 /// A running session: the compositor and the desktop it hosts.
@@ -736,6 +717,7 @@ pub struct Session {
     /// The controllers in the room, and how they drive the desktop; `None`
     /// when this session reads none.
     controllers: Option<controllers::Controllers>,
+    connectors: mount::connectors::ConnectorHost,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     controller_wakes: std::collections::BTreeMap<u64, tilo_compositor::ReadableWatch>,
@@ -806,6 +788,8 @@ impl Session {
         // What the desk and the chrome ask of the session, from their own
         // widget trees.
         let notices = tilo_desktop_surface::DesktopNotifications::default();
+        // The centre opens with what it kept when this session last ended.
+        let notice_history = notifications::restore_history(&notices);
         // What the bar reads of the notifications, and the policy arrivals
         // are judged by: the person may change it at any time.
         let notice_signals = Rc::new(notifications::NoticeSignals::default());
@@ -926,8 +910,13 @@ impl Session {
         let mut restore = desk_restore::Restore::default();
         match activity.opened_desk() {
             desk_doc::Kept::Desk(kept) => {
+                let mut kept = *kept;
+                // A launch that no window came for is not a window this start
+                // restores, and keeping it would leave one more of them on the
+                // desk with every restart.
+                desk_restore::without_unfilled(&mut kept);
                 restore = desk_restore::Restore::of(&kept);
-                handle.replace_tree(*kept);
+                handle.replace_tree(kept);
             }
             // The person's desk is on disk and this session did not open it:
             // they are looking at a desk that is not theirs, and have to be
@@ -1043,7 +1032,7 @@ impl Session {
         // its next pass.
         options.wake.bind(compositor.waker());
         compositor.set_input_config(options.config.input.clone());
-        apply_keyboard(&mut compositor, &options.config.keyboard);
+        controls::apply_keyboard(&mut compositor, &options.config.keyboard);
         compositor.set_idle_config(options.config.idle);
         a11y_settings::apply(&mut compositor, &options.config.a11y)?;
         compositor.set_backlight(Box::new(display_settings::PanelBacklight::find()));
@@ -1398,6 +1387,7 @@ impl Session {
             nearby.as_ref(),
             Rc::clone(&capture_io),
             capture_notes,
+            &live_activities,
         );
 
         // The desktop's own chords win over every app's: the portal's
@@ -1753,6 +1743,7 @@ impl Session {
             bluetooth: bluetooth_handoff::Handoffs::default(),
             handoff: Rc::new(std::cell::RefCell::new(None)),
             waking: mount::wake::Wake::new(&options.wake_seams),
+            wake_handle: options.wake.handle(),
             music,
             power,
             workspace_settings,
@@ -1794,6 +1785,7 @@ impl Session {
                 notification_policy,
                 notice_signals,
                 options.power.clone(),
+                notice_history,
             ))),
             asker,
             agent_door: RefCell::new(agent_door),
@@ -2007,9 +1999,11 @@ impl Session {
                 .take()
                 .map(controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
+            connectors: mount::connectors::ConnectorHost::new(),
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
+        mount::connectors::start_all(&mut session);
         if starts_locked {
             session.compositor.lock_now()?;
         }

@@ -14,8 +14,7 @@ use connectivity::model::{
 use crate::hosted::{HostedActions, HostedRow};
 use crate::resource::QuickSettings;
 use crate::{
-    HandoffTarget, NotificationRow, NotificationsView, PowerProfile, QsSection, QuickSettingsState,
-    SoundOutput, WifiPasswordPrompt,
+    HandoffTarget, PowerProfile, QsSection, QuickSettingsState, SoundOutput, WifiPasswordPrompt,
 };
 
 pub const NAMES: &[&str] = &[
@@ -31,9 +30,6 @@ pub const NAMES: &[&str] = &[
     "devices",
     "clipboard",
     "paste",
-    "notifications",
-    "notifications-empty",
-    "notification",
     "accessory",
     "edit",
     "short",
@@ -53,13 +49,6 @@ pub fn actions(name: Option<&str>) -> Vec<Invoke<QuickSettings>> {
         Some("devices") => open(QsSection::Devices),
         Some("clipboard") => open(QsSection::Clipboard),
         Some("paste") => vec![QuickSettings::PASTE.invoke()],
-        Some("notifications" | "notifications-empty") => {
-            vec![QuickSettings::SHOW_NOTIFICATIONS.invoke()]
-        }
-        Some("notification") => vec![
-            QuickSettings::SHOW_NOTIFICATIONS.invoke(),
-            QuickSettings::READ_NOTIFICATION.with(3_u64),
-        ],
         Some("accessory") => vec![QuickSettings::SHOW_ACCESSORY.with(HEADPHONES.to_owned())],
         Some("edit") => vec![QuickSettings::EDIT.with(true)],
         _ => Vec::new(),
@@ -238,51 +227,7 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             })
             .collect(),
     };
-    state.notifications = NotificationsView {
-        rows: vec![
-            notification(
-                1,
-                "chat",
-                "Chat",
-                "Ana",
-                "Are we still on for lunch?",
-                "2 min ago",
-                true,
-            ),
-            notification(
-                2,
-                "chat",
-                "Chat",
-                "Sam",
-                "Sent you the slides",
-                "10 min ago",
-                true,
-            ),
-            NotificationRow {
-                actions: vec![
-                    ("dismiss".into(), "Dismiss".into()),
-                    ("snooze".into(), "Snooze".into()),
-                ],
-                ..notification(
-                    3,
-                    "calendar",
-                    "Calendar",
-                    "Design review",
-                    "In 15 minutes in the large room. Bring the prototype and the notes from \
-                     last week's session; we will go through the open questions one by one.",
-                    "15 min ago",
-                    false,
-                )
-            },
-        ],
-        quiet: None,
-        can_undo: false,
-    };
-    // An agent works in the workspace in front, so the newest kept
-    // notification can be handed to it.
-    if let Some(newest) = state.notifications.rows.first_mut() {
-        newest.agent = Some("claude-code".into());
-    }
+    state.notifications = 3;
     state.handoff_targets = Some(vec![
         HandoffTarget {
             id: "laptop".into(),
@@ -315,11 +260,6 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
             state.network.wifi.networks.truncate(2);
             state.wifi_hidden = Some(crate::HiddenNetworkPrompt::new());
         }
-        Some("notifications") => {
-            state.do_not_disturb = true;
-            state.notifications.quiet = Some("Do Not Disturb is on".into());
-        }
-        Some("notifications-empty") => state.notifications = NotificationsView::default(),
         Some("now-playing") => state.now_playing = Some(crate::NowPlaying::fixture()),
         Some("short") => {
             state.displays = vec![
@@ -347,27 +287,5 @@ fn network(name: &str, signal: u8, connected: bool, known: bool) -> WifiNetwork 
         secure: true,
         connected,
         known,
-    }
-}
-
-fn notification(
-    id: u64,
-    group: &str,
-    app: &str,
-    title: &str,
-    body: &str,
-    age: &str,
-    opens: bool,
-) -> NotificationRow {
-    NotificationRow {
-        id,
-        group: group.into(),
-        app: app.into(),
-        title: title.into(),
-        body: body.into(),
-        age: age.into(),
-        actions: Vec::new(),
-        agent: None,
-        opens,
     }
 }

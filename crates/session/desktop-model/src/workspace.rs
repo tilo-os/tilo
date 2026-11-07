@@ -1095,13 +1095,7 @@ impl Workspace {
 
 /// The node of assigning the named grant set `name` in `workspace`: a grant on it
 /// lets someone assign that one set.
-#[must_use]
-pub fn preset_assign_node(workspace: &str, name: &str) -> TreePath {
-    roles::workspace_resource(workspace)
-        .field("presets")
-        .item(name.trim().to_lowercase())
-        .action("assign")
-}
+pub use tilo_action_policy::roles::preset_assign_node;
 
 impl Workspace {
     /// A workspace whose durable identity is minted here: it exists from the

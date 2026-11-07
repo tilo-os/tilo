@@ -16,29 +16,54 @@ use crate::host::FixtureHost;
 
 /// Which page of the panel shows.
 #[derive(
-    Model,
-    Clone,
-    Copy,
-    Debug,
-    Default,
-    PartialEq,
-    Eq,
-    Hash,
-    serde::Serialize,
-    serde::Deserialize,
-    ui::tilo_resource::JsonSchema,
+    Model, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "kebab-case", from = "StoredPage", into = "StoredPage")]
 pub enum Page {
     /// The controls, or the page of the section opened from them.
     #[default]
     Root,
-    /// The notifications kept since they arrived.
-    Notifications,
-    /// One notification, read in full.
-    Notification,
     /// One Bluetooth accessory and the devices it can move to.
     Accessory,
+}
+
+/// What a stored panel state may name: its pages, and the notifications page
+/// it had. The kept notifications are the shell's centre now, so a panel
+/// left on that page opens on its controls.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum StoredPage {
+    Root,
+    Accessory,
+    Notifications,
+    Notification,
+}
+
+impl From<StoredPage> for Page {
+    fn from(stored: StoredPage) -> Self {
+        match stored {
+            StoredPage::Accessory => Self::Accessory,
+            StoredPage::Root | StoredPage::Notifications | StoredPage::Notification => Self::Root,
+        }
+    }
+}
+
+impl From<Page> for StoredPage {
+    fn from(page: Page) -> Self {
+        match page {
+            Page::Root => Self::Root,
+            Page::Accessory => Self::Accessory,
+        }
+    }
+}
+
+impl ui::tilo_resource::JsonSchema for Page {
+    /// The pages the panel writes. The notifications page it had is still
+    /// read from a state stored before the centre moved to the shell, and is
+    /// not offered: nothing writes it now.
+    fn json_schema() -> ui::serde_json::Value {
+        ui::serde_json::json!({ "type": "string", "enum": ["root", "accessory"] })
+    }
 }
 
 /// The panel.
@@ -48,8 +73,6 @@ pub struct QuickSettings {
     pub page: Page,
     /// The accessory its page is about, by address.
     pub accessory: String,
-    /// The notification being read.
-    pub notification: u64,
     /// The section whose page replaces the controls; one at a time.
     pub section: Option<QsSection>,
     /// Opened to paste: the clipboard history alone, and a choice is pasted
@@ -93,21 +116,6 @@ impl QuickSettings {
         self.section = None;
     }
 
-    /// Show the notifications.
-    #[action(housekeeping)]
-    pub fn show_notifications(&mut self) {
-        self.pasting = false;
-        self.editing = false;
-        self.page = Page::Notifications;
-    }
-
-    /// Read one notification in full.
-    #[action(housekeeping)]
-    pub fn read_notification(&mut self, #[param("The notification")] notification: u64) {
-        self.page = Page::Notification;
-        self.notification = notification;
-    }
-
     /// Show a Bluetooth accessory and the devices it can move to.
     #[action(housekeeping)]
     pub fn show_accessory(&mut self, #[param("The accessory's address")] address: String) {
@@ -145,8 +153,6 @@ impl QuickSettings {
     pub fn back(&mut self) {
         if self.editing {
             self.editing = false;
-        } else if self.page == Page::Notification {
-            self.page = Page::Notifications;
         } else if self.page != Page::Root {
             self.page = Page::Root;
         } else {
@@ -177,11 +183,6 @@ impl QuickSettings {
                 self.accessory.clone()
             } else {
                 String::new()
-            },
-            notification: if self.page == Page::Notification {
-                self.notification
-            } else {
-                0
             },
             section: (self.page == Page::Root && !self.editing)
                 .then_some(self.section)

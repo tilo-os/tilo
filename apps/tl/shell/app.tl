@@ -495,8 +495,9 @@ view battery_status() {
 }
 
 /// The notifications: an icon button named with what it shows ("Notifications", how many are
-/// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens or
-/// closes the device's status: the quick settings, or the notifications.
+/// unread, or that they are silenced), with the count on the bell's corner. Pressing it opens
+/// the notification centre, or closes it while it is up: the bell is what it is named for, and
+/// the quick settings are the sound's, the connection's and the battery's own, beside it.
 ///
 /// The count is the button's own (`count:`): it stands on the bell's top trailing corner and
 /// wholly inside the button's face, so the bar's own edge never cuts it and it covers neither
@@ -513,6 +514,6 @@ view bell(d: Desk) {
         role: .bar,
         count: d.unread,
     ) {
-        on press: device.show_surface(device.desk, surface: "quick-settings")
+        on press: device.show_surface(device.desk, surface: "centre")
     }
 }

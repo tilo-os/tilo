@@ -32,6 +32,17 @@ pub(crate) fn app_name(app_id: &str) -> String {
     tilo_desktop_search::names::app_name(id)
 }
 
+/// What a notification's sender is called: the app's own name where this
+/// device knows the app, and for a program the session proved with no
+/// installed app behind it, the name the program gives itself, else the
+/// program's name as words. A program's path is never shown.
+pub(crate) fn sender_name(app_id: &str, said: &str) -> String {
+    if !app_id.trim().starts_with('/') {
+        return app_name(app_id);
+    }
+    tilo_desktop_surface::notifications::sender_words(said).unwrap_or_else(|| app_name(app_id))
+}
+
 /// What the window showing `app_id` and calling itself `title` is called:
 /// the window's own title and the app it shows ("Groceries — Notes"). A
 /// window with no title of its own is the app alone, and a title that is
@@ -100,6 +111,37 @@ mod tests {
             window_name("org.example.Terminal", "quinten@host: ~"),
             "quinten@host: ~ — Terminal",
             "a window claiming no app id the device knows still reads as words"
+        );
+    }
+
+    #[test]
+    fn a_sender_with_no_installed_app_is_never_named_by_its_path() {
+        // A process the session proved, with no app behind it, names itself;
+        // the bar and the banner say its name, never the file it runs from.
+        assert_eq!(
+            sender_name("/usr/bin/notify-send", "Notes"),
+            "Notes",
+            "the name its sender gives is the app's own word"
+        );
+        assert_eq!(
+            sender_name("/usr/bin/notify-send", "  "),
+            "Notify Send",
+            "a sender that names nothing is its program's name"
+        );
+        assert_eq!(
+            sender_name("/usr/bin/notify-send", "a\u{7}b"),
+            "ab",
+            "a name with control characters shows none of them"
+        );
+        assert_eq!(
+            sender_name("/usr/bin/notify-send", "/usr/bin/notify-send"),
+            "Notify Send",
+            "a program that gives its path as its name is named by its file"
+        );
+        assert_eq!(
+            sender_name("so.tilo.notes", "Notes"),
+            "Notes",
+            "an app this device knows is named by its list"
         );
     }
 

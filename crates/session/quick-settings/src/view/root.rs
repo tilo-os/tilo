@@ -268,7 +268,8 @@ fn root_row(cx: &ViewCx<QuickSettings>, face: &crate::faces::RowFace) -> Element
         )
     } else {
         debug_assert_eq!(face.row, RootRow::Notifications);
-        actions.bind_invocation(row.disclosure(), QuickSettings::SHOW_NOTIFICATIONS.invoke())
+        // The one list is the shell's centre, opened over the desk.
+        actions.bind_effect_invocation(row.disclosure(), &QsEffect::ShowCentre)
     })
 }
 

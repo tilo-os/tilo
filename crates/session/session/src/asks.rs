@@ -148,8 +148,7 @@ impl Shared {
             ChromeIntent::ToggleQuickSettings => {
                 // The press that closed it is still being delivered: the same
                 // press does not open it again.
-                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings)
-                {
+                if self.quick_settings && !self.overlays.dismissed_recently(Slot::QuickSettings) {
                     if self.overlays.is_open(Slot::QuickSettings) {
                         self.overlays.close(Slot::QuickSettings);
                     } else {
@@ -180,7 +179,9 @@ impl Shared {
             ChromeIntent::ToggleProfile => self.people.borrow().show_self(),
             // Pulling an activity out of the bar's pill: its card is the
             // floating layer's to draw.
-            ChromeIntent::ExpandActivity { activity } => self.activities.expand(&activity),
+            ChromeIntent::ExpandActivity { app, activity } => {
+                self.activities.expand(&app, &activity);
+            }
             // Inviting people: the link into the workspace in front is made in
             // the invite sheet, wherever it was asked for — the bar's invite
             // button, the roster's footer, workspace settings or the launchpad's
@@ -628,11 +629,11 @@ impl Shared {
         let mut invocations = self.invocations.borrow_mut();
         match action {
             ShortcutAction::QuickSettings => self.toggle_quick_settings(),
-            // The panel's own pages: it is asked for them once it runs, which
-            // is a pass after the stack has it up.
+            // The bell opens the one list of notifications: the centre over
+            // the desk, which a press on it opens and another closes.
             ShortcutAction::Notifications => {
-                self.show_quick_settings();
-                self.panel_asks.borrow_mut().push("show-notifications");
+                invocations
+                    .push(Invocation::new(DESK_RESOURCE, "show-surface").with("surface", "centre"));
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();

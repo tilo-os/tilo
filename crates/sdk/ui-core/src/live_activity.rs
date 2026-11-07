@@ -82,7 +82,8 @@ impl Kind {
     }
 }
 
-/// How loudly an activity reads: its bar in the card, and the pill's dot.
+/// How loudly an activity reads: its glyph on the card, its reading in the
+/// pill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Tone {
@@ -93,6 +94,33 @@ pub enum Tone {
     Accent,
     /// Nearly due, or asking for attention.
     Alert,
+}
+
+impl Tone {
+    /// The ink an activity of this tone reads in, wherever it is drawn: the
+    /// bar's pill and the card's glyph say the same thing about it.
+    #[must_use]
+    pub fn ink(self, theme: &crate::theme::Theme) -> vello::peniko::Color {
+        let colors = &theme.tokens.colors;
+        match self {
+            Self::Neutral => colors.text_primary,
+            Self::Accent => colors.intent.accent,
+            Self::Alert => colors.semantic.danger,
+        }
+    }
+}
+
+/// How an activity's artwork heads its card.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Art {
+    /// A square tile beside the lines, as a song's cover stands beside its
+    /// title and artist.
+    #[default]
+    Square,
+    /// The card's whole width at nine sixteenths above the lines: a picture
+    /// the activity made, such as a screenshot, shown as its own hero.
+    Hero,
 }
 
 /// What pressing a control does, as the card draws it.
@@ -106,6 +134,9 @@ pub enum ControlKind {
     Secondary,
     /// Ends the activity: the card's close, or the pill's dismiss.
     Close,
+    /// Ends what runs, in the colour that warns: a recording's stop. It comes
+    /// after the rest because a compact encoding names a variant by its place.
+    Destructive,
 }
 
 /// One control the activity offers.
@@ -206,6 +237,9 @@ pub struct Summary {
     /// picture): a card shows it beside the title, the pill's a thumbnail.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub artwork: String,
+    /// How the artwork heads the card: beside the lines, or over them.
+    #[serde(default)]
+    pub art: Art,
     #[serde(default)]
     pub tone: Tone,
     #[serde(default)]
@@ -228,6 +262,7 @@ impl Summary {
             progress: None,
             length: None,
             artwork: String::new(),
+            art: Art::Square,
             tone: Tone::Neutral,
             controls: Vec::new(),
         }
@@ -296,6 +331,16 @@ impl Summary {
     #[must_use]
     pub fn with_artwork(mut self, artwork: impl Into<String>) -> Self {
         self.artwork = artwork.into();
+        self
+    }
+
+    /// The artwork heads the card over its lines, at nine sixteenths of the
+    /// card's width: a picture the activity made is shown whole, not as a
+    /// tile beside a title.
+    #[must_use]
+    pub fn with_hero_artwork(mut self, artwork: impl Into<String>) -> Self {
+        self.artwork = artwork.into();
+        self.art = Art::Hero;
         self
     }
 
@@ -444,17 +489,6 @@ impl Summary {
             .iter()
             .map(|control| control.transport().map(|step| (control.id.as_str(), step)))
             .collect()
-    }
-
-    /// At most [`MAX_CONTROLS`], in the order the card draws them: the close
-    /// last, so it never sits where a hurried press aimed at the main action.
-    #[must_use]
-    pub fn shown_controls(&self) -> Vec<&Control> {
-        let mut controls = self.action_controls();
-        if let Some(close) = self.close_control() {
-            controls.push(close);
-        }
-        controls
     }
 }
 

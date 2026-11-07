@@ -430,44 +430,14 @@ pub enum QsEffect {
     /// Clear the clipboard history, keeping pinned copies.
     #[effect(own_device)]
     ClearClipboard,
-    /// Open a notification.
-    #[effect(own_device)]
-    OpenNotification {
-        #[param("The notification")]
-        notification: u64,
-    },
-    /// Dismiss a notification.
-    #[effect(own_device)]
-    DismissNotification {
-        #[param("The notification")]
-        notification: u64,
-    },
-    /// Dismiss every notification from one app.
-    #[effect(own_device)]
-    DismissNotificationGroup {
-        #[param("The app's notification group")]
-        group: String,
-    },
-    /// Run one of a notification's actions.
-    #[effect(own_device)]
-    RunNotificationAction {
-        #[param("The notification")]
-        notification: u64,
-        #[param("The action")]
-        action: String,
-    },
-    /// Hand a notification to an agent as a task.
-    #[effect(own_device)]
-    HandNotificationToAgent {
-        #[param("The notification")]
-        notification: u64,
-    },
-    /// Clear all notifications.
-    #[effect(own_device)]
-    ClearNotifications,
-    /// Bring back the notifications just cleared.
-    #[effect(own_device)]
-    UndoClearNotifications,
+    /// Show the notification centre over the desk: the panel's notifications
+    /// row opens the one list, where they are read and answered.
+    #[effect(
+        own_device,
+        idempotent,
+        keywords = "alerts, notices, benachrichtigungen"
+    )]
+    ShowCentre,
     /// Show a control on the panel.
     #[effect(own_device, idempotent)]
     ShowControl {

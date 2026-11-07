@@ -320,7 +320,6 @@ mod tests {
     use super::*;
     use ui::floating_layer::{Card, Corner, Placement};
     use ui::live_activity::{Control, ControlKind, Kind, Summary};
-    use ui::winit::keyboard::{Key, NamedKey};
 
     fn timer(id: &str, title: &str) -> Card {
         let summary = Summary::new(Kind::Timer, title, "1:30")
@@ -426,23 +425,6 @@ mod tests {
                 control: "pause".into(),
             }]
         );
-    }
-
-    #[test]
-    fn keyboard_focus_walks_the_cards_and_leaves_them() {
-        let surface = hosted(1280.0, vec![timer("tea", "Tea"), timer("eggs", "Eggs")]);
-        let mut state = surface.state.borrow_mut();
-        let first = state.layer.layout().cards[0].rect.center();
-        state.layer.pointer_button(first, true);
-        assert!(state.layer.shown().keyboard, "a press focuses the card");
-        state.layer.key(&Key::Named(NamedKey::ArrowDown));
-        let shown = state.layer.shown();
-        assert!(shown.keyboard);
-        assert_eq!(
-            state.layer.key(&Key::Named(NamedKey::Escape)),
-            Some(Ask::Focus(false))
-        );
-        assert!(!state.layer.shown().keyboard);
     }
 
     #[test]

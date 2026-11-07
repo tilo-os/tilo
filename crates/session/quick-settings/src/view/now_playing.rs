@@ -13,7 +13,7 @@ use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Dropdown, Element, IconWidget, Image, ImageFit, Row,
-    Text, TransportControl,
+    Slider, Text, TransportControl,
 };
 
 use crate::NowPlaying;
@@ -64,6 +64,12 @@ struct Choices {
     player: String,
     outputs: Vec<(String, String)>,
     output: String,
+    /// Where the song is, from 0 to 1, while its player says how long it is:
+    /// the row's progress, which the person drags to another point.
+    progress: Option<f64>,
+    /// Where the song stands and what is left of it, beside the bar's ends:
+    /// the labels the card's bar carries.
+    times: Option<(String, String)>,
     /// The handoff to continue here: its request, and the line that says
     /// what it is.
     offer: Option<(String, String)>,
@@ -139,6 +145,13 @@ impl Choices {
             player,
             outputs,
             output,
+            progress: playing.progress(),
+            times: playing.times().map(|(elapsed, remaining)| {
+                (
+                    ui::format::timecode(elapsed),
+                    ui::format::timecode(remaining),
+                )
+            }),
             offer: playing.offer.as_ref().map(|offer| {
                 let line = t_args(
                     "qs-now-playing-offer",
@@ -179,11 +192,22 @@ pub(super) fn card(cx: &ViewCx<QuickSettings>, parts: &Parts) -> Element {
         let Some(choices) = choices else {
             return Box::new(Container::new().with_no_padding());
         };
+        // The song and its bar are one block: the bar reads under the cover,
+        // the lines and the transport it belongs to, apart from the pickers
+        // that follow it.
+        let mut media = Column::new()
+            .with_intrinsic_height()
+            .with_no_padding()
+            .with_rhythm(Rhythm::Tight)
+            .push(Box::new(song(cx, choices)));
+        if let (Some(progress), Some(times)) = (choices.progress, &choices.times) {
+            media = media.push(seek(cx, progress, times));
+        }
         let mut card = Column::new()
             .with_intrinsic_height()
             .with_no_padding()
             .with_rhythm(Rhythm::Related)
-            .push(Box::new(song(cx, choices)));
+            .push(media.into_widget());
         for below in choices_below(cx, choices) {
             card = card.push(below);
         }
@@ -245,6 +269,45 @@ fn song(cx: &ViewCx<QuickSettings>, choices: &Choices) -> Row {
                 .with_child(lines.into_widget()),
         ))
         .push(Box::new(transport(cx, &choices.steps)))
+}
+
+/// Where the song stands, dragged to another point, between the two times it
+/// runs from and to: the panel's own seek effect, so a click, a script and
+/// the floating layer's card all go to the player the same way.
+fn seek(cx: &ViewCx<QuickSettings>, progress: f64, times: &(String, String)) -> Element {
+    let position = LocalState::new(progress);
+    let slider = Slider::from_state(&position)
+        .with_id("qs-now-playing-seek")
+        .with_accessible_name(&t("qs-now-playing-seek"))
+        .step(0.01)
+        .commits_on_release();
+    let slider: Element = Box::new(cx.actions().bind_effect(slider, QsEffect::SEEK));
+    Box::new(
+        Row::new()
+            .no_wrap()
+            .with_rhythm(Rhythm::Tight)
+            .with_align_items(ui::taffy::AlignItems::Center)
+            .with_id("qs-now-playing-seek-row")
+            .push(time("qs-now-playing-elapsed", &times.0))
+            .push(Box::new(
+                Container::new()
+                    .with_no_padding()
+                    .with_flex_grow()
+                    .with_child(slider),
+            ))
+            .push(time("qs-now-playing-remaining", &times.1)),
+    )
+}
+
+/// A point in the song beside its bar's end, captioned and quiet as the
+/// card's own labels are.
+fn time(id: &str, label: &str) -> Element {
+    Box::new(
+        Text::new(label)
+            .with_id(id)
+            .with_role(TextRole::Caption)
+            .dimmed(),
+    )
 }
 
 /// The transport, painted the way every media surface paints one: a round

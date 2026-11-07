@@ -70,6 +70,10 @@ fn build(model: &Path, out: &Path) -> Result<(), String> {
         .arg("build")
         .arg("--package")
         .arg("tasks-model")
+        // The module's own side: its export and the host imports under it, which the crate
+        // leaves out of a build an app links for its types.
+        .arg("--features")
+        .arg("module")
         .arg("--target")
         .arg("wasm32-unknown-unknown")
         .arg("--target-dir")

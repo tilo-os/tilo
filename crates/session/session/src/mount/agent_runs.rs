@@ -13,6 +13,10 @@ impl Shared {
     /// costs a comparison.
     pub(crate) fn feed_agent_runs(&self) {
         let now = tilo_clock::unix_now();
+        // The agents the person admitted at the door work in the workspace in
+        // front: they take what the person hands them as much as a workspace
+        // member does, whether or not the workspace's governance names them.
+        let seated = self.seats.readings();
         let (front, workspaces) = self.handle.read(|tree| {
             let front = tree
                 .active_workspace()
@@ -22,12 +26,19 @@ impl Shared {
                 .workspaces
                 .iter()
                 .map(|held| {
+                    let mut agents: Vec<String> = held
+                        .agent_members_at(now)
+                        .into_iter()
+                        .map(|(agent, _)| agent)
+                        .collect();
+                    for seat in &seated {
+                        if seat.doing == held.name && !agents.contains(&seat.key) {
+                            agents.push(seat.key.clone());
+                        }
+                    }
                     tilo_agent_runs::WorkspaceFacts::new(
                         &held.id().to_string(),
-                        held.agent_members_at(now)
-                            .into_iter()
-                            .map(|(agent, _)| agent)
-                            .collect(),
+                        agents,
                         Some(held.policy.clone()),
                     )
                 })
@@ -41,6 +52,6 @@ impl Shared {
         // Who a kept notification can be handed to: the agent live in the
         // workspace in front, where there is one.
         let taking = self.agent_runs.taking_agent();
-        self.notifications.borrow_mut().set_taking_agent(taking);
+        self.notifications.borrow().set_taking_agent(taking);
     }
 }

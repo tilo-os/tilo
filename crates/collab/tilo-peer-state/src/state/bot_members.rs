@@ -710,8 +710,15 @@ impl StatePeer {
         {
             return Err("the bot's new device is already in this workspace".into());
         }
-        // The adopter answers for the bot from now on, so its grant must sit
-        // within what the adopter may do, and names them as its grantor.
+        // The adopter answers for the bot from now on, so its grants must sit
+        // within what the adopter may do. They are written by the device that
+        // signs this change, because that is the device every replay of it
+        // sees: the granter is the signer, whether it acts for itself or on
+        // the adopter's behalf.
+        let signer = self
+            .certificate(&key.verifying_key().to_bytes(), now)
+            .map_err(|error| error.to_string())?
+            .user_public_key;
         let cx = Context::at_time(now);
         let bound = roles::foreign_device_bound();
         let authority = member.authority(&bound);
@@ -719,7 +726,7 @@ impl StatePeer {
         let mut reissued = Vec::with_capacity(old.len());
         for grant in &old {
             let mut next = grant.clone();
-            next.granted_by = tilo_action_policy::Subject::person(member.person.clone());
+            next.granted_by = tilo_action_policy::Subject::person(hex::encode(signer));
             WorkspacePolicy::check_within(&authority, &next, &cx)
                 .map_err(|refusal| refusal.to_string())?;
             reissued.push(next);

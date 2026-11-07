@@ -596,10 +596,16 @@ fn pressing_the_pill_expands_the_activity_it_names() {
     tree.active = tree.workspaces[0].slot;
     let chrome = super::fixture::FixtureChrome::new(tree.clone());
     chrome.borrow_mut().activities = vec![
-        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
-            .with_id("tea"),
-        ui::live_activity::Summary::new(ui::live_activity::Kind::Music, "Album", "Track 2")
-            .with_id("music"),
+        (
+            "so.tilo.clocks".to_owned(),
+            ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
+                .with_id("tea"),
+        ),
+        (
+            "so.tilo.music".to_owned(),
+            ui::live_activity::Summary::new(ui::live_activity::Kind::Music, "Album", "Track 2")
+                .with_id("music"),
+        ),
     ];
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     bar.center_rect = Rect::new(300.0, 7.0, 660.0, 41.0);
@@ -610,6 +616,7 @@ fn pressing_the_pill_expands_the_activity_it_names() {
     assert_eq!(
         chrome.borrow().intents.last(),
         Some(&crate::chrome::ChromeIntent::ExpandActivity {
+            app: "so.tilo.clocks".to_owned(),
             activity: "tea".to_owned()
         }),
         "the pill's leading activity comes out as its card"
@@ -638,7 +645,7 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     let tea = ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Tea", "4:32")
         .with_id("tea");
-    chrome.borrow_mut().activities = vec![tea.clone()];
+    chrome.borrow_mut().activities = vec![("so.tilo.clocks".to_owned(), tea.clone())];
     lay_out_and_draw(&mut bar, 1600.0);
     let alone = bar.center_rect;
     assert_eq!(
@@ -658,9 +665,12 @@ fn the_bars_pill_hugs_the_activity_and_counts_the_ones_behind_it() {
 
     let one = bar.center_pill_width(&Theme::default(), &mut TextRenderer::new(), 1600.0);
     chrome.borrow_mut().activities = vec![
-        tea,
-        ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Coffee", "0:30")
-            .with_id("coffee"),
+        ("so.tilo.clocks".to_owned(), tea),
+        (
+            "so.tilo.clocks".to_owned(),
+            ui::live_activity::Summary::new(ui::live_activity::Kind::Timer, "Coffee", "0:30")
+                .with_id("coffee"),
+        ),
     ];
     lay_out_and_draw(&mut bar, 1600.0);
     assert_eq!(bar.center_pill().more, 1, "one activity waits behind it");
@@ -1395,10 +1405,11 @@ fn a_narrow_bar_centres_its_pill_on_the_reading_it_shows() {
     let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     lay_out_and_draw(&mut bar, 520.0);
     let clock = (bar.center_rect, bar.center_lane);
-    chrome.borrow_mut().activities = vec![
+    chrome.borrow_mut().activities = vec![(
+        "so.tilo.chat".to_owned(),
         ui::live_activity::Summary::new(ui::live_activity::Kind::Call, "Ada and Milo", "0:42")
             .with_id("chat-call:c_huddle"),
-    ];
+    )];
     bar.refresh_status_and_media_state();
     lay_out_and_draw(&mut bar, 520.0);
     let (pill, lane) = (bar.center_rect, bar.center_lane);

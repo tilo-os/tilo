@@ -12,7 +12,7 @@
 
 use vello::kurbo::{Point, Rect, Size};
 
-use crate::live_activity::Summary;
+use crate::live_activity::{Art, Summary};
 use crate::tokens::Metrics;
 
 /// How far a card rests from the work area's edges.
@@ -46,6 +46,13 @@ const CARD_LINE_GAP: f64 = 2.0;
 /// The artwork that heads a song's card, square: as tall as its title and
 /// artist together, so the song reads as one block.
 const CARD_ART: f64 = 56.0;
+/// The shape of a picture that heads its card over the lines: the card's
+/// whole width at nine sixteenths, as a screenshot's own frame is.
+const CARD_HERO_ART: f64 = 9.0 / 16.0;
+/// How wide a card headed with a picture stands: wide enough for its three
+/// controls to say what each one does beside its glyph ("Copy", "Open", "Show
+/// in folder"), and for the picture to be worth looking at.
+const CARD_HERO_WIDTH: f64 = 380.0;
 /// Between a song's artwork and its title.
 const CARD_ART_GAP: f64 = 12.0;
 /// A progress bar's time label, one at each end of it.
@@ -140,12 +147,6 @@ impl Card {
             size: None,
         }
     }
-
-    /// The activity's own name, what the layer reports it by.
-    #[must_use]
-    pub fn activity(&self) -> &str {
-        &self.summary.id
-    }
 }
 
 /// A card as the layer draws it.
@@ -154,17 +155,8 @@ pub struct Placed {
     pub app: String,
     pub summary: Summary,
     pub rect: Rect,
-    /// The person dragged it loose: it stays where they left it.
-    pub loose: bool,
     /// The app draws it: the layer keeps its place and paints nothing.
     pub rich: bool,
-}
-
-impl Placed {
-    #[must_use]
-    pub fn activity(&self) -> &str {
-        &self.summary.id
-    }
 }
 
 /// Why a card is not on the screen.
@@ -192,43 +184,25 @@ pub struct Layer {
     pub folded: Vec<Folded>,
 }
 
-/// How big an activity's card is on `work`: one token's width (never wider
-/// than the display) and the height of the rows the summary has, so a card
-/// is as tall as what it says and no taller.
+/// How big an activity's card is on `work`: one token's width (a hero picture
+/// takes its own), never wider than the display, and the height of the rows
+/// the summary has, so a card is as tall as what it says and no taller.
 #[must_use]
 pub fn card_size(work: Rect, summary: &Summary) -> Size {
     let widest = (work.width() - 2.0 * EDGE_INSET).max(0.0);
-    let width = f64::from(Metrics::BASE.panel_width_utility).min(widest);
-    let lines = CARD_HERO
-        + if summary.subtitle.is_empty() {
-            0.0
-        } else {
-            CARD_LINE_GAP + CARD_SUBTITLE
-        };
-    let mut height = 2.0 * CARD_PADDING + CARD_HEADER + CARD_ROW_GAP;
-    // A song heads its card with artwork as tall as its title and artist.
-    height += if summary.artwork.is_empty() {
-        lines
+    let width = if summary.art == Art::Hero && !summary.artwork.is_empty() {
+        CARD_HERO_WIDTH
     } else {
-        CARD_ART.max(lines)
-    };
-    if summary.progress.is_some() {
-        height += CARD_ROW_GAP
-            + if summary.length.is_some() {
-                CARD_PROGRESS_ROW
-            } else {
-                CARD_PROGRESS
-            };
+        f64::from(Metrics::BASE.panel_width_utility)
     }
-    if summary.has_actions() {
-        height += CARD_ROW_GAP
-            + if summary.transport().is_some() {
-                CARD_TRANSPORT
-            } else {
-                CARD_CONTROLS
-            };
-    }
-    Size::new(width, height)
+    .min(widest);
+    Size::new(width, card_parts(probe(width), summary).height)
+}
+
+/// A card of `width` tall enough for every row a summary can have: what
+/// [`card_size`] measures its rows on.
+fn probe(width: f64) -> Rect {
+    Rect::from_origin_size((0.0, 0.0), Size::new(width, 4096.0))
 }
 
 /// How big `card` stands on `work`: every card in a column is as wide as the
@@ -266,7 +240,8 @@ pub struct Parts {
     pub hero: Rect,
     /// The line under the hero, where the summary has one.
     pub subtitle: Option<Rect>,
-    /// The artwork beside the song's lines, where the summary has any.
+    /// The artwork: beside the song's lines, or over them at nine sixteenths
+    /// of the card's width when the summary says it heads the card.
     pub artwork: Option<Rect>,
     /// Where it is in the song, and what is left of it, at the ends of the
     /// progress bar, where the summary has a length.
@@ -280,6 +255,8 @@ pub struct Parts {
     /// Each control's place: its square on a media transport (a circle of its
     /// own size), its slot on any other card.
     pub controls: Vec<(String, Rect)>,
+    /// The card's height: every row above, and the margin at its foot.
+    pub height: f64,
 }
 
 /// Where each of `summary`'s parts stands on a card in `card`: the rows
@@ -338,6 +315,11 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         };
     let (artwork, lines_x0, lines_top) = if summary.artwork.is_empty() {
         (None, inside.x0, None)
+    } else if summary.art == Art::Hero {
+        // The picture stands over the lines, the card's whole width at nine
+        // sixteenths: what it shows is the card's point.
+        let side = (inside.width().max(0.0) * CARD_HERO_ART).max(0.0);
+        (Some(row(side, CARD_ROW_GAP)), inside.x0, None)
     } else {
         let block = row(CARD_ART.max(lines), CARD_ROW_GAP);
         let art = Rect::from_origin_size(block.origin(), Size::new(CARD_ART, CARD_ART));
@@ -353,9 +335,15 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         ),
         None => row(CARD_HERO, CARD_ROW_GAP),
     };
-    let subtitle = (!summary.subtitle.is_empty()).then(|| {
-        let top = hero.y1 + CARD_LINE_GAP;
-        Rect::new(lines_x0, top, inside.x1, top + CARD_SUBTITLE)
+    // The line under the hero: beside a song's artwork it follows the hero,
+    // and anywhere else it is a row of its own, so what stands under it
+    // starts below it.
+    let subtitle = (!summary.subtitle.is_empty()).then(|| match lines_top {
+        Some(top) => {
+            let top = top + CARD_HERO.min(inside.height()) + CARD_LINE_GAP;
+            Rect::new(lines_x0, top, inside.x1, top + CARD_SUBTITLE)
+        }
+        None => row(CARD_SUBTITLE, CARD_LINE_GAP),
     });
     let (progress, elapsed, remaining) = match summary.progress {
         None => (None, None, None),
@@ -443,6 +431,7 @@ pub fn card_parts(card: Rect, summary: &Summary) -> Parts {
         progress,
         controls_row,
         controls,
+        height: cursor - card.y0 + CARD_PADDING,
     }
 }
 
@@ -469,8 +458,7 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
             Some(left) => layer.cards.push(Placed {
                 app: card.app.clone(),
                 summary: card.summary.clone(),
-                rect: clamp_into(card_extent(work, card), left, work),
-                loose: true,
+                rect: keep_inside(card_extent(work, card), left, work, 0.0, REACHABLE),
                 rich: false,
             }),
             None => docked.push(card),
@@ -494,7 +482,6 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
                 app: first.app.clone(),
                 summary: first.summary.clone(),
                 rect: drop_from_the_bar(placement, first),
-                loose: false,
                 rich: first.rich,
             });
             layer.folded.extend(rest.iter().map(|card| Folded {
@@ -534,7 +521,6 @@ pub fn place(placement: &Placement, corner: Corner, cards: &[Card], expanded: bo
                 app: card.app.clone(),
                 summary: card.summary.clone(),
                 rect,
-                loose: false,
                 rich: card.rich,
             });
             cursor = if corner.from_top() {
@@ -607,47 +593,53 @@ fn drop_from_the_bar(placement: &Placement, card: &Card) -> Rect {
     let work = placement.work;
     let width = (work.width() - 2.0 * EDGE_INSET).max(0.0);
     let height = card_extent(work, card).height;
-    let mut top = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
-    if let Some(banners) = placement.banners
-        && banners.y1 + CARD_GAP > top
-        && banners.y0 < top + height
-    {
-        top = banners.y1 + CARD_GAP;
-    }
+    let below_bar = (work.y0 + EDGE_INSET).max(placement.bar.y1 + EDGE_INSET);
+    let top = placement
+        .banners
+        .filter(|banners| banners.y1 + CARD_GAP > below_bar && banners.y0 < below_bar + height)
+        .map_or(below_bar, |banners| banners.y1 + CARD_GAP);
     // A card taller than what is left starts from the top and goes no lower
     // than the work area's bottom inset.
-    let lowest = (work.y1 - EDGE_INSET - height).max(work.y0 + EDGE_INSET);
-    Rect::from_origin_size(
-        (work.x0 + EDGE_INSET, top.min(lowest)),
-        Size::new(width, height),
-    )
+    let y = clamp_axis(top, height, below_bar, work.y1 - EDGE_INSET, height);
+    Rect::from_origin_size((work.x0 + EDGE_INSET, y), Size::new(width, height))
 }
 
-/// A card `size` dragged to `at`, kept inside `work` but for [`REACHABLE`]:
-/// a card that fits stays wholly inside, a card larger than the work area
-/// keeps a strip to grab.
-fn clamp_into(size: Size, at: Rect, work: Rect) -> Rect {
-    let x = clamp_axis(at.x0, size.width, work.x0, work.x1);
-    let y = clamp_axis(at.y0, size.height, work.y0, work.y1);
+/// A card the size of `size` dragged to `at`, kept inside `work` and `inset`
+/// from its edges but for a strip `reachable` long the person can grab: a
+/// card that fits stays wholly inside, a card larger than the work area keeps
+/// that strip. Every place a card is dropped ends here, so a settled card and
+/// a remembered one land the same way.
+#[must_use]
+pub fn keep_inside(size: Size, at: Rect, work: Rect, inset: f64, reachable: f64) -> Rect {
+    let left = work.x0 + inset;
+    let top = work.y0 + inset;
+    let x = clamp_axis(at.x0, size.width, left, work.x1 - inset, reachable);
+    let y = clamp_axis(at.y0, size.height, top, work.y1 - inset, reachable);
     Rect::from_origin_size((x, y), size)
 }
 
-fn clamp_axis(origin: f64, length: f64, low: f64, high: f64) -> f64 {
+fn clamp_axis(origin: f64, length: f64, low: f64, high: f64, reachable: f64) -> f64 {
     let inside = high - length;
     if inside >= low {
         origin.clamp(low, inside)
     } else {
-        // Longer than the work area: at least a reachable strip stays inside,
-        // as far as the work area is that tall at all.
-        origin.clamp(low, (high - REACHABLE).max(low))
+        origin.clamp(low, (high - reachable).max(low))
     }
+}
+
+/// An activity the bar's pill names: the app that shows it and its summary.
+/// An activity's id is its own app's, so the app is part of what names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Named {
+    pub app: String,
+    pub summary: Summary,
 }
 
 /// What the bar's pill shows: the activity that stands first, and how many
 /// others are waiting behind it (one dot each).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Pill {
-    pub heading: Option<Summary>,
+    pub heading: Option<Named>,
     pub more: usize,
 }
 
@@ -663,17 +655,26 @@ impl Pill {
     pub fn reading(&self) -> String {
         self.heading
             .as_ref()
-            .map(Summary::reading)
+            .map(|named| named.summary.reading())
             .unwrap_or_default()
+    }
+
+    /// The ink the reading stands in: the heading activity's tone.
+    #[must_use]
+    pub fn ink(&self, theme: &crate::theme::Theme) -> vello::peniko::Color {
+        self.heading.as_ref().map_or_else(
+            || theme.tokens.colors.text_primary,
+            |named| named.summary.tone.ink(theme),
+        )
     }
 
     /// The picture the pill shows beside its words, when the activity that
     /// heads it has artwork: a song reads as its cover and its title.
     #[must_use]
     pub fn artwork(&self) -> Option<crate::widget::PictureSource> {
-        let heading = self.heading.as_ref()?;
-        (!heading.artwork.is_empty()).then(|| crate::widget::PictureSource {
-            src: heading.artwork.clone(),
+        let summary = &self.heading.as_ref()?.summary;
+        (!summary.artwork.is_empty()).then(|| crate::widget::PictureSource {
+            src: summary.artwork.clone(),
         })
     }
 }
@@ -682,10 +683,17 @@ impl Pill {
 /// it. A call stands before directions, directions before a timer that is due
 /// within a minute, that timer before any other timer, timers before music.
 #[must_use]
-pub fn pill(activities: &[Summary]) -> Pill {
-    let mut sorted: Vec<&Summary> = activities.iter().collect();
-    sorted.sort_by(|a, b| a.pill_rank().cmp(&b.pill_rank()));
-    let heading = sorted.first().map(|summary| (*summary).clone());
+pub fn pill(activities: &[(String, Summary)]) -> Pill {
+    let mut sorted: Vec<&(String, Summary)> = activities.iter().collect();
+    sorted.sort_by(|a, b| {
+        a.1.pill_rank()
+            .cmp(&b.1.pill_rank())
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    let heading = sorted.first().map(|(app, summary)| Named {
+        app: app.clone(),
+        summary: summary.clone(),
+    });
     Pill {
         heading,
         more: sorted.len().saturating_sub(1),

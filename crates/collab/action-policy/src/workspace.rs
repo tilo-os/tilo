@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActionKind, Answer, Authority, Context, Grant, GrantId, Lifetime, Party, Role, Subject,
-    TreePath,
+    TreePath, Verdict,
     roles::{self, governance},
 };
 
@@ -506,6 +506,30 @@ impl WorkspacePolicy {
         } else {
             verdict
         };
+        Self::resolved(&verdict, approved)
+    }
+
+    /// [`Self::admit_action`] for placing `grant`: a grant assigns one of the
+    /// workspace's saved sets ([`roles::preset_assigned`]) when a grant on that
+    /// set's assignment node allows it, and any other grant when the
+    /// workspace's own grant action does.
+    fn admit_grant(
+        &self,
+        actor: &Authority<'_>,
+        grant: &Grant,
+        cx: &Context<'_>,
+        approved: bool,
+    ) -> Result<Vec<GrantId>, Refusal> {
+        let Some((set, _)) = roles::preset_assigned(&grant.id) else {
+            return self.admit_action(actor, governance::GRANT, cx, approved);
+        };
+        self.check_not_held_off(actor, cx)?;
+        let node = roles::preset_assign_node(&self.workspace, set);
+        let verdict = actor.decide(&node, roles::GOVERNANCE_KIND, cx);
+        Self::resolved(&verdict, approved)
+    }
+
+    fn resolved(verdict: &Verdict, approved: bool) -> Result<Vec<GrantId>, Refusal> {
         match verdict.answer {
             Answer::Allow => Ok(verdict.spent()),
             Answer::Ask if approved => Ok(verdict.spent()),
@@ -591,7 +615,14 @@ impl WorkspacePolicy {
         approved: bool,
     ) -> Result<(), Refusal> {
         if !is_leaving(actor_person, change) {
-            self.admit_action(actor, change.action(), cx, approved)?;
+            match change {
+                Change::Grant(grant) => {
+                    self.admit_grant(actor, grant, cx, approved)?;
+                }
+                change => {
+                    self.admit_action(actor, change.action(), cx, approved)?;
+                }
+            }
         }
         self.check_change(actor_person, actor, change, cx)
     }
@@ -616,7 +647,10 @@ impl WorkspacePolicy {
         let spent = if is_leaving(actor_person, &change) {
             Vec::new()
         } else {
-            self.admit_action(actor, change.action(), cx, approved)?
+            match &change {
+                Change::Grant(grant) => self.admit_grant(actor, grant, cx, approved)?,
+                change => self.admit_action(actor, change.action(), cx, approved)?,
+            }
         };
         self.check_change(actor_person, actor, &change, cx)?;
         self.spend(&spent);

@@ -242,9 +242,10 @@ impl TopBarChrome {
         {
             // An activity the pill names is pulled out as its card; the
             // reading on its own opens the board.
-            if let Some(summary) = pill.heading {
+            if let Some(heading) = pill.heading {
                 chrome.intent(ChromeIntent::ExpandActivity {
-                    activity: summary.id,
+                    app: heading.app,
+                    activity: heading.summary.id,
                 });
             } else {
                 let focus = chrome.snapshot().activity_glance.focus;

@@ -154,23 +154,27 @@ pub fn quiet_label(reason: &QuietReason) -> String {
     }
 }
 
+/// What a sender calls itself, as it may be shown: one short line with no
+/// control characters. `None` when it names nothing, and a file it runs from
+/// is no name: a program that calls itself `/usr/bin/notes` names nothing.
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub fn sender_words(app_name: &str) -> Option<String> {
+    let words = app_name
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(64)
+        .collect::<String>();
+    let words = words.trim();
+    (!words.is_empty() && !words.contains('/')).then(|| words.to_owned())
+}
+
 /// What a sender that nobody vouched for says it is, shown as its claim:
 /// one short line, never as an app's verified name. `None` when it claims
 /// nothing.
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
 pub fn sender_claim(app_name: &str) -> Option<String> {
-    let claim = app_name
-        .chars()
-        .filter(|character| !character.is_control())
-        .take(64)
-        .collect::<String>();
-    let claim = claim.trim();
-    (!claim.is_empty()).then(|| {
-        crate::i18n::t_args(
-            "notification-sender-claims",
-            &[("name", claim.to_owned().into())],
-        )
-    })
+    sender_words(app_name)
+        .map(|name| crate::i18n::t_args("notification-sender-claims", &[("name", name.into())]))
 }
 
 /// What a notification's default action is labelled, in the desktop's

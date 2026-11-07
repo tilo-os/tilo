@@ -203,6 +203,9 @@ pub struct Status {
     pub keyboard: bool,
     /// Whether the session lets this screen suspend, restart or shut down.
     pub power: bool,
+    /// Notifications the person has not read yet, as the bar's bell counts
+    /// them: the screen says how many wait beyond the unlock.
+    pub notifications: usize,
 }
 
 /// What the lock screen shows: plain data the session keeps current.
@@ -246,24 +249,45 @@ impl Shown {
     }
 
     /// What the screen has to say under the field, and in which tone: the
-    /// answer, a check in flight, or the keyboard's Caps Lock. Nothing to say
-    /// is nothing shown, and the space for a line is kept either way.
-    fn notice(&self) -> Option<(String, Tone)> {
+    /// answer, a check in flight, a battery about to give out, or the
+    /// keyboard's Caps Lock. Nothing to say is nothing shown, and the space
+    /// for a line is kept either way.
+    fn notice(&self) -> Option<(String, Tone, Option<Icon>)> {
         if let Some(error) = &self.error {
-            Some((error.clone(), Tone::Danger))
+            Some((error.clone(), Tone::Danger, None))
         } else if self.checking {
-            Some((t("lock-checking"), Tone::Neutral))
+            Some((t("lock-checking"), Tone::Neutral, None))
+        } else if let Some(percent) = self.failing_battery() {
+            Some((
+                crate::t_args(
+                    "lock-battery-critical",
+                    &[(
+                        "percent",
+                        ui::i18n::ArgValue::Text(ui::format::percent(f64::from(percent) / 100.0)),
+                    )],
+                ),
+                Tone::Danger,
+                Some(Icon::Battery),
+            ))
         } else if self.caps_lock {
-            Some((t("lock-caps-lock"), Tone::Warning))
+            Some((t("lock-caps-lock"), Tone::Warning, Some(Icon::ArrowBigUp)))
         } else {
             None
         }
     }
 
+    /// The battery's reading while it is about to give out on its own: full
+    /// enough, or charging, is nothing for the screen to warn about.
+    fn failing_battery(&self) -> Option<u8> {
+        let battery = self.status.battery.as_ref()?;
+        let percent = battery.percent?;
+        (percent <= ui::widget::StatusCluster::CRITICAL && !battery.charging).then_some(percent)
+    }
+
     /// Whether there is a line to show at all, without wording it: the frame
     /// pump asks this on every frame and words nothing it does not draw.
     fn says_something(&self) -> bool {
-        self.error.is_some() || self.checking || self.caps_lock
+        self.error.is_some() || self.checking || self.failing_battery().is_some() || self.caps_lock
     }
 }
 
@@ -546,7 +570,7 @@ impl ResourceApp for LockApp {
 
     fn scenarios() -> &'static [&'static str] {
         &[
-            "plain", "typing", "refused", "checking", "caps", "playing", "minimal",
+            "plain", "typing", "refused", "checking", "caps", "playing", "minimal", "failing",
         ]
     }
 
@@ -587,6 +611,7 @@ fn staged_shown(name: &str) -> Shown {
             layouts: 2,
             keyboard: false,
             power: true,
+            notifications: 2,
         },
         media: None,
         keyboard: false,
@@ -619,6 +644,16 @@ fn staged_shown(name: &str) -> Shown {
         },
         "minimal" => Shown {
             status: Status::default(),
+            ..scene
+        },
+        "failing" => Shown {
+            status: Status {
+                battery: Some(Battery {
+                    percent: Some(4),
+                    charging: false,
+                }),
+                ..scene.status
+            },
             ..scene
         },
         _ => scene,
@@ -891,17 +926,15 @@ fn notice(shown: &Shown, alpha: &Rc<Cell<f32>>) -> Element {
         .with_align_items(ui::taffy::AlignItems::Center)
         .with_justify(ui::taffy::JustifyContent::Center);
     let said = shown.notice();
-    let tone = said.as_ref().map_or(Tone::Neutral, |(_, tone)| *tone);
-    let line = said.map_or_else(|| " ".to_owned(), |(line, _)| line);
+    let tone = said.as_ref().map_or(Tone::Neutral, |(_, tone, _)| *tone);
+    let (line, icon) = said.map_or_else(|| (" ".to_owned(), None), |(line, _, icon)| (line, icon));
     if shown.checking {
         row = row.push(Box::new(Spinner::for_text(TextRole::Caption)));
-    } else if tone == Tone::Warning {
-        // The keyboard's Caps Lock, as the key itself says it: the filled
-        // Shift glyph the on-screen keyboard latches.
+    } else if let Some(icon) = icon {
+        // The line says what kind of thing it is before it says it: the
+        // Caps Lock key's own glyph, or the battery it is warning about.
         row = row.push(Box::new(
-            IconWidget::new(Icon::ArrowBigUp)
-                .sized(IconSize::Small)
-                .tone(Tone::Warning),
+            IconWidget::new(icon).sized(IconSize::Small).tone(tone),
         ));
     }
     row = row.push(Box::new(
@@ -1009,6 +1042,16 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
         .with_rhythm(Rhythm::Sibling)
         .with_align_items(ui::taffy::AlignItems::Center)
         .with_justify(ui::taffy::JustifyContent::Center);
+    if shown.status.notifications > 0 {
+        // The person's news comes before the machine's own readings: it is
+        // the one thing here that is about them rather than the device.
+        let count = f64::from(u32::try_from(shown.status.notifications).unwrap_or(u32::MAX));
+        let label = crate::t_args(
+            "lock-notifications",
+            &[("count", ui::i18n::ArgValue::Number(count))],
+        );
+        row = row.push(status_item(Icon::Bell, Some(&label)));
+    }
     if let Some(link) = &shown.status.link {
         row = row.push(status_item(link.kind.icon(), link.name.as_deref()));
     }

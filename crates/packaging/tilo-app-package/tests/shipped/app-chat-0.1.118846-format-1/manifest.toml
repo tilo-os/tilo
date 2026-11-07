@@ -1,0 +1,81 @@
+[package]
+id = "so.tilo.chat"
+name = "Chat"
+category = "Network"
+version = "0.1.118846+g000193032440e4743c4f78852c5e4be9773ed420"
+kind = "app"
+runtime = "tilo-runtime/2026.07+native.9cbfb43fcfb0a4ea875a0619fb132906"
+
+[package.isa]
+aarch64 = "armv8-a"
+
+[publisher]
+identity = "ed25519:d3a8bd4b1cee19a15fddbe4ee4a70a119553a9b8b85e09ba1f67b4ab95d6ddb0"
+signature = ""
+
+[[trust.attested_by]]
+attestor = "tilo-demo/2026.07"
+claim = "deadbeef"
+signature = ""
+
+[continuity]
+required = ["presentation"]
+semantic-schema = "realtime-session-v1"
+
+[actions]
+query = true
+invoke = true
+
+[resources]
+kinds = [
+    "chat.workspace",
+    "tilo.moderation",
+    "tilo.rich-text",
+]
+
+[sandbox]
+namespaces = [
+    "user",
+    "pid",
+    "uts",
+    "ipc",
+    "mount",
+]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+hosts = []
+
+[sandbox.portals]
+screencast = "via-host"
+
+[sandbox.services]
+collab = "optional@1"
+shell-ui = "optional@1"
+tilo-fs = "optional@1"
+
+[entrypoint]
+bin = "bin/chat"
+type = "gui"
+splash-segments = ["bin/chat[0x0:0x400000]"]
+splash-budget = 250
+
+[providers]
+mime = []
+ext = []
+schemes = []
+
+[capabilities]
+optional = [
+    "open-uri",
+    "clipboard",
+    "files.paths",
+    "app-files",
+    "threads",
+    "media.decode",
+    "camera",
+    "microphone",
+    "screen-capture",
+]

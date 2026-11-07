@@ -391,6 +391,11 @@ lock-pause = Pause
 lock-next = Nächster Titel
 lock-previous = Vorheriger Titel
 lock-battery = Akku
+lock-battery-critical = Akku bei { $percent }. Stecke das Ladegerät an, damit dieser Rechner weiterläuft.
+lock-notifications = { $count ->
+    [one] 1 Benachrichtigung
+   *[other] { $count } Benachrichtigungen
+}
 lock-suspend = Bereitschaft
 lock-restart = Neu starten
 lock-shut-down = Ausschalten

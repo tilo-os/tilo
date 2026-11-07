@@ -83,3 +83,17 @@ fn a_press_names_the_control_and_the_song_it_was_pressed_on() {
     assert_eq!(command.command, "play-pause");
     assert_eq!(command.activity_id.as_deref(), Some("t1"));
 }
+
+#[test]
+fn a_seek_names_the_point_it_was_left_at() {
+    let command: Command = serde_json::from_value(serde_json::json!({
+        "command": "seek",
+        "activity_id": "t1",
+        "fraction": 0.25,
+    }))
+    .expect("a seek");
+    assert_eq!(command.fraction, Some(0.25));
+    let press: Command = serde_json::from_value(serde_json::json!({"command": "next"}))
+        .expect("a transport press carries no point");
+    assert_eq!(press.fraction, None);
+}

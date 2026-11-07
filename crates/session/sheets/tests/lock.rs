@@ -12,7 +12,7 @@
 use std::sync::mpsc::Receiver;
 
 use tilo_sheets::Seat as _;
-use tilo_sheets::lock::{LockApp, LockEffect, LockSeat, Media, Shown, Status};
+use tilo_sheets::lock::{Battery, LockApp, LockEffect, LockSeat, Media, Shown, Status};
 use ui::a11y::Action as A11yAction;
 use ui::framework::testing::HeadlessApp;
 use ui::passcode_keyboard::{PasscodeKey, PasscodeKeyboard};
@@ -114,6 +114,47 @@ fn the_screen_says_the_time_whose_session_it_is_and_what_unlocks_it() {
             "{spoken} is on the screen: {labels:?}"
         );
     }
+}
+
+/// The screen says what the lock is holding back: the notifications that
+/// wait behind it, and a battery about to give out on its own.
+#[test]
+fn the_screen_says_how_many_wait_and_warns_of_a_failing_battery() {
+    let mut waiting = screen();
+    waiting.status.notifications = 3;
+    let (mut app, _seat, _asked) = locked(waiting);
+    let said = labels(&mut app);
+    assert!(
+        said.iter().any(|label| label == "3 notifications"),
+        "what waits behind the unlock: {said:?}"
+    );
+
+    let mut failing = screen();
+    failing.status.battery = Some(Battery {
+        percent: Some(3),
+        charging: false,
+    });
+    let (mut app, _seat, _asked) = locked(failing);
+    let said = labels(&mut app);
+    assert!(
+        said.iter().any(|label| label.starts_with("Battery at 3%")),
+        "a battery about to give out says so: {said:?}"
+    );
+
+    // Charging at the same reading is nothing to warn about: the charger is
+    // the answer already.
+    let mut charging = screen();
+    charging.status.battery = Some(Battery {
+        percent: Some(3),
+        charging: true,
+    });
+    let (mut app, _seat, _asked) = locked(charging);
+    assert!(
+        !labels(&mut app)
+            .iter()
+            .any(|label| label.starts_with("Battery at 3%")),
+        "a charging battery is not failing"
+    );
 }
 
 /// Where the screen puts the node labelled `label`.

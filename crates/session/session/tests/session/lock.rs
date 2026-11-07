@@ -381,11 +381,9 @@ fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> 
             "path": path.to_str().expect("a path the socket carries"),
         }),
     );
-    assert_eq!(
-        asked,
-        serde_json::json!({"ok": {"frame": 0}}),
-        "the door draws {name}"
-    );
+    // The answer also says whether the picture is of the lock screen, which is
+    // what the lock's own tests read of it.
+    assert_eq!(asked["ok"]["frame"], 0, "the door draws {name}: {asked}");
     image::open(&path)
         .unwrap_or_else(|error| panic!("{name}: {error}"))
         .to_rgba8()

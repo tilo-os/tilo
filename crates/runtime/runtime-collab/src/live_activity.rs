@@ -174,6 +174,16 @@ impl LiveActivities {
         self.wake_host();
     }
 
+    /// The controls pressed on `app_id`'s activity that it has not taken
+    /// after `after`, and the serial to pass back for the next.
+    ///
+    /// The host of an activity that has no collaboration channel of its own
+    /// — the session presenting its own capture — takes them up here.
+    #[must_use]
+    pub fn pressed_controls(&self, app_id: &str, after: u64) -> Option<(u64, Vec<Value>)> {
+        self.controls_after(app_id, after)
+    }
+
     /// The controls app `app_id` has not taken after `after`, and the
     /// serial of the last; `None` while there are none.
     fn controls_after(&self, app_id: &str, after: u64) -> Option<(u64, Vec<Value>)> {
@@ -306,6 +316,31 @@ mod tests {
 
         board.show("so.tilo.clocks", None);
         assert_eq!(board.activity("so.tilo.clocks"), None);
+    }
+
+    /// The host an activity belongs to takes its controls up from the board,
+    /// for an activity that has no collaboration channel of its own: the
+    /// session's own capture says what it caught and what it is doing with it.
+    #[test]
+    fn an_activitys_host_takes_its_controls_up_itself() {
+        let board = LiveActivities::default();
+        board.show(
+            "so.tilo.capture-studio",
+            Some(serde_json::json!({"title": "Shot"})),
+        );
+        board.press(
+            "so.tilo.capture-studio",
+            serde_json::json!({"command": "copy"}),
+        );
+        let (serial, controls) = board
+            .pressed_controls("so.tilo.capture-studio", 0)
+            .expect("the press is there for its host");
+        assert_eq!(controls, vec![serde_json::json!({"command": "copy"})]);
+        assert_eq!(
+            board.pressed_controls("so.tilo.capture-studio", serial),
+            None,
+            "a control taken once is not pressed again"
+        );
     }
 
     /// The host presenting the board is woken by an activity moving and by

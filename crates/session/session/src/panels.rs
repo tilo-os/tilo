@@ -377,7 +377,7 @@ impl ActivityLayer {
         let layer = ui::floating_layer::place(&placement, self.corner, &cards, expanded);
         self.cards.begin_slots();
         for placed in &layer.cards {
-            if self.cards.size(&placed.app, placed.activity()).is_none() {
+            if self.cards.size(&placed.app, &placed.summary.id).is_none() {
                 continue;
             }
             let at = Rect::new(
@@ -386,7 +386,7 @@ impl ActivityLayer {
                 placed.rect.x1 + f64::from(x),
                 placed.rect.y1 + f64::from(y),
             );
-            self.cards.slot_at(&placed.app, placed.activity(), at);
+            self.cards.slot_at(&placed.app, &placed.summary.id, at);
         }
         let feed = tilo_activities::Feed {
             placement,
@@ -414,7 +414,11 @@ impl ActivityLayer {
                 Ask::Close { app, activity } => self.reader.close(&app, &activity),
                 Ask::Collapse { app, activity } => self.reader.collapse(&app, &activity),
                 Ask::Moved { app, activity, at } => self.reader.moved(&app, &activity, at),
-                Ask::Focus(on) => self.reader.focus(on),
+                Ask::Seek {
+                    app,
+                    activity,
+                    fraction,
+                } => self.reader.seek(&app, &activity, fraction),
             }
         }
     }

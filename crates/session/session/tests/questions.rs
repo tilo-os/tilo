@@ -1079,8 +1079,13 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
 }
 
 /// A program of this login at the door: it says who it is, and asks what the
-/// session has for it. What it read comes back, however far it got.
-fn door_client(socket: &std::path::Path, answers: &std::sync::mpsc::Sender<Vec<Value>>) {
+/// session has for it. What it read comes back, however far it got; `hold`
+/// keeps its seat at the door until the test lets it go.
+fn door_client(
+    socket: &std::path::Path,
+    answers: &std::sync::mpsc::Sender<Vec<Value>>,
+    hold: Option<std::sync::mpsc::Receiver<()>>,
+) {
     let stream = UnixStream::connect(socket).expect("the agent door's socket");
     stream
         .set_read_timeout(Some(tilo_test_env::hang_bound()))
@@ -1119,6 +1124,9 @@ fn door_client(socket: &std::path::Path, answers: &std::sync::mpsc::Sender<Vec<V
         }
     }
     let _ = answers.send(read);
+    if let Some(hold) = hold {
+        let _ = hold.recv_timeout(tilo_test_env::hang_bound());
+    }
 }
 
 /// The answers the program at the door read, once the session let it
@@ -1127,14 +1135,27 @@ fn door_answers(
     session: &mut Session,
     questions: &Questions,
     answers: &std::sync::mpsc::Receiver<Vec<Value>>,
-    client: std::thread::JoinHandle<()>,
 ) -> Vec<Value> {
     pump(session, |_| questions.pending().is_empty());
-    let read = answers
+    answers
         .recv_timeout(tilo_test_env::hang_bound())
-        .expect("the program at the door is served");
-    client.join().expect("the program's thread");
-    read
+        .expect("the program at the door is served")
+}
+
+/// The agents the desk shows as seated at the person's door: the ones whose
+/// work the bar carries as a presence of its own.
+fn seated_agents(session: &Session) -> Vec<String> {
+    session
+        .read(tilo_surface_host::shell_part::DESK_RESOURCE)
+        .and_then(|desk| desk.get("agents").cloned())
+        .and_then(|agents| {
+            serde_json::from_value::<Vec<tilo_surface_host::shell_part::AgentReading>>(agents).ok()
+        })
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|agent| agent.seat)
+        .map(|agent| agent.key)
+        .collect()
 }
 
 #[test]
@@ -1160,7 +1181,8 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     assert!(desk_agents(&session).is_empty(), "nobody works here yet");
 
     let (answers, received) = std::sync::mpsc::channel();
-    let client = std::thread::spawn(move || door_client(&socket, &answers));
+    let (release, hold) = std::sync::mpsc::channel();
+    let client = std::thread::spawn(move || door_client(&socket, &answers, Some(hold)));
 
     // Nothing the program sent past its introduction is read before the
     // person says so: the question stands on the portal's sheet.
@@ -1192,7 +1214,7 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
 
     press(&mut session, PortalEffect::SELECT.id, json!({"index": 1}));
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
-    let read = door_answers(&mut session, &questions, &received, client);
+    let read = door_answers(&mut session, &questions, &received);
 
     assert!(
         read[0].pointer("/result/serverInfo").is_some(),
@@ -1202,17 +1224,28 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         read[1].get("error").is_none(),
         "it reaches this desktop's actions as the agent it was admitted as: {read:?}"
     );
+    pump(&mut session, |session| {
+        seated_agents(session)
+            .iter()
+            .any(|agent| agent == "claude-code")
+    });
     assert_eq!(
-        desk_agents(&session),
-        [("claude-code".to_owned(), tilo_action_policy::KindSet::READ)],
-        "the agent the workspace holds, with the Observer preset's grants"
+        seated_agents(&session),
+        ["claude-code".to_owned()],
+        "the bar shows the agent the person let in while it works here"
+    );
+    assert!(
+        desk_agents(&session).is_empty(),
+        "it works as this person's agent, not as a member of the workspace"
     );
     assert_eq!(
         agents_tab(&mut session),
-        (true, vec!["claude-code".to_owned()]),
-        "the person administers the desk they sit at, and its Agents tab lists \
-         the agent they let in"
+        (true, Vec::new()),
+        "the person administers the desk they sit at, and no workspace agent \
+         joined behind their back"
     );
+    let _ = release.send(());
+    client.join().expect("the program's thread");
 }
 
 #[test]
@@ -1235,11 +1268,12 @@ fn a_program_the_person_refuses_works_nowhere() {
     .expect("session");
 
     let (answers, received) = std::sync::mpsc::channel();
-    let client = std::thread::spawn(move || door_client(&socket, &answers));
+    let client = std::thread::spawn(move || door_client(&socket, &answers, None));
 
     pump(&mut session, |_| questions.pending().len() == 1);
     press(&mut session, PortalEffect::CANCEL.id, json!({}));
-    let read = door_answers(&mut session, &questions, &received, client);
+    let read = door_answers(&mut session, &questions, &received);
+    client.join().expect("the program's thread");
 
     assert_eq!(
         read[0].pointer("/error/message").and_then(Value::as_str),

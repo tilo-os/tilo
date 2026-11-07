@@ -542,25 +542,23 @@ search-window-verb-share = teilen zeigen beenden share show unshare stop
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück
 a11y-notifications-none = Keine aufbewahrten Benachrichtigungen.
-a11y-notifications-description = Neueste Zeilen { $first } bis { $last } von { $total }, nach App gruppiert. Mit Pfeil nach oben und unten wählst du eine Benachrichtigung, mit Bild auf und Bild ab springst du um eine Seite, mit Pos1 oder Ende zur neuesten oder ältesten aufbewahrten Benachrichtigung. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe ein, Entf verwirft sie.
+a11y-notifications-description = { $count ->
+    [one] { $count } aufbewahrte Benachrichtigung, nach App gruppiert.
+   *[other] { $count } aufbewahrte Benachrichtigungen, nach App gruppiert.
+} Mit Pfeil hoch und runter wählen, mit Bild auf und Bild ab einen Bildschirm weiterspringen, mit Pos1 oder Ende zur neuesten oder ältesten springen. Eingabe öffnet die gewählte Benachrichtigung oder klappt ihre App-Gruppe auf, Entf verwirft sie.
 a11y-notifications-list = Aufbewahrte Benachrichtigungen
 a11y-notifications-clear = Alle Benachrichtigungen löschen
 a11y-notifications-clear-description = Löscht den aufbewahrten Benachrichtigungsverlauf dieser Sitzung. Acht Sekunden lang kannst du das rückgängig machen.
 a11y-notifications-cleared = Benachrichtigungen gelöscht
 a11y-notifications-undo = Löschen der Benachrichtigungen rückgängig machen
 a11y-notifications-undo-description = Stellt die gelöschten Benachrichtigungen in ihrer ursprünglichen Reihenfolge wieder her. Drücke Eingabe oder Leertaste.
-a11y-notifications-newer = Neuere Benachrichtigungen
-a11y-notifications-older = Ältere Benachrichtigungen
 a11y-notifications = Benachrichtigungen
 notification-center-title = Benachrichtigungen
 notification-center-empty = Keine neuen Benachrichtigungen
 notification-center-cleared = Benachrichtigungen gelöscht
 notification-center-clear-all = Alle löschen
-notification-center-position = { $first }–{ $last } von { $total }
 notification-center-close = Benachrichtigungen schließen
 notification-center-back-to-list = Zurück zu den Benachrichtigungen
-notification-center-newer = Neuere
-notification-center-older = Ältere
 history-severity-info = Information
 history-severity-warning = Warnung
 history-severity-error = Fehler
@@ -590,6 +588,7 @@ notification-lock-count = { $count ->
    *[other] { $count } Benachrichtigungen
 }
 notification-more = { $count } weitere
+notification-more-from = +{ $count } weitere von { $app }
 notification-stack-a11y = Benachrichtigungen
 notification-group-system = System
 notification-center-undo = Rückgängig
@@ -1463,6 +1462,7 @@ window-menu-new-tab = Neuer Tab dieser App
 window-menu-not-yours-to-open = Nur zusehen
 window-menu-no-app = Keine App hier
 window-menu-split-right = Nach rechts teilen
+window-menu-split-one-tab = Nichts zu teilen: Dieses Fenster hat nur einen Tab
 window-menu-new-group = In ein neues Fenster verschieben
 window-menu-close = Schließen
 window-menu-close-window = Dieses Fenster schließen

@@ -807,10 +807,11 @@ fn adopting_moves_the_bot_to_the_adopter_and_reissues_its_grants() {
     assert_eq!(live.installation.installed_by, hex::encode(editor_root));
     assert_eq!(live.device_public_key, device.device_public_key);
     assert!(governor.permissions(old.device_public_key, now).is_err());
+    let owner = hex::encode(governor.owner());
     for grant in governor.bot_grants(BOT, now).unwrap() {
         assert_eq!(
             grant.granted_by,
-            tilo_action_policy::Subject::person(hex::encode(editor_root))
+            tilo_action_policy::Subject::person(owner.clone())
         );
     }
 }

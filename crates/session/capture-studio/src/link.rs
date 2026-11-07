@@ -165,8 +165,14 @@ pub enum Failure {
     SoundLost,
     /// A screenshot could not be read back off the desktop, and why.
     NotTaken(String),
-    /// A screenshot's file could not be written, and why.
-    NotWritten(String),
+    /// A screenshot's file could not be written: where it was to go, and what
+    /// stopped it. The system's own error stays out of what the person reads.
+    NotWritten {
+        /// The folder the file was to be written in.
+        folder: PathBuf,
+        /// What stopped the write.
+        cause: WriteCause,
+    },
     /// A screenshot was written but not put on the clipboard, and why.
     NotCopied(String),
     /// A screenshot could not be read back for the clipboard, and why.
@@ -180,6 +186,63 @@ pub enum Failure {
         /// What the system said, in its own words.
         error: String,
     },
+}
+
+/// Why a screenshot's file could not be written. The person reads it in their
+/// own words — "Tilo can't write to this folder" rather than an error number —
+/// so the reason a folder refused a file is told apart here, where both the
+/// bar that says it and the card that offers to copy it instead can name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteCause {
+    /// The folder is the person's, but not Tilo's to write in.
+    Permission,
+    /// The disk has no room left for the picture.
+    NoRoom,
+    /// The disk it would go on cannot be written at all.
+    ReadOnly,
+    /// There is no folder there to write into.
+    Folder,
+    /// Something else stopped the write.
+    Other,
+}
+
+impl WriteCause {
+    /// What stopped writing `error`: the system's own error kind, told apart
+    /// without ever being shown to the person.
+    #[must_use]
+    pub fn of(error: &std::io::Error) -> Self {
+        if let Some(code) = error.raw_os_error() {
+            return match code {
+                // EACCES, EPERM
+                13 | 1 => Self::Permission,
+                // ENOSPC, EDQUOT
+                28 | 122 => Self::NoRoom,
+                // EROFS
+                30 => Self::ReadOnly,
+                // ENOENT, ENOTDIR
+                2 | 20 => Self::Folder,
+                _ => Self::Other,
+            };
+        }
+        match error.kind() {
+            std::io::ErrorKind::PermissionDenied => Self::Permission,
+            std::io::ErrorKind::NotFound => Self::Folder,
+            _ => Self::Other,
+        }
+    }
+
+    /// The message a person reads of it, named the same by the bar and by the
+    /// floating layer's card.
+    #[must_use]
+    pub fn words(self) -> &'static str {
+        match self {
+            Self::Permission => "permission",
+            Self::NoRoom => "no-room",
+            Self::ReadOnly => "read-only",
+            Self::Folder => "folder",
+            Self::Other => "other",
+        }
+    }
 }
 
 /// A failure of the last capture the person took, and a number that tells two

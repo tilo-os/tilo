@@ -9,23 +9,32 @@ description = "The YouTube origin of tilolang packages: keeps a package's youtub
 [dependencies]
 tilolang-tilo = { path = "../tilolang-tilo" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
+# The door an instance attaches to the connector over, and the descriptors the session hands
+# both (`runtime_portal::origin_connector`).
+runtime-portal = { path = "../../runtime/runtime-portal", optional = true }
 # YouTube's own client, as Tube and Music reach it: each query compiled once beside rustypipe.
-tilo-innertube = { path = "../tilo-innertube" }
-rustypipe = { workspace = true, features = ["rustls-no-provider"] }
+tilo-innertube = { path = "../tilo-innertube", optional = true }
+rustypipe = { workspace = true, features = ["rustls-no-provider"], optional = true }
 # The app runtime rustypipe's connections live on, and its TLS provider.
-ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
-tilo-net = { path = "../tilo-net" }
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", optional = true }
+tilo-net = { path = "../tilo-net", optional = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tracing.workspace = true
 
 [features]
-default = ["live"]
-# The InnerTube client. An origin polled in a build without it answers nothing, which is what a
-# test's or a development session's own service is for.
-live = []
+default = ["live", "connector"]
+# The InnerTube client, and the connector process that holds it: the network the tilolang
+# host never has. A build without it, or a session with no connector running, answers from a
+# test's own service instead.
+live = ["dep:tilo-innertube", "dep:rustypipe", "dep:ui", "dep:tilo-net"]
+# The connector process's loop: the door it takes instances from, and the socket each reaches
+# it over (`tilo-launcher run --tilolang-connector youtube`).
+connector = ["dep:runtime-portal"]
 
 [dev-dependencies]
 tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
