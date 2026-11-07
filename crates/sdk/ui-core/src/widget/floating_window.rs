@@ -636,7 +636,13 @@ impl<C: Widget> FloatingWindow<C> {
         } else {
             (1.0 - squish * 0.008, 1.0 + squish * 0.016)
         };
-        let appear = Appear::pose(eased, self.rect.center(), EffectiveMotion::default());
+        let appear = Appear::pose(
+            eased,
+            Direction::Enter,
+            self.rect,
+            self.rect.center(),
+            EffectiveMotion::default(),
+        );
         let c = self.rect.center();
         (
             appear

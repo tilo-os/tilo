@@ -125,13 +125,17 @@ impl Appearing {
 
     /// The pose of `surface` now, coming from `anchor`: the summoning
     /// control's centre, the caret, the pointer of a context menu, or the
-    /// surface's own centre for a centred dialog. It scales about the point
-    /// of the surface nearest the anchor ([`Appear::origin`]).
+    /// surface's own centre for a centred dialog. It comes from — or goes
+    /// back to — the point of the surface nearest the anchor, at 92 % and 8
+    /// px toward it arriving, 97 % and 8 px leaving ([`Appearing`] says which
+    /// of the two it is doing).
     #[must_use]
     pub fn pose(&self, surface: Rect, anchor: Point) -> Pose {
         Appear::pose(
             self.progress(),
-            Appear::origin(surface, anchor),
+            super::Direction::of(self.is_open()),
+            surface,
+            anchor,
             self.motion,
         )
     }

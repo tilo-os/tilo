@@ -1155,9 +1155,7 @@ impl Widget for NotificationLayer {
             let panel = layout.panel();
             // Under the bell: the panel's own top-right corner.
             let anchor = Point::new(panel.x1, panel.y0);
-            let pose = self
-                .appear
-                .pose(panel, ui::motion::Appear::origin(panel, anchor));
+            let pose = self.appear.pose(panel, anchor);
             (layout, panel, pose)
         });
         if let Some((layout, panel, pose)) = posed

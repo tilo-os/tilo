@@ -14,7 +14,7 @@ use vello::peniko::{BlendMode, Fill};
 
 use ui::TextRole;
 use ui::icons::Icon;
-use ui::motion::{Appear, Presence};
+use ui::motion::{Appear, Direction, Presence};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::time::Instant;
@@ -171,8 +171,13 @@ impl Peek {
         self.card = place(model, (width, height), theme);
         let card = self.card;
         let progress = self.shown.progress(now);
-        let origin = Appear::origin(card, model.anchor.center());
-        let pose = Appear::pose(progress, origin, theme.motion());
+        let pose = Appear::pose(
+            progress,
+            Direction::of(self.shown.is_open()),
+            card,
+            model.anchor.center(),
+            theme.motion(),
+        );
         self.drawn = pose.drawn_rect(card);
         let placed = pose.applied_to(transform);
         scene.push_layer(

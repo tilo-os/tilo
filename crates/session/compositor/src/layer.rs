@@ -70,6 +70,9 @@ pub struct LayerPose {
     /// own rectangle: `(0.0, 0.0)` its top-left corner, `(1.0, 0.0)` its
     /// top-right, `(0.5, 0.5)` its middle. The corner its slot anchors it by.
     pub anchor: (f64, f64),
+    /// Where it is drawn instead of where it stands, in logical pixels: how
+    /// far it is still toward the anchor it comes from or goes back to.
+    pub offset: (f64, f64),
 }
 
 impl LayerPose {
@@ -78,11 +81,12 @@ impl LayerPose {
         scale: 1.0,
         opacity: 1.0,
         anchor: (0.0, 0.0),
+        offset: (0.0, 0.0),
     };
 
     /// Whether it is drawn as it stands: nothing of a pose is applied.
     fn settled(&self) -> bool {
-        self.scale >= 1.0 && self.opacity >= 1.0
+        self.scale >= 1.0 && self.opacity >= 1.0 && self.offset == (0.0, 0.0)
     }
 }
 
@@ -527,8 +531,9 @@ impl State {
             if !self.layers.visible(placed) {
                 continue;
             }
-            let location = (placed.rect.loc - geometry.loc).to_f64();
             let pose = self.layers.pose(&placed.namespace);
+            let placed_at = (placed.rect.loc - geometry.loc).to_f64();
+            let location = placed_at + Point::from(pose.offset);
             if pose.opacity <= 0.0 || pose.scale <= 0.0 {
                 continue;
             }

@@ -103,6 +103,9 @@ pub enum Run {
 pub(crate) struct PanelMotion {
     appear: Appearing,
     motion: EffectiveMotion,
+    /// The panel's own rectangle, at its origin: what the pose scales and
+    /// offsets in ([`Appearing`] works in the surface's own coordinates).
+    surface: Rect,
 }
 
 /// The corner the panel's slot anchors it by (`Anchor::TopTrailing`): it
@@ -115,14 +118,19 @@ impl PanelMotion {
         Self {
             appear: Appearing::closed(),
             motion,
+            surface: Rect::ZERO,
         }
     }
 
     /// Follow the slot: `up` whether the stack has the panel open, `drawn`
-    /// whether its app has drawn it yet. A panel that is up but not drawn
-    /// has no first frame to grow from, so its arrival starts with that
-    /// frame rather than running unseen while its app starts.
-    pub(crate) fn follow(&mut self, up: bool, drawn: bool) {
+    /// whether its app has drawn it yet, and `place` where the stack put it.
+    /// A panel that is up but not drawn has no first frame to grow from, so
+    /// its arrival starts with that frame rather than running unseen while
+    /// its app starts.
+    pub(crate) fn follow(&mut self, up: bool, drawn: bool, place: Option<Rect>) {
+        if let Some(place) = place {
+            self.surface = Rect::new(0.0, 0.0, place.width(), place.height());
+        }
         if up && !drawn && !self.appear.is_open() {
             return;
         }
@@ -150,12 +158,18 @@ impl PanelMotion {
         if progress >= 1.0 {
             return None;
         }
-        let pose = Appear::pose(progress, ui::kurbo::Point::new(0.0, 0.0), self.motion);
-        let [scale, ..] = pose.transform.as_coeffs();
+        let coming = Appear::coming(
+            progress,
+            ui::motion::Direction::of(self.appear.is_open()),
+            self.surface,
+            ui::kurbo::Point::new(self.surface.x1, self.surface.y0),
+            self.motion,
+        );
         Some(LayerPose {
-            scale,
-            opacity: pose.opacity,
+            scale: coming.scale,
+            opacity: coming.opacity,
             anchor: ANCHOR,
+            offset: (coming.offset.x, coming.offset.y),
         })
     }
 }
@@ -179,7 +193,8 @@ impl crate::Session {
         self.follow_panel_back();
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
         let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
-        self.quick_settings_panel.follow(open, drawn);
+        let place = self.shared.overlays.place(Slot::QuickSettings);
+        self.quick_settings_panel.follow(open, drawn, place);
         if !open {
             self.hide_quick_settings();
             // Asked again when the panel opens again, a panel that would not
@@ -189,7 +204,7 @@ impl crate::Session {
             self.shared.panel_back.set(None);
             return;
         }
-        let Some(place) = self.shared.overlays.place(Slot::QuickSettings) else {
+        let Some(place) = place else {
             // The stack has it up where it cannot say: nothing to place the
             // app at.
             self.stop_quick_settings();
@@ -486,6 +501,8 @@ mod tests {
         let t0 = ui::time::now();
         let at = |ms: u64| t0 + ui::time::Duration::from_millis(ms);
         let mut panel = PanelMotion::new(EffectiveMotion::default());
+        // The place the stack gives it: 380 x 640 at the display's right.
+        let place = Some(Rect::new(892.0, 32.0, 1272.0, 672.0));
         // Every read of the motion is pinned at the instant it is read at.
         let look = |panel: &PanelMotion, ms: u64| {
             with_monotonic_time(at(ms), || (panel.is_drawn(), panel.pose()))
@@ -495,7 +512,7 @@ mod tests {
         };
 
         // Up while its app has not drawn it yet: out of sight, not moving.
-        with_monotonic_time(t0, || panel.follow(true, false));
+        with_monotonic_time(t0, || panel.follow(true, false, place));
         let (drawn, waiting) = look(&panel, 0);
         assert!(!drawn, "nothing to animate before its first frame");
         let waiting = waiting.expect("it waits invisible");
@@ -503,13 +520,17 @@ mod tests {
         assert!(!asks(&panel, 0), "nothing moves, so no pass is due");
 
         ui::motion::note_source(MotionSource::Pointer);
-        with_monotonic_time(t0, || panel.follow(true, true));
+        with_monotonic_time(t0, || panel.follow(true, true, place));
         let (drawn, coming) = look(&panel, 0);
         assert!(drawn);
         let coming = coming.expect("it arrives");
         assert!(
             coming.opacity < 0.05 && coming.scale < 1.0,
             "from faint and small: {coming:?}"
+        );
+        assert!(
+            coming.offset.0 > 0.0 && coming.offset.1 < 0.0,
+            "and from the corner the status area is in, up and to the right: {coming:?}"
         );
         assert!(
             asks(&panel, 0),
@@ -523,7 +544,7 @@ mod tests {
         );
         assert!(!asks(&panel, 600), "and asks for no pass of its own");
 
-        with_monotonic_time(at(700), || panel.follow(false, true));
+        with_monotonic_time(at(700), || panel.follow(false, true, place));
         assert!(look(&panel, 700).0, "it leaves rather than vanishing");
         let leaving = look(&panel, 770).1.expect("its leave is drawn");
         assert!(

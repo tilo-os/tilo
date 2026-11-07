@@ -3,7 +3,7 @@ use crate::widget::Widget as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 use vello::Scene;
-use vello::kurbo::Affine;
+use vello::kurbo::{Affine, Rect};
 use winit::keyboard::NamedKey;
 
 /// Lay `widget` out in a `width` wide column and draw it once.
@@ -270,7 +270,13 @@ fn a_pill_arriving_after_the_first_layout_appears_and_a_count_cross_fades() {
         &mut text,
         &reduced,
     );
-    let pose = crate::motion::Appear::pose(0.5, Point::ZERO, reduced.motion());
+    let pose = crate::motion::Appear::pose(
+        0.5,
+        crate::motion::Direction::Enter,
+        Rect::new(0.0, 0.0, 40.0, 20.0),
+        Point::ZERO,
+        reduced.motion(),
+    );
     assert_eq!(
         pose.transform,
         Affine::IDENTITY,
