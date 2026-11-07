@@ -7,7 +7,6 @@
 //! the new window is up. A move into or out of a workspace other people are in is
 //! asked about first; one that cannot be made puts the tab back where it was and
 //! says why. Nothing in a move touches the disk on the session's own thread.
-
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -1114,7 +1113,6 @@ fn read(workspace: &Workspace, person: &str, earlier: &[String]) -> WorkspaceRea
 }
 
 /// What the person calls `app`, when this machine knows a package by that name.
-
 fn app_name(app: &str) -> String {
     tilo_installed_apps::read_one_from_env(app)
         .ok()

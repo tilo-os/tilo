@@ -1,14 +1,10 @@
-//! The keys the session answers wherever the keyboard is: the desktop's
-//! chords and the hardware keys along the top of the keyboard.
-//!
-//! The compositor offers this surface every press before the focused
-//! window or panel gets it ([`SurfaceHost::claim_key`]). A press that is a
-//! chord of the desktop's one shortcut table ([`tilo_desktop::shortcuts`])
-//! or a hardware key (volume, brightness, airplane mode, the touchpad,
-//! playback, Print, F1) is taken, and becomes an invocation of a published
-//! action: the chord's `desktop:chrome/shortcut`, quick settings' `volume-up`, the
-//! media service's `play-pause`. The session runs those through the same
-//! door every other caller uses; nothing here performs anything itself.
+//! The keys the session answers wherever the keyboard is: the desktop's chords and
+//! the hardware keys along the top of the keyboard.
+//! The compositor offers this surface every press before the focused window or
+//! panel gets it ([`SurfaceHost::claim_key`]). A press that is a chord of the
+//! desktop's one shortcut table ([`tilo_desktop::shortcuts`]) or a hardware key is
+//! taken and becomes an invocation of a published action, run through the same door
+//! every other caller uses; nothing here performs anything itself.
 
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
