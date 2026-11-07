@@ -2103,7 +2103,12 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 if child.container {
                     line.push('/');
                 }
-                let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
+                // What the resource is, by the kind its app publishes it under: the name a
+                // path resolves by (`session/Task`), a read answers, and a search hit prints.
+                // Never a program's type name for it (`tasks.Task`): that word names a type
+                // in a program and addresses nothing in a listing, so a row that said it
+                // could not be walked to (a listing's header says the published kind too).
+                let _ = write!(line, "  {}", child.kind);
                 if !child.actions.is_empty() {
                     let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
