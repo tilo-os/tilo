@@ -128,14 +128,14 @@ desk-not-shared-body = Sie bleibt auf diesem Gerät: { $reason }.
 
 # Das Gerät einer mitarbeitenden Person spricht eine andere Tilo-Protokollversion:
 # die beiden arbeiten wieder zusammen, sobald eines von ihnen aktualisiert.
-version-mismatch-updating-title = Tilo wird aktualisiert, um mit { $device } weiterzuarbeiten
-version-mismatch-updating-body = { $device } hat ein neueres Tilo. Dieser Rechner holt das neueste System und startet darauf neu, wenn niemand arbeitet.
-version-mismatch-needs-update-title = { $device } muss aktualisieren, um weiter zusammenzuarbeiten
-version-mismatch-needs-update-body = { $device } hat ein älteres Tilo als dieser Rechner. Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
-version-mismatch-unknown-updating-title = Tilo wird aktualisiert, um mit einem anderen Gerät weiterzuarbeiten
-version-mismatch-unknown-updating-body = Ein anderes Gerät hat ein neueres Tilo. Dieser Rechner holt das neueste System und startet darauf neu, wenn niemand arbeitet.
-version-mismatch-unknown-needs-update-title = Ein anderes Gerät muss aktualisieren, um weiter zusammenzuarbeiten
-version-mismatch-unknown-needs-update-body = Ein anderes Gerät hat ein älteres Tilo als dieser Rechner. Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+version-mismatch-updating-title = { $device } hat ein neueres Tilo
+version-mismatch-updating-body = Dieser Rechner aktualisiert und startet neu, sobald der Bildschirm eine Weile gesperrt ist.
+version-mismatch-needs-update-title = { $device } muss aktualisieren
+version-mismatch-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
+version-mismatch-unknown-updating-title = Ein anderes Gerät hat ein neueres Tilo
+version-mismatch-unknown-updating-body = Dieser Rechner aktualisiert und startet neu, sobald der Bildschirm eine Weile gesperrt ist.
+version-mismatch-unknown-needs-update-title = Ein anderes Gerät muss aktualisieren
+version-mismatch-unknown-needs-update-body = Aktualisiere Tilo dort, dann arbeiten beide wieder zusammen.
 
 # Was jemand in der Suche, auf einer Karte oder in einer Mitteilung gewählt
 # hat, ist nicht geschehen, und die Zeile ist fort: die Mitteilung sagt, was

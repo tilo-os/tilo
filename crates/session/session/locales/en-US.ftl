@@ -125,14 +125,14 @@ desk-not-shared-body = It stays on this device: { $reason }.
 
 # A collaborator's device speaks another Tilo protocol version: the two work
 # together again once one of them updates.
-version-mismatch-updating-title = Updating Tilo to keep working with { $device }
-version-mismatch-updating-body = { $device } runs a newer Tilo. This device fetches the newest system and restarts into it when nobody is working.
-version-mismatch-needs-update-title = { $device } needs to update to keep working together
-version-mismatch-needs-update-body = { $device } runs an older Tilo than this device. Update Tilo there and the two work together again.
-version-mismatch-unknown-updating-title = Updating Tilo to keep working with another device
-version-mismatch-unknown-updating-body = Another device runs a newer Tilo. This device fetches the newest system and restarts into it when nobody is working.
-version-mismatch-unknown-needs-update-title = Another device needs to update to keep working together
-version-mismatch-unknown-needs-update-body = Another device runs an older Tilo than this device. Update Tilo there and the two work together again.
+version-mismatch-updating-title = { $device } runs a newer Tilo
+version-mismatch-updating-body = This device updates and restarts onto it once your screen has been locked for a while.
+version-mismatch-needs-update-title = { $device } needs to update
+version-mismatch-needs-update-body = Update Tilo there and the two work together again.
+version-mismatch-unknown-updating-title = Another device runs a newer Tilo
+version-mismatch-unknown-updating-body = This device updates and restarts onto it once your screen has been locked for a while.
+version-mismatch-unknown-needs-update-title = Another device needs to update
+version-mismatch-unknown-needs-update-body = Update Tilo there and the two work together again.
 
 # What a person chose in search, on a card or on a notification did not
 # happen, and the row they chose it on is gone: the notice says what they

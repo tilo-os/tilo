@@ -1141,6 +1141,41 @@ fn a_notification_from_the_persons_other_device_is_named_after_it() {
     );
 }
 
+/// The banner a person meets leads with the app's own mark, whichever device
+/// told it: the projection carries the app's id, so the other device's Mail
+/// draws Mail's mark here rather than a generic window.
+#[test]
+fn another_devices_notification_leads_with_the_same_mark_as_here() {
+    let here = {
+        let rig = rig();
+        let id = rig.daemon.alloc_id();
+        rig.daemon.push(from_app(sent(id), "so.tilo.mail"));
+        rig.step();
+        rig.banner()
+    };
+    let there = {
+        let rig = rig();
+        rig.bridge
+            .borrow()
+            .remote_project(&laptop(), "Laptop", &projection());
+        rig.banner()
+    };
+    assert_eq!(
+        there.mark().icon,
+        here.mark().icon,
+        "the same app leads with the same mark on both devices"
+    );
+    assert_eq!(
+        there.mark().icon,
+        Some(ui::icons::Icon::Mail),
+        "Mail's own mark, not a generic window"
+    );
+    assert!(
+        there.mark().image.is_none(),
+        "the other device's banner carries no artwork"
+    );
+}
+
 #[test]
 fn without_previews_the_other_devices_text_arrives_redacted() {
     let rig = rig();
@@ -1337,8 +1372,16 @@ fn a_device_on_another_version_is_named_on_the_desk() {
     let feed = rig.feed();
     assert_eq!(feed.banners.len(), 1, "it is a banner over the desk");
     let banner = &feed.banners[0].notification;
-    assert!(banner.title.contains("Framework 16"), "{}", banner.title);
-    assert!(banner.body.contains("newest system"), "{}", banner.body);
+    assert!(
+        banner.title.contains("Framework 16") && banner.title.contains("newer Tilo"),
+        "the device names the title: {}",
+        banner.title
+    );
+    assert!(
+        banner.body.contains("restarts"),
+        "the body says what happens here: {}",
+        banner.body
+    );
     assert_eq!(
         rig.desktop.log().active().len(),
         1,
