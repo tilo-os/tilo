@@ -77,24 +77,27 @@ impl ChatApp {
     /// The conversation this window shows as a card of its own, standing
     /// where the box that sent the message stood: what a send opens, so the
     /// message and the conversation it landed in are in front of the person
-    /// where they wrote it. A conversation already in a card is left as it
-    /// is, and so is one this window cannot float.
+    /// where they wrote it. The window goes on with what it showed, as it
+    /// does for a conversation floated out of a thread by hand: one
+    /// conversation stands in one place.
     pub(crate) fn float_conversation_at(
         &mut self,
         channel: &str,
         at: Rect,
         chat: &crate::record::Chat,
     ) {
-        if self.agent_surfaces.contains_key(channel) {
-            return;
+        if !self.agent_surfaces.contains_key(channel) {
+            let id = ui::tilo_resource::Id::from_raw(channel.to_owned());
+            let title = chat.display_names(&id, Some(&self.me.id.clone()));
+            let mut surface =
+                crate::agent_conversation_surface::AgentConversationSurface::at(self, title, at);
+            surface.move_editor_to_view(self);
+            self.agent_surface_requests.push_back(surface.request());
+            self.agent_surfaces.insert(channel.to_owned(), surface);
         }
-        let id = ui::tilo_resource::Id::from_raw(channel.to_owned());
-        let title = chat.display_names(&id, Some(&self.me.id.clone()));
-        let mut surface =
-            crate::agent_conversation_surface::AgentConversationSurface::at(self, title, at);
-        surface.move_editor_to_view(self);
-        self.agent_surface_requests.push_back(surface.request());
-        self.agent_surfaces.insert(channel.to_owned(), surface);
+        if self.active_channel == channel {
+            self.leave_floated_agent_route();
+        }
     }
 
     pub(crate) fn leave_floated_agent_route(&mut self) {

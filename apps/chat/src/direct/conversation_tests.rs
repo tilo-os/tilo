@@ -295,7 +295,9 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
 
 /// A send made in a box hands the conversation it opened to the desktop at the
 /// box's own bounds: the message and the conversation it landed in stand in
-/// one place, one gesture.
+/// one place, one gesture. The conversation stands in the card alone — the
+/// window goes on with what it showed, as it does when a conversation is
+/// floated out of a thread by hand.
 #[test]
 fn a_box_send_opens_its_conversation_where_the_box_stood() {
     use crate::effects::ChatEffect;
@@ -310,7 +312,7 @@ fn a_box_send_opens_its_conversation_where_the_box_stood() {
 
     bob_window
         .effect(&ChatEffect::Send {
-            to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
+            to: vec![Recipient::found(RecipientKind::Person, ada.clone(), "Ada")],
             attached: Vec::new(),
             text: "look at this".into(),
             bounds: Some(stood),
@@ -331,6 +333,21 @@ fn a_box_send_opens_its_conversation_where_the_box_stood() {
         Some(Rect::new(stood[0], stood[1], stood[2], stood[3])),
         "the card stands where the box stood"
     );
+    bob_window.with_chat(|chat| {
+        let conversation = crate::record::Chat::direct_id([
+            crate::record::Participant::person(bob.clone()),
+            crate::record::Participant::person(ada.clone()),
+        ])
+        .to_string();
+        assert!(
+            chat.agent_surfaces.contains_key(&conversation),
+            "the conversation is the window's card"
+        );
+        assert_ne!(
+            chat.active_channel, conversation,
+            "the window shows the conversation in one place, not two"
+        );
+    });
 }
 
 /// What a person's card asks of Chat when they press Message: the row naming
