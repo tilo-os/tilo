@@ -2023,15 +2023,22 @@ mod tests {
         // With no clean rendering anywhere, the best effort still shows.
         assert_eq!(I18nManager::format("share", &[]), "Geteilt mit {$persn}");
 
-        // The source fallback follows the active locale's plural rules.
+        // The source fallback follows the window's language's plural rules.
         const SOURCE: &str =
             "items = { $count ->\n    [one] { $count } item\n   *[other] { $count } items\n}";
         install_plain("en-US", "en-US", &[("en-US", SOURCE)]);
         let items = || I18nManager::format("items", &[("count", ArgValue::from(21))]);
         assert_eq!(items(), "21 items");
-        // Russian puts 21 in the `one` category; the English copy follows.
-        I18nManager::set_locale("ru-RU");
+        // A window that speaks Russian reads its English fallback under
+        // Russian's rules, where 21 is `one`.
+        install_plain(
+            "en-US",
+            "ru-RU",
+            &[("en-US", SOURCE), ("ru-RU", "greeting = Здравствуйте")],
+        );
         assert_eq!(items(), "21 item");
+        // A language selection the window's catalogues are not in leaves the
+        // English window in English.
         I18nManager::set_locale("xx-ZZ");
         assert_eq!(items(), "21 items");
     }
