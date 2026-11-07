@@ -512,17 +512,18 @@ fn listed(b: Bag) -> Int {\n    let l = b.items.filter(i -> true)\n    return l.
             .any(|s| format!("{s:?}").contains("ForList")),
         "the loop"
     );
-    // A lambda reading a local of its caller, or text by order, is the loop's alone; so is a
-    // list, which is no collection the store keeps. How many members a set holds is the
+    // A lambda reading text by order is the loop's alone. How many members a set holds is the
     // store's to count.
     for loop_only in ["outer", "ordered"] {
         assert!(asked(func(&m, loop_only)).is_empty(), "{loop_only}");
     }
     assert_eq!(asked(func(&m, "tagged")).len(), 1);
+    // A list read of a collection is the collection's items still, whatever its type says: the
+    // count over it is answered where the items were read, not item by item.
     assert_eq!(
         asked(func(&m, "listed")).len(),
-        1,
-        "the collection's filter alone"
+        2,
+        "the collection's filter, and the list it read"
     );
 }
 

@@ -2461,10 +2461,14 @@ impl Checker<'_> {
             }
             return Ex::error();
         };
-        // Over a collection, a lambda the store can answer is asked of it first; the collection
-        // is held in a local for that, which the loop reads too.
+        // Over a collection, a lambda the store can answer is asked of it first: over a
+        // collection, and over a list that may be one (a parameter taking either keeps the
+        // collection it is given). The list is held in a local for the asking, which the loop
+        // reads too.
         let pred = match (&list.ty, m) {
-            (Ty::Collection(_), "filter" | "count") => self.native_pred(elem, &param.name, &body),
+            (Ty::Collection(_) | Ty::List(_), "filter" | "count") => {
+                self.native_pred(elem, &param.name, &body)
+            }
             _ => None,
         };
         let (list, native) = match pred {
