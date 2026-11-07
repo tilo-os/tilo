@@ -147,6 +147,11 @@ member sees it floating in the same spot, each on their own display: the
 record keeps the corner it holds and its distances from it, so a smaller
 screen finds it inside their display.
 
+A float stands on the desk rather than in it: it carries the floating
+elevation and its own opaque ground under its bar and body, so the window it
+covers never reads through it, and while the hand carries it, it reads as
+lifted off what it passes over.
+
 A float dragged by its bar follows the hand. Over a strip the gap it would
 land in shows as any reorder drag's does; let go there and it snaps back into
 that gap as if it had never floated. Let go off the strip and it stays where

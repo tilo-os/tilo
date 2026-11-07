@@ -303,6 +303,19 @@ impl GroupRow {
                     &rect.inflate(160.0, 160.0),
                 );
             }
+            // A float stands over the desk rather than in its strip: the
+            // floating elevation lifts it off what it covers, and its own
+            // opaque ground stands between them, so the window below never
+            // reads through its bar or its body.
+            let radius = f64::from(theme.tokens.radii.tile);
+            crate::surface::floating_shadow(scene, transform, rect, radius, alpha, theme);
+            scene.fill(
+                vello::peniko::Fill::NonZero,
+                transform,
+                theme.tokens.colors.surfaces.content,
+                None,
+                &vello::kurbo::RoundedRect::from_rect(rect, radius),
+            );
             self.draw_group_plain(i, scene, transform, (tr, theme, presence));
             if alpha < 1.0 - f32::EPSILON {
                 scene.pop_layer();
