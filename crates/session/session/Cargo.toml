@@ -340,7 +340,7 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 # The workspaces' live plane: a sealed `moq-lite` session per workspace over
 # this session's own endpoint, and the relay role a member serves for the
 # others.
-tilo-live = { path = "../../collab/tilo-live", features = ["native", "plane"] }
+tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"] }
 
 # The login screens' comforts go to tilo-authd over its socket protocol.
 tilo-auth = { path = "../../system/tilo-auth", default-features = false }

@@ -21,7 +21,7 @@
 //! | `estimated_send_rate` | none this layer reports |
 //!
 //! A connection reaches `MoQ` only through the same admission preface as a
-//! WebTransport session ([`crate::carrier::present`] and `carrier::accept`):
+//! WebTransport session ([`crate::admit::present`] and `carrier::accept`):
 //! the transport is merely open until the host admits it.
 
 use std::future::Future;
@@ -35,13 +35,15 @@ use iroh::endpoint::{
     Connection, ConnectionError, PathId, QuicTransportConfig, ReadError, RecvStream, ResetError,
     SendDatagramError, SendStream, StoppedError, VarInt, WriteError,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
 use iroh::{Endpoint, EndpointAddr};
 use moq_net::web_transport_trait as wt;
 use moq_net::web_transport_trait::poll;
 use tilo_lock::MutexRecover as _;
 
-use crate::carrier::{self, AdmissionError, PROTOCOL};
+use crate::admit::{AdmissionError, Dial, Dialling, start};
+use crate::preface::PROTOCOL;
 
 /// The ALPN every carrier connection negotiates: the `moq-lite` draft name,
 /// which is also the WebTransport subprotocol.
@@ -460,22 +462,22 @@ impl Iroh {
     }
 }
 
-impl carrier::Dial for Iroh {
+impl Dial for Iroh {
     fn dial<'a>(
         &'a self,
         grant: &'a [u8],
         publish: Option<moq_net::origin::Consumer>,
         subscribe: Option<moq_net::origin::Producer>,
         timeout: Duration,
-    ) -> carrier::Dialling<'a> {
+    ) -> Dialling<'a> {
         Box::pin(async move {
-            tokio::time::timeout(timeout, async {
+            n0_future::time::timeout(timeout, async {
                 let connection = self
                     .endpoint
                     .connect(self.addr.clone(), ALPN)
                     .await
                     .map_err(|_| AdmissionError::Unavailable)?;
-                carrier::start(Session::new(connection), grant, publish, subscribe).await
+                start(Session::new(connection), grant, publish, subscribe).await
             })
             .await
             .map_err(|_| AdmissionError::Unavailable)?
@@ -490,6 +492,7 @@ impl carrier::Dial for Iroh {
 /// # Errors
 ///
 /// Returns a message when `endpoint` cannot accept another protocol.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn serve<S, F>(endpoint: Endpoint, serve: S) -> Result<Router, String>
 where
     S: Fn(Session) -> F + Send + Sync + Clone + 'static,
@@ -505,6 +508,7 @@ where
 /// registers beside the device's other protocols instead of spawning a second
 /// router.
 #[must_use]
+#[cfg(not(target_arch = "wasm32"))]
 pub fn handler<S, F>(serve: S) -> impl ProtocolHandler
 where
     S: Fn(Session) -> F + Send + Sync + Clone + 'static,
@@ -514,16 +518,19 @@ where
 }
 
 /// One accepted connection's `serve`.
+#[cfg(not(target_arch = "wasm32"))]
 struct Handler<S> {
     serve: S,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<S> std::fmt::Debug for Handler<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("carrier handler")
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl<S, F> ProtocolHandler for Handler<S>
 where
     S: Fn(Session) -> F + Send + Sync + Clone + 'static,

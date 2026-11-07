@@ -18,8 +18,10 @@ plane = ["dep:moq-net", "dep:hex", "dep:n0-future"]
 # The relay and the native carrier: the listening half, which runs on the
 # device that serves them.
 relay = ["tls", "plane", "dep:web-transport-quinn", "dep:quinn", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:tokio", "dep:url", "dep:serde_json"]
-# The same carrier over a direct iroh connection, beside WebTransport.
-native = ["relay", "dep:iroh"]
+# The carrier over a direct iroh connection, the one every device dials and
+# the page will: the client half only (`plane`), so it builds for the browser.
+# The listening half a device that serves a plane runs is `relay`'s.
+iroh = ["plane", "dep:iroh", "dep:bytes"]
 
 [dependencies]
 # The scope of a track is a channel of an app's record.
@@ -82,11 +84,11 @@ required-features = ["relay"]
 
 [[test]]
 name = "live_native"
-required-features = ["relay", "native"]
+required-features = ["relay", "iroh"]
 
 [[test]]
 name = "live_plane"
-required-features = ["relay", "native", "plane"]
+required-features = ["relay", "iroh"]
 
 [lints]
 workspace = true

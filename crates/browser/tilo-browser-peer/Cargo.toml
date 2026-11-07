@@ -60,9 +60,9 @@ serde_json.workspace = true
 
 [features]
 default = ["iroh"]
-# Reach the host over iroh as well as HTTPS (native peers). The page builds
-# without it, so the wasm bundle links no iroh.
-iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh", "tilo-live/native"]
+# Reach the host over iroh as well as HTTPS (native peers). The wasm build
+# links iroh too; it never links the listening half.
+iroh = ["dep:iroh", "dep:iroh-base", "dep:tilo-relay-session", "tilo-relay-client/iroh", "tilo-live/iroh"]
 toolkit = ["dep:ui"]
 
 [dev-dependencies]
