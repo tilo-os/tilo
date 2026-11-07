@@ -509,11 +509,16 @@ impl Widget for TimePicker {
     crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        self.dirty = true;
+        // A sync is a read of what the document holds, not a paint: only the
+        // pull landing a time this picker was not already showing is one.
         if let Some(binding) = &mut self.local_state
             && let crate::widget::binding::Pulled::Value(value) = binding.pull(state, path)
         {
-            self.apply_value(value.normalized());
+            let value = value.normalized();
+            if self.value() != value {
+                self.dirty = true;
+                self.apply_value(value);
+            }
         }
     }
 

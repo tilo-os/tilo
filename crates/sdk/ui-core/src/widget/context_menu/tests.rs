@@ -711,8 +711,10 @@ fn a_settled_menu_asks_for_no_frame() {
         MenuItem::action("Open", || {}),
         MenuItem::action("Close", || {}),
     ]);
-    menu.mark_drawn();
-    assert!(!menu.needs_redraw(), "a menu nobody opened draws nothing");
+    assert!(
+        !menu.needs_redraw(),
+        "a menu nobody opened paints nothing, whatever it paints once it opens"
+    );
     menu.open_at([40.0, 60.0]);
     assert!(menu.needs_redraw(), "it was opened");
     menu.mark_drawn();
@@ -726,7 +728,10 @@ fn a_settled_menu_asks_for_no_frame() {
     menu.mark_drawn();
     assert!(!menu.needs_redraw());
     menu.close();
-    assert!(menu.needs_redraw(), "it is going away");
+    assert!(
+        !menu.needs_redraw(),
+        "motion reads at its end: the menu it closed paints nothing"
+    );
 }
 
 /// A menu is as wide as its longest label and its longest trailing text

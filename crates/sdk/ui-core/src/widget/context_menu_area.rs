@@ -825,10 +825,13 @@ impl super::Decorator for ContextMenuArea {
         self.environment = environment;
     }
 
+    /// What a frame paints: the content's own change, what the menu paints
+    /// over it (which is nothing while it is closed, [`ContextMenu::needs_redraw`]),
+    /// and a picker it stands open. A box standing without the menu is the
+    /// menu's painting too.
     fn needs_redraw(&self) -> bool {
         self.content.needs_redraw()
             || self.menu.needs_redraw()
-            || self.menu.send_to_alone_open()
             || self.content.needs_animation_frame()
             || self.picker_wanted.is_some()
             || self

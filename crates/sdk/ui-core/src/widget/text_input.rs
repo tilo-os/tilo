@@ -379,6 +379,8 @@ pub struct TextInput {
     drag_anchor_span: (usize, usize),
     /// Session-configured click counting shared by every editable surface.
     drag_select: DragSelect,
+    /// An edit waits for the owner to take it ([`Self::take_dirty`]): the
+    /// notification is not a pending paint, so it never asks for a frame.
     /// Cleared on `take_dirty()`/`set_text()` — a programmatic write isn't a user edit.
     dirty: bool,
     /// What this field shows may have moved since the last frame drew it
@@ -1018,6 +1020,7 @@ impl TextInput {
     /// Replace text read from model state without reporting a user edit.
     fn adopt_model_text(&mut self, text: String) {
         if self.text != text {
+            self.repaint = true;
             self.text = text;
             self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         }
@@ -4659,6 +4662,7 @@ impl TextInput {
         edit.apply(&mut self.text);
         self.goal_x = None;
         self.typing.touch();
+        self.repaint = true;
         self.dirty = true;
         self.layout_dirty |= self.multiline || self.single_attributes.is_some();
         true
@@ -5961,8 +5965,12 @@ impl Widget for TextInput {
         self.is_hovered &= environment.supports_hover();
     }
 
+    /// Read the field's bound state. A sync is a read of what the document
+    /// holds, not a paint: a field lending its document after a frame's draw
+    /// would otherwise ask for a frame forever, and the flags of the pieces
+    /// that do move (a paste landing, a bound value replaced) are theirs to
+    /// raise below.
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.repaint = true;
         if self.poll_pending_paste() {
             self.notify_user_change(false);
         }
@@ -6481,6 +6489,7 @@ impl Widget for TextInput {
             WindowEvent::CursorMoved { position, .. } => {
                 self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
                 if self.completion.hover_at(self.last_mouse_pos) {
+                    self.repaint = true;
                     self.dirty = true;
                 }
             }
@@ -6649,12 +6658,13 @@ impl Widget for TextInput {
     /// Repaints like a leaf when something it shows moved; the show/hide
     /// control's own paint is a child's. Asking unconditionally kept every
     /// window that holds a field painting forever, which is what an idle
-    /// window costs: nothing changed, so nothing is drawn.
+    /// window costs: nothing changed, so nothing is drawn. The pending edit
+    /// notification ([`Self::dirty`]) is left out for the same reason: an
+    /// owner that reads the text when the person submits leaves it standing,
+    /// and a field sitting in a window people are not touching must not keep
+    /// that window drawing.
     fn needs_redraw(&self) -> bool {
-        self.repaint
-            || self.dirty
-            || self.layout_dirty
-            || crate::widget::redraw_or_children(false, self)
+        self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
@@ -6902,6 +6912,7 @@ impl Widget for TextInput {
                 let focus = byte_at(*focus);
                 self.core.set_selection(anchor, focus);
                 self.goal_x = None;
+                self.repaint = true;
                 self.dirty = true;
                 true
             }

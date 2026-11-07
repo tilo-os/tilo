@@ -221,14 +221,21 @@ impl Widget for ShortcutRecorder {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.dirty = true;
-        if let Pulled::Value(value) = self.stored.pull(state, root) {
+        // A sync is a read of what the document holds, not a paint: only a
+        // pulled shortcut or rejection this recorder was not already showing
+        // is one.
+        if let Pulled::Value(value) = self.stored.pull(state, root)
+            && self.value != value
+        {
             self.value = value;
+            self.dirty = true;
         }
         if let Some(rejected) = &mut self.rejected
             && let Pulled::Value(invalid) = rejected.pull(state, root)
+            && self.invalid != invalid
         {
             self.invalid = invalid;
+            self.dirty = true;
         }
     }
 

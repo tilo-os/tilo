@@ -14,6 +14,8 @@ use super::x_for_byte;
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, named_key};
 use crate::testing::dispatch;
 use crate::text_edit::SUGGESTION_SETTLE;
+use automerge::ObjType;
+use automerge::transaction::Transactable as _;
 
 #[test]
 fn multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width() {
@@ -812,4 +814,36 @@ fn a_chrome_owned_field_places_the_caret_and_reports_every_selection() {
         assert!(ti.handle_chrome_pointer(&mouse_press(), 2.0, mods(false, false)));
         assert_eq!(ti.selection_anchor_focus_or_caret(), (8, 8));
     }
+}
+
+#[test]
+fn a_bound_field_at_rest_asks_for_no_frame() {
+    // A sync reads what the document holds. A read that shows the same text
+    // is not a paint: a host asking the field when to idle would never idle.
+    let mut state = crate::State::new();
+    let text = state
+        .doc
+        .put_object(&state.root, "body", ObjType::Text)
+        .unwrap();
+    state.doc.splice_text(&text, 0, 0, "hello").unwrap();
+    let mut field = TextInput::local();
+    field.bind_text(text.clone());
+    crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
+    assert!(
+        crate::widget::Widget::needs_redraw(&field),
+        "the field adopted the bound text"
+    );
+    crate::widget::Widget::mark_drawn(&mut field);
+    crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
+    assert!(
+        !crate::widget::Widget::needs_redraw(&field),
+        "a sync that adopted nothing new asks for no frame"
+    );
+    state.doc.splice_text(&text, 0, 0, "J").unwrap();
+    crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
+    assert_eq!(field.value(), "Jhello");
+    assert!(
+        crate::widget::Widget::needs_redraw(&field),
+        "a bound edit shows in place"
+    );
 }

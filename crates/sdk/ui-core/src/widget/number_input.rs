@@ -838,17 +838,19 @@ impl Widget for NumberInput {
     }
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
-        self.dirty = true;
         // Don't clobber the field while the user is mid-edit; the model is
         // adopted as soon as editing ends.
         if self.field.is_focused() {
             return;
         }
+        // A sync is a read of what the document holds, not a paint: only a
+        // pulled number the stepper was not already showing is one.
         if let Some(binding) = &mut self.binding
             && let Pulled::Value(v) = binding.pull(state, root)
         {
             let clamped = v.clamp(self.min, self.max);
             if !clamped.is_nan() && clamped.total_cmp(&self.value).is_ne() {
+                self.dirty = true;
                 self.value = clamped;
                 self.sync_field();
             }

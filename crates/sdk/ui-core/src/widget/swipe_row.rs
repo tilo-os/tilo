@@ -491,6 +491,14 @@ impl Decorator for SwipeRow {
         self.offset.is_moving(crate::motion::frame_now()) || self.content.needs_animation_frame()
     }
 
+    /// Rest what the frame drew. The list draws the rows near its box and culls the others away,
+    /// and a row it did not draw owes nothing for the offset it moved by unseen: the next frame
+    /// draws it where it is now, so a row out of view does not keep a window at rest awake.
+    fn mark_drawn(&mut self) {
+        self.drawn = self.offset.get(crate::motion::frame_now());
+        self.content.mark_drawn();
+    }
+
     fn needs_redraw(&self) -> bool {
         let offset = self.offset.get(crate::motion::frame_now());
         (offset - self.drawn).abs() > f64::EPSILON

@@ -207,14 +207,21 @@ struct Rest {
     rounds: u32,
 }
 
-/// The frame the window runs now: the frame of what the host just did (the patches it published
-/// wake the window and the frame takes them in). A window at rest runs none, and nothing is asked
-/// of it by hand (`Window::frame`), which lays out and draws again work no person's interaction
-/// made. What a frame it runs is asked for by is the host's change, not widget dirtiness, which
-/// leaves default to dirty and keeps until a later frame draws them.
+/// The frame the window runs now: the frame of what the host just did (its patches wake the
+/// window and the frame reads them). A window at rest runs none: asking it by hand
+/// (`Window::frame`) is asking it to lay out and draw again, which is work no person's
+/// interaction made. A frame only the window's own clock asks for is not a step's cost either:
+/// these tests settle motion, and the frames a scroll's glide ran would be as many as the
+/// machine got through. What the window owes nothing for is asserted where the schedule is read
+/// (`a_window_at_rest_asks_its_host_for_no_frame`).
 fn frame_if_asked(session: &mut Session, changed: bool) -> bool {
     match &mut session.window {
-        Window::Harness(window) => changed && window.poll_frame().unwrap_or(true),
+        Window::Harness(window) => {
+            if changed {
+                window.relayout();
+            }
+            changed
+        }
         Window::Live(app) => {
             Window::live_frame(app);
             true
@@ -258,8 +265,9 @@ fn at_rest(session: &mut Session) -> Rest {
         if rest.rounds > 400 {
             let window = session.window.harness();
             panic!(
-                "the window rested never: {:?} {:?} {:?}",
+                "the window rested never: {:?} {:?} {:?} {:?}",
                 window.queued_work_sources(),
+                window.redraw_sources(),
                 window.frame_schedule(),
                 window.last_relayout()
             );
@@ -1817,4 +1825,24 @@ fn a_step_lays_out_what_it_changes() {
         );
         session.settle();
     }
+}
+
+/// A window a person has not touched asks for no frame: nothing is queued, nothing animates,
+/// nothing is due, and what the last frame drew is what it shows.
+#[test]
+fn a_window_at_rest_asks_its_host_for_no_frame() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(20);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = Session::tasks_over_in(&route, chunks, None);
+    session.settle();
+    let window = session.window.harness();
+    let schedule = window.frame_schedule();
+    assert!(
+        !schedule.needs_redraw && !schedule.queued_work && !schedule.needs_animation_frame,
+        "the window at rest asks for none: {schedule:?} {:?} {:?}",
+        window.queued_work_sources(),
+        window.redraw_sources()
+    );
+    assert_eq!(schedule.next_wake_deadline, None);
 }

@@ -228,11 +228,14 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSchedule {
+    /// A frame drawn now would show something the last one did not: queued
+    /// work, a changed paint, an animation, a due deadline. False is rest.
     pub needs_redraw: bool,
-    /// The part of `needs_redraw` that is queued work: a component wake, a
-    /// pending invocation or a presence change. Widget dirtiness is left
-    /// out (leaves default to dirty), so a host that takes frames only for
-    /// input and this work stays idle while nothing happens.
+    /// The part of `needs_redraw` that is work queued off the tree: a
+    /// component wake, a pending invocation, a presence change, a layout a
+    /// row declaration asked for. Widget dirtiness is left out, so a host
+    /// that takes frames for queued work alone keeps a change drawn by hand
+    /// (an input the host answers with a frame) from waiting on it.
     pub queued_work: bool,
     pub needs_animation_frame: bool,
     pub next_wake_deadline: Option<crate::time::Instant>,
@@ -2565,34 +2568,34 @@ impl FrameHarness {
             || self.wake_pending();
         let (slots_declared, slots_moving) = self.slot_row_wants_frame();
         let queued_work = queued_work || slots_declared;
-        self.with_schedule_roots(|roots| FrameSchedule {
-            needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
-                || slots_moving
-                || self.settle_frame_owed
-                || self.tooltips.schedule().2
-                || crate::motion::frames_wanted(crate::time::now())
-                || self
-                    .presence
-                    .interaction_animation_demand(crate::time::now(), &self.theme),
-            next_wake_deadline: roots
+        let now = crate::time::now();
+        self.with_schedule_roots(|roots| {
+            let next_wake_deadline = roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
-                .chain(
-                    self.presence
-                        .interaction_next_wake_deadline(crate::time::now()),
-                )
+                .chain(self.presence.interaction_next_wake_deadline(now))
                 .chain(self.tooltips.schedule().1)
-                .min(),
-            needs_redraw: roots
-                .iter()
-                .any(|root| root.needs_redraw() || root.needs_animation_frame())
-                || queued_work
-                || self.permissions_moved()
-                // Only a drawing that read outside the tree goes stale with
-                // input; one that read inside it changed nothing.
-                || (self.drawn_input != crate::input_generation::generation()
-                    && self.drawn_outside),
-            queued_work,
+                .min();
+            FrameSchedule {
+                needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame())
+                    || slots_moving
+                    || self.settle_frame_owed
+                    || self.tooltips.schedule().2
+                    || crate::motion::frames_wanted(now)
+                    || self.presence.interaction_animation_demand(now, &self.theme),
+                next_wake_deadline,
+                needs_redraw: roots
+                    .iter()
+                    .any(|root| root.needs_redraw() || root.needs_animation_frame())
+                    || queued_work
+                    || self.permissions_moved()
+                    // Only a drawing that read outside the tree goes stale with input.
+                    || (self.drawn_input != crate::input_generation::generation()
+                        && self.drawn_outside)
+                    // A deadline the clock reached is work the frame takes now.
+                    || next_wake_deadline.is_some_and(|at| at <= now),
+                queued_work,
+            }
         })
     }
 
@@ -2717,12 +2720,11 @@ impl FrameHarness {
     }
 
     /// Diagnostic paths of dirty subtrees, without inspecting document content.
-    /// Queried outside a measured frame; not part of normal scheduling.
+    /// Queried outside a measured frame; not part of normal scheduling. It
+    /// reads the tree as [`Self::frame_schedule`] does — presence lent, no
+    /// widget entered — so a path it names is one the schedule counted.
     pub fn redraw_sources(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, parent: &str, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::bound_dispatch::enter_widget(widget) else {
-                return;
-            };
             if !(widget.needs_redraw() || widget.needs_animation_frame()) {
                 return;
             }
@@ -2734,9 +2736,11 @@ impl FrameHarness {
         }
         self.drain_component_wakes();
         let mut result = Vec::new();
-        for root in self.presentation_roots() {
-            visit(root, "", &mut result);
-        }
+        self.with_schedule_roots(|roots| {
+            for root in roots {
+                visit(root, "", &mut result);
+            }
+        });
         result
     }
 
@@ -2801,12 +2805,12 @@ impl FrameHarness {
     /// Returns whether a new scene was produced. The host schedules this on its frame clock.
     pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
         let frame = self.frame_schedule();
+        if !frame.needs_redraw && !frame.needs_animation_frame {
+            return Ok(false);
+        }
         let due = frame
             .next_wake_deadline
             .is_some_and(|deadline| deadline <= crate::time::now());
-        if !frame.needs_redraw && !frame.needs_animation_frame && !due {
-            return Ok(false);
-        }
         if due {
             // A deadline is a time a widget asked to be woken at, and what it does then its sync
             // may read (a row notes when its windows were last synced to know which deadlines had
