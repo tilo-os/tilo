@@ -250,6 +250,30 @@ impl<S: Seat> Published for Sheet<S> {
         self.drawn() && Published::a11y_action(&mut self.host, target, action)
     }
 
+    /// The controls the sheet's card shows by name, where they stand on the
+    /// desktop: a sheet that is down shows nothing to read or to press.
+    fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
+        if !self.drawn() {
+            return Vec::new();
+        }
+        Published::controls(&mut self.host)
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        self.press_action(name, ui::window_targets::TargetAction::Activate)
+    }
+
+    fn press_action(
+        &mut self,
+        name: &str,
+        action: ui::window_targets::TargetAction,
+    ) -> Result<(), String> {
+        if !self.drawn() {
+            return Err(format!("no control named {name}"));
+        }
+        Published::press_action(&mut self.host, name, action)
+    }
+
     fn wants_keyboard(&self) -> bool {
         SurfaceHost::wants_keyboard(self)
     }

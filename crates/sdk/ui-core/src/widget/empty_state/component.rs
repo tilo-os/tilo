@@ -29,6 +29,12 @@ pub struct EmptyStateProps {
 impl Described for EmptyState {
     type Props = EmptyStateProps;
 
+    /// The action button is the state's own action: the widget holds the binding, so the press
+    /// is a route an agent's invocation of it lands on, and both run from the door.
+    fn press_events() -> &'static [&'static str] {
+        &["act"]
+    }
+
     fn from_props(key: &str, props: EmptyStateProps) -> Self {
         let EmptyStateProps {
             title,

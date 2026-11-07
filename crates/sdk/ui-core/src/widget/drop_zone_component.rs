@@ -33,6 +33,12 @@ pub struct DropZoneProps {
 impl Described for DropZone {
     type Props = DropZoneProps;
 
+    /// Choosing its files is the button's own action: the button holds the binding, so a press
+    /// is the route an agent's invocation of the action lands on, and both run from the door.
+    fn press_events() -> &'static [&'static str] {
+        &["choose"]
+    }
+
     fn from_props(key: &str, props: DropZoneProps) -> Self {
         let mut zone = Self::new(key.to_owned(), "");
         zone.set_content(props);

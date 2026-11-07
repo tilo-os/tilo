@@ -22,6 +22,20 @@ fn the_shipped_catalogue_is_the_one_the_toolkit_generates() {
 #[test]
 fn every_description_is_documented_and_consistent() {
     let catalogue = catalogue();
+    let mut seen: Vec<&str> = catalogue
+        .components
+        .iter()
+        .map(|d| d.name.as_str())
+        .collect();
+    let all = seen.len();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(
+        seen.len(),
+        all,
+        "the catalogue names each component once: a hand-written entry next to the widget's \
+         own description registers it twice"
+    );
     for d in &catalogue.components {
         assert!(!d.doc.is_empty(), "{} has its doc text", d.name);
         let mut names: Vec<&str> = d
