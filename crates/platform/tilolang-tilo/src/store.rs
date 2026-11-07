@@ -55,7 +55,7 @@ use serde_json::Value as Json;
 use tilo_resource::{Model, Segment};
 use tilolang_runtime::DOC_VERSIONS as VERSIONS;
 use tilolang_runtime::Journal;
-use tilolang_runtime::ids::{AppId, DocId, FieldId, RunId, TypeId};
+use tilolang_runtime::ids::{AppId, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::store::{
     ANY_FIELD, Applied, ChangeNote, ChangeSummary, FieldKey, FieldSpec, FieldValue, Link, Listing,
     ListingChange, Mutation, NewRecord, OutboxEntry, Pred, Scalar, Splice, Store, StoreError,
@@ -64,13 +64,13 @@ use tilolang_runtime::store::{
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{
-    Authorship, DynAction, DynEdit, Made, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
+    Authorship, DynAction, DynEdit, RECORDS_KEY, apply_edits, outbox_entries, read_resource,
 };
 use crate::background::Waker;
 use crate::chunk::{self, ChunkNo, Chunks, Stamps};
 use crate::index::derive::{Derive, DocReads, Reached, linked_list, split_link};
 use crate::index::lists::Entry;
-use crate::index::overlay::{ListState, Overlay, OverlaySink};
+use crate::index::overlay::{ListState, Overlay};
 use crate::index::view::{self, View};
 use crate::index::{self as idx, Index, IndexError, IndexReads};
 use crate::items::Nested;
@@ -360,6 +360,10 @@ struct Inner {
     /// What the store wrote into the mirror since it last caught up with the record, oldest
     /// first: the mirror's open transaction.
     local: Vec<LocalWrite>,
+    /// The transactions of `local` the record holds ([`Self::settle_versions`]): a change of the
+    /// record's carries what they wrote, so reads hold it from the index and the writes are not
+    /// derived into the overlay again.
+    settled: BTreeSet<Vec<u8>>,
     stats: StoreStats,
     /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -677,6 +681,7 @@ impl TiloStore {
             inner: Rc::new(RefCell::new(Inner {
                 chunks: Chunks::default(),
                 local: Vec::new(),
+                settled: BTreeSet::new(),
                 stats: StoreStats::default(),
                 index: BTreeMap::new(),
                 apps: BTreeMap::new(),
@@ -1767,107 +1772,6 @@ impl Inner {
         (moved, wholes, notified)
     }
 
-    /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed.
-    fn rebuild_overlay(&mut self) {
-        let mut overlay = Overlay::default();
-        if self.chunks.has_record() {
-            for write in &self.local {
-                let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
-                    continue;
-                };
-                let mut sink = OverlaySink {
-                    overlay: &mut overlay,
-                    snapshot: Some(&held.snapshot),
-                };
-                let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
-                if let Err(error) = derive.changes(&mut sink, &write.app, &write.reached()) {
-                    tracing::warn!(app = write.app, %error, "a change was not indexed");
-                }
-                if let Some(ends) = &write.versions
-                    && let Err(error) = derive.versions(&mut sink, &write.app, ends)
-                {
-                    tracing::warn!(app = write.app, %error, "a change's versions were not indexed");
-                }
-                if let Some(ends) = &write.versions {
-                    unsaved::derive_removed(&mut derive, &mut sink, &write.app, ends, &write.items);
-                }
-            }
-        }
-        self.overlay = Arc::new(overlay);
-    }
-
-    /// Take in the versions an action this device committed made, provisional until the
-    /// record holds it: each resource it changed was last changed by its invoker at the time
-    /// the invocation recorded, one it made was made then, and each of its fields it changed
-    /// was changed then (`changed(r, .field)`). Reflection (`created(r)`, `updated(r)`,
-    /// `changed(r, .field)`) and the lists ordered by them read these until the record's own
-    /// replace them with the record's next change; the record's carry the same time, so
-    /// nothing moves then. Returns the fields that changed: each resource's versions.
-    fn provisional_versions(
-        &mut self,
-        app: &str,
-        start: usize,
-        note: &ChangeNote,
-        made: &[Made],
-    ) -> BTreeMap<DocId, Vec<FieldKey>> {
-        let at = note.at.clone().unwrap_or_else(crate::host::system_time);
-        let stamp = idx::reflect::Stamp {
-            version: Version {
-                who: note.invoker.clone(),
-                at,
-                action: note.action.clone(),
-                task: note.group.clone(),
-                from: note.from.clone(),
-                count: note.count.max(1),
-                // No change yet: the action was invoked on top of every change this device
-                // holds, so it orders after each of them recorded in the same second.
-                op: idx::reflect::PROVISIONAL,
-                ..Version::default()
-            },
-        };
-        let mut reached: BTreeMap<DocId, Vec<FieldKey>> = BTreeMap::new();
-        let mut ends = Ends::new();
-        for made in made {
-            let resource = made.resource.clone();
-            let end = idx::reflect::Ends::of(
-                &stamp,
-                &made.fields,
-                made.kind,
-                made.kind == tilolang_runtime::store::VersionKind::Removed,
-            );
-            let doc = tilolang_runtime::store::doc_of(&resource).to_owned();
-            reached
-                .entry(doc)
-                .or_default()
-                .extend(version_fields(&resource, &end));
-            ends.insert(resource, end);
-        }
-        // Kept with the action's last write, so they go when its writes go.
-        let Some(write) = self.local.get_mut(start..).and_then(<[_]>::last_mut) else {
-            return BTreeMap::new();
-        };
-        write.versions = Some(ends.clone());
-        let items = write.items.clone();
-        if let (true, Some(held)) = (
-            self.chunks.has_record(),
-            self.apps.get(app).filter(|held| held.ready()),
-        ) {
-            let snapshot = Arc::clone(&held.snapshot);
-            let mut sink = OverlaySink {
-                overlay: Arc::make_mut(&mut self.overlay),
-                snapshot: Some(&snapshot),
-            };
-            let mut derive = Derive::new(&self.chunks, &self.index, &self.nested);
-            if let Err(error) = derive.versions(&mut sink, app, &ends) {
-                tracing::warn!(app, %error, "a change's versions were not indexed");
-            }
-            unsaved::derive_removed(&mut derive, &mut sink, app, &ends, &items);
-        }
-        self.changed_within(&reached);
-        reached
-    }
-
     /// Write `edit` on the record `doc` in the transaction `txn`, adding it to `state`: what a
     /// migration or a trigger did to a resource is a change of the record like any other.
     /// Whether the record's type is known here, which a mark needs.
@@ -2087,6 +1991,47 @@ impl Inner {
                         .map(|stamp| stamp.version)
                 }),
         )
+    }
+
+    /// The items of the collection `field` of `at` under `node` (above it, for `down` false)
+    /// by the reference field `parent`, in the collection's order, each with the type it is:
+    /// what [`View::relatives`] answers, for a collection of one record type. `None` when the
+    /// index does not hold the collection's items, or holds them of several types: one column
+    /// per type's field answers no walk over both.
+    fn relatives(
+        &self,
+        at: &ResourceRef,
+        field: &str,
+        parent: &str,
+        node: &ResourceRef,
+        down: bool,
+    ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
+        let (app, _) = self.locate(at)?;
+        let Some(view) = self.view(&app) else {
+            return Ok(None);
+        };
+        let resource = at.id_string();
+        let Some(ty) = view.type_of(&resource).map_err(backend)? else {
+            return Ok(None);
+        };
+        let Some(schema) = lookup(&ty) else {
+            return Ok(None);
+        };
+        let Some(spec) = schema
+            .field(field)
+            .filter(|f| f.kind == MergeKind::Collection)
+        else {
+            return Ok(None);
+        };
+        let Some(item) = spec.record.as_deref().and_then(lookup) else {
+            return Ok(None);
+        };
+        let path = node.id_string();
+        let Some(node) = crate::index::derive::id_of(&path) else {
+            return Ok(None);
+        };
+        view.relatives((&resource, field), item, parent, node, down)
+            .map_err(backend)
     }
 
     /// The listing of the collection `field` of `at` (of items of the type `item`), filtered
@@ -2576,6 +2521,17 @@ impl Store for TiloStore {
 
     fn listing(&self, at: &ResourceRef, field: &FieldSpec) -> Result<Rc<Listing>, StoreError> {
         self.held().listed(at, &field.id, None)
+    }
+
+    fn relatives(
+        &self,
+        at: &ResourceRef,
+        field: &FieldId,
+        parent: &FieldId,
+        node: &ResourceRef,
+        down: bool,
+    ) -> Result<Option<Vec<(ItemId, TypeId)>>, StoreError> {
+        self.held().relatives(at, field, parent, node, down)
     }
 
     fn listing_where(

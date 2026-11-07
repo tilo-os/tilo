@@ -20,7 +20,10 @@ use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{Standing, WorkspacePolicy};
 use tilo_app::framework::WorkspaceRecord;
-use tilo_app::tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents as Record, same_person};
+use tilo_app::tilo_workspace_agent::{
+    KIND, OWNER, WorkspaceAgents as Record, same_person, workspace_agents as actions,
+};
+use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
 use ui::record::workspace::WorkspaceRecords;
 use ui::record::{RecordId, RecordOwners};
@@ -43,15 +46,27 @@ pub(crate) struct Kept {
     pub model: Option<String>,
 }
 
-/// Who keeps each of the workspaces' agents, as the pass read their records.
+/// Who keeps each of the workspaces' agents, and what each may spend today,
+/// as the pass read their records.
 #[derive(Default)]
 pub(crate) struct Roster {
     keepers: Mutex<BTreeMap<(String, String), String>>,
+    /// What each agent may spend today and has, by workspace and agent: what a
+    /// run of its is admitted with.
+    spend: Mutex<BTreeMap<(String, String), runtime_collab::TaskRunSpend>>,
 }
 
 impl tilo_action_broker::services::AgentRoster for Roster {
     fn keeper(&self, workspace: &str, agent: &str) -> Option<String> {
         self.keepers
+            .lock()
+            .ok()?
+            .get(&(workspace.to_owned(), agent.to_owned()))
+            .cloned()
+    }
+
+    fn spend(&self, workspace: &str, agent: &str) -> Option<runtime_collab::TaskRunSpend> {
+        self.spend
             .lock()
             .ok()?
             .get(&(workspace.to_owned(), agent.to_owned()))
@@ -106,7 +121,9 @@ impl Agents {
     /// agent to the broker, and answer the agents kept here: this device runs
     /// those.
     pub(crate) fn feed(&self, person: &str, workspaces: &[(String, WorkspacePolicy)]) -> Vec<Kept> {
+        let day = ui::clock::today().to_string();
         let mut keepers = BTreeMap::new();
+        let mut spend = BTreeMap::new();
         let mut kept = Vec::new();
         for (workspace, policy) in workspaces {
             let Some(record) = self.record(workspace, policy, person) else {
@@ -117,6 +134,14 @@ impl Agents {
                 keepers.insert(
                     (workspace.clone(), agent.id.0.clone()),
                     agent.keeper.clone(),
+                );
+                spend.insert(
+                    (workspace.clone(), agent.id.0.clone()),
+                    runtime_collab::TaskRunSpend {
+                        day: day.clone(),
+                        limit_micros: agent.spend_limit_micros,
+                        spent_micros: agent.spent_on(&day),
+                    },
                 );
                 if same_person(&agent.keeper, person) {
                     kept.push(Kept {
@@ -131,7 +156,42 @@ impl Agents {
         if let Ok(mut held) = self.roster.keepers.lock() {
             *held = keepers;
         }
+        if let Ok(mut held) = self.roster.spend.lock() {
+            *held = spend;
+        }
         kept
+    }
+
+    /// Charge what the runs' agents spent to their day, on each workspace's
+    /// record of its agents, as the person sitting here: a keeper's device
+    /// counts what the agents it runs spend.
+    pub(crate) fn charge(
+        &self,
+        workspaces: &[(String, WorkspacePolicy)],
+        person: &str,
+        spent: &[(String, String, u64)],
+    ) {
+        if spent.is_empty() {
+            return;
+        }
+        let day = ui::clock::today().to_string();
+        for (workspace, agent, cost_micros) in spent {
+            let Some((_, policy)) = workspaces.iter().find(|(held, _)| held == workspace) else {
+                continue;
+            };
+            let Some(record) = self.record(workspace, policy, person) else {
+                continue;
+            };
+            let counted =
+                record.invoke(&Record::RECORD_AGENT_SPEND.with(actions::RecordAgentSpend {
+                    agent: Id::from_raw(agent.clone()),
+                    day: day.clone(),
+                    cost_micros: *cost_micros,
+                }));
+            if let Err(error) = counted {
+                tracing::warn!(%error, %workspace, %agent, "an agent's spend is not counted");
+            }
+        }
     }
 
     /// The workspace's agents record, opened here where it is not, at the

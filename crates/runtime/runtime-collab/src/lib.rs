@@ -848,6 +848,44 @@ pub struct TaskRunEnvelope {
     /// agent. Absent: the agent's own. Older senders omit it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<TaskRunModel>,
+    /// What the run's agent may spend on the day its keeper counts. Absent for
+    /// a host that reads no record of the workspace's agents, and from older
+    /// senders.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub spend: Option<TaskRunSpend>,
+}
+
+/// What an agent may spend on one day, as its keeper's device counted it.
+///
+/// The day is its keeper's: the agent's own clock sits wherever its device is,
+/// and a day the counter has not reached yet is a day with nothing spent
+/// ([`TaskRunSpend::left`]).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunSpend {
+    /// The day counted, `YYYY-MM-DD` by its keeper's clock.
+    pub day: String,
+    /// The most its keeper lets it spend that day, in millionths of the
+    /// currency; `None` spends unmetered.
+    pub limit_micros: Option<u64>,
+    /// What it spent that day, in millionths of the currency.
+    pub spent_micros: u64,
+}
+
+impl TaskRunSpend {
+    /// What is left of its keeper's limit on `day`, in millionths of the
+    /// currency: `None` spends unmetered, and a day the counter has not
+    /// reached has spent none of it.
+    #[must_use]
+    pub fn left(&self, day: &str) -> Option<u64> {
+        let limit = self.limit_micros?;
+        let spent = if self.day == day {
+            self.spent_micros
+        } else {
+            0
+        };
+        Some(limit.saturating_sub(spent))
+    }
 }
 
 /// A model of one provider profile, chosen for a run.
@@ -957,6 +995,13 @@ pub enum TaskRunUpdate {
     },
     Cancelled {
         message: String,
+    },
+    /// What the run spent by now, in millionths of the currency, as the model
+    /// gateway charged it: the run's total, not the last call's. An agent
+    /// sends it after each model call, and the device that keeps it charges
+    /// what the total added to its day.
+    Spent {
+        cost_micros: u64,
     },
 }
 

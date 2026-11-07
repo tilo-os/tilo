@@ -16,7 +16,7 @@ use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
 use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, presented};
 
 mod agents;
 mod apps;
@@ -417,7 +417,9 @@ impl WorkspaceSettingsSeat {
 
     fn ask(&self, effect: WorkspaceSettingsEffect) {
         if effect == WorkspaceSettingsEffect::Close {
-            self.presentation.gone();
+            // The sheet's own close: the card leaves the screen, and the
+            // shell tells it gone once nothing of it is drawn.
+            self.presentation.close();
         }
         self.asked.borrow_mut().push(effect);
     }
@@ -848,7 +850,9 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     }
     let body = body.push(pane);
     let close = parts.clone();
-    Box::new(
+    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
+    Box::new(presented(
+        presentation,
         ModalDialog::new(settings.name.clone(), body)
             .with_test_id("ws-settings")
             .with_icon(ui::icons::Icon::LayoutGrid)
@@ -856,9 +860,8 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
             .with_max_width(WIDTH)
             // The tabs stay in view: the body scrolls under them.
             .with_header(strip)
-            .open(true)
             .secondary_action(settings.close.clone(), move || close.close()),
-    )
+    ))
 }
 
 impl Confirm {
@@ -904,10 +907,10 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
         .with_intrinsic_height()
         .push(general::caption(&subject));
     let (keep, going, dismissed) = (parts.clone(), parts.clone(), parts.clone());
+    let presentation = parts.seat.as_ref().map(crate::Seat::presentation);
     let mut dialog = ModalDialog::new(question.title.clone(), body)
         .with_test_id("ws-settings-decision")
         .with_description(question.description.clone())
-        .open(true)
         .primary_action(question.confirm.clone(), move || {
             going.decide(Answer::Confirm);
         })
@@ -923,7 +926,7 @@ fn decision(settings: &Settings, confirm: &Confirm, parts: &Parts) -> Element {
             review.decide(Answer::Review);
         });
     }
-    Box::new(dialog)
+    Box::new(presented(presentation, dialog))
 }
 
 /// Escape takes back a name being typed, and leaves an agent's review,

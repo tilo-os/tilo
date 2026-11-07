@@ -12,7 +12,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use ui::TextRole;
-use ui::motion::{Appear, Presence, Transient};
+use ui::motion::{Appear, Direction, Presence, Transient};
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::time::{Duration, Instant};
@@ -209,6 +209,8 @@ impl FollowBanner {
         // The bar comes down from the top bar it hangs under.
         let pose = Appear::pose(
             f64::from(openness),
+            Direction::of(is_following),
+            chip,
             Point::new(chip.center().x, chip.y0),
             motion,
         );

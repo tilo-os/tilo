@@ -44,11 +44,23 @@ fn scale_about(origin: Point, scale: f64) -> Affine {
 /// A popover, menu, sheet or dialog coming from the control that summoned it
 /// and going back to it.
 ///
-/// Opacity and a scale of 0.96 → 1 about the **origin**: the point of the
-/// surface nearest that control. Opacity leads (opaque at 60 %), so the text
-/// is readable early and the scale finishes underneath. In at `base`, out at
-/// `fast`. Reduced motion: opacity only, at `fast`. A shortcut: at once.
+/// It arrives from nothing: opacity 0, 92 % of its size, 8 px toward that
+/// control; it leaves to nothing, 97 % of its size and those 8 px again. Both
+/// about the **origin**, the point of the surface nearest the control. In at
+/// `base`, out at `fast`. Reduced motion: opacity only. A shortcut: at once.
 pub struct Appear;
+
+/// How one [`Appear`] surface is drawn at one progress: the opacity and scale
+/// it is drawn at, about its origin, and how far toward its anchor it stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Coming {
+    /// Of its settled size.
+    pub scale: f64,
+    /// 0..=1.
+    pub opacity: f32,
+    /// Toward its anchor, in logical pixels: nothing once it rests.
+    pub offset: Vec2,
+}
 
 impl Appear {
     pub const SPEC: MotionSpec = MotionSpec {
@@ -57,28 +69,96 @@ impl Appear {
         reduced: Reduced::Fades,
         shortcut: Shortcut::Lands,
     };
-    const START_SCALE: f64 = 0.96;
-    const OPAQUE_AT: f64 = 0.6;
+    /// The share of its size it starts arriving at. A surface is drawn on the
+    /// frame after the press that summoned it, with the motion already under
+    /// way — in a software-rendered session that frame is 50 to 90 ms into a
+    /// 210 ms motion, most of the way through a spring's travel — so the share
+    /// is set where that frame still reads clearly smaller than the surface at
+    /// rest, not where it would read at the instant of the press.
+    const ENTER_SCALE: f64 = 0.92;
+    /// The share of its size it ends leaving at.
+    const EXIT_SCALE: f64 = 0.97;
+    /// How far toward its anchor it starts arriving and ends leaving, in
+    /// logical pixels.
+    pub const REACH: f64 = 8.0;
 
-    /// The pose at `progress` (a [`super::Presence`]'s), scaling about
-    /// `origin` (in the surface's coordinates; see [`Self::origin`]).
+    /// How `surface` is drawn `progress` of the way through arriving or
+    /// leaving `direction`, its anchor the point nearest the control that
+    /// summoned it (a bar button, a control, the pointer of a context menu,
+    /// or the surface's own centre for a centred dialog).
     #[must_use]
-    pub fn pose(progress: f64, origin: Point, motion: EffectiveMotion) -> Pose {
+    pub fn coming(
+        progress: f64,
+        direction: Direction,
+        surface: Rect,
+        anchor: Point,
+        motion: EffectiveMotion,
+    ) -> Coming {
         let p = progress.clamp(0.0, 1.0);
         if motion.reduced() {
-            return Pose {
+            return Coming {
+                scale: 1.0,
                 opacity: unit_opacity(p),
-                transform: Affine::IDENTITY,
+                offset: Vec2::ZERO,
             };
         }
-        let scale = Self::START_SCALE + (1.0 - Self::START_SCALE) * p;
+        let from = match direction {
+            Direction::Enter => Self::ENTER_SCALE,
+            Direction::Exit => Self::EXIT_SCALE,
+        };
+        let eased = Self::eased(p, direction);
+        Coming {
+            scale: from + (1.0 - from) * eased,
+            opacity: unit_opacity(eased),
+            offset: Self::toward(surface, anchor) * (1.0 - eased),
+        }
+    }
+
+    /// Its size, its fade and its reach over the whole motion. Arriving, it is
+    /// eased so the first frames after a press are its faintest and smallest —
+    /// it grows and brightens into place; the surface is drawn on the frame
+    /// after what asked for it, so a motion linear in the clock would be a
+    /// third of the way in on its first frame. Leaving, it gives up its
+    /// opacity at a steady rate, so every frame of the way out still shows
+    /// some of it, rather than the first frame showing none.
+    fn eased(progress: f64, direction: Direction) -> f64 {
+        match direction {
+            Direction::Enter => progress * progress,
+            Direction::Exit => progress,
+        }
+    }
+
+    /// [`Self::coming`] as a [`Pose`], applied in the surface's own
+    /// coordinates.
+    #[must_use]
+    pub fn pose(
+        progress: f64,
+        direction: Direction,
+        surface: Rect,
+        anchor: Point,
+        motion: EffectiveMotion,
+    ) -> Pose {
+        let coming = Self::coming(progress, direction, surface, anchor, motion);
         Pose {
-            opacity: unit_opacity(p / Self::OPAQUE_AT),
-            transform: if p >= 1.0 {
+            opacity: coming.opacity,
+            transform: if coming.scale >= 1.0 && coming.offset == Vec2::ZERO {
                 Affine::IDENTITY
             } else {
-                scale_about(origin, scale)
+                Affine::translate(coming.offset)
+                    * scale_about(Self::origin(surface, anchor), coming.scale)
             },
+        }
+    }
+
+    /// How far, and which way, it stands from where it rests at its first
+    /// frame: [`Self::REACH`] toward the point of `surface` nearest `anchor`.
+    fn toward(surface: Rect, anchor: Point) -> Vec2 {
+        let out = Self::origin(surface, anchor) - surface.center();
+        let length = out.hypot();
+        if length > f64::EPSILON {
+            out * (Self::REACH / length)
+        } else {
+            Vec2::ZERO
         }
     }
 

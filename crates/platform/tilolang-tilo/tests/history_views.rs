@@ -469,7 +469,7 @@ fn a_history_entry_says_the_day_a_task_moved_to_or_was_taken_away() {
     ada.commit();
     let said = says(&history_of(&ada, &target(&moved)));
     assert!(
-        said.join(" ").contains("bo moved this to"),
+        said.join(" ").contains("bo moved it to"),
         "a day a task had is moved to another: {said:?}"
     );
     assert!(said.contains(&"2026-10-31".to_owned()), "{said:?}");
@@ -510,7 +510,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&filed)));
     assert!(
-        said.join(" ").contains("bo moved this to"),
+        said.join(" ").contains("bo moved it to"),
         "a task put in a project is moved to it: {said:?}"
     );
     assert!(said.contains(&"New project".to_owned()), "{said:?}");
@@ -528,7 +528,7 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&unfiled)));
     assert!(
-        said.join(" ").contains("bo moved this out of"),
+        said.join(" ").contains("bo moved it out of"),
         "a task taken out of a project says the one it left: {said:?}"
     );
 
@@ -546,10 +546,13 @@ fn a_history_entry_says_the_priority_the_project_and_the_person_a_task_moved_to(
     ada.commit();
     let said = says(&history_of(&ada, &target(&assigned)));
     assert!(
-        said.join(" ").contains("bo assigned this to"),
+        said.join(" ").contains("bo assigned it to"),
         "a task given to someone says who: {said:?}"
     );
-    assert!(said.contains(&"Ada Lovelace".to_owned()), "{said:?}");
+    assert!(
+        said.contains(&"you".to_owned()),
+        "the person looking is the one it was given to, and reads as you: {said:?}"
+    );
 }
 
 /// Words a change to a field reads with, where the field's value is the whole of what it says:
@@ -569,20 +572,17 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let checked = says(&history_of(&ada, &target(&done)));
     assert!(
-        checked.join(" ").contains("bo set done to"),
-        "checking a task off says what it set: {checked:?}"
+        checked.join(" ").contains("bo marked it done"),
+        "checking a task off says so, and shows no value of a flag's: {checked:?}"
     );
     call(&ada, "bo", TASKS_APP, "check", vec![done.clone()]);
     ada.commit();
     let reopened = says(&history_of(&ada, &target(&done)));
     assert!(
-        reopened.join(" ").contains("bo set done to"),
-        "opening it again says what it set: {reopened:?}"
+        reopened.join(" ").contains("bo unmarked it done"),
+        "opening it again says so the other way: {reopened:?}"
     );
-    assert_ne!(
-        checked, reopened,
-        "the check and the reopening read unlike: the flag each set is shown"
-    );
+    assert_ne!(checked, reopened, "the check and the reopening read unlike");
 
     let above = call(
         &ada,
@@ -609,7 +609,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.join(" ").contains("bo moved this to"),
+        said.join(" ").contains("bo moved it to"),
         "a task put under another says what it moved to: {said:?}"
     );
     assert!(
@@ -620,7 +620,7 @@ fn a_history_entry_says_a_task_was_completed_reopened_or_moved_without_showing_a
     ada.commit();
     let said = says(&history_of(&ada, &target(&under)));
     assert!(
-        said.join(" ").contains("bo moved this out of"),
+        said.join(" ").contains("bo moved it out of"),
         "a task taken out from under another says what it left: {said:?}"
     );
 }
@@ -1078,7 +1078,7 @@ fn typing_in_a_bound_field_reads_as_an_edit_of_that_field() {
 /// did: it took the tasks under it with it, and the step before it is an entry of its own.
 #[test]
 fn checking_a_task_off_is_one_entry_saying_what_it_did() {
-    const SAYS: &str = "You set done to";
+    const SAYS: &str = "You marked it done";
     let (mut ada, _, tasks) = two_people();
     let parent = call(
         &ada,

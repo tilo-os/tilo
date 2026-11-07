@@ -1483,7 +1483,7 @@ says how (no curve, duration, spring constant or eased ratio of its own):
 
 | Motion | For |
 |---|---|
-| `Appear` | popovers, menus, sheets, dialogs: opacity and a 0.96 → 1 scale about the control that summoned them; in `base`, out `fast` |
+| `Appear` | popovers, menus, sheets, dialogs: eased from nothing, 92 % of their size and 8 px toward the control that summoned them, so the frame after a press is their faintest and smallest, resting at 100 %; leaving to nothing at 97 % and those 8 px; in `base`, out `fast` |
 | `Drill` / `DrillDepth` | drill-in and back in a panel (shared axis: 28 px and a fade); whole-column pushes |
 | `Disclose` / `Extent` | expand and collapse; a panel's height following its page (clip, never re-layout) |
 | `PanelSlide` | sidebars, drawers, the inspector; content beside reflows once, at the wide end; edge sheets |

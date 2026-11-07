@@ -55,7 +55,7 @@ usage:
       door, or the person's own session (--real), where the person admits it. Each entry is a
       program for the door's `tilo` tool, run as the REPL's task: lets are kept, refs (n3) name
       what answers showed, a bulk change previews until `confirm`, `undo` takes a step back.
-  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--dump WxH [--shots DIR [--theme NAME]...]]
+  tilolang layout-check [DIR]... [--search DIR]... [--allow FILE] [--json] [--root NAME] [--state NAME=VALUE]... [--key KEY]... [--press LABEL]... [--dump WxH [--shots DIR [--theme NAME]...]]
       lay out every view of each app headlessly, staged from each of its scenarios, at window
       sizes from 320x568 to 3440x1440, display scales 1 and 2 and text scales 1 and 1.5, and
       report overflow, clipped text, overlapping siblings, hit targets below the minimum and
@@ -215,6 +215,7 @@ fn layout_check_command(args: &[String]) -> ExitCode {
                 "--root" => options.root = Some(value(&mut iter, arg)?),
                 "--state" => options.states.push(value(&mut iter, arg)?),
                 "--key" => options.keys.push(value(&mut iter, arg)?),
+                "--press" => options.presses.push(value(&mut iter, arg)?),
                 "--dump" => {
                     let size = value(&mut iter, arg)?;
                     options.dump = size

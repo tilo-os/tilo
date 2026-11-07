@@ -23,7 +23,7 @@ use ui::widget::{
     ListRow, ModalDialog, Row, SearchField, Section, Text, Widget,
 };
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 use crate::t;
 
 /// The app the shell mounts the sheet as.
@@ -226,7 +226,12 @@ pub type Ask = Rc<dyn Fn(DirectoryEffect)>;
 /// the search kept in `query` and every press asked through `ask`. The
 /// session's window ([`DirectoryApp`]) and a browser page build this same
 /// sheet from the same data.
-pub fn sheet(directory: &Directory, query: &LocalState<String>, ask: &Ask) -> Element {
+pub fn sheet(
+    directory: &Directory,
+    query: &LocalState<String>,
+    ask: &Ask,
+    presentation: Option<&Presentation>,
+) -> Element {
     let search = SearchField::from_state(query)
         .with_placeholder(&t("directory-search"))
         .with_id("directory-search");
@@ -242,17 +247,17 @@ pub fn sheet(directory: &Directory, query: &LocalState<String>, ask: &Ask) -> El
     let link = ask.clone();
     let typed = query.clone();
     let dismissed = ask.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(t("directory-title"), body)
             .with_test_id("directory")
             .with_icon(Icon::Users)
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .secondary_action(t("directory-link-or-code"), move || {
                 link(DirectoryEffect::LinkOrCode { text: typed.get() });
             })
             .on_dismiss(move || dismissed(DirectoryEffect::Done)),
-    )
+    ))
 }
 
 /// The sheet as an app.
@@ -290,11 +295,14 @@ impl ResourceApp for DirectoryApp {
             *seat.shown.borrow_mut() = Some(shown.clone());
             *seat.query.borrow_mut() = Some(query.clone());
         }
-        let asking = seat;
+        let asking = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: DirectoryEffect, _cx| match &asking {
             Some(seat) => {
                 if effect == DirectoryEffect::Done {
-                    seat.presentation.gone();
+                    // Its own close: the card leaves the screen, and the shell tells it gone
+                    // once nothing of it is drawn.
+                    seat.presentation.close();
                 }
                 seat.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
@@ -310,8 +318,9 @@ impl ResourceApp for DirectoryApp {
             let directory = directory.clone();
             let ask = asking.clone();
             let field = field.clone();
+            let presentation = presentation.clone();
             cx.switch(&rows_query, move |_cx, _query| {
-                sheet(&directory, &field, &ask)
+                sheet(&directory, &field, &ask, presentation.as_ref())
             })
         });
         Box::new(Searching {

@@ -240,31 +240,7 @@ impl Staged {
             }
         }
         instance.set_origin(true);
-        // The capture has no door over the workspace, so it stands where the door stands: it
-        // takes each step the instance hands over, writes it down and answers it, as a
-        // session's door does. The store reads the record's changes back, so what it tells of a
-        // change — the versions of a resource, and the marks and history drawn from them — is a
-        // session's, never a workspace staged but never written down.
-        let settle = |instance: &mut Instance, record: &mut ui::automerge::AutoCommit| {
-            instance.sync(Some(record));
-            instance.commit_planned();
-            let Some(host) = instance.host() else {
-                return Ok::<(), String>(());
-            };
-            while let Some((invocation, _)) = instance.take_invocation() {
-                let address = invocation.address.clone();
-                if address.resource == HOST_RESOURCE && address.action == COMMIT {
-                    let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
-                    if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
-                        commit(&host, &me, record, &action)?;
-                    }
-                }
-                instance.answered(&address, None);
-            }
-            instance.sync(Some(record));
-            Ok::<(), String>(())
-        };
-        settle(&mut instance, &mut record)?;
+        settle(&mut instance, &mut record, &me, None)?;
         if let Some(host) = instance.host() {
             for state in &staging.states {
                 let (name, text) = state.split_once('=').ok_or_else(|| {
@@ -276,7 +252,10 @@ impl Staged {
             }
         }
         instance.stage(staging.scenario.as_deref());
-        settle(&mut instance, &mut record)?;
+        // A scenario's sample data is what it writes without a time of its own; what it dates
+        // is the story it tells.
+        let now = packages.now();
+        settle(&mut instance, &mut record, &me, Some(&now))?;
         if let Some(why) = instance.take_stage_failure() {
             return Err(format!(
                 "the scenario \"{}\" failed: {why}",
@@ -566,6 +545,74 @@ impl Staged {
             .map(|window| window.broken_components())
             .unwrap_or_default()
     }
+}
+
+/// The moment a second before `at` (an RFC 3339 time), written as the record writes one.
+fn second_before(at: &str) -> String {
+    let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(at) else {
+        return at.to_owned();
+    };
+    let Some(earlier) = parsed.checked_sub_signed(chrono::Duration::seconds(1)) else {
+        return at.to_owned();
+    };
+    earlier
+        .to_utc()
+        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// The capture has no door over the workspace, so it stands where the door stands: it takes
+/// each step the instance hands over, writes it down and answers it, as a session's door does.
+/// The store reads the record's changes back, so what it tells of a change — the versions of a
+/// resource, and the marks and history drawn from them — is a session's, never a workspace
+/// staged but never written down.
+///
+/// `sample_at` is the moment a scenario's undated steps carry (the capture's clock), where one
+/// ran: the steps are all read before any is written, so each undated one lands a second before
+/// the first dated one. A change made on top of another is never dated before it, and the marks
+/// and the history drawn from the record stay in the order the scenario wrote it.
+fn settle(
+    instance: &mut Instance,
+    record: &mut ui::automerge::AutoCommit,
+    person: &str,
+    sample_at: Option<&str>,
+) -> Result<(), String> {
+    instance.sync(Some(record));
+    instance.commit_planned();
+    let Some(host) = instance.host() else {
+        return Ok(());
+    };
+    let mut steps = Vec::new();
+    while let Some((invocation, _)) = instance.take_invocation() {
+        let address = invocation.address.clone();
+        if address.resource == HOST_RESOURCE && address.action == COMMIT {
+            let ticket = invocation.arguments.get("ticket").and_then(Json::as_u64);
+            if let Some(action) = ticket.and_then(|ticket| host.store().committed(ticket)) {
+                steps.push((address, action));
+                continue;
+            }
+        }
+        instance.answered(&address, None);
+    }
+    let earliest = sample_at.and_then(|sample_at| {
+        steps
+            .iter()
+            .filter_map(|(_, action)| action.authorship.at.as_deref())
+            .filter(|at| *at < sample_at)
+            .min()
+            .map(second_before)
+    });
+    for (address, mut action) in steps {
+        if let Some(sample_at) = sample_at
+            && action.authorship.at.as_deref() == Some(sample_at)
+            && let Some(earliest) = earliest.as_deref()
+        {
+            action.authorship.at = Some(earliest.to_owned());
+        }
+        commit(&host, person, record, &action)?;
+        instance.answered(&address, None);
+    }
+    instance.sync(Some(record));
+    Ok(())
 }
 
 /// Apply `action` to `record` as the door applies one for a session: encoded, as the person's

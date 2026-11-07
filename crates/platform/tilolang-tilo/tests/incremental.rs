@@ -165,6 +165,8 @@ fn a_window_publishes_what_it_reaches_and_the_whole_workspace_when_asked() {
     let ids = item_ids(&ada, &meta, &root);
     let planner: Arc<dyn Planner> = Arc::new(Refusing);
     let mut published = Publications::new(&ada.host);
+    // This publication is a window's: it holds the rows on screen, not the workspace.
+    published.window();
     published.update(&ada.host, &planner);
     // A window the turn is not drawn for publishes nothing: the workspace is not read for a
     // surface nothing shows.
@@ -754,22 +756,30 @@ fn planning_an_action_changes_nothing_anyone_follows() {
 #[test]
 fn a_host_without_frames_publishes_the_whole_workspace_and_takes_a_change_in_after_it() {
     let (mut ada, meta, root) = workspace();
-    let planner: Arc<dyn Planner> = Arc::new(Refusing);
-    let mut published = Publications::new(&ada.host);
-    // The frame that starts it publishes nothing: a record is read when a window reaches it.
-    assert!(published.update(&ada.host, &planner).is_empty());
-    assert!(!published.is_building());
-    // What the window shows is read on the frame that shows it, and only that.
     let ids = item_ids(&ada, &meta, &root);
+    let planner: Arc<dyn Planner> = Arc::new(Refusing);
+    // A window publishes nothing up front: a record is read when a window reaches it.
+    let mut windowed = Publications::new(&ada.host);
+    windowed.window();
+    assert!(windowed.update(&ada.host, &planner).is_empty());
+    assert!(!windowed.is_building());
+    // What the window shows is read on the frame that shows it, and only that.
     let shown = [resource_id(APP, &format!("{root}/{}", ids[1]))];
-    assert_eq!(published.reached(&ada.host, &planner, APP, &shown).len(), 1);
+    assert_eq!(windowed.reached(&ada.host, &planner, APP, &shown).len(), 1);
     assert_eq!(
-        published.visited(),
+        windowed.visited(),
         1,
         "what the window shows of three items reads one record"
     );
     // A host without frames publishes the whole workspace, read on another thread, and a
     // change made while it reads is taken in after what it read.
+    let mut published = Publications::new(&ada.host);
+    published.settle(&ada.host, &planner);
+    assert_eq!(
+        shape(&published.trees()[&root]),
+        published_anew(&ada, &meta, &root),
+        "every record is published for a caller that reads the whole workspace"
+    );
     retype(&mut ada, &meta, &root, &ids[1], "oat milk");
     published.settle(&ada.host, &planner);
     assert!(!published.is_building());

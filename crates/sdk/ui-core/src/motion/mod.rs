@@ -5,7 +5,7 @@
 //!
 //! | Motion | For |
 //! |---|---|
-//! | [`Appear`] / [`Appearing`] | popovers, menus, dropdowns, tooltips, sheets, dialogs coming from their origin and going back |
+//! | [`Appear`] / [`Appearing`] / [`Appearance`] | popovers, menus, dropdowns, tooltips, sheets, dialogs coming from their origin and going back |
 //! | [`Drill`] / [`DrillDepth`] | drill-in and back inside a panel; whole-column pushes |
 //! | [`Disclose`] / [`Extent`] / [`Disclosure`] | expand and collapse; a panel's height following its content; a find bar or banner coming and going |
 //! | [`PanelSlide`] | sidebars, drawers, the inspector |
@@ -68,7 +68,7 @@ mod value;
 #[cfg(test)]
 mod tests;
 
-pub use appearing::Appearing;
+pub use appearing::{Appearance, Appearing};
 pub use beckon::{Arrival, Beckon, Completion};
 #[cfg(test)]
 pub(crate) use clock::forget_frames_for_tests;

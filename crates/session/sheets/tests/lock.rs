@@ -23,7 +23,12 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 
 /// A locked session's screen, showing `shown` on the seat the app reports
 /// to, and what it asks the session.
+///
+/// Every reading of it is at rest: the screen the shell puts up arrives
+/// growing and fading from nothing, so a frame taken while it comes up says
+/// how it moves, not what it says.
 fn locked(shown: Shown) -> (HeadlessApp<LockApp>, LockSeat, Receiver<LockEffect>) {
+    let _settled = ui::motion::testing::settled();
     let seat = LockSeat::default();
     // What the screen asks goes to the session through the connection its
     // app opens; the test stands in for it here.
@@ -252,7 +257,7 @@ fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
     }
 }
 
-/// The frame the screen paints for `shown`.
+/// The frame the screen paints for `shown`: what two runs compare.
 fn painted(shown: Shown) -> ui::vello::Scene {
     let (mut app, _seat, _asked) = locked(shown);
     app.harness().frame_output().scene.clone()
@@ -267,8 +272,9 @@ fn connection(kind: ui::widget::LinkKind, name: Option<&str>) -> ui::widget::Lin
     }
 }
 
-/// Whether two painted screens draw the same shapes and letters. The ink is
-/// left out: the sheet's arrival still thins it while the shapes stand still.
+/// Whether two painted screens draw the same shapes and letters, both at
+/// rest: the sheet arrives growing and fading, so only a settled screen draws
+/// the same shapes twice, and the ink alone is what a footer's glyph changes.
 fn same_shapes(left: &ui::vello::Scene, right: &ui::vello::Scene) -> bool {
     let (a, b) = (left.encoding(), right.encoding());
     a.path_tags == b.path_tags

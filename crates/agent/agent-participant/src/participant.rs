@@ -1600,15 +1600,16 @@ impl AgentParticipant {
                 .is_some_and(|merged| merged.elapsed() < EXPORT_QUIET)
     }
 
-    /// Whether an open record of the app `step` acts in holds edits still
-    /// waiting for their keys.
+    /// Whether an open record of the app `step` acts in holds edits it could
+    /// not decide yet: waiting for their keys, their surface or the
+    /// workspace's governance.
     fn step_record_pending(&self, step: &Step) -> bool {
         let status = self.peer.status();
         let held = |route: &DocumentRoute| {
             status
                 .routes
                 .get(route)
-                .is_some_and(|route| route.awaiting_keys > 0)
+                .is_some_and(|route| route.waiting() > 0)
         };
         // By app: the record a step names may not be open yet.
         self.apps
@@ -1616,7 +1617,8 @@ impl AgentParticipant {
             .any(|route| route.app_id == step.app && held(route))
     }
 
-    /// Whether a record the running task opened still waits for its keys.
+    /// Whether a record the running task opened still holds undecided
+    /// edits.
     fn touched_keys_pending(&self) -> bool {
         let Some(running) = &self.running else {
             return false;
@@ -1626,16 +1628,15 @@ impl AgentParticipant {
             status
                 .routes
                 .get(route)
-                .is_some_and(|route| route.awaiting_keys > 0)
+                .is_some_and(|route| route.waiting() > 0)
         })
     }
 
-    /// Whether a record of the workspace the agent may work on has arrived sealed
-    /// and opens once the agent holds its channel keys: until then the workspace
-    /// is only half seen.
+    /// Whether a record of the workspace the agent may work on holds edits it
+    /// could not decide yet: until then the workspace is only half seen.
     fn keys_pending_for(&self, task: &str) -> bool {
         self.peer.status().routes.iter().any(|(route, status)| {
-            status.awaiting_keys > 0
+            status.waiting() > 0
                 && route.cluster_id == self.workspace
                 && self.identity.delegation.permits_app(&route.app_id)
                 && crate::model::task_names_app(task, &route.app_id)

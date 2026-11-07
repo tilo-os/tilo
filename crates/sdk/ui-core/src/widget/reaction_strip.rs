@@ -589,6 +589,8 @@ impl ReactionStrip {
             let pose = state.map_or(crate::motion::Pose::REST, |state| {
                 crate::motion::Appear::pose(
                     state.presence.progress(now),
+                    crate::motion::Direction::of(state.presence.is_open()),
+                    pill.rect,
                     pill.rect.center(),
                     motion,
                 )

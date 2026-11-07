@@ -153,10 +153,6 @@ impl RowStatus<'_> {
     }
 }
 
-/// How strongly the colour of whoever made an unseen change washes the row: a hint, quieter
-/// than a selection.
-const CHANGE_WASH: f32 = 0.07;
-
 /// How prominent a row's trailing value is.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RowValue {
@@ -1172,6 +1168,21 @@ struct Changed {
     show: Option<Box<dyn FnMut()>>,
 }
 
+/// The change a retained row shows, as [`ListRow::shown_change`] reads it: who made it, what
+/// they are called, what they did (the sentence under the title), and what assistive
+/// technology hears of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShownChange<'a> {
+    /// Who made the change.
+    pub identity: &'a str,
+    /// What they are called.
+    pub name: &'a str,
+    /// What they did, in words.
+    pub said: &'a str,
+    /// Who changed it and in which run, as the row's tooltip and assistive technology say it.
+    pub spoken: &'a str,
+}
+
 /// A retained list row. Construct with a stable id and a title; press
 /// activates it (pointer, Enter/Space, or assistive technology).
 pub struct ListRow {
@@ -1801,6 +1812,19 @@ impl ListRow {
             show,
         });
         self
+    }
+
+    /// The change the row shows, while the person has not seen it: who made it, what they are
+    /// called and what they did, as the row draws them.
+    #[must_use]
+    pub fn shown_change(&self) -> Option<ShownChange<'_>> {
+        let change = self.change.as_ref()?;
+        Some(ShownChange {
+            identity: &change.identity,
+            name: &change.name,
+            said: &change.said,
+            spoken: &change.spoken,
+        })
     }
 
     /// Hide this row's tooltip while something the host paints covers the list it stands in:

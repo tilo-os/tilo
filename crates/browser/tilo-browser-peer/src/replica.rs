@@ -301,29 +301,3 @@ fn origin(author: [u8; 32], retained: bool) -> TransportOrigin {
         TransportOrigin::RelayDelta(author)
     }
 }
-
-/// Decide every workspace's members' writes against the app surfaces of the
-/// apps this page runs: set once, before the page restores its workspaces.
-#[cfg(feature = "toolkit")]
-pub(crate) fn decide_with_page_surfaces() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        tilo_peer_state::decide_with_surfaces(page_surfaces(), ui::app_surface::hash_of);
-    });
-}
-
-/// The app surfaces a page decides members' writes against: those of the
-/// apps it runs, by the hash a write names. A write naming another version's
-/// surface waits until the page runs that version, as it would on a native
-/// device that has not fetched it.
-#[cfg(feature = "toolkit")]
-fn page_surfaces() -> collab_types::Surfaces {
-    collab_types::Surfaces::from_source(std::sync::Arc::new(
-        collab_types::surface::ContentSurfaces::new(|record, hash| {
-            let running = ui::app_surface::hash_of(record.app)?;
-            (hex::encode(running) == hash)
-                .then(|| ui::app_surface::bytes_of(record.app).map(<[u8]>::to_vec))
-                .flatten()
-        }),
-    ))
-}

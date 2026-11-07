@@ -45,6 +45,9 @@ pub enum ViewEvent {
     /// `undo(v)` or `undo(run)` was pressed: take back, through the platform's history, the
     /// step a version is part of, or every step of a task run.
     Undo(UndoAsk),
+    /// *Mark all seen* was pressed and moved `count` marks: the window says so, and the person
+    /// can take the move back with it.
+    Seen { count: usize },
 }
 
 /// What an `undo(...)` a view applied takes back.
@@ -567,9 +570,13 @@ impl ViewInstance {
                     .iter()
                     .filter_map(|id| id.as_text().map(str::to_owned))
                     .collect();
-                self.core
+                let count = self
+                    .core
                     .mark_all_seen(&self.live.viewer.0, &ids)
                     .map_err(|error| RuntimeError::Package(error.to_string()))?;
+                if count > 0 {
+                    self.events.borrow_mut().push(ViewEvent::Seen { count });
+                }
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             THEN_ACTION => {

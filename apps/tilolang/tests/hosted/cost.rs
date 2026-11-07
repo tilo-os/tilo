@@ -323,9 +323,10 @@ fn record_has_task(session: &Session, title: &str) -> bool {
             matches!(item.get(&field.id), Some(tilolang_tilo::DynValue::Text(text)) if text == title)
         })
     };
+    let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
     tilolang_tilo::action::resource_ids(doc, TASKS)
         .into_iter()
-        .filter_map(|id| tilolang_tilo::action::read_resource(doc, TASKS, &id).ok())
+        .filter_map(|id| tilolang_tilo::action::read_resource(&chunks, TASKS, &id).ok())
         .any(|record| {
             record
                 .schema()
@@ -1355,16 +1356,11 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
 /// What a step still does for each task the workspace holds grows with the workspace: where the
 /// workspace is larger, the step does `per_task` more of `count` for every task more.
 ///
-/// Both are loops over the collection a change did not narrow, and both are read through the
-/// index rather than item by item, so neither gathers the workspace's items to answer:
-/// - `check a task` follows the tasks under it with `descendants`, lowered to a loop over the
-///   list reading each item's parent: the collection holds no index of a task's children.
+/// The loop left is a filter over the collection a change did not narrow, read through the
+/// index rather than item by item, so it does not gather the workspace's items to answer:
 /// - `entry enter` adds a task, which rejoins the place's filter: the filtered listing is read
 ///   again from the collection, its predicate's remaining fields read on every item it may hold.
-const KNOWN_PER_TASK: &[(&str, &str, u64)] = &[
-    ("check a task", "index_fields", 1),
-    ("entry enter", "index_fields", 3),
-];
+const KNOWN_PER_TASK: &[(&str, &str, u64)] = &[("entry enter", "index_fields", 3)];
 
 /// A step of the window costs what it changed and what the window shows, never the size of the
 /// workspace: checking a task off, switching the sidebar's place, a keystroke in the entry, the

@@ -19,7 +19,7 @@ use ui::widget::{
     Section, Segment, Spacer, Text, TextInput, ToggleGroup,
 };
 
-use crate::presentation::Presentation;
+use crate::presentation::{Presentation, Seat, presented};
 
 /// The app the shell mounts the sheet as.
 pub const APP_ID: &str = "so.tilo.invite";
@@ -257,6 +257,7 @@ pub fn sheet(
     choosing: &LocalState<Choosing>,
     link: &LocalState<String>,
     ask: &Ask,
+    presentation: Option<&Presentation>,
 ) -> Element {
     let mut body = Column::new()
         .with_intrinsic_height()
@@ -277,16 +278,16 @@ pub fn sheet(
     }
     let dismissed = ask.clone();
     let escaped = ask.clone();
-    Box::new(
+    Box::new(presented(
+        presentation,
         ModalDialog::new(invite.title.clone(), body)
             .with_test_id("invite")
             .with_icon(Icon::UserPlus)
             .with_description(invite.description.clone())
             .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
-            .open(true)
             .secondary_action(invite.close.clone(), move || dismissed(InviteEffect::Done))
             .on_dismiss(move || escaped(InviteEffect::Done)),
-    )
+    ))
 }
 
 /// What the person asked for last went wrong, or went as asked: said in a
@@ -560,11 +561,14 @@ impl ResourceApp for InviteApp {
         if let Some(seat) = &seat {
             *seat.shown.borrow_mut() = Some(shown.clone());
         }
-        let asking = seat;
+        let asking = seat.clone();
+        let presentation = seat.as_ref().map(|seat| seat.presentation().clone());
         cx.effects(move |effect: InviteEffect, _cx| match &asking {
             Some(seat) => {
                 if effect == InviteEffect::Done {
-                    seat.presentation.gone();
+                    // Its own close: the card leaves the screen, and the shell tells it gone
+                    // once nothing of it is drawn.
+                    seat.presentation.close();
                 }
                 seat.asked.borrow_mut().push(effect);
                 Ok(Effected::done())
@@ -579,8 +583,9 @@ impl ResourceApp for InviteApp {
             let choosing = choosing.clone();
             let link = link.clone();
             let ask = ask.clone();
+            let presentation = presentation.clone();
             cx.switch(&picked, move |_cx, _picked| {
-                sheet(&invite, &choosing, &link, &ask)
+                sheet(&invite, &choosing, &link, &ask, presentation.as_ref())
             })
         })
     }

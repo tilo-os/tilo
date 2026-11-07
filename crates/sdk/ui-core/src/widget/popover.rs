@@ -104,6 +104,11 @@ impl MenuMetrics {
     }
 }
 
+/// Narrower than this, a panel that stands as a sheet in a narrow window
+/// ([`Popover::set_sheet_when_narrow`]) does: the width a phone holds a list
+/// on, where a panel under its button has no room to be one.
+pub const SHEET_WIDTH: f64 = 480.0;
+
 /// An anchored floating Panel holding an option menu or any content widget.
 /// See the module docs for the contract.
 #[crate::component::not_a_component(
@@ -132,6 +137,15 @@ pub struct Popover<C: Widget = NoContent> {
     /// Prefer retaining the complete panel over preserving anchor separation
     /// when neither side has enough room. Ordinary menus keep their policy.
     confine_to_viewport: bool,
+    /// The widest the panel's body may be, however wide the window: a list it
+    /// holds reads as a list, not as a page across the window. `None` bounds it
+    /// only by the room the window leaves.
+    max_width: Option<f64>,
+    /// Stand at the bottom edge, as wide as the window, while the window is
+    /// narrow ([`SHEET_WIDTH`]): a sheet, as a phone shows one, rather than a
+    /// panel hanging under its button where a narrow window has no room for
+    /// one.
+    sheet_when_narrow: bool,
     /// The window the top layer last painted over.
     presented: Option<Rect>,
     /// The panel, resolved by [`Self::place`] (also run by layout and paint).
@@ -186,6 +200,8 @@ impl<C: Widget> Popover<C> {
             align: PanelAlign::Leading,
             viewport: None,
             confine_to_viewport: false,
+            max_width: None,
+            sheet_when_narrow: false,
             presented: None,
             rect: Rect::ZERO,
             dismiss: None,
@@ -217,6 +233,50 @@ impl<C: Widget> Popover<C> {
     pub fn confined_to_viewport(mut self) -> Self {
         self.confine_to_viewport = true;
         self
+    }
+
+    /// Keep the panel inside the window it floats in, or let it hang as wide
+    /// as its content.
+    pub fn set_confined_to_viewport(&mut self, confine: bool) {
+        self.confine_to_viewport = confine;
+        self.stale = true;
+    }
+
+    /// Bound the panel's body to `width` logical pixels, however wide the
+    /// window is.
+    pub fn set_max_width(&mut self, width: f64) {
+        self.max_width = Some(width);
+        self.stale = true;
+    }
+
+    /// Stand at the window's bottom edge, as wide as the window, while the
+    /// window is narrower than [`SHEET_WIDTH`].
+    pub fn set_sheet_when_narrow(&mut self, sheet: bool) {
+        self.sheet_when_narrow = sheet;
+        self.stale = true;
+    }
+
+    /// Whether the panel stands as a sheet at the window's bottom edge now: a
+    /// panel that prefers a sheet in a narrow window, in one.
+    pub fn is_sheet(&self) -> bool {
+        self.sheet_when_narrow && self.presented.is_some_and(|w| w.width() < SHEET_WIDTH)
+    }
+
+    /// The width the panel's body is laid out at: the room the window leaves
+    /// less the panel's padding, narrowed to [`Self::max_width`]; a sheet
+    /// spans the room. Zero while no window has named its size.
+    fn body_width(&self, theme: &Theme) -> f64 {
+        let Some(window) = self.presented else {
+            return 0.0;
+        };
+        let room = (floating_surface::panel_room(window, theme).width()
+            - 2.0 * self.padding(theme))
+        .max(0.0);
+        if self.is_sheet() {
+            room
+        } else {
+            room.min(self.max_width.unwrap_or(f64::INFINITY))
+        }
     }
 
     /// Present individually surfaced controls without a surrounding panel.
@@ -468,6 +528,17 @@ impl<C: Widget> Popover<C> {
             (w + 1.0, h)
         };
         let (w, h) = (body_w.ceil() + pad * 2.0, body_h.ceil() + pad * 2.0);
+        if self.is_sheet() {
+            // Against the window's bottom edge, as wide as the window: the
+            // anchor is where it came from, not where it stands.
+            let h = h.min(viewport.height());
+            self.rect = Rect::new(viewport.x0, viewport.y1 - h, viewport.x1, viewport.y1);
+            self.resolved_side = PopoverSide::Below;
+            if self.options.is_none() && self.host_content.is_none() {
+                self.place_content(tr, theme);
+            }
+            return;
+        }
         let gap = f64::from(theme.tokens.spacing.s1);
         let place = |side| {
             floating_surface::place_aligned(self.anchor, (w, h), side, self.align, gap, viewport)
@@ -1184,9 +1255,13 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         self.detached = None;
         let content = self.content.build_layout(taffy, theme, node_map);
         self.host_content = Some(content);
-        let width = self.presented.map_or(Dimension::auto(), |w| {
-            Dimension::length(crate::num::f32_of_f64(w.width()))
-        });
+        let width = if self.presented.is_some() {
+            Dimension::length(crate::num::f32_of_f64(self.body_width(theme)))
+        } else {
+            self.max_width.map_or(Dimension::auto(), |width| {
+                Dimension::length(crate::num::f32_of_f64(width))
+            })
+        };
         let style = Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {
@@ -1306,15 +1381,17 @@ impl<C: Widget + 'static> Widget for Popover<C> {
         node: NodeId,
         _text: &mut TextRenderer,
     ) -> bool {
-        // The content's max-content width is bounded by the popover node:
-        // give it the window's width once the top layer has named it.
-        let (Some(window), true) = (self.presented, self.host_content.is_some()) else {
+        // The content's max-content width is bounded by the popover node: give
+        // it the room the window leaves, narrowed to the panel's own bound, once
+        // the top layer has named the window it floats in. A panel is never
+        // wider than the window it stands over.
+        let (Some(_), true) = (self.presented, self.host_content.is_some()) else {
             return false;
         };
         let Ok(mut style) = taffy.style(node).cloned() else {
             return false;
         };
-        let width = Dimension::length(crate::num::f32_of_f64(window.width()));
+        let width = Dimension::length(crate::num::f32_of_f64(self.body_width(&self.layout_theme)));
         if style.size.width == width {
             return false;
         }

@@ -2137,6 +2137,7 @@ pub(crate) fn called(id: &str, name: &str, input: &serde_json::Value) -> ModelRe
         },
         stop_reason: StopReason::ToolCalls,
         usage: Usage::default(),
+        cost_micros: 0,
     }
 }
 
@@ -2146,6 +2147,7 @@ fn said(text: &str, stop: StopReason) -> ModelResponse {
         message: Message::text(Role::Assistant, text),
         stop_reason: stop,
         usage: Usage::default(),
+        cost_micros: 0,
     }
 }
 

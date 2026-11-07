@@ -73,6 +73,8 @@ mod room_admission;
 mod room_host;
 #[path = "store_and_forward.rs"]
 mod store_and_forward;
+#[path = "surface_content.rs"]
+mod surface_content;
 #[path = "tenant_isolation.rs"]
 mod tenant_isolation;
 

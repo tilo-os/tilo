@@ -15,11 +15,11 @@ use tilolang::types::Ty;
 /// Which of a change's two values its words speak of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Shows {
-    /// What the field held before: "moved this out of" a project it left.
+    /// What the field held before: "moved it out of" a project it left.
     Before,
-    /// What it holds after: "moved this to" the day it is due.
+    /// What it holds after: "moved it to" the day it is due.
     After,
-    /// Neither: "unassigned this".
+    /// Neither: "unassigned it".
     None,
 }
 
@@ -54,7 +54,7 @@ pub struct Said {
 pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Said {
     let gone = kind(after) == "none";
     let was_gone = kind(before) == "none";
-    let mut said = by_type(&field.ty, named, gone, was_gone);
+    let mut said = by_type(&field.ty, named, after, gone, was_gone);
     if said.shows == Shows::Before && was_gone {
         // Nothing stood before the change: there is no value of its to speak of.
         said.shows = Shows::None;
@@ -63,7 +63,7 @@ pub fn said(field: &FieldInfo, named: &str, before: &Value, after: &Value) -> Sa
 }
 
 /// What a change to a field of `ty` reads with.
-fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
+fn by_type(ty: &Ty, named: &str, after: &Value, gone: bool, was_gone: bool) -> Said {
     let mut ty = ty;
     while let Ty::Option(inner) = ty {
         ty = inner;
@@ -83,13 +83,21 @@ fn by_type(ty: &Ty, named: &str, gone: bool, was_gone: bool) -> Said {
             named,
         ),
         Ty::Time => after_naming("tilolang-did-set-time", "set the { $field } time to", named),
-        Ty::Principal if gone => plain("tilolang-did-unassigned", "unassigned this", Shows::None),
-        Ty::Principal => plain("tilolang-did-assigned", "assigned this to", Shows::After),
+        Ty::Principal if gone => plain("tilolang-did-unassigned", "unassigned it", Shows::None),
+        Ty::Principal => plain("tilolang-did-assigned", "assigned it to", Shows::After),
         Ty::Record(_) | Ty::Union(_) if gone => {
-            plain("tilolang-did-taken-out", "moved this out of", Shows::Before)
+            plain("tilolang-did-taken-out", "moved it out of", Shows::Before)
         }
         Ty::Date | Ty::Record(_) | Ty::Union(_) => {
-            plain("tilolang-did-moved", "moved this to", Shows::After)
+            plain("tilolang-did-moved", "moved it to", Shows::After)
+        }
+        // A flag reads as set or cleared: the field's name is what it means ("marked it done"),
+        // and there is no value of its to go on with.
+        Ty::Bool if flag(after) == Some(true) => {
+            naming("tilolang-did-marked", "marked it { $field }", named)
+        }
+        Ty::Bool if flag(after) == Some(false) => {
+            naming("tilolang-did-unmarked", "unmarked it { $field }", named)
         }
         Ty::Bool | Ty::Int | Ty::Float | Ty::Enum(_) if gone => {
             naming("tilolang-did-cleared", "cleared { $field }", named)
@@ -128,6 +136,19 @@ fn after_naming(key: &'static str, source: &'static str, named: &str) -> Said {
         source,
         field: Some(named.to_owned()),
         shows: Shows::After,
+    }
+}
+
+/// The flag `shown` holds, where it shows one (`Core::shown`): a flag has no value to go on
+/// with, so what it now says is the whole of what changed.
+fn flag(shown: &Value) -> Option<bool> {
+    match shown {
+        Value::Bool(flag) => Some(*flag),
+        Value::Tuple(parts) if kind(shown) == "bool" => match parts.get(1) {
+            Some(Value::Bool(flag)) => Some(*flag),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -240,6 +261,8 @@ mod tests {
             reads(&priority, &high, &none),
             ("tilolang-did-cleared", "", true)
         );
+        // A flag has no value to go on with: it reads as set or cleared, by the field it is
+        // of, and never as "set done to" with nothing after it.
         let pinned = field("pinned", Ty::Bool);
         assert_eq!(
             reads(
@@ -247,7 +270,15 @@ mod tests {
                 &shown("bool", Value::Bool(false)),
                 &shown("bool", Value::Bool(true))
             ),
-            ("tilolang-did-set", "after", true)
+            ("tilolang-did-marked", "", true)
+        );
+        assert_eq!(
+            reads(
+                &pinned,
+                &shown("bool", Value::Bool(true)),
+                &shown("bool", Value::Bool(false))
+            ),
+            ("tilolang-did-unmarked", "", true)
         );
     }
 

@@ -156,6 +156,75 @@ fn a_press_on_the_desk_closes_the_workspace_menu_and_it_stays_down() {
     );
 }
 
+/// A press on the chip that opened the menu closes it, and the chip the same
+/// press also lands on does not put it back up: one press, one answer.
+#[test]
+fn the_press_that_takes_the_menu_down_does_not_raise_it_again() {
+    let (mut frame, overlays) = chrome();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
+    });
+    frame.relayout();
+    let chip = with_chrome(&mut frame, |chrome| chrome.bar().workspace_menu_rect());
+    assert_eq!(
+        overlays.press_outside(chip.center().x, chip.center().y),
+        Some(Slot::WorkspaceMenu),
+        "the chip is not where the menu paints itself"
+    );
+    overlays.dismiss(Slot::WorkspaceMenu);
+    frame.relayout();
+    assert!(!with_chrome(&mut frame, |chrome| chrome.menu_open()));
+
+    // The same press reaches the chip, which asks for the menu as any click
+    // on it does: the menu it just took down stays down.
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
+    });
+    frame.relayout();
+    assert!(
+        !with_chrome(&mut frame, |chrome| chrome.menu_open()),
+        "the press that closed it is still being delivered"
+    );
+    assert!(!overlays.is_open(Slot::WorkspaceMenu));
+
+    // The press is over: the next one on the chip opens the menu again.
+    overlays.press_ended();
+    overlays.settle_press();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
+    });
+    frame.relayout();
+    assert!(
+        with_chrome(&mut frame, |chrome| chrome.menu_open()),
+        "a later press opens it"
+    );
+}
+
+/// The same for the mark behind the Tilo menu.
+#[test]
+fn the_press_that_takes_the_tilo_menu_down_does_not_raise_it_again() {
+    let (mut frame, overlays) = chrome();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
+    });
+    frame.relayout();
+    assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
+    assert_eq!(
+        overlays.press_outside(DESK_PRESS.0, DESK_PRESS.1),
+        Some(Slot::TiloMenu)
+    );
+    overlays.dismiss(Slot::TiloMenu);
+    frame.relayout();
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleTiloMenu);
+    });
+    frame.relayout();
+    assert!(
+        !with_chrome(&mut frame, |chrome| chrome.menu_open()),
+        "the mark the same press lands on does not open it again"
+    );
+}
+
 #[test]
 fn a_press_on_the_menu_itself_is_the_menus() {
     let (mut frame, overlays) = chrome();

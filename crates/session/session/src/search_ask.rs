@@ -428,6 +428,7 @@ mod tests {
                     message: Message::text(Role::Assistant, self.0.concat()),
                     stop_reason: agent_provider_config::protocol::StopReason::EndTurn,
                     usage: agent_provider_config::protocol::Usage::default(),
+                    cost_micros: 0,
                 })
             })
         }

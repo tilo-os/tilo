@@ -173,7 +173,11 @@ fn closing_saves_a_typed_name_first() {
             WorkspaceSettingsEffect::Close,
         ]
     );
-    assert!(!seat.presentation().is_drawn());
+    assert_eq!(
+        seat.presentation().phase(),
+        tilo_sheets::Phase::Leaving,
+        "the card leaves the screen; the shell hears it is gone once it has"
+    );
 }
 
 #[test]

@@ -187,7 +187,6 @@ impl DisplaySheet {
             return;
         };
         seat.presentation().close();
-        seat.presentation().gone();
     }
 
     /// One pass of the sheet: for a new opening, look for wireless displays

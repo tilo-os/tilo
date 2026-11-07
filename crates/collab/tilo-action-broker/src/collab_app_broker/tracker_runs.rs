@@ -42,6 +42,21 @@ fn run_of<'a>(runs: &'a [TrackerRun], binding: &NativeTaskBinding) -> Option<&'a
         .find(|run| run.issue == binding.task_id && run.agent == binding.agent_id)
 }
 
+/// What `run`'s agent may spend on the day its keeper counts, as the record of
+/// the workspace's agents holds it: `None` where this host reads no such
+/// record, and then the agent works unmetered.
+fn spend_of(
+    state: &AppBrokerState,
+    workspace: &str,
+    run: &TrackerRun,
+) -> Option<runtime_collab::TaskRunSpend> {
+    state
+        .services
+        .agents
+        .as_deref()?
+        .spend(workspace, &run.agent)
+}
+
 /// Whether invoking `action` of `app` on `resource` with `argument` is the
 /// run of issue `task`'s report on that issue: one of the tracker's own
 /// verbs, naming the run's issue.
@@ -339,6 +354,7 @@ impl AppBrokerState {
                 execution_budget: run.budget,
                 action_context: context,
                 model: run.model.clone(),
+                spend: spend_of(self, workspace, run),
             },
             subscriber,
         )

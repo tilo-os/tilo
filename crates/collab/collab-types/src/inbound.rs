@@ -123,6 +123,12 @@ impl<T> InboundHold<T> {
         self.held.drain(..).collect()
     }
 
+    /// What this route holds now, oldest first, without taking it: what a
+    /// holder reports about its route.
+    pub fn held(&self) -> impl Iterator<Item = (OpKey, &T)> {
+        self.held.iter().map(|(key, item)| (*key, item))
+    }
+
     #[must_use]
     pub fn is_owed(&self, key: &OpKey) -> bool {
         self.owed.contains(key)

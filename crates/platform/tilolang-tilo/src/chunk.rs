@@ -69,23 +69,26 @@ pub const CHUNKS_KEY: &str = "$chunks";
 /// against the fixed cost of a record (about 200 us to make, 36 us to open, 19 KiB held).
 pub const ITEMS: u64 = 2048;
 
-/// What a chunk is held to: [`ITEMS`] items, or the snapshot bytes one should not pass.
-pub const BYTES: u64 = 1024 * 1024;
-
-/// What a chunk may hold.
+/// What a chunk may hold: [`ITEMS`] items. Bytes are not a second limit to keep: a chunk's size
+/// follows its item count on the measured curve, and a change too large for the transport is
+/// refused by the workspace and reported (`Instance::unshared`), never silently kept here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Limits {
     pub items: u64,
-    pub bytes: u64,
 }
 
 impl Default for Limits {
     fn default() -> Self {
-        Self {
-            items: ITEMS,
-            bytes: BYTES,
-        }
+        Self { items: ITEMS }
     }
+}
+
+/// The record id of chunk `chunk` of the record `base`: `derived:chunk.<n>@<base>`, the id
+/// [`record_sync`](crate::chunk) syncs on demand and the channel its changes travel on. Chunk
+/// [`FIRST`] is the record itself, which has its own id (`base`).
+#[must_use]
+pub fn record_id(base: &str, chunk: ChunkNo) -> String {
+    format!("derived:chunk.{chunk}@{base}")
 }
 
 /// One run of a collection in one chunk: its last order key, and how many items it holds.
@@ -171,6 +174,19 @@ impl Placement {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.of.is_empty() && self.runs.is_empty()
+    }
+
+    /// Every chunk the manifest names, above the record: the resources it places, and the runs
+    /// it keeps. What a replica holds of a record is these, chunk [`FIRST`] being the record
+    /// itself.
+    #[must_use]
+    pub fn chunks(&self) -> std::collections::BTreeSet<ChunkNo> {
+        self.of
+            .values()
+            .copied()
+            .chain(self.runs.values().flat_map(|chunks| chunks.keys().copied()))
+            .filter(|chunk| *chunk != FIRST)
+            .collect()
     }
 
     /// The number of the next chunk a run starts in.
@@ -301,6 +317,8 @@ impl Chunks {
     pub fn of(doc: Doc) -> Self {
         let mut chunks = Self::default();
         chunks.insert(FIRST, doc);
+        // What the record's manifest places is where this set routes its reads and writes.
+        chunks.reread_placement();
         chunks
     }
 
@@ -330,6 +348,11 @@ impl Chunks {
     pub fn doc_mut(&mut self, id: &str) -> Option<&mut Doc> {
         let chunk = self.chunk(id);
         self.mirror_mut(chunk)
+    }
+
+    /// The numbers of the chunks the store holds, the record first and the rest by number.
+    pub fn numbers(&self) -> impl Iterator<Item = ChunkNo> + '_ {
+        self.docs().map(|(chunk, _)| chunk)
     }
 
     /// The chunks the store holds, the record first and the rest by number.
@@ -559,10 +582,7 @@ mod tests {
 
     #[test]
     fn runs_order_by_their_last_item_and_fill_before_a_new_chunk_starts() {
-        let limits = Limits {
-            items: 2,
-            bytes: BYTES,
-        };
+        let limits = Limits { items: 2 };
         let mut doc = record();
         // The first run stays in the record itself, where the collection is; the second is a chunk.
         run(&mut doc, "tracker", "issues", FIRST, "a2", 2).expect("write");

@@ -43,7 +43,9 @@ fn run_connector(origin: &str) -> Result<(), String> {
     match origin {
         "imap" => tilolang_mail::run_connector(origin),
         "youtube" => {
-            tilolang_youtube::connector::run(std::sync::Arc::new(tilolang_youtube::Live::new()))
+            let service: std::sync::Arc<dyn tilolang_youtube::Service> =
+                std::sync::Arc::new(tilolang_youtube::Live::new());
+            tilolang_youtube::connector::run(&service)
         }
         other => Err(format!("there is no connector for the origin `{other}`")),
     }

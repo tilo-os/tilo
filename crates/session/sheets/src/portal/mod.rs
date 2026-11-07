@@ -740,10 +740,12 @@ impl ResourceApp for PortalApp {
     fn view(cx: &mut ViewCx<PortalSheet>) -> Element {
         let seat = cx.take_lent::<PortalSeat>();
         let seat = seat.unwrap_or_else(|| {
-            // Headless, a scenario stands in for the shell.
+            // Headless, a scenario stands in for the shell: it hands the
+            // sheet its question and puts it up, as the shell does.
             let seat = PortalSeat::default();
             if let Some(dialog) = cx.fixture::<Dialog>() {
                 seat.show(Some((*dialog).clone()));
+                seat.presentation.open(false);
             }
             seat
         });

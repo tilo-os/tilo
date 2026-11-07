@@ -33,6 +33,7 @@ fn answer(duplicate: bool) -> ModelResponse {
         },
         stop_reason: StopReason::ToolCalls,
         usage: Usage::default(),
+        cost_micros: 0,
     }
 }
 

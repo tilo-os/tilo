@@ -21,11 +21,11 @@ tilolang-ask-denied = Diese Änderung ist hier nicht erlaubt.
 tilolang-ask-needs-approval = Diese Änderung muss zuerst bestätigt werden.
 tilolang-embed-source = Block
 tilolang-did-changed = hat { $field } geändert
-tilolang-did-created = hat dies erstellt
-tilolang-did-removed = hat dies entfernt
-tilolang-did-moved = hat dies verschoben nach
-tilolang-did-taken-out = hat dies entfernt aus
-tilolang-did-assigned = hat dies zugewiesen an
+tilolang-did-created = hat es erstellt
+tilolang-did-removed = hat es entfernt
+tilolang-did-moved = hat es verschoben nach
+tilolang-did-taken-out = hat es entfernt aus
+tilolang-did-assigned = hat es zugewiesen an
 tilolang-did-unassigned = hat die Zuweisung aufgehoben
 tilolang-did-set = hat { $field } gesetzt auf
 tilolang-did-cleared = hat { $field } geleert
@@ -34,12 +34,18 @@ tilolang-did-cleared-date = hat das Datum { $field } geleert
 tilolang-did-many = hat { $count } { $kind } geändert
 tilolang-did-set-time = hat die Uhrzeit { $field } gesetzt auf
 tilolang-did-cleared-time = hat die Uhrzeit { $field } geleert
+tilolang-did-marked = hat { $field } gesetzt
+tilolang-did-unmarked = hat { $field } aufgehoben
 tilolang-did-and = und
 
 # Was sich geändert hat, seit die Person zuletzt hinsah, Stück für Stück, und der eine Schritt,
 der es alles als gesehen markiert.
 tilolang-since-you-looked = Seit Sie zuletzt hinsahen
 tilolang-mark-all-seen = Alle als gesehen markieren
+tilolang-marked-seen = { $count ->
+    [one] 1 Änderung als gesehen markiert
+   *[other] { $count } Änderungen als gesehen markiert
+}
 
 tilolang-invocation-pending = Wartet
 tilolang-invocation-done = Erledigt
@@ -51,6 +57,7 @@ tilolang-embed-error = Dieser Block konnte nicht ausgeführt werden
 tilolang-all = Alle { $kind }
 # Wer eine Zeile des Verlaufs geschrieben hat: die Person selbst.
 tilolang-you = Du
+tilolang-you-lower = dich
 tilolang-empty = Noch nichts hier
 # What a list says when it lists none of its kind's items: "Noch keine Notizen".
 tilolang-empty-kind = Noch keine { $kind }

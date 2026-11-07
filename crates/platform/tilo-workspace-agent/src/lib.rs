@@ -742,33 +742,12 @@ fn chosen_model(model: Option<String>) -> Result<Option<String>, Refusal> {
     Ok(Some(model))
 }
 
-/// An amount a person reads, in millionths of the currency: `$5`, `$0.42`,
-/// `$12.50` — whole when it is, two places when it has cents, never more.
-#[must_use]
-pub fn money(micros: u64) -> String {
-    let cents = micros / 10_000;
-    let (units, hundredths) = (cents / 100, cents % 100);
-    let units = units.to_string();
-    let mut grouped = String::new();
-    for (place, digit) in units.chars().rev().enumerate() {
-        if place > 0 && place % 3 == 0 {
-            grouped.insert(0, ',');
-        }
-        grouped.insert(0, digit);
-    }
-    if hundredths == 0 {
-        format!("${grouped}")
-    } else {
-        format!("${grouped}.{hundredths:02}")
-    }
-}
-
 /// The most a keeper may set as a day's limit, or `None` for no limit.
 fn checked_limit(limit: Option<u64>) -> Result<Option<u64>, Refusal> {
     match limit {
         Some(limit) if limit > MAX_SPEND_LIMIT_MICROS => Err(Refusal::new(format!(
-            "a day's limit is at most {}",
-            money(MAX_SPEND_LIMIT_MICROS)
+            "a day's limit is at most {} dollars",
+            MAX_SPEND_LIMIT_MICROS / 1_000_000
         ))),
         limit => Ok(limit),
     }

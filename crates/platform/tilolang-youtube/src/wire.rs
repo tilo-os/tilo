@@ -58,6 +58,18 @@ pub enum FromConnector {
     },
 }
 
+/// What an answer answers, for a fault that says the connector answered another question.
+#[must_use]
+pub const fn kind_of(answer: &FromConnector) -> &'static str {
+    match answer {
+        FromConnector::Search { .. } => "a search",
+        FromConnector::Channel { .. } => "a channel",
+        FromConnector::Trending { .. } => "the trending list",
+        FromConnector::Stream { .. } => "a stream",
+        FromConnector::Failed { .. } => "a failure",
+    }
+}
+
 impl FromConnector {
     /// The id of the question this answers.
     #[must_use]

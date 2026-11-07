@@ -69,10 +69,11 @@ fn action_id(app: &mut HostedApp, resource: &str, name: &str) -> String {
 
 /// How many items the collections of the notebooks of `doc` hold: the notes.
 fn items_in(doc: &mut ui::tilo_resource::Doc) -> usize {
+    let chunks = tilolang_tilo::chunk::Chunks::of(doc.clone());
     resource_ids(doc, NOTES)
         .iter()
         .map(|id| {
-            tilolang_tilo::action::read_resource(doc, NOTES, id).map_or(0, |record| {
+            tilolang_tilo::action::read_resource(&chunks, NOTES, id).map_or(0, |record| {
                 record
                     .schema()
                     .fields

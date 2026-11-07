@@ -529,8 +529,7 @@ impl HostContext {
         validate_identity(&author.0).map_err(LaunchError::Restore)?;
         match records.canonical_namespace() {
             Some((_, package, _)) if package == definition.app_id() => {}
-            Some(_) => return Err(LaunchError::BindingMismatch),
-            None => return Err(LaunchError::BindingMismatch),
+            _ => return Err(LaunchError::BindingMismatch),
         }
         for required in &definition.required {
             if !permissions.borrow().check(required) {

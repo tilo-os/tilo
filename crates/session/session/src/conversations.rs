@@ -75,13 +75,63 @@ impl Held {
     }
 }
 
-/// The turns, as the broker's run channel reads them.
-#[derive(Default)]
+/// The turns, as the broker's run channel reads them, and what their agents
+/// spent.
 pub(crate) struct Runs {
     held: Mutex<Held>,
+    /// What the runs' agents spent since the last pass, in millionths of the
+    /// currency, by workspace and agent: the pass charges it to their day.
+    spent: Mutex<BTreeMap<(String, String), u64>>,
+    /// The total each run last reported, by workspace, task and epoch, so a
+    /// report charges only what it added.
+    reported: Mutex<BTreeMap<(String, String, u64), u64>>,
+    /// Wakes the session's loop when a run reported what it spent, so the day
+    /// it is charged to is the day the agent then works in.
+    wake: Option<tilo_service::Wake>,
 }
 
 impl Runs {
+    /// The turns, woken through `wake` when a run reports what it spent.
+    fn new(wake: tilo_service::Wake) -> Self {
+        Self {
+            held: Mutex::default(),
+            spent: Mutex::default(),
+            reported: Mutex::default(),
+            wake: Some(wake),
+        }
+    }
+
+    /// What the runs' agents spent since the last pass, by workspace and
+    /// agent, in millionths of the currency, ready to be charged to their day.
+    pub(crate) fn take_spent(&self) -> Vec<(String, String, u64)> {
+        let Ok(mut spent) = self.spent.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *spent)
+            .into_iter()
+            .map(|((workspace, agent), cost)| (workspace, agent, cost))
+            .collect()
+    }
+
+    /// Keep only the reports of the turns `held` names: a run that ended is
+    /// charged for what it spent, and its total is no longer followed.
+    fn prune_reported(&self, held: &Held) {
+        let Ok(mut reported) = self.reported.lock() else {
+            return;
+        };
+        reported.retain(|(workspace, issue, epoch), _| {
+            held.workspaces
+                .iter()
+                .find(|facts| &facts.workspace == workspace)
+                .is_some_and(|facts| {
+                    facts
+                        .turns
+                        .iter()
+                        .any(|entry| &entry.run.issue == issue && entry.run.epoch == *epoch)
+                })
+        });
+    }
+
     fn workspace(&self, workspace: &str) -> Result<Facts, String> {
         self.held
             .lock()
@@ -149,6 +199,56 @@ impl TrackerRuns for Runs {
             .ok_or("this workspace's grants are not at hand")?;
         requirement.check_tracker_policy(policy, workspace, &entry.run, Some(&entry.looked), wall())
     }
+
+    /// What a run spent, as its agent reported it: charged to the agent's day
+    /// by the pass, and only for what it added to the total it reported
+    /// before.
+    fn reported(
+        &self,
+        workspace: &str,
+        issue: &str,
+        epoch: u64,
+        update: &runtime_collab::TaskRunUpdate,
+    ) {
+        let runtime_collab::TaskRunUpdate::Spent { cost_micros } = update else {
+            return;
+        };
+        let agent = self.held.lock().ok().and_then(|held| {
+            held.workspaces
+                .iter()
+                .find(|facts| facts.workspace == workspace)
+                .and_then(|facts| {
+                    facts
+                        .turns
+                        .iter()
+                        .find(|entry| entry.run.issue == issue && entry.run.epoch == epoch)
+                })
+                .map(|entry| entry.run.agent.clone())
+        });
+        let Some(agent) = agent else {
+            // The turn is over: what it spent was charged when the pass read
+            // the report before it.
+            return;
+        };
+        let added = {
+            let Ok(mut reported) = self.reported.lock() else {
+                return;
+            };
+            let key = (workspace.to_owned(), issue.to_owned(), epoch);
+            let before = reported.insert(key, *cost_micros).unwrap_or_default();
+            cost_micros.saturating_sub(before)
+        };
+        if added == 0 {
+            return;
+        }
+        if let Ok(mut spent) = self.spent.lock() {
+            let cost = spent.entry((workspace.to_owned(), agent)).or_default();
+            *cost = cost.saturating_add(added);
+        }
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+    }
 }
 
 /// One workspace as the pass hands it over: the grants its turns are decided
@@ -186,11 +286,12 @@ impl Conversations {
     /// through `wake` when a change lands.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
-        if let Err(error) = scope.bind(move |_| wake()) {
+        let waking = Arc::clone(&wake);
+        if let Err(error) = scope.bind(move |_| waking()) {
             tracing::warn!(%error, "the conversations are not woken");
         }
         Self {
-            runs: Arc::default(),
+            runs: Arc::new(Runs::new(wake)),
             owners: RecordOwners::new(root),
             wake: scope,
             open: RefCell::default(),
@@ -200,6 +301,12 @@ impl Conversations {
     /// The turns, as the broker reads them.
     pub(crate) fn runs(&self) -> Arc<Runs> {
         Arc::clone(&self.runs)
+    }
+
+    /// What the runs' agents spent since the last pass, by workspace and
+    /// agent, in millionths of the currency, for their day to be charged.
+    pub(crate) fn take_spent(&self) -> Vec<(String, String, u64)> {
+        self.runs.take_spent()
     }
 
     /// Read each workspace's conversations as `person`, and hand the turns
@@ -217,8 +324,10 @@ impl Conversations {
                 }
             })
             .collect();
-        if let Ok(mut held) = self.runs.held.lock() {
-            *held = Held { workspaces: read };
+        let held = Held { workspaces: read };
+        self.runs.prune_reported(&held);
+        if let Ok(mut current) = self.runs.held.lock() {
+            *current = held;
         }
     }
 
@@ -550,11 +659,59 @@ mod tests {
     }
 
     #[test]
+    fn a_runs_spend_is_charged_to_its_agent_for_what_each_report_added() {
+        let chat = workspace();
+        let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
+        let (entries, agents) = turns(&chat, &head, ME);
+        let issue = entries[0].run.issue.clone();
+        let epoch = entries[0].run.epoch;
+        let agent = entries[0].run.agent.clone();
+        let runs = Runs::new(std::sync::Arc::new(|| {}));
+        *runs.held.lock().unwrap() = Held {
+            workspaces: vec![Facts {
+                workspace: "w1".into(),
+                agents,
+                policy: None,
+                turns: entries,
+            }],
+        };
+        let spent = |cost_micros| runtime_collab::TaskRunUpdate::Spent { cost_micros };
+
+        runs.reported("w1", &issue, epoch, &spent(420_000));
+        assert_eq!(
+            runs.take_spent(),
+            vec![("w1".to_owned(), agent.clone(), 420_000)]
+        );
+        assert_eq!(runs.take_spent(), Vec::new(), "a charge is taken once");
+
+        runs.reported("w1", &issue, epoch, &spent(420_000));
+        assert_eq!(
+            runs.take_spent(),
+            Vec::new(),
+            "a repeated total adds nothing"
+        );
+
+        runs.reported("w1", &issue, epoch, &spent(900_000));
+        assert_eq!(
+            runs.take_spent(),
+            vec![("w1".to_owned(), agent, 480_000)],
+            "the run's total, not the last call's, is what its agent spent"
+        );
+
+        runs.reported("w2", &issue, epoch, &spent(100));
+        assert_eq!(
+            runs.take_spent(),
+            Vec::new(),
+            "a turn this session does not hold is not charged"
+        );
+    }
+
+    #[test]
     fn the_run_channel_knows_only_the_workspaces_it_read() {
         let chat = workspace();
         let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
         let (entries, agents) = turns(&chat, &head, ME);
-        let runs = Runs::default();
+        let runs = Runs::new(std::sync::Arc::new(|| {}));
         *runs.held.lock().unwrap() = Held {
             workspaces: vec![Facts {
                 workspace: "w1".into(),

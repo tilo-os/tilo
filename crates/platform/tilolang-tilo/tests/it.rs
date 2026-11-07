@@ -16,6 +16,8 @@ mod bundle;
 mod capture;
 mod chained;
 mod chat;
+#[cfg(feature = "record")]
+mod chunk_records;
 mod chunks;
 mod collab;
 mod columns;
@@ -49,6 +51,7 @@ mod record;
 mod records;
 mod records_service;
 mod reflection;
+mod relatives;
 mod rich_text;
 mod scenarios;
 #[cfg(feature = "record")]

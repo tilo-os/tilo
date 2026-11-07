@@ -839,8 +839,10 @@ impl TilolangHost {
                     );
                 }
             }
-            if let Some(change) = running.hosted.unsent_change() {
-                units.push((app, record, change));
+            // What the unit's reverts wrote, in whichever chunk: each part names the record it
+            // travels on, so an action undone across a unit's chunks still goes as one commit.
+            for (record, change) in running.hosted.unsent_parts() {
+                units.push((app.clone(), record, change));
             }
         }
         if units.is_empty() {
@@ -864,11 +866,8 @@ impl TilolangHost {
         .ok()
         .and_then(|commits| commits.into_iter().flatten().next());
         for running in &mut self.running {
-            let route = running.hosted.record().route();
-            let (app, record) = (route.app_id.as_str(), route.record.as_deref().unwrap_or(""));
-            let sent = units
-                .iter()
-                .any(|(unit_app, unit_record, _)| app == unit_app && record == unit_record);
+            let app = running.hosted.record().route().app_id.clone();
+            let sent = units.iter().any(|(unit_app, _, _)| *unit_app == app);
             if !sent {
                 continue;
             }

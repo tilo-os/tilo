@@ -177,7 +177,15 @@ impl ChangeMarkProps {
         let content = Container::new()
             .with_no_padding()
             .with_child(Box::new(column));
-        Some(Box::new(button.with_popover(content)))
+        // A list under the mark, not a page across the window: as wide as the design system's
+        // list panel, inside the window it hangs in, and a sheet at the bottom of a window too
+        // narrow to hang one in. Its footer's one move stays whole at either width.
+        let mut pair = button.with_popover(content);
+        pair.popover_mut().set_confined_to_viewport(true);
+        pair.popover_mut()
+            .set_max_width(f64::from(crate::tokens::Metrics::BASE.panel_width_list));
+        pair.popover_mut().set_sheet_when_narrow(true);
+        Some(Box::new(pair))
     }
 
     /// The mark's button: the faces of everyone who changed it (one, for a row) and its label.

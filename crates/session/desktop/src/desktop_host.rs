@@ -913,10 +913,10 @@ impl DesktopChrome {
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
         ] {
-            // A press outside took it down, and that press is still being
-            // delivered: the widget follows the stack down below, rather than
-            // the stack taking the widget's word for it and raising it again.
-            if !self.overlays.is_open(slot) && self.overlays.dismissed_recently(slot) {
+            // The stack took it down — a press outside it, another surface
+            // opening — and the widget has yet to follow: what it still shows
+            // is the state being left behind, not an opening to raise again.
+            if !self.overlays.is_open(slot) && self.overlays.awaiting_close(slot) {
                 continue;
             }
             if open == self.overlays.is_open(slot) {
@@ -940,21 +940,31 @@ impl DesktopChrome {
     /// surface comes up — the person opened it, the session did, or Escape
     /// took one away — the slot closes there, and the widget that draws it
     /// closes here so the two never disagree about what the person sees.
+    ///
+    /// Each closing is reported back to the stack, which is how it hears the
+    /// widget followed ([`Overlays::close`]): what it still shows until then
+    /// is the state the stack left behind, and the widget opening again after
+    /// that is a new surface to publish, not that state coming back.
     fn follow_the_stack(&mut self) {
         if self.emoji.is_open() && !self.overlays.is_open(Slot::Emoji) {
             self.emoji.close();
+            self.overlays.close(Slot::Emoji);
         }
         if self.workspace_menu.is_open() && !self.overlays.is_open(Slot::WorkspaceMenu) {
             self.workspace_menu.close();
+            self.overlays.close(Slot::WorkspaceMenu);
         }
         if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
             self.tilo_menu.toggle(Rect::ZERO, self.rect);
+            self.overlays.close(Slot::TiloMenu);
         }
         if self.navigator.takes_keys() && !self.overlays.is_open(Slot::Strips) {
             self.navigator.close();
+            self.overlays.close(Slot::Strips);
         }
         if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
             self.search.close();
+            self.overlays.close(Slot::Search);
         }
     }
 
@@ -1200,6 +1210,13 @@ impl DesktopChrome {
             }
             ChromeIntent::ShowActivity(_) => self.activity_by(None),
             ChromeIntent::ToggleWorkspaceMenu { at } => {
+                // The press that took it down is still being delivered, and
+                // the bar answers it: the same press does not raise it again.
+                // A secondary press elsewhere asks for the menu there, which
+                // is the point it names, not this one.
+                if at.is_none() && self.overlays.dismissed_recently(Slot::WorkspaceMenu) {
+                    return;
+                }
                 if self.tilo_menu.is_menu_open() {
                     self.tilo_menu.toggle(Rect::ZERO, self.rect);
                 }
@@ -1237,6 +1254,11 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ToggleTiloMenu => {
+                // As the workspace's: the press that closed it does not open
+                // it again on its way out.
+                if self.overlays.dismissed_recently(Slot::TiloMenu) {
+                    return;
+                }
                 self.workspace_menu.close();
                 self.tilo_menu.set_actions(self.tilo_menu_actions());
                 self.tilo_menu.toggle(self.bar.tilo_mark_rect(), self.rect);
