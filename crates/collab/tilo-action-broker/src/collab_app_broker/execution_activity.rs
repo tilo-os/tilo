@@ -494,7 +494,7 @@ mod anchor_tests {
     }
 
     /// The argument slot an invocation carries for `arguments`.
-    fn slot(arguments: serde_json::Value) -> String {
+    fn slot(arguments: &serde_json::Value) -> String {
         tilo_actions::remote::InvokeArgument::Json(
             arguments.as_object().cloned().unwrap_or_default(),
         )
@@ -526,7 +526,7 @@ mod anchor_tests {
                 "Whether it is done",
             )],
         );
-        let typed = slot(serde_json::json!({ "done": true }));
+        let typed = slot(&serde_json::json!({ "done": true }));
         for argument in [None, Some("true"), Some(typed.as_str())] {
             assert_eq!(
                 anchor_of(&action, &resource, argument),
@@ -562,7 +562,7 @@ mod anchor_tests {
                 ActionParam::required_owned("text", ParamType::Text, "What to write"),
             ],
         );
-        let replaced = slot(serde_json::json!({
+        let replaced = slot(&serde_json::json!({
             "at": { "item": "b1", "start": 4, "end": 9 },
             "text": "hello",
         }));
@@ -572,7 +572,7 @@ mod anchor_tests {
             "the characters it wrote, not the place it wrote them at",
         );
         // At a caret, the written characters are inserted there.
-        let inserted = slot(serde_json::json!({
+        let inserted = slot(&serde_json::json!({
             "at": { "item": "b1", "at": 12 },
             "text": "héllo",
         }));
@@ -582,7 +582,7 @@ mod anchor_tests {
             "characters, as the place counts them, not bytes",
         );
         // A deletion writes nothing: the characters it removed are the change.
-        let deleted = slot(serde_json::json!({
+        let deleted = slot(&serde_json::json!({
             "at": { "item": "b1", "start": 3, "end": 11 },
             "text": "",
         }));
@@ -619,7 +619,7 @@ mod anchor_tests {
             anchor_of(
                 &action,
                 &resource,
-                Some(&slot(serde_json::json!({ "title": "x" })))
+                Some(&slot(&serde_json::json!({ "title": "x" })))
             ),
             tilo_actions::InteractionAnchor::Resource,
         );

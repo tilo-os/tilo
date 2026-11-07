@@ -362,7 +362,7 @@ impl Fixture {
                     grant: tilo_action_policy::Grant::new(
                         AGENT_GRANT,
                         tilo_action_policy::Subject::agent("scribe"),
-                        tilo_action_policy::TreePath::workspace(&workspace_id().to_string()),
+                        tilo_action_policy::TreePath::workspace(workspace_id().to_string()),
                         tilo_action_policy::KindSet::READ,
                         tilo_action_policy::Answer::Allow,
                         tilo_action_policy::Subject::person(hex::encode(

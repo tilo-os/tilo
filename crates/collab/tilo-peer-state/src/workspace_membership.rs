@@ -286,13 +286,9 @@ pub enum WorkspaceMembershipCommand {
     },
     /// Retired with admission by preset, as [`Self::RetiredAddAgent`].
     #[serde(rename = "RemoveAgent")]
-    RetiredRemoveAgent {
-        agent: String,
-    },
+    RetiredRemoveAgent { agent: String },
     /// Delegate normal app authorship after an authenticated person opens it.
-    GrantAppAuthorship {
-        app: String,
-    },
+    GrantAppAuthorship { app: String },
     /// Retired with workspace tasks: an issue's grants are ordinary grants. It
     /// keeps the commands after it at their encoded positions, still reads
     /// where workspaces hold it, and is refused.
@@ -305,36 +301,23 @@ pub enum WorkspaceMembershipCommand {
     },
     /// Retired with workspace tasks, as [`Self::RetiredGrantForTask`].
     #[serde(rename = "RevokeForTask")]
-    RetiredRevokeForTask {
-        task: String,
-        grant: GrantId,
-    },
+    RetiredRevokeForTask { task: String, grant: GrantId },
     /// Record `grant` in the workspace, as the caller gives it: they must hold the
     /// workspace's grant action and may give no more than they hold.
-    Grant {
-        grant: Grant,
-    },
+    Grant { grant: Grant },
     /// Take back the grant `grant`, as the caller: they must hold the workspace's
     /// revoke action.
-    Revoke {
-        grant: GrantId,
-    },
+    Revoke { grant: GrantId },
     /// Install a bot or update its program ([`BotInstall`]).
     InstallBot(Box<BotInstall>),
     /// Renew an installed bot's delegation, or move it to a new device key.
     RenewBot(Box<BotRenewal>),
     /// Withdraw a bot and revoke its grants; its row stays.
-    UninstallBot {
-        installation: InstallationId,
-    },
+    UninstallBot { installation: InstallationId },
     /// Stop a bot from starting runs.
-    PauseBot {
-        installation: InstallationId,
-    },
+    PauseBot { installation: InstallationId },
     /// Let a paused bot start runs again.
-    ResumeBot {
-        installation: InstallationId,
-    },
+    ResumeBot { installation: InstallationId },
     /// Change whether a bot may post under other names.
     SetBotAppearance {
         installation: InstallationId,
@@ -346,24 +329,18 @@ pub enum WorkspaceMembershipCommand {
     RequestBot(BotRequest),
     /// Take back the request for directory entry `entry`: its host
     /// uninstalls the bot it installed for it.
-    WithdrawBotRequest {
-        entry: String,
-    },
+    WithdrawBotRequest { entry: String },
     /// Run this release of its app in the workspace, for every member
     /// ([`AppRelease`]).
     InstallApp(AppRelease),
     /// Stop choosing a version of `app`: each member runs the one they
     /// have.
-    UninstallApp {
-        app: String,
-    },
+    UninstallApp { app: String },
     /// A change to the workspace's members, as the caller makes it: a role, a
     /// removal, a ban or a restriction, or a grant given or taken back. The
     /// workspace's admission decides it against the caller's own grants where
     /// they made it, on every device that receives it.
-    Member {
-        change: tilo_action_policy::Change,
-    },
+    Member { change: tilo_action_policy::Change },
     /// A change to the workspace's own settings, as the caller makes it
     /// ([`SettingsChange`]): decided against the caller's own grants where
     /// they made it, on every device that receives it.
@@ -378,9 +355,7 @@ pub enum WorkspaceMembershipCommand {
     },
     /// End the share `share`: the grants of it the caller gave, or all of
     /// them when they may revoke in the workspace.
-    Unshare {
-        share: String,
-    },
+    Unshare { share: String },
 }
 
 /// A change to the workspace's own settings: its name, its saved grant sets and
@@ -655,7 +630,7 @@ fn validate_member_change(change: &tilo_action_policy::Change) -> Result<(), Str
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_action_policy::{Answer, Subject, TreePath, roles};
+    use tilo_action_policy::{Answer, TreePath};
 
     #[test]
     fn a_bot_request_names_a_canonical_entry_and_version() {
