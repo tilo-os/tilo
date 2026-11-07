@@ -418,10 +418,27 @@ impl Described for Board {
         board
     }
 
-    /// The lanes, their cards and what a drop does change where the board stands: the board
-    /// keeps what the person is doing with it, a card in flight included.
+    /// The lanes, what heads them and what a drop does change where the board stands: the
+    /// board keeps what the person is doing with it, a card in flight included.
+    ///
+    /// Props given in place name the lanes and cards and carry none of their views, so the
+    /// lanes and cards they name must be the ones the board holds, one for one: a board given
+    /// other lanes or other cards is another board, and is built again around them. Rebuilding
+    /// its cards from those props would show none of their content.
     fn set_props(&mut self, props: BoardProps) -> bool {
         let BoardProps { name, lanes } = props;
+        let shaped: Vec<(String, Vec<String>)> = lanes
+            .iter()
+            .map(|lane| {
+                (
+                    lane.key.clone(),
+                    lane.cards.iter().map(|card| card.key.clone()).collect(),
+                )
+            })
+            .collect();
+        if !self.holds(&shaped) {
+            return false;
+        }
         let built = lanes_of(lanes);
         let on_drop = drop_handler(&built);
         self.name = name;

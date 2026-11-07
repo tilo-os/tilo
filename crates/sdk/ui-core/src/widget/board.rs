@@ -199,6 +199,18 @@ impl Board {
         });
     }
 
+    /// Whether the board shows exactly `lanes`: each lane by its key and its cards by theirs,
+    /// in order. A board's props given in place name the lanes and cards it shows and carry
+    /// none of their views, so props naming other lanes or cards are another board.
+    pub(crate) fn holds(&self, lanes: &[(String, Vec<String>)]) -> bool {
+        self.lanes.len() == lanes.len()
+            && self
+                .lanes
+                .iter()
+                .zip(lanes)
+                .all(|(held, (key, cards))| held.key == *key && held.cards == *cards)
+    }
+
     /// The lanes the board shows now, where it stands: what the board is and what the person is
     /// doing with it — a drag in flight — stay.
     pub(crate) fn set_lanes(
