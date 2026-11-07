@@ -741,17 +741,6 @@ impl<'a> ToastCard<'a> {
         self
     }
 
-    /// Whether the card offers something to do: an action, or work under
-    /// way it follows. Only such a card may stay up until it is taken down;
-    /// any other leaves after [`NOTICE_LIFETIME`].
-    #[must_use]
-    pub fn stays_up(&self) -> bool {
-        self.actionable
-            || !self.primary_action.is_empty()
-            || !self.secondary_action.is_empty()
-            || self.progress.is_some()
-    }
-
     /// Whether the card carries only one action, beside its text.
     fn single_action(&self) -> bool {
         self.secondary_action.is_empty() && !self.primary_action.is_empty()

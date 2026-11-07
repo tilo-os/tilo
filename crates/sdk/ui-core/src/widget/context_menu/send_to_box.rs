@@ -16,12 +16,6 @@ impl ContextMenu {
         &self.send_to
     }
 
-    /// The box beside the menu, to set where its window is or to take what
-    /// it holds.
-    pub fn send_to_mut(&mut self) -> &mut crate::widget::SendToBox {
-        &mut self.send_to
-    }
-
     /// Open the box with no menu around it: a window's own send key over a
     /// selection, and a shell asking an app to send what it holds, or to
     /// report a problem, when it names whom the box goes to. `anchor` is
