@@ -950,8 +950,12 @@ impl InstanceRecord {
                 DocumentMutation::Incremental(bytes) => self.doc.load_incoming(bytes),
                 DocumentMutation::Snapshot(bytes) => self.doc.load_incoming_whole(bytes),
             };
+            // What is taken in counts as a change only when the record gained one: a change this
+            // replica made comes back on its own route (the broker hands every holder what a
+            // unit sent), and the record already holds it. The record's readers are told a
+            // change once it holds it, so a change it held already is told to none of them.
             match taken {
-                Ok(_) => changed = true,
+                Ok(applied) => changed |= applied > 0,
                 Err(error) => tracing::warn!(%error, "workspace: a change was not taken in"),
             }
         }
