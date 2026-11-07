@@ -1012,14 +1012,14 @@ impl NavList {
     /// action. Showing a destination is the window's own state, never an
     /// edit: the action is absent from history.
     #[must_use]
-    pub fn on_view(mut self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
+    pub fn on_view(self, id: impl Into<String>, f: impl FnMut(String) + 'static) -> Self {
         let id = id.into();
         self.set_on_view(id.clone(), f);
         self.with_id(id)
     }
 
     /// [`Self::on_view`] after construction: what choosing a destination does.
-    fn set_on_view(&mut self, id: impl Into<String>, f: impl FnMut(String) + 'static) {
+    fn set_on_view(&self, id: impl Into<String>, f: impl FnMut(String) + 'static) {
         let id = id.into();
         self.shared.borrow_mut().view = Some(NavView {
             choice: crate::widget::view_choice::ViewChoice::new(id, "Go to"),
@@ -1117,13 +1117,13 @@ impl NavList {
     /// Called with the section id and the action id when a section header's
     /// trailing action is pressed.
     #[must_use]
-    pub fn on_section_action(mut self, f: impl FnMut(&str, &str) + 'static) -> Self {
+    pub fn on_section_action(self, f: impl FnMut(&str, &str) + 'static) -> Self {
         self.set_section_action(f);
         self
     }
 
     /// [`Self::on_section_action`] after construction.
-    fn set_section_action(&mut self, f: impl FnMut(&str, &str) + 'static) {
+    fn set_section_action(&self, f: impl FnMut(&str, &str) + 'static) {
         self.shared.borrow_mut().on_section_action = Some(Box::new(f));
     }
 

@@ -735,6 +735,97 @@
       }
     },
     {
+      "name": "ChangeMark",
+      "doc": "What someone else changed of a resource that the person looking has not seen yet: who, in which task run, and whether they made, changed or removed it. The host fills all but `of` from the resource's versions; activating it shows what they did.",
+      "props": [
+        {
+          "name": "of",
+          "doc": "The resource whose changes it marks.",
+          "type": {
+            "option": "resource"
+          },
+          "positional": true
+        },
+        {
+          "name": "by",
+          "doc": "Who made the newest change the person has not seen.",
+          "type": {
+            "option": "principal"
+          }
+        },
+        {
+          "name": "by_all",
+          "doc": "Everyone who made one of the changes the person has not seen, in the order they changed it (its newest change last), each once.",
+          "type": {
+            "list": "principal"
+          }
+        },
+        {
+          "name": "said",
+          "doc": "What the newest change did, in the words history says it with (\"moved this to\").",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "noun",
+          "doc": "What one item of it is called, plural (\"tasks\"): the noun a window's count names.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "run",
+          "doc": "The task run it was part of, as its task is titled.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "kind",
+          "doc": "What they did: `created`, `changed` or `removed`.",
+          "type": {
+            "option": "text"
+          },
+          "data": true
+        },
+        {
+          "name": "count",
+          "doc": "How many changes of it the person has not seen.",
+          "type": "int"
+        },
+        {
+          "name": "window",
+          "doc": "It marks a window, in its header: it says how many changes and by whom.",
+          "type": "bool"
+        },
+        {
+          "name": "more",
+          "doc": "The window's document holds more resources than the mark counted: what it says is a lower bound, and says so.",
+          "type": "bool"
+        }
+      ],
+      "slots": [
+        {
+          "name": "content",
+          "doc": "What a window's mark opens: the views of its catch-up (*Since you looked*), placed by whoever placed the mark. A mark of a row has none, and shows who changed it alone.",
+          "accepts": "view",
+          "many": true,
+          "default": true
+        }
+      ],
+      "events": [
+        {
+          "name": "activate",
+          "doc": "Activated: show what they did, at the run that did it."
+        }
+      ],
+      "semantics": {
+        "role": "Button",
+        "label": "run"
+      }
+    },
+    {
       "name": "Sparkline",
       "doc": "A tiny trend line, with no axis, grid, title or legend: a recent history inside a table cell or a stat card. Fewer than two samples draw nothing.",
       "props": [

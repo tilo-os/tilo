@@ -1391,6 +1391,83 @@ mod tests {
     use crate::component::{Event, Fired, Intent};
     use crate::widget::MenuItemProps;
 
+    /// The rows of a list given its items whole: a row a title each.
+    fn given_rows(count: usize) -> DescribedRows {
+        let items = (0..count)
+            .map(|at| ListItemProps {
+                key: format!("row-{at}"),
+                row: ItemRow::Row(Box::new(ListRowProps {
+                    title: format!("row {at}"),
+                    ..ListRowProps::default()
+                })),
+                ..ListItemProps::default()
+            })
+            .collect();
+        DescribedRows {
+            held: Held::Given(Rc::new(items)),
+            ..DescribedRows::default()
+        }
+    }
+
+    /// The props of a list of `rows` that is a column's whole body.
+    fn column_of(rows: DescribedRows) -> VirtualListProps {
+        VirtualListProps {
+            in_column: true,
+            rows,
+            ..VirtualListProps::default()
+        }
+    }
+
+    /// Lay the list out in a column of `height`, as the window does.
+    fn lay_out(list: &mut VirtualList<DescribedRows>, height: f32) {
+        list.set_viewport_height(height);
+        let doc = automerge::AutoCommit::new();
+        Widget::sync(list, &doc, &automerge::ROOT);
+        let mut taffy = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        let node = Widget::build_layout(list, &mut taffy, &crate::theme::Theme::dark(), &mut nodes);
+        taffy
+            .compute_layout(
+                node,
+                taffy::Size {
+                    width: taffy::AvailableSpace::Definite(300.0),
+                    height: taffy::AvailableSpace::Definite(height),
+                },
+            )
+            .unwrap();
+        Widget::apply_layout(list, &taffy, node, Point::ZERO);
+    }
+
+    /// A list given its items again keeps where the person scrolled: the items are replaced
+    /// where the list stands, not the list built again around them.
+    #[test]
+    fn a_list_given_its_items_again_keeps_where_the_person_scrolled() {
+        let mut list = DescribedList::from_props("list", column_of(given_rows(200)));
+        {
+            let inner = list.list_mut().expect("the list stands");
+            lay_out(inner, 200.0);
+            lay_out(inner, 200.0);
+            inner.set_scroll_offset(600.0);
+            assert!(inner.scroll_offset() > 0.0, "the list scrolled");
+        }
+        let scrolled = list.list().expect("the list stands").scroll_offset();
+        let props = VirtualListProps {
+            tail_title: Some("Done".into()),
+            ..column_of(given_rows(200))
+        };
+        assert!(
+            list.set_props(props),
+            "the list takes its items where it stands"
+        );
+        let inner = list.list().expect("the list stands");
+        assert!(
+            (inner.scroll_offset() - scrolled).abs() < 0.01,
+            "the rows stayed where the person scrolled them: {} then {}",
+            scrolled,
+            inner.scroll_offset()
+        );
+    }
+
     /// A menu command that reports its choose to `queue` when run.
     fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
         let mut item = MenuItemProps {

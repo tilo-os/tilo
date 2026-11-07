@@ -285,7 +285,7 @@ fn show_as_card(widget: &mut dyn Widget, selected: bool, activate: Event) -> boo
 /// resolve where a card lands.
 struct Lanes {
     /// Each lane's key, heading, cards and foot, in order.
-    lanes: Vec<(
+    columns: Vec<(
         String,
         Option<Element>,
         Vec<(String, Element)>,
@@ -307,7 +307,7 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
     // row stands.
     let headed = lanes.iter().any(|lane| lane.title.is_some());
     let mut built = Lanes {
-        lanes: Vec::with_capacity(lanes.len()),
+        columns: Vec::with_capacity(lanes.len()),
         items: HashMap::new(),
         before: HashMap::new(),
         lane_drops: HashMap::new(),
@@ -360,7 +360,7 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
             widgets.push((card_key, widget));
         }
         built.lane_drops.insert(lane_key.clone(), (drop, order));
-        built.lanes.push((lane_key, heading, widgets, foot));
+        built.columns.push((lane_key, heading, widgets, foot));
     }
     built
 }
@@ -369,7 +369,7 @@ fn lanes_of(lanes: Vec<BoardLaneProps>) -> Lanes {
 /// place among that lane's other cards.
 fn drop_handler(built: &Lanes) -> Box<dyn FnMut(BoardDrop)> {
     let Lanes {
-        lanes: _,
+        columns: _,
         items,
         before,
         lane_drops,
@@ -413,7 +413,7 @@ impl Described for Board {
         let on_drop = drop_handler(&built);
         let mut board = Self::new().with_id(key.to_owned());
         board.name = name;
-        board.set_lanes(built.lanes);
+        board.set_lanes(built.columns);
         board.set_on_drop(on_drop);
         board
     }
@@ -425,7 +425,7 @@ impl Described for Board {
         let built = lanes_of(lanes);
         let on_drop = drop_handler(&built);
         self.name = name;
-        self.set_lanes(built.lanes);
+        self.set_lanes(built.columns);
         self.set_on_drop(on_drop);
         true
     }

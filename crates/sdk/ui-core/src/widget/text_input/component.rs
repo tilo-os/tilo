@@ -198,3 +198,50 @@ impl Described for TextInput {
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::Dispatch;
+    use crate::widget::Widget;
+    use vello::kurbo::Rect;
+    use winit::event::WindowEvent;
+
+    /// A field keeps the keyboard, the caret and what is being composed into it when its props
+    /// change: only what it says and the text it edits change.
+    #[test]
+    fn a_field_takes_new_props_keeping_the_keyboard_the_caret_and_the_composition() {
+        let mut field = TextInput::from_props("field", TextInputProps::default());
+        field.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
+        Widget::set_focus(&mut field, true);
+        let composed = WindowEvent::Ime(winit::event::Ime::Preedit(
+            "漢".into(),
+            Some(("漢".len(), "漢".len())),
+        ));
+        assert!(
+            Dispatch::new().send(&mut field, &composed).handled,
+            "the field takes what is being composed"
+        );
+        assert!(field.is_composing(), "the field is composing");
+        let caret = field.caret_position();
+
+        let props = TextInputProps {
+            placeholder: Some("Search".into()),
+            ..TextInputProps::default()
+        };
+        assert!(
+            field.set_props(props),
+            "the field takes its props where it stands"
+        );
+        assert!(Widget::is_focused(&field), "the field kept the keyboard");
+        assert_eq!(
+            field.caret_position(),
+            caret,
+            "the caret stayed where the person put it"
+        );
+        assert!(
+            field.is_composing(),
+            "what was being composed is still in the field"
+        );
+    }
+}

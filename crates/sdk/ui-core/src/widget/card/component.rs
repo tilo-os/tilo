@@ -98,20 +98,17 @@ impl Described for Card {
         let title = title.filter(|title| !title.is_empty());
         let count = count.map(|count| usize::try_from(count.max(0)).unwrap_or(0));
         if title != self.title || count != self.header_count {
-            match &title {
-                Some(title) => {
-                    self.header_count = count;
-                    let header = SectionHeader::group(title.as_str());
-                    let header = match count {
-                        Some(count) => header.count(count),
-                        None => header,
-                    };
-                    self.set_header(header);
-                }
-                None => {
-                    self.header_count = None;
-                    self.remove_header();
-                }
+            if let Some(title) = &title {
+                self.header_count = count;
+                let header = SectionHeader::group(title.as_str());
+                let header = match count {
+                    Some(count) => header.count(count),
+                    None => header,
+                };
+                self.set_header(header);
+            } else {
+                self.header_count = None;
+                self.remove_header();
             }
         }
         let label = self.title.clone().unwrap_or_default();

@@ -276,10 +276,6 @@ impl DropZone {
     /// action `drop`, so a person's drop, a script and an agent hand files
     /// over through the same action.
     #[must_use]
-    #[expect(
-        clippy::expect_used,
-        reason = "the generated text parameter and its action are internally consistent"
-    )]
     pub fn on_files_view(mut self, f: impl FnMut(Vec<PathBuf>) + 'static) -> Self {
         self.set_on_files_view(f);
         self

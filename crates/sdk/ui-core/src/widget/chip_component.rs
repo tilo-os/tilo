@@ -91,13 +91,12 @@ impl Described for Chip {
         self.selectable = selected.is_some();
         self.set_selected(selected.unwrap_or(false));
         self.activation.set_event(press, &label);
-        match remove.handler() {
-            Some(mut run) => self.set_on_remove_view(move || run()),
-            None => {
-                self.removable = false;
-                self.on_remove = None;
-                self.remove_verb = None;
-            }
+        if let Some(mut run) = remove.handler() {
+            self.set_on_remove_view(move || run());
+        } else {
+            self.removable = false;
+            self.on_remove = None;
+            self.remove_verb = None;
         }
         self.dirty = true;
         true

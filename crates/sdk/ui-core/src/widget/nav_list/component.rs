@@ -244,7 +244,7 @@ fn place(key: &str, title: Option<String>, items: Vec<NavEntry>, select: Event) 
 
 impl NavList {
     /// Answer choosing a place and pressing a section's add with the events `placed` carries.
-    fn report(&mut self, key: &str, placed: &Placed) {
+    fn report(&self, key: &str, placed: &Placed) {
         if !placed.adds.is_empty() {
             let mut runs: std::collections::HashMap<String, Box<dyn FnMut()>> = placed
                 .adds

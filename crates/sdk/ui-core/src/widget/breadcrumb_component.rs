@@ -62,7 +62,7 @@ impl Described for Breadcrumb {
         }
         let goes = handlers.iter().any(Option::is_some);
         let mut trail = Self::new(labels);
-        trail.key = key.to_owned();
+        trail.key = String::from(key);
         if let Some(icon) = root_icon {
             trail = trail.root_icon(icon);
         }

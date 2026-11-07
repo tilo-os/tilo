@@ -892,3 +892,43 @@ impl Described for DeclaredPopoverButton {
         Some(column)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A popover the person opened stays open while its props are given to it again, and closes
+    /// when the host says it is closed.
+    #[test]
+    fn a_popover_takes_its_props_where_it_stands_and_keeps_what_was_opened() {
+        let mut popover = DeclaredPopover::new(PopoverProps {
+            label: Some("Filters".into()),
+            ..PopoverProps::default()
+        });
+        popover.popover().set_open(true);
+        let props = PopoverProps {
+            open: true,
+            label: Some("Filters".into()),
+            side: Some(PopoverSide::Below),
+            ..PopoverProps::default()
+        };
+        assert!(
+            popover.set_props(props),
+            "the popover takes its props where it stands"
+        );
+        assert!(
+            popover.popover().is_open(),
+            "the popover the person opened stayed open"
+        );
+        let closed = PopoverProps {
+            open: false,
+            label: Some("Filters".into()),
+            ..PopoverProps::default()
+        };
+        assert!(popover.set_props(closed));
+        assert!(
+            !popover.popover().is_open(),
+            "a popover the host closed shut"
+        );
+    }
+}
