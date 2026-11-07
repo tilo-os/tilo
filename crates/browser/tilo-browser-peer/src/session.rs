@@ -253,6 +253,34 @@ pub struct RouteStatus {
     /// Sealed documents that arrived before this device held the route's
     /// keys; they open once the keys do.
     pub awaiting_keys: usize,
+    /// Documents that arrived written by an app version whose surface this
+    /// page does not hold; they are decided once the workspace answers it.
+    pub awaiting_surface: usize,
+    /// Documents that arrived before the workspace's governance could decide
+    /// them (its author, the workspace, or the app version it runs).
+    pub awaiting_governance: usize,
+}
+
+impl RouteStatus {
+    /// The documents this route holds, undecided, whatever they wait for.
+    #[must_use]
+    pub fn waiting(&self) -> usize {
+        self.awaiting_keys + self.awaiting_surface + self.awaiting_governance
+    }
+}
+
+/// Why a document waits undecided.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HoldReason {
+    /// Its route's keys, which carry it sealed.
+    Keys,
+    /// The app version it was written with, by that version's surface hash:
+    /// this page asks its workspace for it, and decides the document when it
+    /// arrives.
+    Surface([u8; 32]),
+    /// The workspace's governance: its author's certificate, the workspace's
+    /// document, or the app version the workspace runs.
+    Governance,
 }
 
 /// Everything a snapshot is derived from.
@@ -778,7 +806,7 @@ impl PeerHandle {
         channels.restore(saved.channels);
         channels.restore_requests(saved.requests);
         #[cfg(feature = "toolkit")]
-        crate::replica::decide_with_page_surfaces();
+        crate::surfaces::decide_with_kept_surfaces();
         let task = Task {
             replicas: crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store)),
             commands: commands.downgrade(),
@@ -798,6 +826,8 @@ impl PeerHandle {
             opened: BTreeMap::new(),
             refused: (0, String::new()),
             held_inbound: BTreeMap::new(),
+            surface_wants: crate::content::ContentWants::default(),
+            surfaces_arrived: false,
             owed_replays: BTreeMap::new(),
             held_live: crate::held_live::HeldLive::new(),
             held_outbound: saved.held.into_iter().collect(),
@@ -1242,10 +1272,23 @@ enum Exit {
     Lost(String),
 }
 
-/// A frame held for its route, with its authenticated author and whether the
-/// host was replaying it: its record's history is admitted where a live
-/// write is not, and a frame decided again keeps that verdict.
-type HeldFrame = (Vec<u8>, [u8; 32], bool);
+/// A frame held for its route, with its authenticated author, whether the
+/// host was replaying it, and what it waits for: its record's history is
+/// admitted where a live write is not, and a frame decided again keeps that
+/// verdict.
+struct HeldFrame {
+    body: Vec<u8>,
+    author: [u8; 32],
+    retained: bool,
+    reason: HoldReason,
+}
+
+impl HeldFrame {
+    /// Whether this frame waits for an app surface an arrival can supply.
+    fn waits_for_surface(&self) -> bool {
+        matches!(self.reason, HoldReason::Surface(_))
+    }
+}
 
 struct Task {
     /// This session's own command queue, for answers it waits on in the
@@ -1280,6 +1323,12 @@ struct Task {
     /// Sealed documents that arrived before this device held their keys,
     /// with their authenticated authors.
     held_inbound: BTreeMap<DocumentRoute, InboundHold<HeldFrame>>,
+    /// App surfaces this page asked its workspaces for, by the route whose
+    /// writes named them: they arrive as pieces of record content.
+    surface_wants: crate::content::ContentWants<()>,
+    /// Whether an app surface arrived since the session last decided what it
+    /// held for one.
+    surfaces_arrived: bool,
     /// Records the host is replaying for documents a full hold let go of.
     owed_replays: BTreeMap<[u8; 32], DocumentRoute>,
     /// Live frames waiting for their record's keys.
@@ -1763,6 +1812,13 @@ impl Task {
                 return Exit::Lost("host session saturated".into());
             }
             self.settle_planes(Some(&client));
+            // App surfaces this page holds documents for go out with what the
+            // session owes, and a surface that arrived decides what waited
+            // for it before anything else is read.
+            self.ask_surfaces(&client);
+            if std::mem::take(&mut self.surfaces_arrived) {
+                self.decide_held_surfaces(&client);
+            }
             // What the outbox still owes the host goes as its queue takes it:
             // every answer from the host, every command, every tick is a
             // chance to hand it more.
@@ -2632,6 +2688,23 @@ impl Task {
                 from_device_public_key,
                 frame,
             } => self.content_wanted(workspace_id, from_device_public_key, frame),
+            Envelope::RecordContent { ref frame, .. } => {
+                // A surface this page asked for is the peer's, not a record's
+                // content: it is kept for deciding, and what waited for it is
+                // decided at the top of the session loop.
+                let device = self.config.cert.device_public_key;
+                match self.surface_wants.piece(&device, frame) {
+                    Some(arrived) => {
+                        self.surfaces_arrived |=
+                            crate::surfaces::keep(&arrived.hash, arrived.bytes);
+                    }
+                    None => {
+                        if let Some(event) = addressed(envelope) {
+                            self.emit(&event);
+                        }
+                    }
+                }
+            }
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
@@ -2808,7 +2881,15 @@ impl Task {
                         // yet. A record whose every write is held would
                         // otherwise never ask for the keys the writes wait on.
                         self.open_channel(&route);
-                        self.hold_document(route, OpKey::of(envelope), body, author, retained);
+                        let reason = self.hold_reason(&route, envelope);
+                        self.hold_document(
+                            route,
+                            OpKey::of(envelope),
+                            body,
+                            author,
+                            retained,
+                            reason,
+                        );
                         return;
                     }
                     Err(error) => {
@@ -2822,7 +2903,8 @@ impl Task {
                     Some(metadata) => self
                         .ciphers
                         .get(&route)
-                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch)),
+                        .is_none_or(|cipher| !cipher.holds_epoch(metadata.epoch))
+                        .then_some(HoldReason::Keys),
                     None => match self
                         .channels
                         .admission(
@@ -2836,19 +2918,19 @@ impl Task {
                         )
                         .admits_cleartext()
                     {
-                        Some(true) => false,
+                        Some(true) => None,
                         Some(false) => {
                             let error = "cleartext on a channel that requires it sealed";
                             self.refused = (self.refused.0.saturating_add(1), error.to_owned());
                             self.emit(&PeerEvent::DocumentRejected(error.to_owned()));
                             return;
                         }
-                        None => true,
+                        None => Some(HoldReason::Governance),
                     },
                 };
-                if waits {
+                if let Some(reason) = waits {
                     let key = OpKey::of(envelope);
-                    self.hold_document(route, key, body, author, retained);
+                    self.hold_document(route, key, body, author, retained, reason);
                     return;
                 }
                 self.open_document(&body, author);
@@ -2871,23 +2953,116 @@ impl Task {
     /// opens, cleartext they require sealed is refused, the rest waits on.
     fn decide_held(&mut self, workspace_id: u64) {
         for route in self.held_routes(workspace_id) {
-            let held = self
-                .held_inbound
-                .get_mut(&route)
-                .map(InboundHold::take)
-                .unwrap_or_default();
-            // The count stands until each document is decided again: one
-            // still sealed is held again, and only what opened stops it.
-            for (_, (body, author, retained)) in held {
-                self.held_body(body, author, retained);
-            }
-            let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
-            self.update(|status| {
-                if let Some(status) = status.routes.get_mut(&route) {
-                    status.awaiting_keys = waiting;
-                }
-            });
+            self.decide_route(&route, None);
         }
+    }
+
+    /// Why `envelope`, a write this page cannot decide yet, waits: for the app
+    /// version it was written with, a change naming a surface the page holds
+    /// not (it asks the workspace for it), or for its workspace's governance.
+    fn hold_reason(
+        &mut self,
+        route: &DocumentRoute,
+        envelope: &collab_types::SignedOp,
+    ) -> HoldReason {
+        let surface = (envelope.kind == collab_types::OpKind::Change)
+            .then_some(envelope.surface)
+            .flatten();
+        match surface {
+            Some(surface) if !crate::surfaces::holds(&route.app_id, &surface) => {
+                HoldReason::Surface(surface)
+            }
+            _ => HoldReason::Governance,
+        }
+    }
+
+    /// Take every document held for `route` and decide it again: what still
+    /// cannot be decided is held again with the reason it has now.
+    fn decide_route(&mut self, route: &DocumentRoute, client: Option<&Link>) {
+        let held = self
+            .held_inbound
+            .get_mut(route)
+            .map(InboundHold::take)
+            .unwrap_or_default();
+        for (_, frame) in held {
+            self.held_body(frame.body, frame.author, frame.retained);
+        }
+        self.recount(route);
+        self.replay_owed(route, client);
+    }
+
+    /// Decide again what the surfaces that arrived were waited for: every
+    /// document held for an app version this page has now.
+    fn decide_held_surfaces(&mut self, client: &Link) {
+        let routes: Vec<DocumentRoute> = self
+            .held_inbound
+            .iter()
+            .filter(|(_, held)| held.held().any(|(_, frame)| frame.waits_for_surface()))
+            .map(|(route, _)| route.clone())
+            .collect();
+        for route in routes {
+            self.decide_route(&route, Some(client));
+        }
+    }
+
+    /// Ask the workspaces for the app surfaces this page holds documents for
+    /// and does not have: the host keeps every version it decided with, and
+    /// asks the registry for one it has not seen.
+    fn ask_surfaces(&mut self, client: &Link) {
+        let mut wants: BTreeMap<[u8; 32], (u64, String, String)> = BTreeMap::new();
+        for (route, held) in &self.held_inbound {
+            let Ok(workspace_id) = route.workspace_id() else {
+                continue;
+            };
+            for (_, frame) in held.held() {
+                if let HoldReason::Surface(surface) = frame.reason {
+                    wants.entry(surface).or_insert_with(|| {
+                        (workspace_id, route.app_id.clone(), route.cluster_id.clone())
+                    });
+                }
+            }
+        }
+        let device = self.config.cert.device_public_key;
+        let now = tilo_clock::unix_now_ms();
+        for (surface, (workspace_id, app_id, cluster_id)) in wants {
+            if crate::surfaces::holds(&app_id, &surface) {
+                continue;
+            }
+            let Some(request) = self.surface_wants.ask(
+                &device,
+                (),
+                (&app_id, &cluster_id),
+                &hex::encode(surface),
+                now,
+            ) else {
+                continue;
+            };
+            self.want_content(workspace_id, request, Some(client));
+        }
+    }
+
+    /// Set `route`'s status from what it holds now, by the reason each
+    /// document waits.
+    fn recount(&self, route: &DocumentRoute) {
+        let mut waiting = (0_usize, 0_usize, 0_usize);
+        if let Some(held) = self.held_inbound.get(route) {
+            for (_, frame) in held.held() {
+                let count = match frame.reason {
+                    HoldReason::Keys => &mut waiting.0,
+                    HoldReason::Surface(_) => &mut waiting.1,
+                    HoldReason::Governance => &mut waiting.2,
+                };
+                *count = count.saturating_add(1);
+            }
+        }
+        self.update(|status| {
+            let status = status.routes.entry(route.clone()).or_default();
+            (
+                status.awaiting_keys,
+                status.awaiting_surface,
+                status.awaiting_governance,
+            ) = waiting;
+        });
     }
 
     /// The host answered `Ready` for `workspace_id`: what the replay brought
@@ -2924,8 +3099,8 @@ impl Task {
             .collect()
     }
 
-    /// Hold a document until its route's keys change, its workspace's governance
-    /// is known, or the host's replay supplies it.
+    /// Hold a document until the reason it names goes away: its route's keys,
+    /// the app surface it was written with, or its workspace's governance.
     fn hold_document(
         &mut self,
         route: DocumentRoute,
@@ -2933,16 +3108,22 @@ impl Task {
         body: Vec<u8>,
         author: [u8; 32],
         retained: bool,
+        reason: HoldReason,
     ) {
         let held = self
             .held_inbound
             .entry(route.clone())
             .or_insert_with(|| InboundHold::new(MAX_HELD_DOCUMENTS));
-        held.hold(key, (body, author, retained));
-        let count = held.len();
-        self.update(|status| {
-            status.routes.entry(route).or_default().awaiting_keys = count;
-        });
+        held.hold(
+            key,
+            HeldFrame {
+                body,
+                author,
+                retained,
+                reason,
+            },
+        );
+        self.recount(&route);
     }
 
     /// Ask the host to replay the records whose full holds let documents
@@ -3068,13 +3249,34 @@ impl Task {
                     );
                 }
                 for (route, held) in &self.held_inbound {
-                    let _ = write!(
-                        channels,
-                        "\nheld for keys {}/{}: {}",
-                        route.app_id,
-                        route.record,
-                        held.len()
-                    );
+                    let mut reasons = Vec::new();
+                    let mut waiting = [0_usize; 3];
+                    for (_, frame) in held.held() {
+                        let counted = match frame.reason {
+                            HoldReason::Keys => &mut waiting[0],
+                            HoldReason::Surface(_) => &mut waiting[1],
+                            HoldReason::Governance => &mut waiting[2],
+                        };
+                        *counted = counted.saturating_add(1);
+                    }
+                    for (count, reason) in
+                        waiting
+                            .into_iter()
+                            .zip(["its keys", "its app surface", "governance"])
+                    {
+                        if count > 0 {
+                            reasons.push(format!("{count} for {reason}"));
+                        }
+                    }
+                    if !reasons.is_empty() {
+                        let _ = write!(
+                            channels,
+                            "\nheld {}/{}: {}",
+                            route.app_id,
+                            route.record,
+                            reasons.join(", ")
+                        );
+                    }
                 }
                 if self.refused.0 > 0 {
                     let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
@@ -3091,23 +3293,9 @@ impl Task {
                     Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),
                 );
                 self.release_live(&route);
-                let held = self
-                    .held_inbound
-                    .get_mut(&route)
-                    .map(InboundHold::take)
-                    .unwrap_or_default();
                 // Open what waited first: a reader that sees the route no
                 // longer awaiting keys has its documents among the events.
-                for (_, (body, author, retained)) in held {
-                    self.held_body(body, author, retained);
-                }
-                let waiting = self.held_inbound.get(&route).map_or(0, InboundHold::len);
-                self.update(|status| {
-                    if let Some(status) = status.routes.get_mut(&route) {
-                        status.awaiting_keys = waiting;
-                    }
-                });
-                self.replay_owed(&route, client);
+                self.decide_route(&route, client);
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
                 }

@@ -1,7 +1,8 @@
 //! Content a governed workspace's records reference that this host keeps: what
 //! its bots fetched from outside (a bridged person's avatar, a file posted
-//! elsewhere) and the surfaces of the apps it runs, which members decide
-//! the host's changes against.
+//! elsewhere) and the surfaces of the apps it decided changes with, whichever
+//! version those changes were written by, which members decide the host's
+//! changes against.
 //!
 //! A member asks the workspace for content its record lacks with the workspace's
 //! presence ([`NeighbourMsg::RecordContentWant`]), as it asks any member.
@@ -168,7 +169,9 @@ impl Workspaces {
     /// The answer to `body`, a presence `workspace`'s member published, when it
     /// asks for content: the pieces of what this host keeps, or word that
     /// it keeps none, as frames for the member's device alone. Empty for
-    /// any other presence.
+    /// any other presence. A request for an app surface this host has not seen
+    /// fetches it from the registry first, so this is called off the async
+    /// threads that serve members.
     pub fn content_answer(&self, workspace: &str, body: &[u8]) -> Vec<Vec<u8>> {
         // ignored-failure: presence carries other formats; only a content want is answered
         let Ok(NeighbourMsg::RecordContentWant {
@@ -193,6 +196,10 @@ impl Workspaces {
                     .get()
                     .and_then(|content| content.read(workspace, &app_id, &hash))
             })
+            // A record started by an older version of an app reads its writes
+            // with that version's surface, which a host that decided them keeps
+            // ([`crate::surfaces`]).
+            .or_else(|| crate::surfaces::answer(&app_id, &hash))
             .filter(|bytes| bytes.len() <= MAX_CONTENT_BYTES)
         else {
             return lacks_answer(&self.inner.host.cert.device_public_key, body)

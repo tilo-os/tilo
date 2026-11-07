@@ -213,8 +213,8 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     );
     let events = peer.events();
     // A reader of the status (the host's workspace actions on another thread)
-    // that sees the note no longer awaiting keys finds its documents among
-    // the events already: a record read as open is never read empty.
+    // that sees the note hold nothing undecided finds its documents among the
+    // events already: a record read as open is never read empty.
     let opened_when_unsealed = {
         let (peer, route, watched) = (peer.clone(), route.clone(), peer.events());
         std::thread::spawn(move || {
@@ -225,7 +225,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
                     .status()
                     .routes
                     .get(&route)
-                    .map(|status| status.awaiting_keys);
+                    .map(|status: &tilo_browser_peer::session::RouteStatus| status.waiting());
                 match awaiting {
                     Some(count) if count > 0 => held = true,
                     Some(0) if held => {
