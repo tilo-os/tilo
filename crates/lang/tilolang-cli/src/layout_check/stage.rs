@@ -644,8 +644,12 @@ fn resource_of(edit: &tilolang_tilo::action::DynEdit) -> &str {
         | DynEdit::OutboxSettle { id, .. }
         | DynEdit::OutboxMark { id, .. }
         | DynEdit::Migrated { id, .. }
-        | DynEdit::TriggerRan { id, .. } => id,
-        DynEdit::In { edit, .. } => resource_of(edit),
+        | DynEdit::TriggerRan { id, .. }
+        | DynEdit::RemoveItem { id, .. } => id,
+        // A run of a collection counts against the record it is a field of, which names no
+        // record of its own.
+        DynEdit::RunChunk { holder, .. } => holder,
+        DynEdit::In { edit, .. } | DynEdit::Chunk { edit, .. } => resource_of(edit),
     }
 }
 
