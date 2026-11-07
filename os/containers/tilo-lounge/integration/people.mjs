@@ -1,4 +1,4 @@
-// Two people in the Lounge, as two real browsers: each context opens the web
+// Two people in the Lounge, as two real browsers: each browser opens the web
 // entry, which joins the Lounge through its door as its own person (the
 // deployment admits everyone as an editor). Then one sends a chat message and
 // opens a window, and the other must see both, each shown present to the
@@ -337,12 +337,16 @@ const rowsUnder = (tab, name) => tab.evaluate(`(() => {
 // what left and arrived over the plane.
 const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(globalThis.tiloMount?.call?.() ?? null)'));
 
-// Another browser, its window the size the desktop draws for before it draws:
-// resizing a presented surface suspends and re-presents it, and keys sent
-// between the two are nobody's.
+// A person's browser, its window the size the desktop draws for before it
+// draws: resizing a presented surface suspends and re-presents it, and keys
+// sent between the two are nobody's. A browser paints the tab it shows and
+// leaves the others as they were, so each person gets one of their own: a
+// second tab in one browser is a desk that stops answering while the other
+// person is looked at.
 const anotherBrowser = async () => {
-  const context = await browser.context();
-  const tab = await browser.tab({context});
+  const launched = await launch({args: browserArgs});
+  browsers.push(launched);
+  const tab = await launched.tab();
   await tab.send('Emulation.setDeviceMetricsOverride',
     {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   return tab;
@@ -427,7 +431,7 @@ const nodeValues = tab => tab.evaluate(`JSON.stringify((() => {
 
 // SwiftShader's WebGPU, as the app SDK's lane runs the bundle: a host GPU in
 // headless Chrome can lose its device mid-run.
-const browser = await launch({args: [
+const browserArgs = [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   // The live plane's host is the deployment's, not this machine's: the page
@@ -441,12 +445,13 @@ const browser = await launch({args: [
   '--autoplay-policy=no-user-gesture-required',
   // A job container's /dev/shm is 64 MiB: a renderer that runs out of it dies.
   '--disable-dev-shm-usage',
-  // Each page keeps stepping while the other one has the browser's attention:
-  // a desk a browser slowed down to save power answers the next key late.
+  // A browser a person is not looking at still answers: a desk slowed down to
+  // save power answers the next key late.
   '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
   '--disable-backgrounding-occluded-windows',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
-]});
+];
+const browsers = [];
 try {
   if (earlier) {
     // A person arriving now: the chat window and the composer are the app's,
@@ -1144,6 +1149,6 @@ try {
 } catch (error) {
   await failed(String(error?.stack ?? error));
 } finally {
-  await browser.close().catch(error => console.error('close:', error.message));
+  for (const browser of browsers) await browser.close().catch(error => console.error('close:', error.message));
 }
 process.exit(0);
