@@ -313,7 +313,7 @@ action unpin(item: DockItem) {
     #[test]
     fn a_record_built_in_a_view_reaches_a_views_record_parameter() {
         let d = Desk::new();
-        let mut view = d.view("dock_run");
+        let view = d.view("dock_run");
         assert_eq!(texts(&view), ["App 0", "App 1"]);
     }
 
