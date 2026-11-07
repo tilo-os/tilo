@@ -1,42 +1,18 @@
 //! Acoustic calibration of a speaker group, as a reversible proposal.
-//!
-//! Calibration measures each speaker from where the person sits. Each
-//! member plays a logarithmic sweep in turn at an instant scheduled on the
-//! calibrating device's clock (the group's leader, the "source"), while a
-//! microphone at the listening position records around it.
-//! [`media::calibration`] turns the recording into an arrival time and a
-//! level. That arrival is the speaker's whole delay as the listener hears
-//! it: the member's output pipeline plus the sound's flight to the seat.
-//! Delaying every member to the latest arrival and cutting it to the
-//! quietest level makes the group sound like one speaker there.
-//!
-//! The listening microphone can be on any of the person's devices: the one
-//! running the wizard by default, or a phone put on the sofa. Microphones on
-//! other devices may listen too, but only as extras:
-//!
-//! * a member's own microphone hears that member from a few centimetres, so
-//!   its arrival is the member's output latency alone. Play and record share
-//!   that device's clock, so fabric-clock error cancels. Subtracting it from
-//!   the arrival at the seat leaves the time of flight, which says how far
-//!   the speaker is from the listener;
-//! * any microphone cross-checks the listening one: a reading that disagrees
-//!   with every other microphone by more than a room could explain is set
-//!   aside, and a reading that is missing or buried in noise is estimated
-//!   from the others ([`media::calibration_fusion`]).
-//!
-//! A microphone on another device is recorded only with that device's own
-//! consent ([`tilo_device_fabric::speaker_group::SpeakerListener`]); the device
-//! measures its recording itself and sends back only the arrival, level and
-//! smoothed response. The calibrating device schedules each recording on the
-//! listening device's clock through the fabric clock estimate it holds for
-//! that device ([`tilo_device_fabric::clock`]), so capture timestamps and
-//! the sweep share one timeline; that estimate's error bound weights the
-//! reading.
-//!
-//! Nothing is applied implicitly. A finished run is a proposal showing each
-//! member's trims before and after; applying stores the new trims on the
-//! group and keeps the old ones for one explicit revert, the same shape as
-//! the spatial display calibration.
+//! Each member plays a sweep at an instant scheduled on the calibrating device's
+//! clock while a microphone at the listening position records around it. The
+//! arrival is the member's whole delay as the listener hears it: its output
+//! pipeline plus the sound's flight to the seat. Delaying every member to the
+//! latest arrival and cutting it to the quietest level makes the group sound like
+//! one speaker there.
+//! The listening microphone may be on any of the person's devices, and others may
+//! listen as extras: a member's own microphone hears its output latency alone, so
+//! the difference is the time of flight, and [`media::calibration_fusion`] sets
+//! aside a reading no other microphone agrees with. A microphone on another device
+//! is recorded only with that device's consent; it sends back the arrival, level
+//! and smoothed response, never its recording.
+//! Nothing is applied implicitly: applying a proposal stores the new trims and
+//! keeps the old ones for one explicit revert.
 
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};

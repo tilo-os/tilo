@@ -1,30 +1,13 @@
 //! The tools service: the typed opens an app asks this session for.
-//!
 //! An app the launcher starts is handed the `tools` socket
-//! ([`runtime_portal::tools`]) and asks on it for what only the session can
-//! do: open one of its tools at a typed context (a terminal at a folder, a
-//! settings route, a workspace settings tab), list the drives the person
-//! plugged in and open one in Files, list the person's apps and open or
-//! uninstall one. Nothing on the wire names a program or arguments:
-//! [`ToolIntent`] is the whole vocabulary, and this module maps it onto what
-//! the session already has.
-//!
-//! Who asks is read from the connection's peer credentials — the process at
-//! the other end, while this session's launch of it still runs — and the
-//! request must belong to the workspace that launch recorded. Never what the
-//! request says of itself.
-//!
-//! Everything that starts a process goes through [`crate::Launches::ask`]: the
-//! launch waits for the pass that starts it and is made on the path the
-//! desk's own launches take, so a tool opened here is the same launch as one
-//! opened from the desk. What only a sheet on the session's loop can show
-//! (workspace settings, an uninstall question) is left for that pass here
-//! and answered by it.
-//!
-//! The drives and apps lists are kept by the loop
-//! ([`Handle::saw_media`], [`Handle::saw_apps`]), and their revisions are what
-//! Files' waits for a change are served from: the broker's `drives` and
-//! `applications` seams.
+//! ([`runtime_portal::tools`]) and asks on it for what only the session can do:
+//! open one of its tools at a typed context, list the drives the person plugged in
+//! and open one in Files, list the person's apps and open or uninstall one. Nothing
+//! on the wire names a program or arguments: [`ToolIntent`] is the whole vocabulary.
+//! Who asks is read from the connection's peer credentials, and the request must
+//! belong to the workspace that launch recorded, never what the request says of
+//! itself. Everything that starts a process goes through [`crate::Launches::ask`],
+//! so a tool opened here is the same launch as one opened from the desk.
 
 use std::io::{BufRead, BufReader, ErrorKind, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};

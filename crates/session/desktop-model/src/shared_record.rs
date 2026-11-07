@@ -1,34 +1,20 @@
 //! A workspace's shared desktop as one Automerge record, entry by entry.
-//!
-//! Every workspace, strip, window group and window is its own map under its
-//! id, holding where it is (its parent and an order among its siblings) and
-//! who made it. Concurrent changes to different entries merge: two people
-//! opening, moving or closing their own windows at once each keep their
-//! change, and a page that reconnects with an old desktop only writes the
-//! entries it changed itself, never over what others did meanwhile. Who may
-//! change which entry is [`crate::ownership`]'s rule.
-//!
-//! Shape, at the record's root:
-//!
+//! Every workspace, strip, window group and window is its own map under its id,
+//! holding where it is (its parent and an order among its siblings) and who made
+//! it, so concurrent changes to different entries merge and a page that reconnects
+//! with an old desktop writes only the entries it changed itself. Who may change
+//! which entry is [`crate::ownership`]'s rule.
 //! ```text
 //! workspaces: { <id>: { order: f64, workspace: <map, no strips>, arrangement? } }
 //! strips:     { <id>: { workspace: <id>, order: f64, name, author? } }
 //! groups:     { <id>: { strip: <id>, order: f64, place? } }
 //! windows:    { <id>: { group: <id>, order: f64, tab: <map>, author?, record? } }
 //! ```
-//!
-//! A workspace's `arrangement` is its kind when that is not the strips, and
-//! a group's `place` where it stands on the canvas: each its own field.
-//! A workspace, a window and a place are maps of their own fields too, not
-//! one blob of text each, so two people editing different fields of the same
-//! one at once — renaming a workspace while the other gives it a shortcut —
-//! each keep their change, as people moving different windows at once keep
-//! their moves.
-//! What only one device decides (which window is focused, widths,
-//! maximization) is never written. [`read`] tolerates what concurrency
-//! leaves behind: a window whose group was removed meanwhile gets a group
-//! of its own in the first strip, and a group or strip whose parent was
-//! removed is placed in the first one, so nothing anyone opened vanishes.
+//! A workspace, a window and a place are maps of their own fields, not one blob of
+//! text each, so two people editing different fields of the same one keep both
+//! changes. What only one device decides (focus, widths, maximization) is never
+//! written, and [`read`] tolerates what concurrency leaves behind, so nothing
+//! anyone opened vanishes.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use tilo_automerge::json;

@@ -1,35 +1,14 @@
-//! Pasting files copied to the clipboard into a folder, on a thread of its
-//! own.
-//!
-//! A paste is not a wish: its copies are staged beside the names they will
-//! take (`.tilo-transfer-<id>` inside the receiving folder), synced to the
-//! disk, written down in a receipt before anything else is touched, and only
-//! then renamed into place. So a power cut never shows a partly copied file
-//! under a real name, and a cut never loses its source: a cut's source goes
-//! into hiding only once its copy is whole and recorded, and is taken away
-//! only once the copy stands under its own name.
-//!
-//! Copying runs here, never on the session's loop: the person keeps their
-//! desktop while a folder of many gigabytes is pasted.
-//!
-//! # The receipt
-//!
-//! The receipt (`paste.json` in the session's state directory, written
-//! atomically and synced) holds the whole paste: every item, the name it
-//! takes, the staging folder, and how far each item got. It is written once
-//! per batch of items before their copies are published, so a paste of many
-//! small files does not pay a durable write per file, and its removal is the
-//! last thing a finished paste does.
-//!
-//! # Recovery
-//!
-//! [`Paste::unfinished`] takes a receipt a session that stopped left behind
-//! and undoes it on a worker of the same kind: an item whose copy is not
-//! under its name is rolled back (a cut's source comes out of hiding, a
-//! replaced name comes back out of the staging folder), an item whose copy
-//! did stand is kept whole (a cut's source goes, a replaced name goes to the
-//! Trash). Every item ends as either its source, untouched, or its copy,
-//! complete: never half of either.
+//! Pasting files copied to the clipboard into a folder, on a thread of its own.
+//! A paste is not a wish: its copies are staged beside the names they will take
+//! (`.tilo-transfer-<id>` inside the receiving folder), synced, written down in a
+//! receipt, and only then renamed into place, so a power cut never shows a partly
+//! copied file under a real name and a cut never loses its source. Copying runs
+//! here, never on the session's loop.
+//! The receipt (`paste.json` in the session's state directory, written atomically
+//! and synced) holds the whole paste and how far each item got; it is written once
+//! per batch, and its removal is the last thing a finished paste does.
+//! [`Paste::unfinished`] undoes what a session that stopped left behind: every item
+//! ends as either its source, untouched, or its copy, complete.
 
 use std::fs;
 use std::io;

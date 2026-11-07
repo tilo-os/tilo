@@ -1,31 +1,14 @@
-//! The lock screen: the session's own, shown on every display while the
-//! session is locked, over nothing (the compositor draws no window or other
-//! surface then, and each display shows the screen scaled to its own size).
-//!
-//! It is one quiet screen: the time and its date in poster type, whose
-//! session this is, and the one password field that unlocks it. Typing the
-//! password and unlocking are the app's effects, so a person, an assistive
-//! tool and a headless run reach the same door. The password never leaves the
-//! seat's zeroizing buffer except to the session, which checks it and either
-//! lifts the lock or says it was wrong.
-//!
-//! The screen runs as its own process: the session publishes what it shows as
-//! a resource of its own ([`Shown`]), the app reads it and asks through the
-//! same actions as any other app, and what the screen asks of the session
-//! arrives as its effects.
-//!
-//! Everything a device says about itself — the network, the battery, the
-//! keyboard layout — arrives as plain data in [`Shown`], so the screen reads
-//! the same in a screenshot as on a laptop. What it can do beyond unlocking
-//! (switch layout, suspend, restart, shut down) it asks the session for as
-//! the same published effects anything else uses, and offers only what the
-//! session says it allows ([`Status`]).
-//!
-//! It moves the way the rest of the toolkit does: the ground is the shared
-//! authentication artwork ([`ui::auth_backdrop`]), the screen arrives on
-//! [`Appear`], a refusal shakes it on [`Attention`], and a while without
-//! input fades it back to that ground until someone touches the keyboard or
-//! the pointer.
+//! The lock screen: the session's own, shown on every display while the session is
+//! locked, over nothing.
+//! It is one quiet screen: the time and its date in poster type, whose session this
+//! is, and the one password field that unlocks it. Unlocking is an effect, so a
+//! person, an assistive tool and a headless run reach the same door; the password
+//! never leaves the seat's zeroizing buffer except to the session, which checks it.
+//! The screen runs as its own process: the session publishes what it shows as a
+//! resource ([`Shown`]), the app asks through the same actions as any other, and
+//! everything a device says about itself arrives as plain data in [`Shown`], so the
+//! screen reads the same in a screenshot as on a laptop. It moves with the shared
+//! authentication artwork ([`ui::auth_backdrop`]).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;

@@ -1,35 +1,16 @@
 //! HDR content composited at full precision.
-//!
-//! The desktop is drawn by vello into an 8-bit sRGB image. A client surface
-//! or peer stream carrying an HDR signal (PQ, HLG or scRGB-style linear
-//! light in 10-bit, half-float or P010 buffers) keeps two renditions:
-//!
-//! - an 8-bit, tone-mapped SDR image, drawn into the scene exactly like any
-//!   other surface, and
-//! - an [`HdrPlane`]: the signal at the buffer's own precision together with
-//!   its image description.
-//!
-//! Every draw of such an image registers an [`HdrLayer`] while a frame is
-//! being recorded ([`HdrLayerRecording`]). A presenter that drives an HDR
-//! output renders the scene twice with the layer images substituted: once
-//! with opaque black and once with a primary colour unique to the layer (red,
-//! green or blue). vello's compositing is linear in a source colour, so the
-//! difference between the two renders in the layer's channel is exactly how
-//! much of the layer reaches each pixel: clipping, rounded corners, opacity,
-//! antialiasing and everything drawn above it (popups, OSD, cursor, scrims)
-//! included. The first render is the SDR desktop with the layers left out.
-//!
-//! The output pass then composites in linear light: the SDR desktop at the
-//! user's SDR white, plus each layer's weight times its signal decoded from
-//! its own description into the output's primaries, and encodes once. An SDR
-//! output of a mixed setup instead gets each layer tone-mapped with
-//! [`crate::hdr_tonemap`]. Anything that renders the scene without
-//! the substitution (screenshots, screencasts, SDR outputs, a pass that
-//! cannot composite) sees the tone-mapped SDR rendition, so no path can show
-//! a hole.
-//!
-//! [`composite_hdr_pixel`] is the CPU reference and the readback presenter's
-//! implementation; `hdr_composite.wgsl` is its GPU mirror.
+//! A surface or peer stream carrying an HDR signal keeps two renditions: an 8-bit,
+//! tone-mapped SDR image drawn into the scene like any other surface, and an
+//! [`HdrPlane`], the signal at the buffer's own precision with its image
+//! description. Every draw registers an [`HdrLayer`] while a frame is recorded; a
+//! presenter that drives an HDR output renders the scene twice with the layer
+//! images substituted (opaque black, then a primary colour unique to the layer), so
+//! the difference in the layer's channel is exactly how much of it reaches each
+//! pixel, clipping and everything drawn above included. The output pass composites
+//! in linear light and encodes once; an SDR output tone-maps each layer with
+//! [`crate::hdr_tonemap`]. No path can show a hole: whatever does not do the
+//! substitution sees the SDR rendition.
+//! [`composite_hdr_pixel`] is the CPU reference; `hdr_composite.wgsl` its GPU mirror.
 
 use std::cell::RefCell;
 use std::sync::Arc;

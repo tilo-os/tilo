@@ -1,30 +1,13 @@
-//! Voice calls on the collaboration plane: the channel this device's call is
-//! in, and who is in the channels every workspace this session takes part in
-//! shows.
-//!
-//! Being in a call is the presence every member of the workspace reads:
-//! joining
-//! publishes the channel, leaving stops saying it, and a channel's roster is
-//! what the members in it say of themselves. The session publishes this from
-//! its pass ([`Calls::follow`]), and the calls themselves through the service
-//! an app reaches ([`tilo_native_media`]), whose carrier is this plane
-//! ([`Factory`]).
-//!
-//! A channel id is the whole of a call's identity on the wire: the presence
-//! names the channel and what it is called, and a roster says who is in a
-//! channel, with no workspace beside it.
-//!
-//! What a call carries is the workspace's live plane ([`tilo_live::plane`]):
-//! its voice is one more sealed track of the session's plane in that
-//! workspace, which every device in the workspace already carries, and the
-//! people the workspace says are in the channel are the ones this device
-//! plays. Its pictures are tracks of the same plane, one per camera and
-//! screen layer a device in the call shows: the plane asks for exactly the
-//! layers someone draws, and a layer nobody draws is never encoded.
-//!
-//! A page in a call publishes and reads its pictures on its own joined plane,
-//! as one more device of the workspace: the same tracks, the same demand, and
-//! the same objects, without a lane of its host's.
+//! Voice calls on the collaboration plane: the channel this device's call is in,
+//! and who is in the channels every workspace this session takes part in shows.
+//! Being in a call is the presence every member reads: joining publishes the
+//! channel, leaving stops saying it, and a channel's roster is what the members in
+//! it say of themselves. A channel id is the whole of a call's identity on the wire.
+//! What a call carries is the workspace's live plane ([`tilo_live::plane`]): its
+//! voice is one more sealed track, and its pictures are tracks, one per camera and
+//! screen layer a device shows, so a layer nobody draws is never encoded. A page in
+//! a call publishes and reads its pictures on its own joined plane, as one more
+//! device of the workspace.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};

@@ -1,30 +1,15 @@
 //! Wayland session discovery.
-//!
 //! Reads `*.desktop` files out of a sessions directory (in production
-//! `/usr/share/wayland-sessions`) and extracts the human-readable `Name=`
-//! and the `Exec=` command line. `Exec` is split on ASCII whitespace into
-//! an argv vector suitable for greetd's `StartSession { cmd, env }`.
-//!
-//! `Name` is the label the greeter shows. The internal `DesktopNames=` id
-//! is not read for display: it is a machine-facing contract
-//! with the portal (`UseIn=tilo`), not something to put in front of
-//! someone logging in.
-//!
-//! This is a *minimal* desktop-entry parser: it reads `Name`, `Exec`,
-//! `TryExec`, `X-Tilo-Session-Default`, `Hidden` and `NoDisplay` from the
-//! `[Desktop Entry]` group, and the session files we ship are simple (no
-//! `%`-field codes, no quoting). It ignores localized `Name[xx]=` keys and
-//! keeps the first unlocalized `Name=`.
-//!
-//! `X-Tilo-Session-Default=true` is how an entry says it is the desktop this
-//! image is about, and the greeter offers it first; every other entry follows
-//! in name order. The shipped entries say so explicitly rather than relying on
-//! a name that happens to sort first, so renaming a session never changes what
-//! a person gets.
-//!
-//! Only real, launchable sessions count: an entry that hides itself, or whose
-//! `TryExec` program is not installed, is not offered. The greeter shows a
-//! session choice only when more than one remains.
+//! `/usr/share/wayland-sessions`) and extracts the human-readable `Name=` and the
+//! `Exec=` command line, split on ASCII whitespace into an argv for greetd's
+//! `StartSession`.
+//! The internal `DesktopNames=` id is not read for display: it is a machine-facing
+//! contract with the portal (`UseIn=tilo`). A minimal desktop-entry parser:
+//! `Name`, `Exec`, `TryExec`, `X-Tilo-Session-Default`, `Hidden` and `NoDisplay`
+//! from `[Desktop Entry]`, and the shipped files carry no `%`-field codes or
+//! quoting. `X-Tilo-Session-Default=true` names the image's own desktop, offered
+//! first; only launchable entries are offered, and a choice only when more than one
+//! remains.
 
 use std::path::Path;
 

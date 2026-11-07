@@ -1,31 +1,14 @@
 //! greetd IPC client — the authenticate-then-start exchange.
-//!
-//! greetd speaks a small request/response protocol over the Unix socket
-//! named by `$GREETD_SOCK`. The greeter:
-//!
-//! 1. `CreateSession { username }`
-//! 2. loops over `AuthMessage`s, answering each via
-//!    `PostAuthMessageResponse { response }`:
-//!      * `Secret`  → the password (hidden prompt, e.g. "Password:")
-//!      * `Visible` → the username (shown prompt, some PAM stacks ask)
-//!      * `Info`    → an informational line (e.g. fprintd "Place your
-//!        finger on the reader"); surfaced to the UI and
-//!        answered with `None` so the conversation advances.
-//!      * `Error`   → a `PAM_ERROR_MSG` conversation message (e.g. fprintd
-//!        "swipe didn't match, try again"). This is *not* a
-//!        terminal failure — the authoritative result is a
-//!        top-level [`Response::Error`]/[`Response::Success`].
-//!        We surface it (styled as a warning) and continue.
-//! 3. on [`Response::Success`], `StartSession { cmd, env }` and (on the
-//!    second `Success`) the session is launching — the greeter exits.
-//! 4. on [`Response::Error`], `CancelSession` and report a mapped,
-//!    user-facing [`AuthError`].
-//!
-//! The protocol loop is factored into [`run_exchange`], generic over any
-//! `Read + Write` stream, so it can be exercised with an in-memory socket
-//! pair in tests. Multi-prompt PAM (fingerprint) drops straight out: the
-//! loop already handles an arbitrary sequence of auth messages and reports
-//! each prompt to the caller via the `on_prompt` callback.
+//! greetd speaks a small request/response protocol over the socket named by
+//! `$GREETD_SOCK`. The greeter sends `CreateSession { username }`, then loops over
+//! `AuthMessage`s, answering each: a `Secret` is the password, a `Visible` the
+//! username, an `Info` is surfaced and answered with `None`, and an `Error` is a
+//! `PAM_ERROR_MSG` surfaced as a warning, not a terminal failure — the
+//! authoritative result is the top-level [`Response`]. On success it sends
+//! `StartSession { cmd, env }` and exits; on an error it sends `CancelSession` and
+//! reports the mapped [`AuthError`].
+//! [`run_exchange`] is generic over any `Read + Write` stream, so multi-prompt PAM
+//! such as fingerprint drops out of the same loop.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;

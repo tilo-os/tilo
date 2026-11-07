@@ -1,33 +1,15 @@
 //! The agent's sheets as the session's questions.
-//!
-//! The native session has no dialog queue of its own: each secrets request
-//! is asked as a question ([`tilo_service::Questions`]) of kind
-//! [`KIND`], under the handle the agent names its sheet by, listed under
+//! The native session has no dialog queue of its own: each secrets request is
+//! asked as a question ([`tilo_service::Questions`]) of kind [`KIND`], listed under
 //! the network's name. The session's sheet reads its details as
-//! [`SecretsDetails`] — the agent's words as Fluent keys and arguments
-//! ([`Text`]), never resolved prose — and answers through
-//! [`Questions::answer`] directly, so typed secrets never travel as an
-//! action's arguments:
-//!
-//! - `values` holds one value per field, in [`SecretsDetails::fields`]
-//!   order; for a SIM its PUK locks ([`SimUnlockStep::Puk`]) they are the
-//!   PUK and the new PIN instead.
-//! - [`Answer::remember`] keeps the secrets on this device, when
-//!   [`SecretsDetails::remember`] offers it.
-//!
-//! The agent checks the answer as the sheet should have: a required field
-//! left empty, or a Wi-Fi password `NetworkManager` would refuse, asks the
-//! question again with a [`Refusal`] naming the field. A PUK goes to
-//! `ModemManager` from here ([`Modem::send_puk`]); a wrong one asks again
-//! with the attempts the SIM has left, a right one starts the connection
-//! again on the unlocked SIM, since `NetworkManager` only ever asks for the
-//! PIN.
-//!
-//! When `NetworkManager` connected on its own and nothing usable was
-//! remembered ([`Sheets::cannot_ask`]), the person is told once per network
-//! with a question of kind [`CANNOT_JOIN_KIND`] ([`CannotJoinDetails`]):
-//! answering it with choice 0 joins the network as them, which asks for its
-//! password as a [`KIND`] question; declining dismisses it.
+//! [`SecretsDetails`] — the agent's words as Fluent keys and arguments, never
+//! resolved prose — and answers through [`Questions::answer`] directly, so typed
+//! secrets never travel as an action's arguments.
+//! The agent checks the answer as the sheet should have: a required field left
+//! empty asks again with a [`Refusal`] naming the field. A wrong PUK asks again
+//! with the attempts the SIM has left. When `NetworkManager` connected on its own
+//! and nothing usable was remembered, the person is told once per network
+//! ([`CANNOT_JOIN_KIND`]) and answering joins it as them.
 
 use std::collections::BTreeMap;
 use std::future::Future;

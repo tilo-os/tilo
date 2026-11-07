@@ -1,31 +1,16 @@
 //! The composing input method: the engine of the active input source.
-//!
 //! Chinese, Japanese and Korean are composed, not mapped: a program holds the
-//! seat's `input-method-v2`, turns the keys the person types into candidate
-//! characters, and commits what they pick into the focused field. That
-//! program is Fcitx5 (Rime, Anthy, Hangul and the X11 apps' XIM), started by
-//! the session on a display of its own — as a surface app gets one — so only
-//! it, and what it starts, can reach the seat's input method on the display
-//! the person's windows are on.
-//!
-//! The session owns which engine is active and how the person switches it, so
-//! the engine's configuration is generated on every start ([`launch`]): its
-//! own switching chords are cleared (Super+Space is the session's search,
-//! Ctrl+Space belongs to the focused app) and the engine of the active source
-//! is the one it starts with. User dictionaries stay in its ordinary data
-//! directory.
-//!
-//! An engine of the active source means the on-screen keyboard does not run
-//! ([`crate::keyboard`]): one input method owns the seat, and the typing the
-//! person does on the glass is committed text, not keys an engine composes.
-//! Switching back to a keyboard layout brings the on-screen keyboard back.
-//!
-//! The engine also serves X11 clients, one workspace display at a time: for
-//! every display whose Xwayland server runs it opens that display over the
-//! session bus and composes for the XIM windows there. A display it opened
-//! after its server stopped is opened again when a fresh server starts on it.
-//! Nothing else is needed on the X side — the compositor accepts these
-//! clients.
+//! seat's `input-method-v2` and turns typed keys into candidate characters. That
+//! program is Fcitx5 (Rime, Anthy, Hangul and XIM), started by the session on a
+//! display of its own — as a surface app gets one — so only it and what it starts
+//! can reach the seat's input method on the person's display.
+//! The session owns which engine is active, so the engine's configuration is
+//! generated on every start: its own switching chords are cleared (Super+Space is
+//! the session's search, Ctrl+Space belongs to the focused app) and the active
+//! source's engine is the one it starts with.
+//! An engine of the active source means the on-screen keyboard does not run: one
+//! input method owns the seat. It also serves X11 clients, one workspace display at
+//! a time.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

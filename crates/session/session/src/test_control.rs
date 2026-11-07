@@ -1,75 +1,17 @@
-//! The control sockets: `tilo-control` drives a session it was started for, and the device
-//! admin drives their own desktop, over one protocol — one JSON request per line, tagged by
-//! `op`, and one answer per line: `{"ok": {..}}`, `{"answer": ..}`, `{"state": ..}`,
-//! `{"targets": ..}` or `{"err": {"code": .., "message": ..}}`.
-//!
-//! Two sockets serve it, and each answers exactly its own half:
-//!
-//! - the development test-control socket (`tilo-session --test-control PATH`, or
-//!   `$TILO_TEST_CONTROL`, honoured by development builds only, at
-//!   `$XDG_RUNTIME_DIR/tilo-session/test-control.sock` when neither names one), which binds
-//!   whatever the developer asked for and answers every op of the protocol below;
-//! - the owner's own door, `$XDG_RUNTIME_DIR/tilo-session/admin-control.sock` for a session
-//!   that owns the machine (a headless one serves `headless-owner-control.sock`), which
-//!   admits only programs of the account whose desktop this is, in its own namespaces, and
-//!   refuses every other connection before reading a byte ([`admin_path`], [`owner_decision`]).
-//!
-//! The owner's door serves what a person's own scripts need to drive their desktop through
-//! the model it publishes — the action model (`actions_enumerate`, `actions_invoke`,
-//! `actions_status` and `actions_cancel`), the state it shows (`state_dump`, `watch` and
-//! `windows`) — and the session's own diagnostics (`process_memory`, and the profiler's
-//! `profile_start`, `profile_status` and `profile_stop`) — and refuses every other op with
-//! `not_permitted` ([`Op::owner_serves`], [`served`]). Injected input, screenshots of the
-//! person's screen, hosted surfaces' controls, fixtures and the test identity live on a
-//! development session's socket only. Nothing is invoked there while the screen is locked,
-//! and the state it shows carries nothing the lock hides.
-//!
-//! What it answers, as the tools that drive a desktop need it:
-//!
-//! - `snapshot` (`tilo-control snapshot PATH`): a PNG of every display, each at its place in the
-//!   layout, as the person in front of them sees it — the lock screen included while the session
-//!   is locked, which no copy that leaves the session shows ([`crate::capture::shown`]), and the
-//!   answer says whether that is what the picture shows;
-//! - `unlock` (`tilo-control unlock`): the session's lock lifted the one way it is — the screen
-//!   dissolves and the compositor comes down once it has, as it does for an accepted password —
-//!   so a tool driving a device off its own display reaches the desk under it;
-//! - `provision_test_identity` (`tilo-control raw '{"op":"provision_test_identity"}'`), which
-//!   mints the throwaway identity a development session opens its desk with instead of first-use
-//!   setup, as the shell's does for a dev image;
-//! - `list_targets` and `click_named`: every control the session's hosted surfaces show, by the
-//!   name they go by (a tab's pill, a place's switch, `onboarding.create.button`, a row of an
-//!   app's own window), and a press of one of them through the same action route an assistive
-//!   technology activates it with — never a point aimed at; `click_named` with `"verb":
-//!   "show-context-menu"` opens that control's context menu the same way;
-//! - the pointer: `pointer_move`, `pointer_button` (left, right or middle), `click_at` and
-//!   `scroll`;
-//! - `drag`: a press at one place, interpolated motion, and the release at another, which is how
-//!   a tab moves into another group or onto another strip;
-//! - `swipe` and `pinch`: the gesture tracker a touchpad feeds the seat, on a shell gesture's
-//!   three fingers or more, so what the person would do with their hand is what runs;
-//! - the keyboard: `key`, `key_down`/`key_up` (a held modifier across a keystroke) and `key`'s
-//!   `modifiers` mask, and `type`, each character typed by the key the seat's layout puts it on,
-//!   or written as text where the layout has no key for it;
-//! - `actions_enumerate`, `actions_invoke`, `actions_status` and `actions_cancel`: the actions the
-//!   session publishes now, across its broker and its own doors ([`crate::agent_door::Host`]),
-//!   invoked and followed as any admitted program invokes them. Nothing here reimplements an
-//!   action: a listing is a catalogue page, and an invocation the action model's own request;
-//! - `watch`: the desk's state as it changes, streamed off the session's own change signal — no
-//!   polling, and nothing is dumped while nobody watches;
-//! - `state_dump` and `windows`: the desk as it is now, and one row per open window;
-//! - `process_memory`: the session's own memory by kind of mapping, read with `mincore` as
-//!   Tilo's kernel has no `smaps`, and `profile_start`/`profile_status`/`profile_stop`: the
-//!   session profiled with its own instruments, frames, phases and threads, for a length the
-//!   owner asks for.
-//!
-//! Each connection is read on a thread of its own. What a request asks of the compositor, the
-//! desk or the hosted surfaces is answered on the loop's pass, the only place that may touch
-//! them, and the loop is woken for it. Input a tool injects — the pointer, the wheel, a gesture,
-//! a key — is answered where the loop takes a device's own input, so the pass it arrives in
-//! carries it, as it carries the person's own press; what asks anything else of the desk waits
-//! for that pass's frame, where it reads the desk the frame shows. What asks only of the actions
-//! and the change signal — the four action requests and `watch` — is answered where it was asked,
-//! so a listing that waits for an app to publish holds no frame.
+//! The control sockets: `tilo-control` drives a session it was started for, and
+//! the device admin drives their own desktop, over one protocol — one JSON request
+//! per line, tagged by `op`, and one answer per line: `{"ok": ..}`,
+//! `{"answer": ..}`, `{"state": ..}`, `{"targets": ..}` or
+//! `{"err": {"code": .., "message": ..}}`.
+//! The development test-control socket (`--test-control PATH` or
+//! `$TILO_TEST_CONTROL`, development builds only) answers every op below,
+//! including injected input, screenshots and fixtures. The owner's own door,
+//! `admin-control.sock`, admits only programs of the account whose desktop this
+//! is, in its own namespaces, and serves only the action model, the state it shows
+//! and the session's diagnostics ([`Op::owner_serves`]).
+//! Each connection is read on a thread of its own; what a request asks of the
+//! compositor, the desk or the hosted surfaces is answered on the loop's pass, and
+//! the loop is woken for it.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

@@ -1,39 +1,16 @@
 //! What the session itself tells the person, through their notifications.
-//!
-//! Eight things the desktop knows and the person should: that storage is
-//! running out, that the battery is too, that the media codecs they asked for
-//! finished or failed, that the session or the computer stopped and started
-//! again, that an update waits for a restart, that a deployment it tried did
-//! not start and this computer went back to the one that worked, that the
-//! machine's graphics stopped and every frame is drawn in software from now
-//! on, and that a drive they plugged in is ready to open or eject. Each
-//! becomes an ordinary notification ([`tilo_notifications_service::Notification`])
-//! published by the notifications service: the banners and the centre read it
-//! from the same resource any app's notification is read from, the person
-//! closes or acts on it as they would on any other, and nothing here draws.
-//!
-//! Two more say what this computer could not read of the person's own state —
-//! the list of their workspaces, and how far its last update got — so a list
-//! that starts empty or an update that does nothing is not unexplained. The
-//! same goes for what it kept of the agents they let work here, and of the
-//! programs they added to their apps: each is asked about again, or missing
-//! from the launcher, and they are told once why. Each of these keeps its
-//! operator's own warning in the log beside the person's notice.
-//!
-//! They are the whole machine's news, so they are shown on every display
-//! ([`Notification::machine_wide`]).
-//!
-//! The one about the desk this device saved is the desktop's own: the person
-//! sees it in the centre of the desk they are looking at, which is not the one
-//! they left.
-//!
-//! Nothing is polled hard: storage is one `statvfs` per filesystem every two
-//! minutes (every twenty seconds while one of them is low), the codecs are a
-//! watch on the helper's status file, the crash records are read once at
-//! start, and the graphics fallback is a read of what the renderers recorded,
-//! once per pass of the session's loop. The one about an update waiting for a
-//! restart, and the one about a deployment the machine went back from, are
-//! raised by the clock that finishes the update ([`crate::update_finish`]).
+//! The desktop knows things the person should: storage and battery running out,
+//! the media codecs they asked for, a session or computer that stopped and started
+//! again, an update waiting for a restart, a deployment it went back from, graphics
+//! that fell back to software, a drive ready to open, and the state of their own
+//! workspaces, agents and apps it could not read. Each becomes an ordinary
+//! notification ([`tilo_notifications_service::Notification`]) published by the
+//! notifications service, so the banners and the centre show it as any app's, and
+//! nothing here draws. They are the whole machine's news and show on every display
+//! ([`Notification::machine_wide`]); the one about the saved desk belongs to the
+//! desk the person is looking at. Nothing is polled hard: storage is one `statvfs`
+//! per filesystem every two minutes (twenty seconds while one is low), codecs are a
+//! watch on the helper's status file, and the rest is read once per session pass.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -1,30 +1,15 @@
-//! The person's own record of what their devices answered when one of them
-//! asked to be unlocked after a reboot.
-//!
-//! An answer is a fact the answering device signs and publishes in its own
-//! part of the person's device fabric ([`tilo_device_fabric::unlock`]): every
-//! one of their devices carries it, and a boot that lost its stream hears the
-//! same answer from any of them. What the person reads is the record here —
-//! `member:<person>:device.unlock`, one document whose changes are those
-//! answers, each naming the boot that asked, the device that answered and
-//! when — so the activity history lists them beside everything else that
-//! happened, on every one of their devices.
-//!
-//! The record is a projection of the fabric, and the fabric is what carries
-//! the answers between devices: each device writes the answers it hears into
-//! its own copy of the person's record, under the answering device's actor
-//! and at the time it decided, so the change is theirs and reads the same
-//! here as on the device that made it.
-//!
-//! Nothing is invented: an answer enters the record only if it validates
-//! against the snapshot that carries it ([`UnlockDecisionRecord::validate`]),
-//! which the fabric authenticates as that device's own. A document this build
-//! cannot read is never written over.
-//!
-//! An answer stands for [`tilo_device_fabric::unlock::DECISION_LIFETIME_NS`]
-//! and the fabric keeps the newest of them, so a device that was away longer
-//! than that learns of an answer only while one of its siblings still holds
-//! it.
+//! The person's own record of what their devices answered when one of them asked to
+//! be unlocked after a reboot.
+//! An answer is a fact the answering device signs and publishes in its own part of
+//! the person's device fabric ([`tilo_device_fabric::unlock`]); every one of their
+//! devices carries it. What the person reads is `member:<person>:device.unlock`,
+//! one document whose changes are those answers, so the activity history lists them
+//! beside everything else that happened.
+//! The record is a projection of the fabric: each device writes the answers it
+//! hears under the answering device's actor, at the time it decided.
+//! Nothing is invented: an answer enters only if it validates
+//! ([`UnlockDecisionRecord::validate`]), and a document this build cannot read is
+//! never written over.
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};

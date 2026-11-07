@@ -1,40 +1,14 @@
 //! Session performance: the desktop the person lands on, measured with no GPU.
-//!
 //! The measured surface is the one both hosts show
-//! ([`tilo_desktop_surface::DesktopSurface`]): the session draws it under its
-//! windows, the page draws it with its apps inside. Two tile profiles cover
-//! what the hosts put in a window's tab, because they cost different things:
-//!
-//! * `arriving` — the native session: a window's pixels are the client's own
-//!   buffer, so a tab's tile is only the arriving placeholder and the frame is
-//!   the desk's chrome (strips, tab bars, edges);
-//! * `apps` — the page: every tab mounts its app component and the surface
-//!   draws it (word processor, chat and notes in the fixture);
-//! * `activities` — the floating layer's cards over a desk: three of them,
-//!   one ticking, then one dragged across the surface.
-//!
-//! Numbers per profile, all from the production frame path
-//! ([`ui::headless::FrameHarness`]):
-//!
-//! * `build` — constructing the surface from its tree;
-//! * `first-frame` — from there to a drawn frame (startup);
-//! * `steady` — 120 forced frames with nothing changed: what a frame owes
-//!   while something animates;
-//! * `typing` — 60 keystrokes into a focused document (the `apps` profile);
-//! * `tick` — frames while a timer's reading moves on: what one changed
-//!   card costs, and that it damages only its own ground (`activities`);
-//! * `drag` — the frames a moved pointer draws while a card follows it
-//!   (`activities`);
-//! * `idle` — frames offered after settling that find no work to do.
-//!
-//! Every phase reports its allocations: a steady frame must not allocate.
-//! Output is a table, or `--json PATH` for the budget check in `tools/perf/`.
-//!
-//! ```text
-//! cargo run -p tilo-desktop --release --example session_perf -- \
-//!     --profile arriving --json out.json
-//! ```
-//! `TILO_PERF_DEVICE` labels the machine in the JSON (`opi3b`, `x86`, ...).
+//! ([`tilo_desktop_surface::DesktopSurface`]); the `arriving`, `apps` and
+//! `activities` profiles cover what the hosts put in a window's tab, because they
+//! cost different things.
+//! Every number comes from the production frame path
+//! ([`ui::headless::FrameHarness`]): `build`, `first-frame` (startup), `steady`
+//! (forced frames with nothing changed), `typing`, `tick`, `drag` and `idle`
+//! frames that find no work. Every phase reports its allocations: a steady frame
+//! must not allocate. Output is a table, or `--json PATH` for the budget check in
+//! `tools/perf/`.
 
 #![allow(
     clippy::unwrap_used,
