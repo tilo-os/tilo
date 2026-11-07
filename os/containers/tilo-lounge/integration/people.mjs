@@ -207,6 +207,15 @@ const paletteRows = async tab => {
     return JSON.stringify(rows);
   })()`));
 };
+// The desk presented `by` more frames: what waits on the desk's own work
+// waits on that, not on a stopwatch, however slow presenting is. A page
+// drawing a megapixel through a software rasteriser draws a few frames a
+// second, and every wait here is a number of frames for that reason.
+const settle = async (tab, by = 2) => {
+  const from = await tab.evaluate('globalThis.tiloMount?.state()?.frames ?? 0');
+  await until(tab, `(globalThis.tiloMount?.state()?.frames ?? 0) >= ${from + by}`,
+    `the desk stepping ${by} more frame(s)`, 120_000);
+};
 // A person's search: the chord, the query, and Enter on the row the palette
 // offers for it. The host answers a query a moment after the last key, and the
 // rows it shows before that answer are the previous query's: they are read
@@ -227,20 +236,23 @@ const search = async (tab, command, query, row) => {
   await until(tab, '!!globalThis.tiloMount?.state()?.searchOpen', `search for "${query}"`, 120_000);
   await type(tab, query);
   const first = rows => (rows ? rows[rows.indexOf('Results') + 1] ?? null : null);
-  let last = null;
   let chosen = null;
   const deadline = Date.now() + 120_000;
+  // The text is in before its answer is: two reads a frame apart, agreeing,
+  // are the palette's answer to this query and not a frame of the one before.
+  await settle(tab, 2);
   for (;;) {
     const rows = await paletteRows(tab);
-    if (first(rows) === row && last && JSON.stringify(rows) === JSON.stringify(last)) {
+    await settle(tab, 1);
+    const again = await paletteRows(tab);
+    if (first(rows) === row && JSON.stringify(rows) === JSON.stringify(again)) {
       await key(tab, 'Enter');
       chosen = rows;
       break;
     }
-    last = rows;
     if (Date.now() > deadline) {
       await dump(tab, `timeout-rows-for-${query}`);
-      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(rows)}`);
+      failed(`the palette offers no ${row} first for "${query}": ${JSON.stringify(again)}`);
     }
   }
   await until(tab, '!globalThis.tiloMount?.state()?.searchOpen', `the search closing after ${row}`, 180_000);
@@ -758,7 +770,7 @@ try {
   const panOf = async tab => (await nav(tab))?.desktopPan ?? null;
   const namesOf = async tab => {
     await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
-    await sleep(300);
+    await settle(tab, 1);
     return (await snapshot(tab)).names;
   };
   const choose = async (tab, pattern) => {
@@ -778,16 +790,16 @@ try {
       // What the desk shows while the fingers are still on it, not only
       // where the gesture left it.
       if (during && index === 2) await during();
-      await sleep(20);
+      await settle(tab, 1);
     }
-    await sleep(500);
+    await settle(tab, 1);
   };
   const rightClick = async (tab, x, y) => {
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
     for (const type of ['mousePressed', 'mouseReleased']) {
       await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'right', clickCount: 1});
     }
-    await sleep(800);
+    await settle(tab, 1);
   };
   const centreOf = async tab => {
     const corner = JSON.parse(await canvasTopLeft(tab));
@@ -816,7 +828,7 @@ try {
   // strip pans by the gesture and the windows stay as they were.
   const centre = await centreOf(a.tab);
   await search(a.tab, a.command, 'notes', 'Notes');
-  await sleep(1500);
+  await settle(a.tab, 2);
   const windowsBefore = (await snapshot(a.tab)).windows;
   const panBefore = await panOf(a.tab);
   if (!panBefore) failed('the strip does not overflow, so nothing can pan');
@@ -840,7 +852,7 @@ try {
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
   await search(a.tab, a.command, 'sheets', 'Sheets');
-  await sleep(2000);
+  await settle(a.tab, 2);
   const keptPan = await panOf(a.tab);
   const sheetBefore = await picture(a.tab);
   await sidewaysSwipe(a.tab, centre.x, centre.y, forward);
@@ -856,9 +868,9 @@ try {
   // never a pan, with or without a sideways part.
   const beforePinch = await panOf(a.tab);
   for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaY: -40, modifiers: 2});
-  await sleep(400);
+  await settle(a.tab, 2);
   for (let i = 0; i < 6; i++) await wheel(a.tab, centre.x, centre.y, {deltaX: 10, deltaY: -20, modifiers: 2});
-  await sleep(500);
+  await settle(a.tab, 2);
   const afterPinch = await panOf(a.tab);
   report.pinch = {before: beforePinch, after: afterPinch};
   if ((afterPinch?.offset ?? 0) !== (beforePinch?.offset ?? 0)) {
@@ -883,7 +895,7 @@ try {
   await rightClick(a.tab, bar.x, bar.y);
   const menuRow = await choose(a.tab, /^(Fill the strip|Give the strip back)$/);
   if (!menuRow) failed('a secondary click in the window bar opens no window menu');
-  await sleep(600);
+  await settle(a.tab, 1);
   const nowMaximized = (await nav(a.tab))?.maximized;
   if (nowMaximized === wasMaximized) failed(`the window menu's row changed nothing: ${JSON.stringify({menuRow, wasMaximized})}`);
   report.windowMenu = {row: menuRow, wasMaximized, nowMaximized};
@@ -891,7 +903,7 @@ try {
 
   // A right-click in the chat's composer is the text's menu.
   await search(a.tab, a.command, 'chat', 'Chat');
-  await sleep(1200);
+  await settle(a.tab, 2);
   const composer = JSON.parse(await find(a.tab, 'Message composer'));
   if (!composer) failed('the chat has no composer to right-click');
   const [cx0, cy0, cx1, cy1] = Array.isArray(composer.bounds)
@@ -912,7 +924,7 @@ try {
   if (!reportRow) failed('the profile card offers no Report a problem');
   // Picking what to report takes every event: nothing under the pointer
   // reacts to it, and the strip the desk shows stays where it was.
-  await sleep(600);
+  await settle(a.tab, 2);
   const pickingPan = await panOf(a.tab);
   await sidewaysSwipe(a.tab, centre.x, centre.y, true);
   if ((await panOf(a.tab))?.offset !== pickingPan?.offset) {
