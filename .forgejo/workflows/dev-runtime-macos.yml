@@ -69,7 +69,6 @@ on:
       - "crates/packaging/registry-types/**"
       - "crates/packaging/runtime-bundle/**"
       - "crates/packaging/tilo-app-package/**"
-      - "crates/platform/tilo-agent-models/**"
       - "crates/platform/tilo-app-module/**"
       - "crates/platform/tilo-appearance/**"
       - "crates/platform/tilo-clipboard/**"

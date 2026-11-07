@@ -370,7 +370,6 @@ dependencies = [
  "serde_json",
  "settings-store",
  "tempfile",
- "tilo-agent-models",
  "tilo-resource",
  "url",
  "uuid",
@@ -17162,15 +17161,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-agent-models"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tilo-resource",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-agent-participant"
 version = "0.1.0"
 dependencies = [
@@ -28190,7 +28180,6 @@ dependencies = [
  "tilo-actions",
  "tilo-activities",
  "tilo-advisory-lock",
- "tilo-agent-models",
  "tilo-agent-participant",
  "tilo-ai-bench",
  "tilo-app",

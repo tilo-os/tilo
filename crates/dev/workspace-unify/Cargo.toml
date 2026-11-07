@@ -1111,7 +1111,6 @@ doc = false
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
 "tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
@@ -2357,7 +2356,6 @@ doc = false
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "test-support"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }
@@ -3706,7 +3704,6 @@ doc = false
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-activities" = { path = "../../../crates/session/activities", default-features = false, features = [] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-agent-participant" = { path = "../../../crates/agent/agent-participant", default-features = false, features = [] }
 "tilo-ai-bench" = { path = "../../../crates/dev/ai-bench", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "chrono", "default", "gpu-video", "mpris", "native", "realtime-video", "test-support"] }
@@ -4951,7 +4948,6 @@ doc = false
 "tilo-action-policy" = { path = "../../../crates/collab/action-policy", default-features = false, features = [] }
 "tilo-actions" = { path = "../../../crates/collab/actions", default-features = false, features = ["test-support"] }
 "tilo-advisory-lock" = { path = "../../../crates/system/advisory-lock", default-features = false, features = [] }
-"tilo-agent-models" = { path = "../../../crates/platform/tilo-agent-models", default-features = false, features = [] }
 "tilo-app" = { path = "../../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "gpu-video", "mpris", "native", "test-support"] }
 "tilo-app-cli" = { path = "../../../crates/dev/tilo-app-cli", default-features = false, features = [] }
 "tilo-app-module" = { path = "../../../crates/platform/tilo-app-module", default-features = false, features = [] }

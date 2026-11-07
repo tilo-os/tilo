@@ -327,7 +327,6 @@ members = [
     "crates/platform/tilo-face",
     "crates/platform/tilo-mime",
     "crates/platform/tilo-wake",
-    "crates/platform/tilo-agent-models",
     "crates/platform/tilo-contact-directory",
     "crates/platform/tilo-workspace-agent",
     "crates/platform/tilo-workspace-emoji",
