@@ -3599,8 +3599,8 @@ pub use property_list::{
 pub mod list_row;
 pub use list_row::{
     CARD_TITLE_LINES, CardBody, ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps,
-    RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, SwipeAction,
-    SwipeActionProps, badge_column_width,
+    RowAction, RowLeading, RowLeadingShape, RowShape, RowStatus, RowValue, ShownChange,
+    SwipeAction, SwipeActionProps, badge_column_width,
 };
 pub mod toggle_group;
 pub use toggle_group::{
