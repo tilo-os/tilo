@@ -73,7 +73,8 @@ pub struct DirectoryClient {
 }
 
 impl DirectoryClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
@@ -113,16 +114,15 @@ impl DirectoryClient {
         &self,
         name: &EntryName,
     ) -> Result<HistoryReadSubjectClient, NotAvailable> {
-        let handle = match call(
+        let Reply::Handle(handle) = call(
             &self.object,
             Request::HistoryReadSubject {
                 name: component(name)?,
             },
         )
         .await?
-        {
-            Reply::Handle(handle) => handle,
-            _ => return Err(crate::unexpected()),
+        else {
+            return Err(crate::unexpected());
         };
         let subject = HistoryReadSubjectClient {
             object: crate::handle_reply(handle, &self.object)?,
@@ -153,7 +153,7 @@ impl DirectoryClient {
         if expected[1] == 0 || old[1] == 0 || expected == old || expected[0] != old[0] {
             return Err(invalid("Invalid replacing inode observations"));
         }
-        let handle = match call(
+        let Reply::Handle(handle) = call(
             &self.object,
             Request::PrepareReplace {
                 temporary: component(temporary)?,
@@ -163,9 +163,8 @@ impl DirectoryClient {
             },
         )
         .await?
-        {
-            Reply::Handle(handle) => handle,
-            _ => return Err(crate::unexpected()),
+        else {
+            return Err(crate::unexpected());
         };
         let pending = PendingReplacementClient {
             object: crate::handle_reply(handle, &self.object)?,
@@ -258,7 +257,7 @@ impl DirectoryClient {
         name: &EntryName,
         expected: [u64; 2],
     ) -> Result<MetadataPinClient, NotAvailable> {
-        let handle = match call(
+        let Reply::Handle(handle) = call(
             &self.object,
             Request::PinEntry {
                 name: component(name)?,
@@ -266,9 +265,8 @@ impl DirectoryClient {
             },
         )
         .await?
-        {
-            Reply::Handle(handle) => handle,
-            _ => return Err(crate::unexpected()),
+        else {
+            return Err(crate::unexpected());
         };
         let pin = MetadataPinClient {
             object: crate::handle_reply(handle, &self.object)?,
@@ -541,7 +539,8 @@ pub struct NativeJobClient {
 }
 
 impl NativeJobClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
@@ -602,12 +601,10 @@ impl NativeJobClient {
                 }
                 JobUpdate::Item {
                     error, recoveries, ..
-                } => {
-                    if error.as_ref().is_some_and(|error| error.len() > 4096)
-                        || recoveries.len() > 256
-                    {
-                        return Err(invalid("item exceeds bound"));
-                    }
+                } if error.as_ref().is_some_and(|error| error.len() > 4096)
+                    || recoveries.len() > 256 =>
+                {
+                    return Err(invalid("item exceeds bound"));
                 }
                 _ => {}
             }
@@ -634,6 +631,11 @@ pub struct MetadataPinClient {
 }
 
 impl MetadataPinClient {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
+        Self { object }
+    }
+
     /// # Errors
     /// Refuses unavailable, revoked or disconnected metadata custody.
     pub async fn check_scope(&self) -> Result<(), NotAvailable> {
@@ -666,6 +668,11 @@ pub struct DirectoryCursorClient {
 }
 
 impl DirectoryCursorClient {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
+        Self { object }
+    }
+
     /// # Errors
     /// Refuses sequence mismatch, native enumeration or transport/authority loss.
     pub async fn page(
@@ -708,6 +715,11 @@ pub struct ReplacementPinClient {
 }
 
 impl ReplacementPinClient {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
+        Self { object }
+    }
+
     /// # Errors
     /// Refuses a malformed receipt or transport loss.
     pub async fn commit_with_history(&self, receipt: &[u8]) -> Result<(), NotAvailable> {
@@ -771,7 +783,8 @@ pub struct PendingReplacementClient {
 }
 
 impl PendingReplacementClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
@@ -817,16 +830,15 @@ impl PendingReplacementClient {
         if *challenge == [0; 32] {
             return Err(invalid("empty handoff challenge"));
         }
-        let ticket = match call(
+        let Reply::Ticket(ticket) = call(
             &self.object,
             Request::PendingArm {
                 challenge: *challenge,
             },
         )
         .await?
-        {
-            Reply::Ticket(ticket) => ticket,
-            _ => return Err(crate::unexpected()),
+        else {
+            return Err(crate::unexpected());
         };
         let ticket: [u8; 16] = ticket
             .try_into()
@@ -860,9 +872,10 @@ impl PendingReplacementClient {
     pub async fn observe(
         &self,
     ) -> Result<crate::directory_types::PendingReplacementObservation, NotAvailable> {
-        let observation = match call(&self.object, Request::PendingObserve).await? {
-            Reply::PendingObservation(observation) => observation,
-            _ => return Err(crate::unexpected()),
+        let Reply::PendingObservation(observation) =
+            call(&self.object, Request::PendingObserve).await?
+        else {
+            return Err(crate::unexpected());
         };
         observation.validate().map_err(|error| invalid(&error))?;
         Ok(observation)
@@ -908,7 +921,8 @@ pub struct CreatedTemporaryClient {
 }
 
 impl CreatedTemporaryClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
@@ -989,7 +1003,8 @@ pub struct HistoryReadSubjectClient {
 }
 
 impl HistoryReadSubjectClient {
-    pub(crate) fn from_object(object: Arc<Object>) -> Self {
+    /// Alias another capability of the same family on an existing connection.
+    pub fn from_object(object: Arc<Object>) -> Self {
         Self { object }
     }
 
@@ -1008,9 +1023,9 @@ impl HistoryReadSubjectClient {
         if challenge == [0; 32] {
             return Err(invalid("empty history Read challenge"));
         }
-        let ticket = match call(&self.object, Request::SubjectArm { challenge }).await? {
-            Reply::Ticket(ticket) => ticket,
-            _ => return Err(crate::unexpected()),
+        let Reply::Ticket(ticket) = call(&self.object, Request::SubjectArm { challenge }).await?
+        else {
+            return Err(crate::unexpected());
         };
         let ticket: [u8; 16] = ticket
             .try_into()
@@ -1044,9 +1059,10 @@ impl HistoryReadSubjectClient {
     pub async fn observe(
         &self,
     ) -> Result<crate::directory_types::HistoryReadObservation, NotAvailable> {
-        let observation = match call(&self.object, Request::SubjectObserve).await? {
-            Reply::HistoryObservation(observation) => observation,
-            _ => return Err(crate::unexpected()),
+        let Reply::HistoryObservation(observation) =
+            call(&self.object, Request::SubjectObserve).await?
+        else {
+            return Err(crate::unexpected());
         };
         observation.validate().map_err(|error| invalid(&error))?;
         Ok(observation)

@@ -37,7 +37,9 @@ pub(crate) fn disconnected(what: &str) -> NotAvailable {
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|error| error.into_inner())
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// A call that waits for its answer.
@@ -71,7 +73,7 @@ impl Connection {
     ///
     /// Returns a failed connection when the stream cannot be made asynchronous
     /// or the driver thread cannot start.
-    pub(crate) fn connect(name: &str, stream: UnixStream) -> io::Result<Arc<Self>> {
+    pub fn connect(name: &str, stream: UnixStream) -> io::Result<Arc<Self>> {
         let transport = stream.try_clone()?;
         stream.set_nonblocking(true)?;
         let (outgoing, frames) = tokio::sync::mpsc::unbounded_channel();
@@ -82,10 +84,10 @@ impl Connection {
             live: AtomicBool::new(true),
             next_call: AtomicU64::new(1),
         });
-        let driver = Arc::clone(&inner);
+        let driveable = Arc::downgrade(&inner);
         std::thread::Builder::new()
             .name(name.into())
-            .spawn(move || drive(stream, frames, driver))?;
+            .spawn(move || drive(stream, frames, driveable))?;
         Ok(Arc::new(Self(inner)))
     }
 
@@ -127,7 +129,7 @@ impl Connection {
 fn drive(
     stream: UnixStream,
     mut frames: tokio::sync::mpsc::UnboundedReceiver<Frame>,
-    driver: Arc<Inner>,
+    connection: std::sync::Weak<Inner>,
 ) {
     let runtime = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -159,7 +161,11 @@ fn drive(
         loop {
             match reader.read_value_async::<Frame>().await {
                 Ok(Some(Frame::Reply { call, reply })) => {
-                    if let Some(answer) = lock(&driver.pending).remove(&call) {
+                    let Some(connection) = connection.upgrade() else {
+                        break;
+                    };
+                    let answer = lock(&connection.pending).remove(&call);
+                    if let Some(answer) = answer {
                         let _ = answer.send(reply);
                     }
                 }
@@ -173,22 +179,25 @@ fn drive(
                 }
             }
         }
-        driver.live.store(false, Ordering::Release);
-        // A peer that left cannot take more calls: tell everyone still waiting.
-        lock(&driver.pending).clear();
+        // The last handle letting go already shut the stream down; a peer that
+        // still left cannot take more calls, so tell everyone still waiting.
+        if let Some(connection) = connection.upgrade() {
+            connection.live.store(false, Ordering::Release);
+            lock(&connection.pending).clear();
+        }
         writer.abort();
     });
 }
 
 /// A capability on a connection; dropping the last handle releases it.
-pub(crate) struct Object {
+pub struct Object {
     pub(crate) connection: Arc<Connection>,
     pub(crate) id: u64,
 }
 
 impl Object {
     /// The capability the connection was handed over as.
-    pub(crate) fn root(connection: Arc<Connection>) -> Arc<Self> {
+    pub fn root(connection: Arc<Connection>) -> Arc<Self> {
         Arc::new(Self {
             connection,
             id: ROOT,
@@ -196,11 +205,17 @@ impl Object {
     }
 
     /// A capability the serving side answered with.
-    pub(crate) fn child(connection: Arc<Connection>, id: u64) -> Arc<Self> {
+    pub fn child(connection: Arc<Connection>, id: u64) -> Arc<Self> {
         Arc::new(Self { connection, id })
     }
 
-    pub(crate) async fn call(&self, request: Request) -> Result<Reply, NotAvailable> {
+    /// A capability this object's own connection answered with.
+    pub fn capability(&self, id: u64) -> Arc<Self> {
+        Self::child(Arc::clone(&self.connection), id)
+    }
+
+    /// One request on this capability, answered or refused.
+    pub async fn call(&self, request: Request) -> Result<Reply, NotAvailable> {
         self.connection.call(self.id, request).await
     }
 }
@@ -249,7 +264,7 @@ impl Capabilities {
         self.0
             .objects
             .write()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(id, object);
         id
     }
@@ -258,7 +273,7 @@ impl Capabilities {
         self.0
             .objects
             .read()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&id)
             .cloned()
     }
@@ -269,7 +284,7 @@ impl Capabilities {
             .0
             .objects
             .write()
-            .unwrap_or_else(|error| error.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&id);
         drop(released);
     }

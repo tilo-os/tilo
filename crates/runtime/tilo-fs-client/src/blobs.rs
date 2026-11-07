@@ -1202,6 +1202,10 @@ fn drive(
     });
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
 async fn run_job(job: Job, session: &Session) {
     match job {
         Job::Store(job) => store(job, session).await,
@@ -1286,6 +1290,10 @@ async fn run_job(job: Job, session: &Session) {
 }
 
 /// Name the agent behind this device's next writes, as the session.
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
 async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(), BlobError> {
     let color = attribution.color;
     match session
@@ -1305,6 +1313,10 @@ async fn attribute(attribution: WriteAttribution, session: &Session) -> Result<(
 }
 
 /// The public copy `name` as the capability `target` reaches it.
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
 async fn public_copy(session: &Session, target: u64, name: &str) -> Result<Arc<Object>, BlobError> {
     let client = session.scopes(target)?;
     match client
@@ -1318,6 +1330,10 @@ async fn public_copy(session: &Session, target: u64, name: &str) -> Result<Arc<O
     }
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
 async fn public(job: PublicJob, session: &Session) {
     match job {
         PublicJob::Keep {
@@ -1383,6 +1399,10 @@ async fn public(job: PublicJob, session: &Session) {
     }
 }
 
+#[allow(
+    clippy::future_not_send,
+    reason = "the client session is Rc-based and runs on a LocalSet by construction"
+)]
 async fn store(job: StoreJob, session: &Session) {
     match job {
         StoreJob::Put {

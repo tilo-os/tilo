@@ -1,6 +1,6 @@
 pub use tilo_fs_client::{
     DirEntry, EntryKind, FileHandle, FsClient, MAX_READ_CHUNK, MAX_WRITE_CHUNK, Metadata, OpenMode,
-    WorkspaceFsClient, blobs_capnp, fs_capnp, native_reply, raw, storage, try_connect,
+    native_reply, storage, try_connect,
 };
 #[cfg(unix)]
 pub use tilo_fs_client::{

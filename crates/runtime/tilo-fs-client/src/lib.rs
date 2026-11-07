@@ -29,7 +29,7 @@ use crate::wire::{Reply, Request};
 #[cfg(unix)]
 mod bridge;
 #[cfg(unix)]
-mod connection;
+pub mod connection;
 #[cfg(unix)]
 pub mod directory_client;
 #[cfg(unix)]
