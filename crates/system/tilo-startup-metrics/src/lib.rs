@@ -73,7 +73,19 @@ struct PendingLaunch {
 /// At most this many dispatch phases are kept per launch.
 const LAUNCH_PHASES_MAX: usize = 16;
 
+/// The most launches the table keeps. More than a person's desktop opens at
+/// once, so a launch whose window never comes (an app that failed inside its
+/// sandbox, a window that does not reach this display) is retired by the next
+/// launch rather than kept for the session's life.
+const PENDING_LAUNCHES_MAX: usize = 64;
+
 static LAUNCHES: Mutex<Vec<PendingLaunch>> = Mutex::new(Vec::new());
+
+/// How many mapped launches wait for their first presented frame. The
+/// compositor reads this every frame it draws, so it is an atomic rather than
+/// a look in the table.
+static AWAITING_FIRST_PRESENT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
 
 /// The `tracing` target of the compositor's per-launch timing lines.
 pub const LAUNCH_LATENCY_TARGET: &str = "tilo::launch_latency";
@@ -155,15 +167,26 @@ pub fn launch_generation() -> u128 {
 pub fn launch_requested(key: impl Into<String>) -> u64 {
     let id = NEXT_LAUNCH_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let key = key.into();
-    launch_table().push(PendingLaunch {
-        id,
-        key: key.clone(),
-        requested_at: Instant::now(),
-        spawned_at: None,
-        surface_id: None,
-        mapped_at: None,
-        phases: Vec::new(),
-    });
+    let retired = {
+        let mut launches = launch_table();
+        let retired = (launches.len() >= PENDING_LAUNCHES_MAX).then(|| launches.remove(0));
+        launches.push(PendingLaunch {
+            id,
+            key: key.clone(),
+            requested_at: Instant::now(),
+            spawned_at: None,
+            surface_id: None,
+            mapped_at: None,
+            phases: Vec::new(),
+        });
+        retired
+    };
+    if let Some(retired) = retired {
+        retire(
+            retired,
+            "application launch timing retired for a newer launch",
+        );
+    }
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
         launch_id = id,
@@ -239,20 +262,27 @@ pub fn launch_spawned(id: u64, pid: u32) {
     );
 }
 
-/// Bind the oldest unmatched request to the exact mapped surface.
-pub fn launch_mapped(id: u64, surface_id: u64) {
+/// Bind the oldest launch of `key` that has not mapped to the exact surface:
+/// the compositor knows a window's app, not the launch that started it, and
+/// same-app launches are FIFO.
+pub fn launch_mapped(key: &str, surface_id: u64) {
     let mut launches = launch_table();
     let Some(launch) = launches
         .iter_mut()
-        .find(|launch| launch.id == id && launch.surface_id.is_none())
+        .find(|launch| launch.key == key && launch.surface_id.is_none())
     else {
         return;
     };
     let now = Instant::now();
     launch.surface_id = Some(surface_id);
     launch.mapped_at = Some(now);
-    let (key, requested_at, spawned_at) =
-        (launch.key.clone(), launch.requested_at, launch.spawned_at);
+    AWAITING_FIRST_PRESENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (id, key, requested_at, spawned_at) = (
+        launch.id,
+        launch.key.clone(),
+        launch.requested_at,
+        launch.spawned_at,
+    );
     drop(launches);
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
@@ -271,51 +301,68 @@ pub fn launch_first_present(surface_id: u64, frame_seq: u64) {
     if frame_seq == 0 {
         return;
     }
-    let mut launches = launch_table();
-    let Some(index) = launches
-        .iter()
-        .position(|launch| launch.surface_id == Some(surface_id))
-    else {
-        return;
+    let retired = {
+        let mut launches = launch_table();
+        let Some(index) = launches
+            .iter()
+            .position(|launch| launch.surface_id == Some(surface_id))
+        else {
+            return;
+        };
+        launches.remove(index)
     };
-    let launch = launches.remove(index);
-    drop(launches);
-    let Some(mapped_at) = launch.mapped_at else {
+    AWAITING_FIRST_PRESENT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    let Some(mapped_at) = retired.mapped_at else {
         return;
     };
     let now = Instant::now();
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
-        launch_id = launch.id,
+        launch_id = retired.id,
         launch_generation = launch_generation(),
-        package_id = %launch.key,
+        package_id = %retired.key,
         surface_id,
         frame_seq,
-        request_to_first_present_us = now.duration_since(launch.requested_at).as_micros(),
-        spawn_to_first_present_us = launch.spawned_at.map(|spawned| now.duration_since(spawned).as_micros()),
+        request_to_first_present_us = now.duration_since(retired.requested_at).as_micros(),
+        spawn_to_first_present_us = retired.spawned_at.map(|spawned| now.duration_since(spawned).as_micros()),
         map_to_first_present_us = now.duration_since(mapped_at).as_micros(),
         "application first frame presented"
     );
 }
 
+/// The window of a launch went before any frame showed it: its open ends
+/// without one, so nothing waits for that surface any more.
+pub fn launch_window_closed(surface_id: u64) {
+    let retired = {
+        let mut launches = launch_table();
+        let Some(index) = launches
+            .iter()
+            .position(|launch| launch.surface_id == Some(surface_id))
+        else {
+            return;
+        };
+        launches.remove(index)
+    };
+    retire(retired, "application window closed before its first frame");
+}
+
 /// Surfaces bound to a launch that has not yet presented its first frame.
 #[must_use]
 pub fn launches_awaiting_first_present() -> Vec<u64> {
+    if AWAITING_FIRST_PRESENT.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+        return Vec::new();
+    }
     launch_table()
         .iter()
         .filter_map(|launch| launch.surface_id)
         .collect()
 }
 
-/// Retire one launch's timing, recording which startup phases it reached.
-/// Retirement can also be placement cleanup: it does not prove a process failed.
-pub fn launch_failed(id: u64) {
-    let mut launches = launch_table();
-    let Some(index) = launches.iter().position(|launch| launch.id == id) else {
-        return;
-    };
-    let launch = launches.remove(index);
-    drop(launches);
+/// Log one launch's retirement, and stop counting its surface as awaiting.
+fn retire(launch: PendingLaunch, message: &'static str) {
+    if launch.surface_id.is_some() {
+        AWAITING_FIRST_PRESENT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
     tracing::info!(
         target: LAUNCH_LATENCY_TARGET,
         launch_id = launch.id,
@@ -324,7 +371,23 @@ pub fn launch_failed(id: u64) {
         spawned = launch.spawned_at.is_some(),
         mapped = launch.mapped_at.is_some(),
         request_to_retire_us = Instant::now().duration_since(launch.requested_at).as_micros(),
-        "application launch timing retired before first frame"
+        "{message}"
+    );
+}
+
+/// Retire one launch's timing, recording which startup phases it reached.
+/// Retirement can also be placement cleanup: it does not prove a process failed.
+pub fn launch_failed(id: u64) {
+    let retired = {
+        let mut launches = launch_table();
+        let Some(index) = launches.iter().position(|launch| launch.id == id) else {
+            return;
+        };
+        launches.remove(index)
+    };
+    retire(
+        retired,
+        "application launch timing retired before first frame",
     );
 }
 
@@ -861,8 +924,8 @@ mod tests {
             launch_spawned(first, 10);
             launch_spawned(first, 99);
             launch_spawned(second, 11);
-            launch_mapped(first, 100);
-            launch_mapped(first, 999);
+            launch_mapped("dev.tilo.same-app", 100);
+            launch_mapped("dev.tilo.other-app", 999);
             launch_first_present(100, 0);
             launch_first_present(100, 1);
             launch_first_present(100, 2);
@@ -1016,18 +1079,33 @@ mod tests {
             let second = launch_requested("dev.tilo.test");
             launch_spawned(first, 10);
             launch_spawned(second, 11);
-            launch_mapped(first, 100);
-            launch_mapped(second, 101);
+            launch_mapped("dev.tilo.test", 100);
+            launch_mapped("dev.tilo.test", 101);
             let surfaces: Vec<_> = launch_table()
                 .iter()
                 .map(|launch| launch.surface_id)
                 .collect();
             assert_eq!(surfaces, [Some(100), Some(101)]);
+            assert_eq!(launches_awaiting_first_present(), [100, 101]);
             launch_first_present(100, 1);
+            assert_eq!(launches_awaiting_first_present(), [101]);
             assert_eq!(launch_table().len(), 1);
             launch_first_present(100, 2);
             assert_eq!(launch_table().len(), 1);
             launch_failed(second);
+            assert!(launches_awaiting_first_present().is_empty());
+        }
+        {
+            // A window that never comes is retired by the launches after it,
+            // not kept for the session's life.
+            launch_table().clear();
+            let lost = launch_requested("dev.tilo.never-maps");
+            for _ in 0..PENDING_LAUNCHES_MAX {
+                launch_requested("dev.tilo.never-maps");
+            }
+            assert_eq!(launch_table().len(), PENDING_LAUNCHES_MAX);
+            assert!(launch_table().iter().all(|launch| launch.id != lost));
+            launch_table().clear();
         }
         lifecycle_events_correlate_same_app_attempts_and_retire_once();
         {

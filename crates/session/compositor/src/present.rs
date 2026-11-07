@@ -22,7 +22,7 @@ use smithay::utils::{Clock, Monotonic, Time};
 use smithay::wayland::presentation::Refresh;
 
 use crate::output::refresh_interval;
-use crate::state::State;
+use crate::state::{State, describe};
 
 /// The interval a frame is paced to where the output does not say one: 60 Hz,
 /// the rate the switch samples are read against.
@@ -68,6 +68,9 @@ pub struct Presentation {
     /// The frame's serial, which the display's retirement of later frames
     /// includes.
     serial: u64,
+    /// The windows of a launch whose first frame this one is: the app's
+    /// content reached a display with it.
+    first_frames: Vec<u64>,
 }
 
 impl Presentation {
@@ -77,6 +80,9 @@ impl Presentation {
         let (time, sequence, flags) = shown.report(Clock::<Monotonic>::new().now());
         self.feedback.presented(time, self.refresh, sequence, flags);
         state.frame_presented(self.serial);
+        for window in self.first_frames {
+            tilo_startup_metrics::launch_first_present(window, self.serial);
+        }
     }
 }
 
@@ -142,10 +148,23 @@ impl State {
         ) {
             eprintln!("{sample}");
         }
+        // A launch's window maps on its first buffer and is shown here: this
+        // frame's serial is where an app's open ends.
+        let awaiting = tilo_startup_metrics::launches_awaiting_first_present();
+        let first_frames = if awaiting.is_empty() {
+            Vec::new()
+        } else {
+            self.space
+                .elements_for_output(output)
+                .filter_map(|window| describe(self, window).map(|info| info.id))
+                .filter(|id| awaiting.contains(id))
+                .collect()
+        };
         Presentation {
             feedback,
             refresh,
             serial,
+            first_frames,
         }
     }
 

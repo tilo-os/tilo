@@ -1034,6 +1034,10 @@ impl Apps {
     ) -> Result<u64, DoorError> {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
+        // The open is timed from the session starting the process to its
+        // first presented frame: the launcher's and the app's share in the
+        // launch-latency log, the surface's in the compositor's.
+        let timed = tilo_startup_metrics::launch_requested(&planned.app);
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a
@@ -1044,9 +1048,13 @@ impl Apps {
         });
         let started = match started {
             Ok(started) => started,
-            Err(error) => return Err(DoorError::Failed(error.to_string())),
+            Err(error) => {
+                tilo_startup_metrics::launch_failed(timed);
+                return Err(DoorError::Failed(error.to_string()));
+            }
         };
         let (started, door) = started;
+        tilo_startup_metrics::launch_spawned(timed, started.pid);
         if let Some(asked) = asked {
             state.running.insert(started.id, asked.to_owned());
         }

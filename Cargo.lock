@@ -18120,6 +18120,7 @@ dependencies = [
  "tilo-frame-metrics",
  "tilo-liveness",
  "tilo-paths",
+ "tilo-startup-metrics",
  "tilo-wayland-ext",
  "tilo-window-share",
  "tilo-winit",

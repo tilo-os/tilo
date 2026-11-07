@@ -1422,6 +1422,11 @@ impl State {
         let Some(info) = describe(self, window) else {
             return;
         };
+        // The app's first buffer is here: the launch that asked for it is
+        // timed to the frame that first shows it.
+        if let Some(app) = info.app_id.as_deref() {
+            tilo_startup_metrics::launch_mapped(app, info.id);
+        }
         // It came back before the desktop was done with its close.
         self.closing.retain(|closing| closing.info.id != info.id);
         self.snapshots.forget(info.id);
@@ -2050,6 +2055,11 @@ impl XdgShellHandler for State {
             .find(|window| window.toplevel() == Some(&surface))
             .cloned();
         if let Some(window) = gone {
+            // A window that goes before a frame showed it ends its launch's
+            // timing: no frame is coming for that surface.
+            if let Some(id) = window_id_of(surface.wl_surface()) {
+                tilo_startup_metrics::launch_window_closed(id);
+            }
             self.keep_closing(&window);
             self.space.unmap_elem(&window);
             self.rearrange();
