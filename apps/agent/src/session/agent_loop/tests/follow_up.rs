@@ -52,6 +52,7 @@ impl TurnTransport for ReadsTheConversation {
             },
             stop_reason: StopReason::ToolCalls,
             usage: Usage::default(),
+            cost_micros: 0,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(TurnEvent::Finished(Ok(

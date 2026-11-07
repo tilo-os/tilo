@@ -52,6 +52,7 @@ impl TurnTransport for Reading {
                 total_tokens: 20,
                 ..Usage::default()
             },
+            cost_micros: 0,
         };
         let (tx, rx) = std::sync::mpsc::channel();
         tx.send(TurnEvent::Finished(Ok(

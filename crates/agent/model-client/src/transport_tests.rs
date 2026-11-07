@@ -83,6 +83,7 @@ impl Transport for BurstStream {
                         ),
                         stop_reason: neutral::StopReason::EndTurn,
                         usage: neutral::Usage::default(),
+                        cost_micros: 0,
                     })
                     .unwrap(),
                 ),
