@@ -1335,7 +1335,7 @@ impl PreparedMedia {
                 .map_err(|_| io::Error::other("Selected accounts could not be prepared"))?;
         }
         if !account_ids.is_empty() {
-            if imager_backend::account_transfer::PasswordSealedAccounts::inspect_prepared_consumer(
+            if imager_backend::account_transfer::inspect_prepared_consumer(
                 &tree.join(prepared_setup::ACCOUNTS_FILE),
                 password.as_bytes(),
                 binding.as_bytes(),

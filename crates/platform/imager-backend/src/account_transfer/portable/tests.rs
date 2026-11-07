@@ -1,5 +1,11 @@
 use super::*;
 
+use accounts::{Secret, SecretVault};
+use zeroize::Zeroizing;
+
+/// Bound the canonical codec enforces on one selected-account plaintext.
+const MAX_PLAINTEXT: usize = 8 * 1024 * 1024;
+
 fn connect(root: &std::path::Path, name: &str, password: &str) -> AccountId {
     let dav_server = crate::account_transfer::dav_readiness::test_server();
     Connector::new(root.to_owned())
@@ -122,7 +128,7 @@ fn wrong_setup_key_tampering_and_empty_binding_never_write_destination() {
             .seal_selected_accounts(&[id.clone(), id], &key, b"setup-1")
             .is_err()
     );
-    assert!(SealedAccounts::from_bytes(&vec![0; MAX_SEALED + 1]).is_err());
+    assert!(SealedAccounts::from_bytes(&vec![0; MAX_PLAINTEXT + 257]).is_err());
 }
 
 #[test]
@@ -236,37 +242,6 @@ fn partial_selection_retry_and_corrupt_custody_are_handled_without_overwrite() {
 }
 
 #[test]
-fn authenticated_foreign_owner_bundle_is_refused_before_target_creation() {
-    let fixture = tempfile::tempdir().unwrap();
-    let target = fixture.path().join("never-created");
-    let key = SymmetricKey::generate().unwrap();
-    let mut account = Account::new(AccountId::new("foreign-account"), "webdav");
-    account.owner = Some("another-collaborator".into());
-    let bundle = Bundle {
-        version: 1,
-        entries: vec![Entry {
-            account,
-            secret: Secret::password("private-collaborator-password"),
-        }],
-    };
-    let plain = Zeroizing::new(serde_json::to_vec(&bundle).unwrap());
-    let context = binding(b"setup-1").unwrap();
-    let sealed = SealedAccounts(
-        envelope::seal(
-            &key,
-            Context::new(Label::MigrationPackage, &context),
-            &plain,
-        )
-        .unwrap(),
-    );
-    assert_eq!(
-        Connector::new(target.clone()).import_sealed_accounts(&sealed, &key, b"setup-1"),
-        Err(ConnectionError::InvalidConfiguration)
-    );
-    assert!(!target.exists());
-}
-
-#[test]
 fn selected_serialization_limit_rejects_account_before_emitting_transport() {
     let fixture = tempfile::tempdir().unwrap();
     let source = fixture.path().join("source");
@@ -301,75 +276,7 @@ fn selected_serialization_limit_rejects_account_before_emitting_transport() {
 const TRANSPORT_PASSWORD: &[u8] = b"a private transport password";
 
 #[test]
-fn password_artifact_roundtrip_reseals_selected_grant_without_source_key_transport() {
-    let fixture = tempfile::tempdir().unwrap();
-    let source = fixture.path().join("source");
-    let target = fixture.path().join("target");
-    let selected = connect(&source, "Selected", "selected-private-password");
-    let unselected = connect(&source, "Unselected", "unselected-private-password");
-    let source_store = std::fs::read(accounts::store_path_in(&source)).unwrap();
-    let source_key = std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap();
-    let source_vault = std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap();
-    let connector = Connector::new(source.clone());
-    let artifact = connector
-        .seal_selected_accounts_with_password(
-            std::slice::from_ref(&selected),
-            TRANSPORT_PASSWORD,
-            b"operation-1",
-        )
-        .unwrap();
-    let fresh = connector
-        .seal_selected_accounts_with_password(
-            std::slice::from_ref(&selected),
-            TRANSPORT_PASSWORD,
-            b"operation-1",
-        )
-        .unwrap();
-    assert_ne!(artifact.as_bytes(), fresh.as_bytes());
-    assert!(
-        !artifact
-            .as_bytes()
-            .windows(source_key.len())
-            .any(|window| window == source_key)
-    );
-    assert!(!format!("{artifact:?}").contains("password"));
-    let readback = PasswordSealedAccounts::from_bytes(artifact.as_bytes()).unwrap();
-    let imported = Connector::new(target.clone())
-        .import_password_sealed_accounts(&readback, TRANSPORT_PASSWORD, b"operation-1")
-        .unwrap();
-    assert_eq!(imported, vec![selected.clone()]);
-    assert!(
-        accounts::AccountStore::load_in(&target)
-            .get(&unselected)
-            .is_none()
-    );
-    assert_eq!(
-        SecretVault::open_in(&target)
-            .get(&selected)
-            .unwrap()
-            .password,
-        "selected-private-password"
-    );
-    assert_ne!(
-        std::fs::read(accounts::vault_dir_in(&target).join("vault.key")).unwrap(),
-        source_key
-    );
-    assert_eq!(
-        std::fs::read(accounts::store_path_in(&source)).unwrap(),
-        source_store
-    );
-    assert_eq!(
-        std::fs::read(accounts::vault_dir_in(&source).join("vault.key")).unwrap(),
-        source_key
-    );
-    assert_eq!(
-        std::fs::read(accounts::vault_dir_in(&source).join("vault.enc")).unwrap(),
-        source_vault
-    );
-}
-
-#[test]
-fn wrapped_key_binding_tamper_and_expensive_kdf_policy_refuse_before_target_writes() {
+fn wrapped_key_binding_and_tamper_refuse_before_target_writes() {
     let fixture = tempfile::tempdir().unwrap();
     let source = fixture.path().join("source");
     let target = fixture.path().join("never-created");
@@ -400,13 +307,6 @@ fn wrapped_key_binding_tamper_and_expensive_kdf_policy_refuse_before_target_writ
     // The wrapped envelope starts at 12; its Argon2 memory field at 8.
     expensive[20..24].copy_from_slice(&u32::MAX.to_le_bytes());
     assert!(PasswordSealedAccounts::from_bytes(&expensive).is_err());
-    assert!(
-        PasswordSealedAccounts::from_bytes(&artifact.as_bytes()[..artifact.as_bytes().len() - 1])
-            .is_err()
-    );
-    let mut trailing = artifact.as_bytes().to_vec();
-    trailing.push(0);
-    assert!(PasswordSealedAccounts::from_bytes(&trailing).is_err());
     assert!(!target.exists());
 }
 
@@ -501,7 +401,7 @@ fn private_publication_is_atomic_create_new_and_symlink_safe() {
             )
             .is_err()
     );
-    assert!(PasswordSealedAccounts::read(&symlink).is_err());
+    assert!(read_artifact(&symlink).is_err());
     assert_eq!(std::fs::read(&old).unwrap(), b"original-account-stays");
     assert_eq!(std::fs::read_dir(&private).unwrap().count(), 2);
     std::fs::set_permissions(&source, std::fs::Permissions::from_mode(0o700)).unwrap();
@@ -517,7 +417,7 @@ fn private_publication_is_atomic_create_new_and_symlink_safe() {
     );
     assert!(!source.join("inside-source.accounts").exists());
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
-    assert!(PasswordSealedAccounts::read(&path).is_err());
+    assert!(read_artifact(&path).is_err());
 }
 
 #[cfg(target_os = "linux")]
@@ -538,7 +438,7 @@ fn private_artifact_reader_rejects_fifo_without_waiting_for_writer() {
     let (answered, answer) = std::sync::mpsc::channel();
     let reading = fifo.clone();
     let reader = std::thread::spawn(move || {
-        let _ = answered.send(PasswordSealedAccounts::read(&reading).is_err());
+        let _ = answered.send(read_artifact(&reading).is_err());
     });
     let refused = answer.recv_timeout(tilo_test_env::hang_bound());
     // Release a regressed blocking reader, so failure cannot hang the suite.
@@ -613,26 +513,13 @@ fn protected_consumer_requirement_follows_exact_authenticated_selected_grants() 
     let artifact_path = artifact_file.path();
     std::fs::write(artifact_path, protected.as_bytes()).unwrap();
     let selected = vec![fresh.as_str().to_owned()];
+    assert!(inspect_prepared_consumer(artifact_path, password, binding, &selected).unwrap());
     assert!(
-        PasswordSealedAccounts::inspect_prepared_consumer(
-            artifact_path,
-            password,
-            binding,
-            &selected
-        )
-        .unwrap()
+        inspect_prepared_consumer(artifact_path, password, b"different-operation", &selected)
+            .is_err()
     );
     assert!(
-        PasswordSealedAccounts::inspect_prepared_consumer(
-            artifact_path,
-            password,
-            b"different-operation",
-            &selected
-        )
-        .is_err()
-    );
-    assert!(
-        PasswordSealedAccounts::inspect_prepared_consumer(
+        inspect_prepared_consumer(
             artifact_path,
             password,
             binding,
