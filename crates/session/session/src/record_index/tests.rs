@@ -91,6 +91,7 @@ fn entry(resource: &str, title: &str) -> IndexEntry {
         fields: Vec::new(),
         secret: false,
         references: Vec::new(),
+        ..IndexEntry::default()
     }
 }
 

@@ -13,6 +13,7 @@ use std::rc::Rc;
 use tilo_content::ContentStore;
 use ui::framework::{EffectAnswer, EffectCx, Publishes, ResourceApp, RunMode, SeedCx, ViewCx};
 use ui::tilo_resource::items::{item_of_resource, item_resource_id};
+use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
 use ui::tilo_resource::{Id, Invoke, SearchEntry};
 use ui::widget::Element;
 
@@ -45,17 +46,23 @@ impl Chat {
             .map(|(id, channel)| {
                 SearchEntry::new(channel.name.clone(), channel.topic.clone())
                     .anchored(anchor("channels", id))
+                    .of_kind(IndexKind::Conversation)
+                    .with_icon(CONVERSATION_ICON)
             });
         // A conversation the record holds as an item: a group of people, or a
         // person and an agent. What it is called is what its participants are
-        // called, until they name it.
+        // called, until they name it; the row shows those participants beside
+        // it.
         let conversations = self
             .channels
             .iter()
             .filter(|(_, conversation)| !conversation.is_channel())
             .map(|(id, _)| {
-                SearchEntry::new(self.display_names(id, None), "Conversation")
+                SearchEntry::new(self.display_names(id, None), "")
                     .anchored(anchor("channels", id))
+                    .of_kind(IndexKind::Conversation)
+                    .with_icon(CONVERSATION_ICON)
+                    .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
@@ -67,14 +74,44 @@ impl Chat {
             Some(SearchEntry::new(&message.text, "Feedback").anchored(anchor("feedback", id)))
         });
         let people = self.people.iter().map(|person| {
-            SearchEntry::new(&person.name, "Person")
-                .anchored(anchor("people", &Id::from_raw(person.id.0.clone())))
+            let person_anchor = anchor("people", &Id::from_raw(person.id.0.clone()));
+            SearchEntry::new(&person.name, "")
+                .anchored(person_anchor.clone())
+                .of_kind(IndexKind::Person)
+                .showing(vec![IndexPerson {
+                    name: person.name.trim().to_owned(),
+                    anchor: person_anchor,
+                    identity: person.id.0.clone(),
+                    agent: person.agent,
+                }])
         });
         channels
             .chain(conversations)
             .chain(categories)
             .chain(feedback)
             .chain(people)
+            .collect()
+    }
+
+    /// The people in the conversation `id`, as a row shows them: named by the
+    /// record when it knows them, else by what their own entry is called.
+    fn participant_rows(&self, id: &Id) -> Vec<IndexPerson> {
+        self.conversation_participants(id)
+            .into_iter()
+            .map(|participant| IndexPerson {
+                name: self
+                    .people
+                    .iter()
+                    .find(|person| person.id.0 == participant.id())
+                    .map(|person| person.name.trim().to_owned())
+                    .unwrap_or_default(),
+                anchor: item_resource_id::<Self>(
+                    "people",
+                    &Id::from_raw(participant.id().to_owned()),
+                ),
+                identity: participant.id().to_owned(),
+                agent: participant.is_agent(),
+            })
             .collect()
     }
 
@@ -114,6 +151,9 @@ impl Chat {
 /// Chat as every host runs and mounts it: the chat widget is the window
 /// over [`Chat`], kept by the workspace as its own record.
 pub struct ChatShell;
+
+/// The glyph a conversation leads with when the row has no face of its own.
+const CONVERSATION_ICON: &str = "message-circle";
 
 /// Every named scenario `--shots --scenario NAME` captures.
 #[cfg(feature = "samples")]

@@ -23,6 +23,7 @@ use std::fmt;
 use collab_types::presence::{PRESENCE_LEN, PresenceHue};
 use serde::{Deserialize, Serialize};
 use tilo_resource::items::item_resource_id;
+use tilo_resource::search_index::{IndexKind, IndexPerson};
 use tilo_resource::{
     ActionCx, Atom, Id, Identified, JsonSchema, Keyed, Model, NonBlank, Refusal, SearchEntry,
     resource,
@@ -224,10 +225,22 @@ impl WorkspaceAgents {
             .filter_map(|agent| {
                 let name = agent.name.trim();
                 (!name.is_empty()).then(|| {
-                    SearchEntry::new(name, "Agent").anchored(item_resource_id::<Self>(
-                        "agents",
-                        &Id::from(agent.id.0.as_str()),
-                    ))
+                    let anchor = item_resource_id::<Self>("agents", &Id::from(agent.id.0.as_str()));
+                    SearchEntry::new(name, "")
+                        .anchored(anchor.clone())
+                        .of_kind(IndexKind::Agent)
+                        .showing(vec![IndexPerson {
+                            name: name.to_owned(),
+                            anchor,
+                            identity: agent.identity(),
+                            agent: true,
+                        }])
+                        .kept_by(IndexPerson {
+                            name: String::new(),
+                            anchor: String::new(),
+                            identity: agent.keeper.clone(),
+                            agent: false,
+                        })
                 })
             })
             .collect()

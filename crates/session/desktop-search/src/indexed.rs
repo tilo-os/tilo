@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use tilo_search::{Document, FieldWeight, Matching, Page, SearchIndex};
-use ui::search::index_publication::{IndexEntry, IndexWeight};
+use ui::search::index_publication::{IndexEntry, IndexKind, IndexPerson, IndexWeight};
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind, provider_score};
 
 use crate::content_index::{AppContentIndex, Contents, IndexedEntry, SlotKey};
@@ -44,6 +44,14 @@ pub struct Snapshot {
     covered: HashSet<(String, String, String)>,
     /// The boost its app gave each visible entry that has one, by row id.
     boosts: HashMap<String, i32>,
+    /// What each resource is called now, by `(workspace, resource)` and the
+    /// app that named it: a row says who a message is from, and in which
+    /// conversation, without the record that holds the message knowing
+    /// either.
+    titles: HashMap<(String, String), Vec<(String, String)>>,
+    /// What each person is called, by `(workspace, identity)`: what the
+    /// entry about them says, for a record that holds only their id.
+    names: HashMap<(String, String), String>,
 }
 
 impl Snapshot {
@@ -73,12 +81,114 @@ impl Snapshot {
             generation,
             index: text_index(&visible),
             locked_index: text_index(&locked),
+            titles: titles_of(&visible),
+            names: names_of(&visible),
             visible,
             locked,
             covered,
             boosts,
         }
     }
+
+    /// What the resource `resource` of `app` in `workspace` is called now,
+    /// as the entry that opens it names it.
+    fn title(&self, workspace: &str, app: &str, resource: &str) -> Option<&str> {
+        let held = self
+            .titles
+            .get(&(workspace.to_owned(), resource.to_owned()))?;
+        held.iter()
+            .find(|(named_by, _)| named_by == app)
+            .or_else(|| held.first())
+            .map(|(_, title)| title.as_str())
+    }
+}
+
+/// What each resource the entries name is called now, by `(workspace,
+/// resource)`: an entry's own name of itself, for the rows that show the
+/// people and places another entry holds.
+fn titles_of(entries: &[IndexedEntry]) -> HashMap<(String, String), Vec<(String, String)>> {
+    let mut titles: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
+    for indexed in entries {
+        titles
+            .entry((
+                indexed.slot.workspace.clone(),
+                indexed.entry.resource.clone(),
+            ))
+            .or_default()
+            .push((indexed.slot.app.clone(), indexed.entry.title.clone()));
+    }
+    titles
+}
+
+/// A person as a row's face stack draws them.
+fn face(name: &str, person: &IndexPerson) -> ui::search::RowFace {
+    ui::search::RowFace {
+        name: name.to_owned(),
+        identity: person.identity.clone(),
+        colour: ui::presence::identity_colour(&person.identity),
+        is_agent: person.agent,
+        dimmed: false,
+    }
+}
+
+/// What each person the entries name is called, by `(workspace, identity)`:
+/// the title of the entry about them.
+fn names_of(entries: &[IndexedEntry]) -> HashMap<(String, String), String> {
+    entries
+        .iter()
+        .filter(|indexed| indexed.entry.kind == Some(IndexKind::Person))
+        .filter_map(|indexed| {
+            let person = indexed.entry.people.first()?;
+            Some((
+                (indexed.slot.workspace.clone(), person.identity.clone()),
+                indexed.entry.title.clone(),
+            ))
+        })
+        .collect()
+}
+
+/// The one line of `text` a row shows for `needle`: all of it when it is
+/// short, else a window around what the person typed, so the match is in
+/// the row rather than the start it happens to have.
+fn excerpt(text: &str, needle: &str) -> String {
+    /// How much of a long line a row shows.
+    const SHOWN: usize = 120;
+    /// How much of the window leads the match.
+    const LEAD: usize = 40;
+    let word: String = ui::search::fold_search_text(needle.trim())
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned();
+    let chars: Vec<char> = text.chars().collect();
+    if word.is_empty() || chars.len() <= SHOWN {
+        return text.to_owned();
+    }
+    let folded: Vec<char> = ui::search::fold_search_text(text).chars().collect();
+    // Folding keeps one char per char for the scripts a message is written
+    // in; where it does not, the beginning is the line.
+    let found = (folded.len() == chars.len())
+        .then(|| {
+            let word: Vec<char> = word.chars().collect();
+            folded
+                .windows(word.len())
+                .position(|window| window == word.as_slice())
+        })
+        .flatten();
+    let Some(found) = found else {
+        return chars.iter().take(SHOWN).collect();
+    };
+    let start = found.saturating_sub(LEAD);
+    let end = start.saturating_add(SHOWN).min(chars.len());
+    let mut out = String::new();
+    if start > 0 {
+        out.push_str("\u{2026} ");
+    }
+    out.extend(chars.get(start..end).unwrap_or_default());
+    if end < chars.len() {
+        out.push_str(" \u{2026}");
+    }
+    out
 }
 
 /// The entries' texts, each found by its position.
@@ -172,18 +282,24 @@ pub struct IndexedContent {
     snapshot: Mutex<Option<Arc<Snapshot>>>,
     /// An app's name as the person knows it.
     app_name: Box<dyn Fn(&str) -> String + Send + Sync>,
+    /// The person searching, by their id: a row of what they keep says
+    /// "you" rather than their name.
+    person: String,
 }
 
 impl IndexedContent {
-    /// A source over `index`, naming apps by `app_name`.
+    /// A source over `index`, naming apps by `app_name` and the person
+    /// searching by `person`.
     pub fn new(
         index: Arc<AppContentIndex>,
         app_name: impl Fn(&str) -> String + Send + Sync + 'static,
+        person: impl Into<String>,
     ) -> Self {
         Self {
             index,
             snapshot: Mutex::new(None),
             app_name: Box::new(app_name),
+            person: person.into(),
         }
     }
 
@@ -240,33 +356,178 @@ impl IndexedContent {
             .cloned()
     }
 
-    /// The row for one visible entry, scored `score`.
+    /// The row for one visible entry, scored `score`, found by `needle`: a
+    /// message shows the line around what the person typed rather than how
+    /// it happens to begin.
     #[must_use]
-    pub fn row(&self, indexed: &IndexedEntry, score: i32) -> Hit {
+    pub fn row(&self, indexed: &IndexedEntry, score: i32, needle: &str) -> Hit {
         let IndexedEntry { slot, entry, .. } = indexed;
-        let subtitle = entry
-            .subtitle
-            .clone()
-            .or_else(|| entry.group.clone())
-            .unwrap_or_else(|| (self.app_name)(&slot.app));
+        let subtitle = entry.subtitle.clone().or_else(|| match entry.kind {
+            Some(_) => self.under_name(slot, entry),
+            None => entry
+                .group
+                .clone()
+                .or_else(|| Some((self.app_name)(&slot.app))),
+        });
+        let (avatar, faces) = self.shown(slot, entry);
+        let title = match entry.kind {
+            Some(IndexKind::Message) => excerpt(&entry.title, needle),
+            _ => entry.title.clone(),
+        };
+        // What the entry is, when its app says something the generic record
+        // row would read poorly: its own section, its own glyph, its people
+        // at the front and beside it.
+        let drawn = (!faces.is_empty() || avatar.is_some()).then(|| {
+            ui::search::SearchRow::Command(Box::new(ui::search::CommandRow {
+                avatar,
+                faces,
+                ..ui::search::CommandRow::default()
+            }))
+        });
         Hit {
-            row: entry
-                .action
-                .is_none()
-                .then(|| ui::search::SearchRow::item_of(slot.app.clone(), &entry.resource))
-                .flatten(),
+            row: drawn.or_else(|| {
+                entry
+                    .action
+                    .is_none()
+                    .then(|| ui::search::SearchRow::item_of(slot.app.clone(), &entry.resource))
+                    .flatten()
+            }),
             preview: None,
             faces: Vec::new(),
             outcome: None,
-            kind: ResourceKind::Record,
+            kind: Self::kind(entry),
             provider: self.id().into(),
             id: entry_id(slot, &entry.key),
-            title: entry.title.clone(),
-            subtitle: Some(subtitle),
+            title,
+            subtitle,
             facts: Vec::new(),
             score,
             icon: entry.icon.as_deref().and_then(ui::icons::Icon::from_name),
             target: Target::Invoke(Box::new(opening(slot, entry))),
+        }
+    }
+
+    /// The section an entry belongs to: what it is, when its app says, else
+    /// the records an app keeps.
+    fn kind(entry: &IndexEntry) -> ResourceKind {
+        match entry.kind {
+            Some(IndexKind::Agent) => ResourceKind::Custom(crate::i18n::t("search-kind-agents")),
+            Some(IndexKind::Conversation) => {
+                ResourceKind::Custom(crate::i18n::t("search-kind-conversations"))
+            }
+            Some(IndexKind::Message) => {
+                ResourceKind::Custom(crate::i18n::t("search-kind-messages"))
+            }
+            Some(IndexKind::Person) => ResourceKind::Custom(crate::i18n::t("search-kind-people")),
+            None => ResourceKind::Record,
+        }
+    }
+
+    /// The avatar and the faces of the row an entry draws: an agent or a
+    /// message shows its person in front, a conversation shows the people in
+    /// it beside its name.
+    fn shown(
+        &self,
+        slot: &SlotKey,
+        entry: &IndexEntry,
+    ) -> (Option<(String, String)>, Vec<ui::search::RowFace>) {
+        let people: Vec<(String, &IndexPerson)> = entry
+            .people
+            .iter()
+            .filter_map(|person| self.named(slot, person).map(|name| (name, person)))
+            .collect();
+        match entry.kind {
+            Some(IndexKind::Agent | IndexKind::Message | IndexKind::Person) => (
+                people
+                    .first()
+                    .map(|(name, person)| (name.clone(), person.identity.clone())),
+                Vec::new(),
+            ),
+            Some(IndexKind::Conversation) => (
+                None,
+                people
+                    .iter()
+                    .map(|(name, person)| face(name, person))
+                    .collect(),
+            ),
+            None => (None, Vec::new()),
+        }
+    }
+
+    /// What `person` is called: the name the record gave, else what the
+    /// resource that holds them is called now.
+    fn named(&self, slot: &SlotKey, person: &IndexPerson) -> Option<String> {
+        let name = person.name.trim();
+        if !name.is_empty() {
+            return Some(name.to_owned());
+        }
+        let snapshot = self.current();
+        if !person.anchor.is_empty()
+            && let Some(title) = snapshot.title(&slot.workspace, &slot.app, &person.anchor)
+        {
+            return Some(title.to_owned());
+        }
+        snapshot
+            .names
+            .get(&(slot.workspace.clone(), person.identity.clone()))
+            .cloned()
+    }
+
+    /// What the entry says under its name when its app left it unsaid: who
+    /// keeps an agent, and who a message is from, where, and how long ago.
+    fn under_name(&self, slot: &SlotKey, entry: &IndexEntry) -> Option<String> {
+        match entry.kind {
+            Some(IndexKind::Agent) => {
+                let keeper = entry.keeper.as_ref()?;
+                if !self.person.is_empty() && keeper.identity == self.person {
+                    return Some(crate::i18n::t("search-row-agent-yours"));
+                }
+                self.named(slot, keeper).map(|name| {
+                    crate::i18n::t_args("search-row-agent-kept-by", &[("keeper", name.into())])
+                })
+            }
+            Some(IndexKind::Conversation) => {
+                let names: Vec<String> = entry
+                    .people
+                    .iter()
+                    .filter_map(|person| self.named(slot, person))
+                    .collect();
+                (!names.is_empty()).then(|| names.join(", "))
+            }
+            Some(IndexKind::Message) => {
+                let sender = entry
+                    .people
+                    .first()
+                    .and_then(|person| self.named(slot, person));
+                let place = entry
+                    .place
+                    .as_ref()
+                    .and_then(|person| self.named(slot, person));
+                let age = entry.when.map(|when| {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map_or(0, |elapsed| {
+                            i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
+                        });
+                    ui::format::relative(now.saturating_sub(when))
+                });
+                match (sender, place, age) {
+                    (Some(sender), Some(place), Some(age)) => Some(crate::i18n::t_args(
+                        "search-row-message",
+                        &[
+                            ("sender", sender.into()),
+                            ("conversation", place.into()),
+                            ("age", age.into()),
+                        ],
+                    )),
+                    (None, Some(place), Some(age)) => Some(crate::i18n::t_args(
+                        "search-row-message-unnamed",
+                        &[("conversation", place.into()), ("age", age.into())],
+                    )),
+                    _ => None,
+                }
+            }
+            _ => None,
         }
     }
 
@@ -343,7 +604,7 @@ impl IndexedContent {
                 .then(|| self.unlock_row(app, needle, MAX_PROVIDER_SCORE));
         }
         self.entry(id)
-            .map(|indexed| self.row(&indexed, MAX_PROVIDER_SCORE))
+            .map(|indexed| self.row(&indexed, MAX_PROVIDER_SCORE, needle))
     }
 }
 
@@ -375,7 +636,7 @@ impl Source for IndexedContent {
                     .then(|| {
                         let score =
                             provider_score(hit.rank.unwrap_or(0)).clamp(1, MAX_PROVIDER_SCORE);
-                        self.row(indexed, score)
+                        self.row(indexed, score, needle)
                     })
             })
             .collect();
@@ -402,6 +663,7 @@ mod tests {
             fields: Vec::new(),
             secret,
             references: Vec::new(),
+            ..IndexEntry::default()
         }
     }
 
@@ -437,7 +699,7 @@ mod tests {
             None,
             vec![note("n1", "Groceries", false)],
         );
-        let content = IndexedContent::new(Arc::clone(&index), |app| format!("{app}!"));
+        let content = IndexedContent::new(Arc::clone(&index), |app| format!("{app}!"), "");
         let hits = content.query("groceries");
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].subtitle.as_deref(), Some("so.tilo.notes!"));
@@ -469,7 +731,7 @@ mod tests {
         let mut page = note("page-7", "Trip plan", false);
         page.resource = "notes.notebook/pages/page-7".into();
         publish(&index, "so.tilo.notes", None, vec![page.clone()]);
-        let content = IndexedContent::new(index, |_| String::new());
+        let content = IndexedContent::new(index, |_| String::new(), "");
         let hits = content.query("trip");
         assert_eq!(hits.len(), 1);
         assert_eq!(
@@ -491,6 +753,233 @@ mod tests {
         );
     }
 
+    /// A person as an entry names them.
+    fn person(name: &str, identity: &str, anchor: &str, agent: bool) -> IndexPerson {
+        IndexPerson {
+            name: name.into(),
+            anchor: anchor.into(),
+            identity: identity.into(),
+            agent,
+        }
+    }
+
+    /// `entry` as what an app says it is: its kind, the people it is about,
+    /// who keeps it, where it is, and when.
+    fn shaped(entry: IndexEntry, kind: IndexKind, people: Vec<IndexPerson>) -> IndexEntry {
+        IndexEntry {
+            kind: Some(kind),
+            people,
+            ..entry
+        }
+    }
+
+    #[test]
+    fn what_an_entry_is_names_the_section_it_sits_in() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![
+                shaped(
+                    note("chat.agent/agents/a_ada", "Ada", false),
+                    IndexKind::Agent,
+                    vec![person(
+                        "Ada",
+                        "agent:a_ada",
+                        "chat.agent/agents/a_ada",
+                        true,
+                    )],
+                ),
+                shaped(
+                    note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                    IndexKind::Conversation,
+                    vec![person("Ada", "agent:a_ada", "", true)],
+                ),
+                shaped(
+                    note("chat.workspace/messages/m_1", "Ada, can you look?", false),
+                    IndexKind::Message,
+                    vec![person("Ada", "agent:a_ada", "", true)],
+                ),
+            ],
+        );
+        let content = IndexedContent::new(index, str::to_owned, "");
+        let kinds: Vec<ResourceKind> = content
+            .query("ada")
+            .into_iter()
+            .map(|hit| hit.kind)
+            .collect();
+        let labels: Vec<String> = kinds
+            .iter()
+            .map(|kind| match kind {
+                ResourceKind::Custom(label) => label.clone(),
+                other => other.label().to_owned(),
+            })
+            .collect();
+        assert_eq!(labels, ["Agents", "Conversations", "Messages"]);
+        // The groups keep that order whatever their strongest hit.
+        let mut sorted = kinds.clone();
+        sorted.sort_by_key(ResourceKind::sort_key);
+        assert_eq!(
+            sorted.first().map(ResourceKind::sort_key),
+            kinds.first().map(ResourceKind::sort_key)
+        );
+    }
+
+    #[test]
+    fn an_agent_reads_as_the_person_it_is_kept_by() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        let mut agent = shaped(
+            note("chat.agent/agents/a_ada", "Ada", false),
+            IndexKind::Agent,
+            vec![person(
+                "Ada",
+                "agent:a_ada",
+                "chat.agent/agents/a_ada",
+                true,
+            )],
+        );
+        agent.icon = Some("sparkles".into());
+        agent.keeper = Some(person("", "u_me", "", false));
+        publish(&index, "so.tilo.chat", None, vec![agent]);
+        let content = IndexedContent::new(index, str::to_owned, "u_me");
+        let hits = content.query("ada");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Agent · kept by you"));
+        let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
+            panic!("an agent is drawn with its own face: {:?}", hits[0].row);
+        };
+        assert_eq!(
+            row.avatar,
+            Some(("Ada".to_owned(), "agent:a_ada".to_owned()))
+        );
+
+        let other =
+            IndexedContent::new(Arc::clone(content.index()), str::to_owned, "u_someone_else");
+        // The keeper `u_me` is not this person: the row says who keeps it.
+        let mut kept = shaped(
+            note("chat.agent/agents/a_ada", "Ada", false),
+            IndexKind::Agent,
+            vec![person("Ada", "agent:a_ada", "", true)],
+        );
+        kept.keeper = Some(person("Sam", "u_me", "", false));
+        publish(content.index(), "so.tilo.chat", None, vec![kept]);
+        let hits = other.query("ada");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Agent · kept by Sam"));
+    }
+
+    #[test]
+    fn a_conversation_lists_the_people_in_it() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![shaped(
+                note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                IndexKind::Conversation,
+                vec![
+                    person("Aria", "person:u_aria", "", false),
+                    person("Ada", "agent:a_ada", "", true),
+                ],
+            )],
+        );
+        let content = IndexedContent::new(index, str::to_owned, "u_me");
+        let hits = content.query("crit");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].subtitle.as_deref(), Some("Aria, Ada"));
+        let Some(ui::search::SearchRow::Command(row)) = &hits[0].row else {
+            panic!("a conversation shows its people: {:?}", hits[0].row);
+        };
+        let names: Vec<&str> = row.faces.iter().map(|face| face.name.as_str()).collect();
+        assert_eq!(names, ["Aria", "Ada"]);
+        assert!(row.faces[1].is_agent);
+        assert_eq!(row.avatar, None);
+    }
+
+    #[test]
+    fn a_message_says_who_said_it_where_and_when() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        let text = "We shipped the new palette yesterday and the animations still stutter \
+                    when the window resizes; Ada, can you look at the wheel again before \
+                    the demo tomorrow morning?";
+        let mut message = shaped(
+            note("chat.workspace/messages/m_wheel", text, false),
+            IndexKind::Message,
+            vec![person(
+                "",
+                "person:u_aria",
+                "chat.workspace/people/u_aria",
+                false,
+            )],
+        );
+        message.place = Some(person(
+            "",
+            "c_crit",
+            "chat.workspace/channels/c_crit",
+            false,
+        ));
+        message.when = Some(
+            i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("the clock is after the epoch")
+                    .as_secs(),
+            )
+            .expect("seconds fit")
+                - 3600,
+        );
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![
+                shaped(
+                    note("chat.workspace/people/u_aria", "Aria", false),
+                    IndexKind::Person,
+                    vec![person("Aria", "person:u_aria", "", false)],
+                ),
+                shaped(
+                    note("chat.workspace/channels/c_crit", "Ada's design crit", false),
+                    IndexKind::Conversation,
+                    vec![person("Aria", "person:u_aria", "", false)],
+                ),
+                message,
+            ],
+        );
+        let content = IndexedContent::new(index, str::to_owned, "u_me");
+        let hits = content.query("ada");
+        let hit = hits
+            .iter()
+            .find(|hit| hit.title.contains("can you look"))
+            .expect("the message is found by what it says");
+        assert_eq!(
+            hit.subtitle.as_deref(),
+            Some(format!("Aria in Ada's design crit · {}", ui::format::relative(3600)).as_str())
+        );
+        assert!(
+            hit.title.starts_with('\u{2026}'),
+            "a long message shows the line around the match: {:?}",
+            hit.title
+        );
+        let Some(ui::search::SearchRow::Command(row)) = &hit.row else {
+            panic!("a message is drawn with its sender's face: {:?}", hit.row);
+        };
+        assert_eq!(
+            row.avatar,
+            Some(("Aria".to_owned(), "person:u_aria".to_owned()))
+        );
+        let Target::Invoke(target) = &hit.target else {
+            panic!("a message opens where it lives");
+        };
+        assert_eq!(target.address.resource, "chat.workspace/messages/m_wheel");
+        assert_eq!(
+            target.arguments[OPEN_ANCHOR],
+            "chat.workspace/messages/m_wheel"
+        );
+    }
+
     #[test]
     fn a_locked_vault_offers_only_to_unlock_it() {
         let index = Arc::new(AppContentIndex::in_memory());
@@ -500,7 +989,7 @@ mod tests {
             Some(false),
             vec![note("l1", "GitHub", true)],
         );
-        let content = IndexedContent::new(index, str::to_owned);
+        let content = IndexedContent::new(index, str::to_owned, "");
         let hits = content.query("github");
         assert_eq!(hits.len(), 1);
         assert_eq!(

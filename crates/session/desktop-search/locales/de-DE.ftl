@@ -101,3 +101,12 @@ search-downloaded-remove = { $name } aus den Apps entfernen
 search-show-all-results = Alle { $count } Ergebnisse zeigen
 search-open-as-tab = Öffnet als Tab hier
 search-open-beside = Öffnet ein Fenster daneben
+# What a hit is, where an app keeps something the desk's generic records
+# read poorly: its own section and its own row.
+search-kind-agents = Agenten
+search-kind-conversations = Unterhaltungen
+search-kind-messages = Nachrichten
+search-row-agent-kept-by = Agent · betreut von { $keeper }
+search-row-agent-yours = Agent · betreut von dir
+search-row-message = { $sender } in { $conversation } · { $age }
+search-row-message-unnamed = In { $conversation } · { $age }

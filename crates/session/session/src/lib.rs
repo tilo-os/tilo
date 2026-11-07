@@ -1691,6 +1691,7 @@ impl Session {
 
         let search = Rc::new(SessionSearch::new(
             options.search,
+            options.person.clone(),
             options.apps,
             Some(options.wake.handle()),
         ));

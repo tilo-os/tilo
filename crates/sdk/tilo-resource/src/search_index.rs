@@ -63,8 +63,43 @@ pub struct IndexAction {
     pub action: String,
 }
 
+/// What kind of thing an entry is, where the app keeps something the desk's
+/// generic rows would read poorly: each is its own section, drawn as what it
+/// is rather than as a record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndexKind {
+    /// An agent of the workspace, opened in the conversation it answers in.
+    Agent,
+    /// A conversation: a channel, a group or a direct message.
+    Conversation,
+    /// One message in a conversation, opened where it sits.
+    Message,
+    /// A person or an agent the workspace knows, drawn as themselves.
+    Person,
+}
+
+/// A person or an agent an entry is about: who a row shows and what it says
+/// under its name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct IndexPerson {
+    /// The name the record gives them, when it can say it; empty: what their
+    /// `anchor` is called now.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// The resource that names them when the record only holds their id
+    /// (`chat.workspace/people/…`), empty when there is none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub anchor: String,
+    /// Their stable id: picks their colour and their picture.
+    pub identity: String,
+    /// Whether they are an agent.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
+}
+
 /// One search entry, as the system index keeps it.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct IndexEntry {
     /// Stable within the app's publication: the resource id, or the
     /// resource and action a hit invokes.
@@ -82,6 +117,26 @@ pub struct IndexEntry {
     /// The result group the app lists the entry under ("Passwords").
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
+    /// What kind of thing it is, when the app keeps something the desk's
+    /// generic rows would read poorly (an agent, a conversation, a message).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<IndexKind>,
+    /// Who the row shows, in the order people read them: the first is its
+    /// avatar, the rest its faces. The sender of a message, the people in a
+    /// conversation, the agent itself.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub people: Vec<IndexPerson>,
+    /// Who keeps it, for an agent: the row says so, and "you" when it is the
+    /// person searching.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keeper: Option<IndexPerson>,
+    /// Where it is, for a message: the conversation it sits in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place: Option<IndexPerson>,
+    /// When it happened, in seconds since the Unix epoch: the row says how
+    /// long ago.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub when: Option<i64>,
     /// A named icon (a lucide kebab name).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
@@ -140,11 +195,28 @@ impl IndexEntry {
             text.map(|text| cut(text.trim().to_owned(), MAX_TEXT_BYTES))
                 .filter(|text| !text.is_empty())
         };
+        let person = |person: IndexPerson| {
+            (!person.identity.is_empty() && person.identity.len() <= MAX_ID_BYTES).then(|| {
+                IndexPerson {
+                    name: cut(person.name.trim().to_owned(), MAX_TEXT_BYTES),
+                    anchor: cut(person.anchor.trim().to_owned(), MAX_ID_BYTES),
+                    ..person
+                }
+            })
+        };
         Some(Self {
             title,
             subtitle: short(self.subtitle),
             group: short(self.group),
             icon: short(self.icon),
+            people: self
+                .people
+                .into_iter()
+                .filter_map(person)
+                .take(MAX_FIELDS)
+                .collect(),
+            keeper: self.keeper.and_then(person),
+            place: self.place.and_then(person),
             fields: self
                 .fields
                 .into_iter()
@@ -409,6 +481,7 @@ mod tests {
             fields: Vec::new(),
             secret: false,
             references: Vec::new(),
+            ..IndexEntry::default()
         }
     }
 

@@ -1343,6 +1343,7 @@ mod tests {
                 fields: Vec::new(),
                 secret: false,
                 references: Vec::new(),
+                ..IndexEntry::default()
             }],
             ..IndexDelta::default()
         };

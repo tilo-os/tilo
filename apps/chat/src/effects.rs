@@ -1264,6 +1264,52 @@ fn voice_command_of(effect: ChatEffect) -> Option<(String, Command)> {
 }
 
 #[cfg(test)]
+mod opening_tests {
+    use super::*;
+    use ui::tilo_resource::Id;
+    use ui::tilo_resource::items::item_resource_id;
+
+    /// What a hit of search opens: an agent its conversation with it, a
+    /// conversation itself, a message the place it was said, and a person
+    /// their conversation.
+    #[test]
+    fn a_hit_opens_the_place_it_names() {
+        let agent = item_resource_id::<ui::tilo_workspace_agent::WorkspaceAgents>(
+            "agents",
+            &Id::from_raw("a_ada"),
+        );
+        assert_eq!(
+            opening(&agent),
+            Some(ChatEffect::OpenAgent {
+                agent: "a_ada".to_owned()
+            })
+        );
+        let conversation = item_resource_id::<Chat>("channels", &Id::from_raw("c_crit"));
+        assert_eq!(
+            opening(&conversation),
+            Some(ChatEffect::OpenChannel {
+                channel: "c_crit".to_owned()
+            })
+        );
+        let message = item_resource_id::<Chat>("messages", &Id::from_raw("m_wheel"));
+        assert_eq!(
+            opening(&message),
+            Some(ChatEffect::RevealMessage {
+                message: "m_wheel".to_owned()
+            })
+        );
+        let person = item_resource_id::<Chat>("people", &Id::from_raw("u_aria"));
+        assert_eq!(
+            opening(&person),
+            Some(ChatEffect::OpenPerson {
+                user: "u_aria".to_owned()
+            })
+        );
+        assert_eq!(opening("chat.workspace"), None);
+    }
+}
+
+#[cfg(test)]
 mod audience_tests {
     use super::ChatEffect;
     use ui::tilo_resource::Effect;

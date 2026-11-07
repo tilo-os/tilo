@@ -75,12 +75,36 @@ fn a_conversation_and_its_messages_are_found_from_the_records() {
         Some("general"),
         "a conversation is found by its name"
     );
+    let general = conversations
+        .iter()
+        .find(|entry| {
+            entry["resource"]
+                .as_str()
+                .is_some_and(|resource| resource.ends_with("/channels/c_general"))
+        })
+        .expect("the conversation's entry");
+    assert_eq!(general["kind"], "conversation");
 
     let messages = read(&part);
+    let said = messages
+        .iter()
+        .find(|entry| entry["title"] == "the wheel is loose again")
+        .expect("a message is found by its text");
     assert!(
-        text_hit(&messages, "the wheel is loose again")
+        said["resource"]
+            .as_str()
             .is_some_and(|resource| resource.ends_with(&format!("/messages/{posted}"))),
-        "a message is found by its text, opening it where it lives"
+        "a message opens where it lives"
+    );
+    assert_eq!(said["kind"], "message");
+    assert_eq!(said["people"][0]["identity"], "u_aria");
+    assert_eq!(
+        said["place"]["anchor"], "chat.workspace/channels/c_general",
+        "a message names the conversation it was said in"
+    );
+    assert!(
+        said["when"].as_i64().is_some_and(|when| when > 0),
+        "a message says when it was said"
     );
 }
 
@@ -111,6 +135,19 @@ fn an_agent_is_found_from_the_workspace_record() {
         "a hit opens the agent at its item of the record: {}",
         hits[0]["resource"]
     );
+    assert_eq!(hits[0]["kind"], "agent");
+    assert!(
+        hits[0]["people"][0]["identity"]
+            .as_str()
+            .is_some_and(|identity| identity.starts_with("agent:")),
+        "an agent's row shows the agent itself: {}",
+        hits[0]["people"][0]
+    );
+    assert!(
+        hits[0]["people"][0]["agent"].as_bool().unwrap_or(false),
+        "an agent's row shows the agent itself"
+    );
+    assert_eq!(hits[0]["keeper"]["identity"], "u_ada");
 }
 
 #[test]

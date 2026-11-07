@@ -211,6 +211,7 @@ fn set_field(field: &str, value: &serde_json::Value) -> serde_json::Map<String, 
 impl SessionSearch {
     pub(crate) fn new(
         options: SearchOptions,
+        person: String,
         apps: Option<Rc<dyn AppActions>>,
         wake: Option<tilo_service::Wake>,
     ) -> Self {
@@ -226,7 +227,7 @@ impl SessionSearch {
         let kept = Kept {
             host_apps: Arc::new(HostApps::new(read.host_apps.clone(), &preferences)),
             lists: read,
-            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name))),
+            content: content.map(|index| Arc::new(IndexedContent::new(index, app_name, person))),
             files: files.map(|(home, names, content)| Arc::new(Files::new(home, names, content))),
             workspace: None,
         };
@@ -1059,6 +1060,7 @@ mod tests {
                 lists,
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1116,6 +1118,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1168,6 +1171,7 @@ mod tests {
                 records: Some(crate::records::Records::of(home.data().to_path_buf())),
                 ..SearchOptions::default()
             },
+            String::new(),
             Some(Rc::new(Opening(Rc::clone(&opened)))),
             None,
         );
@@ -1257,6 +1261,7 @@ mod tests {
                 places: recent,
                 ..SearchOptions::default()
             },
+            String::new(),
             None,
             None,
         );
@@ -1294,7 +1299,7 @@ mod tests {
 
     #[test]
     fn fixed_lists_keep_what_search_built_from_them() {
-        let search = SessionSearch::new(SearchOptions::default(), None, None);
+        let search = SessionSearch::new(SearchOptions::default(), String::new(), None, None);
         let before = Arc::clone(&search.kept.borrow().host_apps);
         let _ = search.feed("workspace", &Scope::Workspace);
         assert!(Arc::ptr_eq(&before, &search.kept.borrow().host_apps));

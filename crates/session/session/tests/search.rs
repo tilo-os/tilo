@@ -1206,6 +1206,7 @@ fn published(index: &AppContentIndex, workspace: &str, title: &str) {
             fields: Vec::new(),
             secret: false,
             references: Vec::new(),
+            ..IndexEntry::default()
         }],
         ..IndexDelta::default()
     };

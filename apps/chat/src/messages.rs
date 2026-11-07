@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tilo_document::ClipBlock;
 use ui::framework::Chained;
 use ui::tilo_resource::items::item_resource_id;
+use ui::tilo_resource::search_index::{IndexKind, IndexPerson};
 use ui::tilo_resource::{
     self, ActionCx, Atom, Id, JsonSchema, NonBlank, Refusal, SearchEntry, Segment,
 };
@@ -81,7 +82,29 @@ impl ChatPart {
             .filter_map(|(id, message)| {
                 let text = message.text.trim();
                 (!text.is_empty()).then(|| {
-                    SearchEntry::new(text, "").anchored(item_resource_id::<Chat>("messages", id))
+                    // Who wrote it and where are ids here: the workspace's
+                    // own record holds the names, so a row says them by what
+                    // those resources are called now.
+                    let author = message.author.0.clone();
+                    let sender = IndexPerson {
+                        name: String::new(),
+                        anchor: item_resource_id::<Chat>("people", &Id::from_raw(author.clone())),
+                        agent: author.starts_with("agent:"),
+                        identity: author,
+                    };
+                    let place = IndexPerson {
+                        name: String::new(),
+                        anchor: item_resource_id::<Chat>("channels", &message.channel),
+                        identity: message.channel.as_str().to_owned(),
+                        agent: false,
+                    };
+                    SearchEntry::new(text, "")
+                        .anchored(item_resource_id::<Chat>("messages", id))
+                        .of_kind(IndexKind::Message)
+                        .with_icon("message-circle")
+                        .showing(vec![sender])
+                        .in_place(place)
+                        .at(message.ts)
                 })
             })
             .collect()

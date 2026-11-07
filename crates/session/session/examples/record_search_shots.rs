@@ -25,7 +25,7 @@ use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_search::content_index::AppContentIndex;
 use tilo_desktop_search::providers::AppEntry;
 use tilo_session::{AppLists, Lists, Options, SearchOptions, Session};
-use ui::search::index_publication::{IndexDelta, IndexEntry};
+use ui::search::index_publication::{IndexDelta, IndexEntry, IndexKind, IndexPerson};
 
 /// The app whose records are read.
 const CHAT: &str = "so.tilo.chat";
@@ -45,6 +45,7 @@ fn entry(key: &str, title: &str, subtitle: Option<&str>) -> IndexEntry {
         fields: Vec::new(),
         secret: false,
         references: Vec::new(),
+        ..IndexEntry::default()
     }
 }
 
@@ -65,31 +66,73 @@ fn published(content: &AppContentIndex, workspace: &str, record: &str, entries: 
 /// written it: a conversation named for its work, the message that asks an
 /// agent into it, and the agent itself.
 fn hold(content: &AppContentIndex, workspace: &str) {
+    /// A person as the rows say them: their name, the entry that opens them
+    /// and their identity.
+    fn person(name: &str, anchor: &str, identity: &str, agent: bool) -> IndexPerson {
+        IndexPerson {
+            name: name.to_owned(),
+            anchor: anchor.to_owned(),
+            identity: identity.to_owned(),
+            agent,
+        }
+    }
+    let aria = person("Aria", "chat.workspace/people/u_aria", "u_aria", false);
+    let ada = person("Ada", "chat.agent/agents/a_ada", "agent:a_ada", true);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| i64::try_from(elapsed.as_secs()).unwrap_or(0));
     published(
         content,
         workspace,
         "chat.workspace",
-        vec![entry(
-            "chat.workspace/channels/c_crit",
-            "Ada's design crit",
-            Some("Share work, get sharp feedback"),
-        )],
+        vec![
+            IndexEntry {
+                kind: Some(IndexKind::Conversation),
+                people: vec![aria.clone(), ada.clone()],
+                icon: Some("message-circle".into()),
+                ..entry("chat.workspace/channels/c_crit", "Ada's design crit", None)
+            },
+            IndexEntry {
+                kind: Some(IndexKind::Person),
+                people: vec![aria.clone()],
+                icon: Some("user".into()),
+                ..entry("chat.workspace/people/u_aria", "Aria", None)
+            },
+        ],
     );
     published(
         content,
         workspace,
         "messages:1",
-        vec![entry(
-            "chat.workspace/messages/m_wheel",
-            "Ada, can you look at the wheel again?",
-            None,
-        )],
+        vec![IndexEntry {
+            kind: Some(IndexKind::Message),
+            people: vec![aria],
+            place: Some(person(
+                "",
+                "chat.workspace/channels/c_crit",
+                "c_crit",
+                false,
+            )),
+            when: Some(now.saturating_sub(600)),
+            icon: Some("message-circle".into()),
+            ..entry(
+                "chat.workspace/messages/m_wheel",
+                "Ada, can you look at the wheel again?",
+                None,
+            )
+        }],
     );
     published(
         content,
         workspace,
         "agents",
-        vec![entry("chat.agent/agents/a_ada", "Ada", Some("Agent"))],
+        vec![IndexEntry {
+            kind: Some(IndexKind::Agent),
+            people: vec![ada],
+            keeper: Some(person("", "", "Ada", false)),
+            icon: Some("sparkles".into()),
+            ..entry("chat.agent/agents/a_ada", "Ada", None)
+        }],
     );
 }
 
@@ -168,7 +211,7 @@ fn main() -> std::process::ExitCode {
         ];
         if listed
             .iter()
-            .all(|title| titles.iter().any(|row| row.starts_with(title)))
+            .all(|title| titles.iter().any(|row| row == title))
         {
             break;
         }
@@ -179,7 +222,7 @@ fn main() -> std::process::ExitCode {
         "Ada",
     ] {
         assert!(
-            titles.iter().any(|row| row.starts_with(wanted)),
+            titles.iter().any(|row| row == wanted),
             "the panel lists {wanted:?}: {titles:?}"
         );
     }
