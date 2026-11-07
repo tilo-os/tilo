@@ -149,6 +149,9 @@ pub struct HeadlessApp<A: ResourceApp> {
     /// Shared with the host: changing it is a role change the running app
     /// sees, as when the record's owner changes someone's access.
     permissions: SharedPermissions,
+    /// The window is a capture: every motion in it reads arrived while this
+    /// is held, so what it photographs is the window at rest.
+    _settled: Option<ui_core::motion::testing::Settled>,
     marker: std::marker::PhantomData<A>,
 }
 
@@ -737,6 +740,13 @@ impl<A: ResourceApp> HeadlessApp<A> {
         configure: impl FnOnce(&mut HostContext),
     ) -> Result<Self, LaunchError> {
         let mut configure = Some(configure);
+        // A capture photographs the window at rest: a surface drawn for one
+        // is the surface settled, not the frame of its arrival the moment the
+        // shutter opens.
+        let settled = capture
+            .as_ref()
+            .filter(|(capture, _)| !capture.is_driven())
+            .map(|_| ui_core::motion::testing::settled());
         let opened = open_app(
             &Opening::of::<A>(),
             Launch {
@@ -767,6 +777,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
             last_effect: None,
             workspace: None,
             permissions: opened.permissions,
+            _settled: settled,
             marker: std::marker::PhantomData,
         })
     }

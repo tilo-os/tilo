@@ -252,8 +252,10 @@ fn with_link(link: Option<ui::widget::LinkStatus>) -> Shown {
     }
 }
 
-/// The frame the screen paints for `shown`.
+/// The frame the screen paints for `shown`, at rest: the screen the shell
+/// puts up arrives, and what it draws once it has is what two runs compare.
 fn painted(shown: Shown) -> ui::vello::Scene {
+    let _settled = ui::motion::testing::settled();
     let (mut app, _seat, _asked) = locked(shown);
     app.harness().frame_output().scene.clone()
 }
@@ -267,8 +269,9 @@ fn connection(kind: ui::widget::LinkKind, name: Option<&str>) -> ui::widget::Lin
     }
 }
 
-/// Whether two painted screens draw the same shapes and letters. The ink is
-/// left out: the sheet's arrival still thins it while the shapes stand still.
+/// Whether two painted screens draw the same shapes and letters, both at
+/// rest: the sheet arrives growing and fading, so only a settled screen draws
+/// the same shapes twice, and the ink alone is what a footer's glyph changes.
 fn same_shapes(left: &ui::vello::Scene, right: &ui::vello::Scene) -> bool {
     let (a, b) = (left.encoding(), right.encoding());
     a.path_tags == b.path_tags
