@@ -441,10 +441,14 @@ impl Core {
     }
 
     /// How long `coll` is: what its listing knows of its length without reading it. A filter
-    /// that checks items one by one as it reads them knows only the most it can hold, and says
-    /// that rather than claim it exact ([`crate::store::Listing::len_is_exact`]).
+    /// that checks items one by one as it reads them knows only the most it can hold until it
+    /// has read them all, so its length is its count, read to its end
+    /// ([`Self::coll_count`]): a list of the items a filter holds is as long as what it keeps.
     pub(crate) fn coll_len(&self, coll: &Rc<CollRef>) -> HResult<usize> {
         let listing = self.coll_listing(coll)?;
+        if !listing.len_is_exact() {
+            return self.coll_count(coll);
+        }
         let len = listing.len();
         self.saw(coll, Read::Len(len), len);
         Ok(len)
