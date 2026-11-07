@@ -234,6 +234,12 @@ pub struct ModelResponse {
     pub stop_reason: StopReason,
     #[serde(default)]
     pub usage: Usage,
+    /// What the gateway charged for this answer, in millionths of the
+    /// currency, at its price table's list price for the model: the number a
+    /// caller spends its own budget against. Zero for a model the table has
+    /// no price for (a local model, or an endpoint's own hosting of one).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub cost_micros: u64,
 }
 
 impl ModelResponse {
@@ -730,6 +736,7 @@ mod tests {
             },
             stop_reason: StopReason::ToolCalls,
             usage: Usage::default(),
+            cost_micros: 0,
         }
     }
 

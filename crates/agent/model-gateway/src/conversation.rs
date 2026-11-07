@@ -234,6 +234,7 @@ fn openai_response(value: &Value) -> Option<ModelResponse> {
             content,
         },
         stop_reason,
+        cost_micros: 0,
         usage: Usage {
             input_tokens,
             output_tokens,
@@ -372,6 +373,7 @@ fn anthropic_response(value: &Value) -> Option<ModelResponse> {
             content,
         },
         stop_reason,
+        cost_micros: 0,
         usage: Usage {
             input_tokens,
             output_tokens,
