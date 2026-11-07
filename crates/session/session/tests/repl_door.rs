@@ -426,16 +426,25 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         },
     );
     let placed_by_german = noted(&session);
-    let (answer, _) = repl.call(
+    // The English word finds nothing, because the desk's words are German: it
+    // is a sentence to the agent rather than a found resource, so it places no
+    // second notebook — it asks (shell.md §8.1, "Asking from the canvas").
+    let (answer, failed) = repl.call(
         &mut session,
         "tilo",
         &json!({"program": "session.place_found(text: \"notebooks\", view: .none, x: .some(80), y: .some(60))"}),
     );
-    assert!(
-        answer.contains("nothing matches"),
-        "the English word finds nothing on a German desk: {answer}"
+    assert!(!failed, "the program ran: {answer}");
+    assert_eq!(
+        noted(&session),
+        placed_by_german,
+        "the English word finds no notebook on a German desk"
     );
-    assert_eq!(noted(&session), placed_by_german, "and places nothing");
+    until(&mut session, "the ask conversation", |session| {
+        common::places(session)
+            .iter()
+            .any(|place| place.record.contains("chat.workspace/channels/"))
+    });
 }
 
 /// How many of the seeded notes app's resources stand on the arrangement.

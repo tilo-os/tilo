@@ -357,7 +357,12 @@ impl Conversations {
             chat::record::Participant::person(person).key(),
             chat::record::Participant::agent(agent).key(),
         ];
-        let id = chat::record::Chat::direct_id(
+        // The id a kept conversation with these participants has, derived the
+        // same on every device: a channel id, because the conversation is one
+        // — it is made once and named in the place's address — never a direct
+        // conversation's id, which names its participants and is nothing the
+        // record can hold.
+        let id = chat::record::Chat::conversation_channel_id(
             participants
                 .iter()
                 .filter_map(|key| chat::record::Participant::parse(key)),
@@ -400,7 +405,13 @@ impl Conversations {
             tracing::warn!(%error, %workspace, "the person's question was not posted");
             return None;
         }
-        Some(format!("{}/{channel}", chat::Chat::KIND))
+        // The conversation as Chat publishes a channel: its item resource, so a
+        // place of it is the channel Chat's own window shows, drawn by Chat's
+        // `conversation` view (`chat.workspace/channels/<id>`), never the
+        // record as a whole.
+        Some(tilo_resource::items::item_resource_id::<chat::Chat>(
+            "channels", &id,
+        ))
     }
 
     /// Read each workspace's conversations as `person`, and hand the turns

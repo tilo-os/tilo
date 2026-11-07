@@ -25,8 +25,8 @@ use tilo_app::tilo_workspace_agent::{
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
+use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordId, RecordOwners};
 
 /// How this session names a record it opened, where the record's history is
 /// told.

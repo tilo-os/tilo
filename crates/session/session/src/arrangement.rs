@@ -634,23 +634,22 @@ impl Arrangement {
         // A question is answered even when it happens to match something the
         // search holds: the person asked, so the text they typed is a
         // message to their agent, not a thing to stand (shell.md §8.1).
-        let resource = if tilo_desktop_search::answers::question::asks(text) {
+        let asked_agent =
+            tilo_desktop_search::answers::question::asks(text) || found_resource.is_none();
+        let resource = if asked_agent {
             ask(text)
         } else {
-            match found_resource {
-                Some(resource) => Some(resource),
-                // Text that names nothing is a sentence to the agent: the
-                // canvas never refuses what a person typed.
-                None => ask(text),
-            }
+            found_resource
         };
         let Some(resource) = resource else {
             return Err(format!("nothing matches {text:?}"));
         };
-        // Text typed into the conversation's own place brings it forward
-        // rather than standing a second place of it: the same conversation
-        // belongs in one place (shell.md §8.1).
-        if let Some(held) = self.place_of(&resource) {
+        // A text that asks brings the conversation it is with forward rather
+        // than standing a second place of it: the same conversation belongs
+        // in one place (shell.md §8.1). Text that finds a resource places it
+        // where the person typed, as it always has — a second place of a note
+        // is the person's to make.
+        if asked_agent && let Some(held) = self.place_of(&resource) {
             self.ask(asked, ArrangementAction::Activate { place: held }, busy)?;
             return Ok(Some(held));
         }
