@@ -65,6 +65,8 @@ pub mod blobs_capnp {
 }
 
 #[cfg(unix)]
+mod bridge;
+#[cfg(unix)]
 pub mod directory_client;
 #[cfg(unix)]
 pub mod directory_connection;
