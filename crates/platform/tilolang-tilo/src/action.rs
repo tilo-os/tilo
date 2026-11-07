@@ -230,8 +230,6 @@ impl DynEdit {
         }
     }
 
-    /// The same edit, addressed to the chunk `chunk` of the record.
-    #[must_use]
     /// `edit` addressed to `chunk`, unless that is where the record's manifest already places
     /// the edit's resource: a write that would go there anyway names no chunk.
     #[must_use]
@@ -243,6 +241,8 @@ impl DynEdit {
         }
     }
 
+    /// The same edit, addressed to the chunk `chunk` of the record.
+    #[must_use]
     pub fn in_chunk(self, chunk: ChunkNo) -> Self {
         Self::Chunk {
             chunk,
@@ -766,21 +766,7 @@ fn apply_one(
             item,
             record,
             at,
-        } => {
-            // The chunk an item's run is in holds the record's map too, if only for the items:
-            // the map is made there when the run reaches the chunk before the record does.
-            let obj = ensure_map(doc, &app, id)?;
-            let items = ensure_map(doc, &obj, ITEMS_KEY)?;
-            let mut taken = Taken::new();
-            let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
-            let record = take_items(record, Some(item.as_str()), &mut taken);
-            record
-                .store(doc, Slot::Key(&items, item))
-                .map_err(|error| refused(&error))?;
-            let held = flat_item(doc, &obj, item)?;
-            doc.put(&held, AT_KEY, at.as_str())?;
-            store_taken(doc, &obj, taken)?;
-        }
+        } => insert_item(doc, &app, id, item, record, at)?,
         DynEdit::Place {
             id,
             item,
@@ -804,22 +790,7 @@ fn apply_one(
                 doc.delete(&app, id.as_str())?;
             }
         }
-        DynEdit::RemoveItem { id, item } => {
-            let items = doc
-                .get(&app, id.as_str())?
-                .and_then(|(value, obj)| {
-                    matches!(value, AmValue::Object(ObjType::Map)).then_some(obj)
-                })
-                .and_then(|obj| doc.get(&obj, ITEMS_KEY).ok().flatten())
-                .and_then(|(value, obj)| {
-                    matches!(value, AmValue::Object(ObjType::Map)).then_some(obj)
-                });
-            if let Some(items) = items
-                && doc.get(&items, item.as_str())?.is_some()
-            {
-                doc.delete(&items, item.as_str())?;
-            }
-        }
+        DynEdit::RemoveItem { id, item } => remove_item(doc, &app, id, item)?,
         DynEdit::OutboxPush {
             id,
             entry,
@@ -849,6 +820,51 @@ fn apply_one(
         DynEdit::Migrated { id, migration } => mark_migrated(doc, &app, id, migration)?,
         DynEdit::TriggerRan { id, key, value } => mark_trigger(doc, &app, id, key, value)?,
         DynEdit::In { .. } | DynEdit::Chunk { .. } | DynEdit::RunChunk { .. } => {}
+    }
+    Ok(())
+}
+
+/// Insert the item `item` of the resource `id`, holding `record`, placed at `at`: the map of the
+/// record and of the item is made in the chunk the edit is applied to, which holds the run the
+/// item joins.
+fn insert_item(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    item: &str,
+    record: &Json,
+    at: &str,
+) -> Result<(), ActionError> {
+    let obj = ensure_map(doc, app, id)?;
+    let items = ensure_map(doc, &obj, ITEMS_KEY)?;
+    let mut taken = Taken::new();
+    let record = DynRecord::from_json(record).map_err(|error| refused(&error))?;
+    let record = take_items(record, Some(item), &mut taken);
+    record
+        .store(doc, Slot::Key(&items, item))
+        .map_err(|error| refused(&error))?;
+    let held = flat_item(doc, &obj, item)?;
+    doc.put(&held, AT_KEY, at)?;
+    store_taken(doc, &obj, taken)
+}
+
+/// Take the item `item` out of the resource `id`, with everything it holds: the other chunk of
+/// the record holds the copy it replaces, when it moved there.
+fn remove_item(
+    doc: &mut Doc,
+    app: &automerge::ObjId,
+    id: &str,
+    item: &str,
+) -> Result<(), ActionError> {
+    let items = doc
+        .get(app, id)?
+        .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj))
+        .and_then(|obj| doc.get(&obj, ITEMS_KEY).ok().flatten())
+        .and_then(|(value, obj)| matches!(value, AmValue::Object(ObjType::Map)).then_some(obj));
+    if let Some(items) = items
+        && doc.get(&items, item)?.is_some()
+    {
+        doc.delete(&items, item)?;
     }
     Ok(())
 }

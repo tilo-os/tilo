@@ -8,6 +8,7 @@ use automerge::AutoCommit;
 use serde_json::Value as Json;
 use serde_json::json;
 use tilo_actions::Action as _;
+use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::{Edit, EditOp, Model as _, Segment};
 use tilolang_runtime::Principal;
 use tilolang_runtime::meta::Meta;
@@ -218,7 +219,7 @@ impl Docs {
     }
 
     fn doc(&mut self, chunk: ChunkNo) -> &mut AutoCommit {
-        self.0.entry(chunk).or_insert_with(AutoCommit::new)
+        self.0.entry(chunk).or_default()
     }
 
     /// Apply `action` as its edits are addressed: an edit that names no chunk is written where
@@ -253,6 +254,16 @@ impl Docs {
         }
     }
 
+    /// The documents forked: a replica of the workspace whose own changes are its own.
+    fn fork(&mut self) -> Self {
+        Self(
+            self.0
+                .iter_mut()
+                .map(|(number, doc)| (*number, doc.fork()))
+                .collect(),
+        )
+    }
+
     /// The documents as a set of chunks, to read a record's items across them.
     fn chunks(&self) -> Chunks {
         let mut chunks = Chunks::default();
@@ -269,8 +280,8 @@ fn merge(into: &mut Docs, other: &Docs) {
     for (number, doc) in into.0.iter().chain(&other.0) {
         every
             .entry(*number)
-            .or_insert_with(AutoCommit::new)
-            .merge(&mut doc.clone())
+            .or_default()
+            .merge_incoming(&mut doc.clone())
             .expect("the documents merge");
     }
     for doc in every.values_mut() {
@@ -444,7 +455,17 @@ fn five_thousand_cards_live_in_three_chunks_in_order() {
     assert_eq!(left(&host, &root, &field), inserted);
 
     // Lookups find a card through the chunk its index row names, without reading the others.
-    let rows = host.store().index_contents(BOARD_APP).unwrap().docs;
+    let rows = host.store().index_contents(BOARD_APP).unwrap();
+    let row = |i: usize, field: &str| {
+        rows.fields
+            .get(&(format!("{root}/{}", inserted[i]), field.to_owned()))
+            .cloned()
+    };
+    let chunk_of = |i: usize| row(i, tilolang_tilo::index::CHUNK);
+    assert_eq!(chunk_of(0), Some("0".to_owned()));
+    assert_eq!(chunk_of(size - 1), Some("0".to_owned()));
+    assert_eq!(chunk_of(size), Some("1".to_owned()));
+    assert_eq!(chunk_of(2 * size), Some("2".to_owned()));
     let card_ty = meta
         .types
         .iter()
@@ -452,15 +473,7 @@ fn five_thousand_cards_live_in_three_chunks_in_order() {
         .unwrap()
         .id
         .clone();
-    let chunk_of = |i: usize| rows.get(&inserted[i]).map(|(_, chunk)| *chunk);
-    assert_eq!(chunk_of(0), Some(0));
-    assert_eq!(chunk_of(size - 1), Some(0));
-    assert_eq!(chunk_of(size), Some(1));
-    assert_eq!(chunk_of(2 * size), Some(2));
-    assert_eq!(
-        rows.get(&inserted[2 * size]).map(|(ty, _)| ty.clone()),
-        Some(card_ty)
-    );
+    assert_eq!(row(2 * size, tilolang_tilo::index::TYPE), Some(card_ty));
 }
 
 #[test]
@@ -482,7 +495,7 @@ fn a_change_to_a_card_in_the_last_chunk_writes_only_that_chunk() {
         action
             .edits
             .iter()
-            .filter_map(|edit| edit.chunk())
+            .filter_map(DynEdit::chunk)
             .collect::<Vec<_>>(),
         [2],
         "the edit is addressed to the card's chunk alone"
@@ -539,11 +552,11 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
     docs.sync(&host);
 
     // Two replicas, each moving the card to a collection of its own.
-    let mut ada = docs.clone();
-    let mut grace = docs.clone();
-    let (mut ada_host, _) = Replica::new("ada", ada.0[&chunk::FIRST].clone(), &[(BOARD, &ids)]);
+    let mut ada = docs.fork();
+    let mut grace = docs.fork();
+    let (mut ada_host, _) = Replica::new("ada", ada.doc(chunk::FIRST).fork(), &[(BOARD, &ids)]);
     let (mut grace_host, _) =
-        Replica::new("grace", grace.0[&chunk::FIRST].clone(), &[(BOARD, &ids)]);
+        Replica::new("grace", grace.doc(chunk::FIRST).fork(), &[(BOARD, &ids)]);
     let at = format!("{root}/{card}");
     for (docs, host, name, chunk) in [
         (&mut ada, &mut ada_host, "move_right", 1),
@@ -556,11 +569,7 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
             name,
             json!({ "c": at }),
         );
-        let mut chunks: Vec<ChunkNo> = action
-            .edits
-            .iter()
-            .filter_map(|edit| edit.chunk())
-            .collect();
+        let mut chunks: Vec<ChunkNo> = action.edits.iter().filter_map(DynEdit::chunk).collect();
         chunks.sort_unstable();
         chunks.dedup();
         assert_eq!(
@@ -602,10 +611,10 @@ fn a_card_moved_on_two_replicas_at_once_lands_in_one_collection() {
     assert_eq!(in_other.len(), usize::from(winner == 2), "{resolved:?}");
 
     // Both stores read the same board, and the card is in one collection only.
-    for host in [&ada_host, &grace_host] {
-        let record = host.host.store().record(&root).unwrap();
-        assert_eq!(record, ada_host.host.store().record(&root).unwrap());
-    }
+    assert_eq!(
+        ada_host.host.store().record(&root).unwrap(),
+        grace_host.host.store().record(&root).unwrap()
+    );
     let record = ada_host.host.store().record(&root).unwrap();
     let some = |field: &str| match record.get(field) {
         Some(DynValue::Collection(items)) => items.iter().any(|(id, _)| id.as_str() == card),

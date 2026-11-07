@@ -1607,19 +1607,7 @@ impl<'d> Derive<'d> {
                         let (Some(found), Some(item_schema)) = (found, item_schema) else {
                             continue;
                         };
-                        let held = kept_removed(sink, &path, item_schema)?;
-                        sink.clear(&path)?;
-                        let own = self.own_fields(sink, &path, found.obj.as_ref(), item_schema)?;
-                        for field in own
-                            .fields
-                            .iter()
-                            .filter(|f| f.kind == MergeKind::Collection)
-                        {
-                            sink.replace(&member_list(&path, &field.id), Vec::new())?;
-                        }
-                        self.arrive(sink, (&path, own), &place, chunk)?;
-                        restore_removed(sink, &path, &held)?;
-                        self.done.insert(path);
+                        self.made_into(sink, &path, &found, item_schema, &place, chunk)?;
                     }
                     (Some(before), Some(place)) => {
                         let holder = place_holder(doc, &place);
@@ -1640,6 +1628,33 @@ impl<'d> Derive<'d> {
             }
             pending = deferred;
         }
+        Ok(())
+    }
+
+    /// The row of an item the changes made, as it arrives in the collection `place` names: its
+    /// own fields derived where it now stands, and what left its collections kept.
+    fn made_into(
+        &mut self,
+        sink: &mut impl Sink,
+        path: &str,
+        found: &crate::items::Found,
+        item_schema: &'static TypeSchema,
+        place: &Place,
+        chunk: ChunkNo,
+    ) -> Result<(), IndexError> {
+        let held = kept_removed(sink, path, item_schema)?;
+        sink.clear(path)?;
+        let own = self.own_fields(sink, path, found.obj.as_ref(), item_schema)?;
+        for field in own
+            .fields
+            .iter()
+            .filter(|field| field.kind == MergeKind::Collection)
+        {
+            sink.replace(&member_list(path, &field.id), Vec::new())?;
+        }
+        self.arrive(sink, (path, own), place, chunk)?;
+        restore_removed(sink, path, &held)?;
+        self.done.insert(path.to_owned());
         Ok(())
     }
 

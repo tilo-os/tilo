@@ -1145,7 +1145,7 @@ impl TiloStore {
             migration: migration.to_owned(),
         };
         let seed = inner.fresh("migrated:").into_bytes();
-        inner.write(&app, vec![edit.clone()], seed, Vec::new(), Moves::default())?;
+        inner.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
         let action = DynAction {
             app: app.clone(),
             kind: format!("tl.{app}.{}", schema.name),
@@ -1207,7 +1207,7 @@ impl TiloStore {
             ..
         } = inner.plan(&at, &mutation)?;
         let seed = inner.fresh("seen:").into_bytes();
-        inner.write(&app, edits.clone(), seed, touched, (items, placed))?;
+        inner.write(&app, edits.clone(), &seed, &touched, (items, placed))?;
         let action = DynAction {
             app: app.clone(),
             kind: format!("tl.{app}.{}", schema.name),
@@ -1490,8 +1490,8 @@ impl TiloStore {
         let written = inner.write(
             &record.app,
             vec![edit.clone()],
-            id.as_bytes().to_vec(),
-            touched,
+            id.as_bytes(),
+            &touched,
             (Vec::new(), Vec::new()),
         );
         if let Err(error) = written {
@@ -1553,8 +1553,8 @@ impl TiloStore {
         let written = inner.write(
             &record.app,
             vec![edit.clone()],
-            id.as_bytes().to_vec(),
-            touched.clone(),
+            id.as_bytes(),
+            &touched,
             (Vec::new(), Vec::new()),
         );
         if let Err(error) = written {
@@ -1885,7 +1885,7 @@ impl Inner {
         state.app = Some(app.clone());
         state.kind = Some(format!("tl.{app}.{}", schema.name));
         let seed = format!("{}:{}", txn.0, self.counter).into_bytes();
-        self.write(&app, vec![edit.clone()], seed, Vec::new(), Moves::default())?;
+        self.write(&app, vec![edit.clone()], &seed, &[], Moves::default())?;
         state.edits.push(edit);
         Ok(true)
     }
@@ -1897,19 +1897,13 @@ impl Inner {
         &mut self,
         app: &str,
         edits: Vec<DynEdit>,
-        seed: Vec<u8>,
-        touched: Vec<FieldKey>,
+        seed: &[u8],
+        touched: &[FieldKey],
         (items, placed): Moves,
     ) -> Result<BTreeMap<DocId, Vec<ListingChange>>, StoreError> {
         let before = (!items.is_empty()).then(|| Arc::clone(&self.overlay));
         for edit in edits {
-            self.write_one(
-                app,
-                edit,
-                seed.clone(),
-                touched.clone(),
-                (items.clone(), placed.clone()),
-            )?;
+            self.write_one(app, edit, seed, touched, (items.clone(), placed.clone()))?;
         }
         let mut listings: BTreeMap<DocId, Vec<ListingChange>> = BTreeMap::new();
         if let (Some(before), Some(held)) = (before, self.apps.get(app).filter(|h| h.ready())) {
@@ -1945,11 +1939,11 @@ impl Inner {
         &mut self,
         app: &str,
         edit: DynEdit,
-        seed: Vec<u8>,
-        touched: Vec<FieldKey>,
+        seed: &[u8],
+        touched: &[FieldKey],
         (items, placed): Moves,
     ) -> Result<(), StoreError> {
-        let derived = unsaved::writes_derived(self, edit.resource(), &touched, &items);
+        let derived = unsaved::writes_derived(self, edit.resource(), touched, &items);
         let chunk = edit
             .chunk()
             .unwrap_or_else(|| self.chunks.chunk(edit.resource()));
@@ -1965,7 +1959,7 @@ impl Inner {
             self.chunks.open(chunk),
             app,
             std::slice::from_ref(&edit),
-            &seed,
+            seed,
         );
         if manifest {
             self.chunks.reread_placement();
@@ -1974,8 +1968,8 @@ impl Inner {
             app: app.to_owned(),
             chunk,
             edit,
-            seed,
-            touched,
+            seed: seed.to_vec(),
+            touched: touched.to_vec(),
             items,
             placed,
             versions: None,
@@ -2343,7 +2337,7 @@ impl Store for TiloStore {
         let seed = format!("{}:{}", txn.0, inner.counter).into_bytes();
         let summary = touched.clone();
         let collections = collections_by_doc(items.iter().map(|(key, _)| key));
-        let listings = inner.write(&app, dyn_edits.clone(), seed, touched, (items, placed))?;
+        let listings = inner.write(&app, dyn_edits.clone(), &seed, &touched, (items, placed))?;
         let kind = lookup(&ty).map(|schema| format!("tl.{app}.{}", schema.name));
         let state = inner
             .txns
@@ -2914,7 +2908,7 @@ impl Store for TiloStore {
             detail: detail.to_owned(),
         };
         let seed = format!("{word}:{}:{}:{detail}", entry.doc, entry.id).into_bytes();
-        self.write_outbox(entry, edit, seed, note)
+        self.write_outbox(entry, edit, &seed, note)
     }
 
     fn outbox_settle(
@@ -2930,7 +2924,7 @@ impl Store for TiloStore {
             reason: outcome.reason().to_owned(),
         };
         let seed = format!("settle:{}:{}", entry.doc, entry.id).into_bytes();
-        self.write_outbox(entry, edit, seed, note)
+        self.write_outbox(entry, edit, &seed, note)
     }
 
     fn outbox_states(&self) -> Vec<(DocId, tilolang_runtime::store::DeliveryState)> {

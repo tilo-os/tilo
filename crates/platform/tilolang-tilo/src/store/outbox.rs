@@ -12,7 +12,7 @@ impl TiloStore {
         &self,
         entry: &OutboxEntry,
         edit: DynEdit,
-        seed: Vec<u8>,
+        seed: &[u8],
         note: &ChangeNote,
     ) -> Result<(), StoreError> {
         self.load_record()?;
@@ -26,7 +26,7 @@ impl TiloStore {
             &app,
             vec![edit.clone()],
             seed,
-            Vec::new(),
+            &[],
             (Vec::new(), Vec::new()),
         )?;
         let kind =
