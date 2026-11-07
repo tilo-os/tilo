@@ -1436,6 +1436,21 @@ fn tab_request_message(
     request.message(instance)
 }
 
+/// The app that publishes what `subject` names, as the window's published
+/// resources tell it: a subject keeps the publisher of its record, which is
+/// where the message about it travels, whatever window showed it.
+#[cfg(feature = "native")]
+fn publishing_app<'a>(
+    subject: &crate::shared_selection::SharedSelection,
+    published: &'a [tilo_actions::ResourceSpec],
+) -> Option<&'a str> {
+    let resource = subject.resource.as_ref()?;
+    let spec = published
+        .iter()
+        .find(|spec| spec.kind == resource.kind && spec.id.as_str() == resource.id.as_str())?;
+    spec.app_id.as_deref()
+}
+
 impl App {
     /// What `request` is about, as the shell is told: a typed reference
     /// and where in this window it is drawn.
@@ -1452,7 +1467,6 @@ impl App {
         String,
         Option<[f64; 4]>,
     ) {
-        let app = self.window_app_id().unwrap_or_default().to_owned();
         let published = self.collect_resources();
         let focused = crate::shared_selection::subtree_selection(self.root_widget.as_ref());
         let mut attached = Vec::with_capacity(request.about.len());
@@ -1465,7 +1479,11 @@ impl App {
                 focused.clone().filter(|_| index == 0),
                 &published,
             );
-            if let Some(sent) = subject.and_then(|subject| subject.to_attached(&app, None)) {
+            let Some(subject) = subject else {
+                continue;
+            };
+            let app = publishing_app(&subject, &published);
+            if let Some(sent) = subject.to_attached(app, None) {
                 attached.push(sent);
             }
         }

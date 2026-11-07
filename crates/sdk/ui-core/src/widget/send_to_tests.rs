@@ -233,6 +233,41 @@ fn the_keyboard_visits_the_recipients_the_subjects_the_message_and_send() {
     );
 }
 
+/// Enter on a recipient picked from the search goes on to the message: the
+/// words typed next are the message, not a new search for a person.
+#[test]
+fn picking_a_recipient_leaves_the_keyboard_in_the_message() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut send_to = box_beside(Rect::new(40.0, 120.0, 212.0, 320.0), viewport);
+    send_to.focus_first();
+    type_text(&mut send_to, "ada");
+    let (request, _) = crate::shared_selection::take_recipient_searches()
+        .pop()
+        .expect("the box asked the search");
+    crate::shared_selection::answer_recipients(
+        request,
+        vec![Recipient::found(
+            RecipientKind::Person,
+            "person:ada",
+            "Ada Lovelace",
+        )],
+    );
+    assert!(send_to.drain_answer());
+
+    assert!(key(
+        &mut send_to,
+        Key::Named(NamedKey::Enter),
+        Modifiers::default()
+    ));
+    assert_eq!(
+        send_to.focus(),
+        SendToFocus::Message,
+        "a recipient picked is a message about to be written"
+    );
+    type_text(&mut send_to, "look");
+    assert_eq!(send_to.text, "look", "the words typed are the message");
+}
+
 #[test]
 fn a_recipient_chip_leads_with_what_it_is_and_carries_the_x_that_takes_it_off() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);

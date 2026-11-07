@@ -129,14 +129,20 @@ impl SharedSelection {
     /// or the run of characters it names, or — when the app publishes no
     /// resource to go with the words — the words quoted.
     ///
-    /// `app` and `record` are the app the person is in and its record of the
-    /// workspace (`None`: its own), which is where what they selected lives.
+    /// `app` names the app that publishes that record and `record` its
+    /// workspace record (`None`: the app's own); `app` is `None` when nobody
+    /// says which app's record it is, and what travels then is the words
+    /// alone: a reference to no app addresses nothing.
     /// A selection of several items travels as those items; a range inside
     /// one travels as that item and its character span, in the app's own
     /// unit, so the app can address the run again when the chip is opened.
     /// `None` when the person selected nothing worth sending.
     #[must_use]
-    pub fn to_attached(&self, app: &str, record: Option<&str>) -> Option<tilo_reference::Attached> {
+    pub fn to_attached(
+        &self,
+        app: Option<&str>,
+        record: Option<&str>,
+    ) -> Option<tilo_reference::Attached> {
         use tilo_reference::{Anchor, Attached, ResourceAt, ResourceRef, Span};
 
         let excerpt = self
@@ -152,7 +158,7 @@ impl SharedSelection {
             .iter()
             .map(|item| item.item.clone())
             .collect();
-        let Some(resource) = self.resource.as_ref() else {
+        let (Some(resource), Some(app)) = (self.resource.as_ref(), app) else {
             // Nothing but the words: worth reading, opening nothing.
             return excerpt.map(|text| Attached::Text {
                 text: text.to_owned(),
@@ -584,7 +590,7 @@ mod tests {
             record: Some("uuid:7".into()),
             reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
         };
-        let sent = run.to_attached("so.tilo.notes", Some("uuid:7"));
+        let sent = run.to_attached(Some("so.tilo.notes"), Some("uuid:7"));
         let run_at = ResourceAt {
             reference: ResourceRef::ranged(
                 "notes.page",
@@ -616,7 +622,7 @@ mod tests {
         let rows = SharedSelection::of_items([("row-1", "One"), ("row-2", "Two")])
             .in_resource(page.clone());
         assert_eq!(
-            rows.to_attached("so.tilo.tasks", None),
+            rows.to_attached(Some("so.tilo.tasks"), None),
             Some(Attached::resource(
                 ResourceAt {
                     app: "so.tilo.tasks".into(),
@@ -631,7 +637,7 @@ mod tests {
         // Words the app reports no resource for are quoted, alone.
         let words = SharedSelection::of_text("ship on Friday");
         assert_eq!(
-            words.to_attached("so.tilo.terminal", None),
+            words.to_attached(Some("so.tilo.terminal"), None),
             Some(Attached::Text {
                 text: "ship on Friday".into(),
                 from: None,
@@ -642,7 +648,7 @@ mod tests {
         // so a chip can still open it.
         let unplaced = SharedSelection::of_text("ship on Friday").in_resource(page);
         assert_eq!(
-            unplaced.to_attached("so.tilo.notes", Some("uuid:7")),
+            unplaced.to_attached(Some("so.tilo.notes"), Some("uuid:7")),
             Some(Attached::Text {
                 text: "ship on Friday".into(),
                 from: Some(ResourceAt {
@@ -653,8 +659,26 @@ mod tests {
             })
         );
 
+        // A record nobody says the app of travels as its words: the message
+        // still carries what the person read, and points at no app's record.
+        let unowned = SharedSelection::of_text("One").in_resource(ActionResource {
+            id: "row-1".into(),
+            kind: "tasks.issue".into(),
+            label: "One".into(),
+        });
+        assert_eq!(
+            unowned.to_attached(None, None),
+            Some(Attached::Text {
+                text: "One".into(),
+                from: None,
+            })
+        );
+
         // Nothing selected, nothing to send.
-        assert_eq!(SharedSelection::default().to_attached("a.b", None), None);
+        assert_eq!(
+            SharedSelection::default().to_attached(Some("a.b"), None),
+            None
+        );
     }
 
     #[test]

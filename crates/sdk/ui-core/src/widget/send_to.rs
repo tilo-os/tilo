@@ -765,7 +765,8 @@ impl SendToBox {
     }
 
     /// Enter in the recipient field: the first row found, else the name
-    /// typed becomes a new agent.
+    /// typed becomes a new agent. Either way the keyboard goes on to the
+    /// message: a recipient picked is a message about to be written.
     fn pick_or_name(&mut self) {
         if let Some(index) = self
             .hovered
@@ -782,7 +783,6 @@ impl SendToBox {
         }
         let recipient = Recipient::new_agent(name.to_owned());
         self.take_recipient(recipient);
-        self.focus = SendToFocus::Message;
     }
 
     fn take_row(&mut self, index: usize) {
@@ -793,8 +793,10 @@ impl SendToBox {
     }
 
     /// A recipient the person chose: it joins the chips, in the place of the
-    /// new agent when the person is making one.
+    /// new agent when the person is making one, and the keyboard goes on to
+    /// the message.
     fn take_recipient(&mut self, recipient: Recipient) {
+        self.focus = SendToFocus::Message;
         self.search.clear();
         self.search_selection = Selection::default();
         self.rows.clear();
