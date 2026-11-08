@@ -4779,7 +4779,9 @@ impl NavShell {
                 self.toggle_by_key(Column::Sidebar);
                 return true;
             }
-            if self.sheet_back() || self.pop_push_stack() {
+            // Escape goes back the way the bar's Back does, one step at a time: the inspector's
+            // sheet, the app's page stack, then a narrow window's push stack.
+            if self.back() {
                 return true;
             }
         }

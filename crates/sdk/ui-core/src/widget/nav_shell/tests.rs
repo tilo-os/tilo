@@ -772,6 +772,36 @@ fn narrow_windows_push_the_content_over_the_overview() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
 }
 
+/// Escape goes back the way the bar's Back does, into an app's own page stack too: a page the app
+/// opened over its list pops, and the way back to the list goes with it.
+#[test]
+fn escape_pops_the_apps_page_stack() {
+    let can = SharedRc::new(Cell::new(true));
+    let read = SharedRc::clone(&can);
+    let write = SharedRc::clone(&can);
+    let shell = NavShell::new()
+        .content_kind(ContentKind::Document)
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .content_header("Call the landlord", Vec::new())
+        .on_back(move || read.get(), move || write.set(false));
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        h.root::<NavShell>().can_go_back(),
+        "the page has a way back"
+    );
+    let esc =
+        crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+    assert!(h.dispatch_to_root(&esc), "Escape is the way back");
+    settle(&mut h, 1280, 800);
+    assert!(!can.get(), "the app's page stack popped");
+    assert!(
+        !h.root::<NavShell>().can_go_back(),
+        "and the way back went with the page"
+    );
+}
+
 #[test]
 fn push_mode_makes_the_sidebar_the_first_screen() {
     let shell = NavShell::new()
