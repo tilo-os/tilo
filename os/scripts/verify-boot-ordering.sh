@@ -31,10 +31,15 @@ After=tilo-ordering-probe-a.service
 Type=oneshot
 ExecStart=/usr/bin/true
 UNIT
-if ! SYSTEMD_LOG_LEVEL=info systemd-analyze verify --man=no \
-    "$scratch/tilo-ordering-probe-a.service" 2>&1 | grep -q 'Found ordering cycle'; then
+# Read whole before matching: `grep -q` stops at the first match, and under pipefail the
+# SIGPIPE systemd-analyze then gets, while it still has the rest of its report to write,
+# failed the control at random.
+control=$(SYSTEMD_LOG_LEVEL=info systemd-analyze verify --man=no \
+    "$scratch/tilo-ordering-probe-a.service" 2>&1 || true)
+if ! grep -q 'Found ordering cycle' <<<"$control"; then
   echo "verify-boot-ordering: systemd-analyze verify did not report a deliberate cycle;" >&2
-  echo "it cannot check this image's boot ordering" >&2
+  echo "it cannot check this image's boot ordering. It said:" >&2
+  tail -n 40 <<<"$control" >&2
   exit 1
 fi
 
