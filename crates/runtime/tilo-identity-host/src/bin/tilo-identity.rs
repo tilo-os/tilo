@@ -95,9 +95,11 @@ mod unix {
         /// Shows a code and waits; on the other device run
         /// `tilo-identity approve --code CODE`.
         Pair {
-            /// How this device is listed on the identity's other devices.
-            #[arg(long, default_value = "Tilo device")]
-            label: String,
+            /// How this device is listed on the identity's other devices:
+            /// by default the name a machine copied from another one waits
+            /// with, or "Tilo device".
+            #[arg(long)]
+            label: Option<String>,
             /// Seconds to wait for the approval.
             #[arg(long, default_value_t = PAIRING_WINDOW_SECS)]
             timeout: u64,
@@ -387,7 +389,18 @@ mod unix {
                 );
                 Ok(())
             }
-            Cmd::Pair { label, timeout } => pair(context, &label, timeout),
+            Cmd::Pair { label, timeout } => {
+                let label = label
+                    .or_else(|| {
+                        tilo_user_identity::branch::pending_label(&IdentityPaths::under(
+                            &context.person.root,
+                        ))
+                        .ok()
+                        .flatten()
+                    })
+                    .unwrap_or_else(|| "Tilo device".into());
+                pair(context, &label, timeout)
+            }
             Cmd::Approve {
                 code,
                 device,

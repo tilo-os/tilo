@@ -57,6 +57,81 @@ A host is not a different kind of node. "Workspace hosting" is a device with
 a large appetite, usually always on. Anyone can run it, with the same
 software and the same protocol as every other device.
 
+### A machine copied from another
+
+A person sets up one machine and branches others off it by copying its disk
+(`tilo-vm vm branch`). The copy is a **new device of the same person**, never
+a second instance of the first one: two machines with one device key would be
+one iroh endpoint, one CRDT author and one filesystem subject.
+
+The device key belongs to a machine. Beside it, `device-private/machine.bin`
+records the firmware's system UUID (`/sys/class/dmi/id/product_uuid`), which a
+VM host sets per machine and keeps across that machine's reboots;
+`/etc/machine-id` is on the disk, so a copy carries it and it proves nothing.
+At every boot, before the filesystem, the relay, the network, SSH or a login
+read anything, `tilo-device-branch.service` compares the two
+(`tilo_user_identity::branch`):
+
+- the recorded machine: nothing happens;
+- nothing recorded (an install from before the record, or the first boot):
+  the machine is recorded, nothing else;
+- no firmware UUID (some hardware, any container): never re-keyed
+  automatically;
+- another machine: this disk is a branch, and it re-keys.
+
+The re-key writes a root-only journal first (the keys the machine's stores may
+be under, the new key, the machine it is for), and every later step can run
+again, so a boot stopped anywhere resumes at the next one:
+
+1. Every store sealed to the device key is re-sealed to the new key. Today that
+   is each person's Secret Service vault, re-sealed by their own Secret
+   Service running as them (`tilo-secret-service reseal-device`, keys on its
+   standard input); root opens nothing in a home. Everything else a person
+   keeps sealed — the accounts and passwords vault, model provider keys, Wi-Fi
+   passwords, the MLS master key, the identity's own secret — has its key in
+   that vault, so it opens as before. A vault under neither key (another
+   machine's) is left untouched.
+2. The new key replaces the device key.
+3. The device is certified (below), and every certificate for the old key is
+   removed from this machine.
+4. A fresh `/etc/machine-id`; SSH host keys are removed and `sshd-keygen`
+   makes new ones.
+5. The machine is recorded and the journal, with the old key, deleted. A store
+   that could not be re-sealed keeps the journal until a later boot re-seals
+   it; the device acts with its new key meanwhile.
+
+The old device is **never revoked**: the machine it was copied from still is
+it.
+
+**What a branch keeps**: the person, everything on the disk, every secret, and
+its workspaces. Membership names people, and a device certified by a member's
+root is that member's device, admitted by any participant when it first asks
+(§ Membership is a resource), so no workspace has to invite the branch.
+**What it gets new**: its device key (so its endpoint id, CRDT author and
+filesystem subject), its certificate, its name — the source's name with
+`branch` and four hex digits of the new key, renamed like any device — its
+machine id and its SSH host keys. A setting such as accepting agents from the
+person's other devices is on the disk and comes along.
+
+**Certification adds no trust.** Only the person's root signs a device
+certificate:
+
+- A machine whose system identity tree holds the root
+  (`user-identity/privkey.bin`) certifies its branch at boot, granting exactly
+  what the source's certificate granted, and no expiry the source did not
+  have. It could sign any certificate for that person already.
+- A person whose root is in their own identity record (the usual primary
+  device) has it issued at their next sign-in, the same provisioning that
+  issues a certificate to any of their devices that holds none; it carries the
+  branch's name (`device/branch-label`).
+- A device that joined without the root holds nothing that signs. It waits,
+  uncertified, for one approval: `tilo identity pair` on the branch (its name
+  is the default) and `tilo identity approve` on a device that holds the root,
+  as any personal device joins. Its secrets stay usable meanwhile: the stores
+  are sealed to the device key, not to its certificate. Nothing lets a device
+  key, or a copy of one, certify another key on its own: a stolen device key
+  revoked from the person would otherwise mint unrevoked successors.
+
 ## Transport
 
 Devices talk over iroh, and nothing else. A device reaches the other devices

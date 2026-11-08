@@ -1,0 +1,56 @@
+[Unit]
+Description=Give a Tilo machine copied from another one a device identity of its own
+Documentation=https://code.tilo.so/tilo/tilo/src/branch/main/docs/architecture/workspace.md
+# A copied disk carries the device key, the machine id and the SSH host keys
+# of the machine it was copied from. Each boot this compares the firmware's
+# machine UUID with the one recorded beside the device key; on another
+# machine it re-keys the device, re-seals what was sealed to the old key and
+# renews those names, before anything reads them.
+DefaultDependencies=no
+After=local-fs.target systemd-tmpfiles-setup.service tilo-device-key-init.service
+Before=sysinit.target tilo-firstboot.service greetd.service fs.service tilo-relay.service
+Before=NetworkManager.service systemd-networkd.service sshd-keygen.target sshd.service
+Before=systemd-user-sessions.service
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/tilo/device-private/keypair.bin
+# Without a machine UUID of its own a copy cannot be told from its source,
+# and a container sees its host's: neither is re-keyed automatically.
+ConditionPathExists=/sys/class/dmi/id/product_uuid
+ConditionVirtualization=!container
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/tilo/tilo-device-key-init --branch
+RemainAfterExit=yes
+UMask=0027
+LimitCORE=0
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateNetwork=yes
+PrivateIPC=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/tilo/device-private /var/lib/tilo/device
+# The machine id and the SSH host keys a copy shares with its source.
+ReadWritePaths=/etc
+# Each person's Secret Service re-seals their vault, running as them.
+ProtectHome=no
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictAddressFamilies=AF_UNIX
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@mount @network-io @resources @obsolete @debug @swap
+
+[Install]
+WantedBy=sysinit.target

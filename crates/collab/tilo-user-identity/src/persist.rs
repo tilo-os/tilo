@@ -389,7 +389,7 @@ pub fn read_public_key(path: &Path) -> Result<[u8; 32], PersistError> {
 /// Read one authorization artifact without following its final symlink or
 /// accepting a blocking device/FIFO. The byte after `limit` is consumed only
 /// to distinguish an exact-size artifact from an oversized one.
-fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
+pub(crate) fn read_regular_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, PersistError> {
     let file = open_regular_without_symlinks(path).map_err(|error| {
         PersistError::Io(io::Error::new(
             error.kind(),
@@ -540,6 +540,86 @@ fn signing_key_from_open_file(
     forbidden_mode: u32,
     owner_policy: SecretOwner,
 ) -> Result<SigningKey, PersistError> {
+    admit_secret_file(file, path, forbidden_mode, owner_policy)?;
+
+    // Read one byte beyond the only valid size. A held reader must not depend
+    // on a descriptor's shared mutable cursor, including aliases of this fd.
+    #[cfg(unix)]
+    let bytes = {
+        use std::os::unix::fs::FileExt as _;
+        let mut bytes = Zeroizing::new(vec![0u8; 33]);
+        let mut read = 0;
+        while read < bytes.len() {
+            let offset = u64::try_from(read)
+                .map_err(|_| io::Error::other("key read offset exceeds its bound"))?;
+            let remaining = bytes
+                .get_mut(read..)
+                .ok_or_else(|| io::Error::other("key reader exceeded its buffer"))?;
+            let found = file.read_at(remaining, offset)?;
+            if found == 0 {
+                break;
+            }
+            read = read
+                .checked_add(found)
+                .ok_or_else(|| io::Error::other("key read length exceeds its bound"))?;
+        }
+        bytes.truncate(read);
+        bytes
+    };
+    #[cfg(not(unix))]
+    let bytes = {
+        let mut bytes = Zeroizing::new(Vec::with_capacity(33));
+        file.take(33).read_to_end(&mut bytes)?;
+        bytes
+    };
+    if bytes.len() != 32 {
+        return Err(PersistError::WrongKeyLength(bytes.len()));
+    }
+    let mut seed = Zeroizing::new([0u8; 32]);
+    seed.copy_from_slice(&bytes);
+    Ok(SigningKey::from_bytes(&seed))
+}
+
+/// Read a private record of at most `limit` bytes under the device key's
+/// policy: a regular, singly linked file owned by root or the reader that
+/// nobody outside its owner can read or write.
+///
+/// # Errors
+///
+/// As [`read_device_key`] for the file's admission, or
+/// [`PersistError::Io`] with `InvalidData` when it holds more than `limit`.
+#[cfg(unix)]
+pub fn read_private_record(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, PersistError> {
+    protect_secret_process()?;
+    let file = open_regular_without_symlinks(path).map_err(|error| {
+        PersistError::Io(io::Error::new(
+            error.kind(),
+            format!("cannot open private record {}: {error}", path.display()),
+        ))
+    })?;
+    admit_secret_file(&file, path, 0o077, SecretOwner::RootOrReader)?;
+    let mut bytes = Zeroizing::new(Vec::with_capacity(limit.saturating_add(1)));
+    (&file)
+        .take(u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("private record {} exceeds {limit} bytes", path.display()),
+        )));
+    }
+    Ok(bytes)
+}
+
+/// The checks every secret file passes before a byte of it is read: a
+/// regular file whose mode has none of `forbidden_mode`, owned as
+/// `owner_policy` accepts, with a single name.
+fn admit_secret_file(
+    file: &fs::File,
+    path: &Path,
+    forbidden_mode: u32,
+    owner_policy: SecretOwner,
+) -> Result<(), PersistError> {
     #[cfg(not(unix))]
     let _ = (forbidden_mode, owner_policy);
     let metadata = file.metadata()?;
@@ -579,43 +659,7 @@ fn signing_key_from_open_file(
             });
         }
     }
-
-    // Read one byte beyond the only valid size. A held reader must not depend
-    // on a descriptor's shared mutable cursor, including aliases of this fd.
-    #[cfg(unix)]
-    let bytes = {
-        use std::os::unix::fs::FileExt as _;
-        let mut bytes = Zeroizing::new(vec![0u8; 33]);
-        let mut read = 0;
-        while read < bytes.len() {
-            let offset = u64::try_from(read)
-                .map_err(|_| io::Error::other("key read offset exceeds its bound"))?;
-            let remaining = bytes
-                .get_mut(read..)
-                .ok_or_else(|| io::Error::other("key reader exceeded its buffer"))?;
-            let found = file.read_at(remaining, offset)?;
-            if found == 0 {
-                break;
-            }
-            read = read
-                .checked_add(found)
-                .ok_or_else(|| io::Error::other("key read length exceeds its bound"))?;
-        }
-        bytes.truncate(read);
-        bytes
-    };
-    #[cfg(not(unix))]
-    let bytes = {
-        let mut bytes = Zeroizing::new(Vec::with_capacity(33));
-        file.take(33).read_to_end(&mut bytes)?;
-        bytes
-    };
-    if bytes.len() != 32 {
-        return Err(PersistError::WrongKeyLength(bytes.len()));
-    }
-    let mut seed = Zeroizing::new([0u8; 32]);
-    seed.copy_from_slice(&bytes);
-    Ok(SigningKey::from_bytes(&seed))
+    Ok(())
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
