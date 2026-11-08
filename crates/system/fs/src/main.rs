@@ -1876,19 +1876,18 @@ async fn serve(
         );
     }
     let namespace = Arc::new(Mutex::new(ns_value));
-    // The mounted tree, published as the Files app's person record: this
-    // daemon is the windowless endpoint of the Files app, so a file created,
-    // renamed, moved or deleted here reaches the person's other devices — and
-    // the members of a workspace this mount is another device's of.
-    let _tree_record = fs::tree_record::spawn(
-        Arc::clone(&namespace),
-        remote_ticket.as_ref().map_or_else(
-            || collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
-            |ticket| ticket.workspace_id().to_string(),
-        ),
-        credentials.clone(),
-        tilo_paths::xdg::service_socket("collab"),
-    );
+    // The person's own tree, as the Files app's person record: this daemon is
+    // the app's windowless endpoint, so what changes here reaches the person's
+    // other devices. A ticket mount holds a workspace's tree, which that
+    // workspace keeps: it takes no unsealed write, and this endpoint has no keys.
+    let _tree_record = remote_ticket.is_none().then(|| {
+        fs::tree_record::spawn(
+            Arc::clone(&namespace),
+            collab_types::personal_cluster(&credentials.user_public_key()).to_string(),
+            credentials.clone(),
+            tilo_paths::xdg::service_socket("collab"),
+        )
+    });
     let record_materializer = if let Some(records) = record_services.as_mut() {
         let materializer =
             RecordMaterializer::new(workspace_id, namespace.clone(), history.clone());

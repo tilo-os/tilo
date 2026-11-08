@@ -342,16 +342,17 @@ fn json_result(command: &mut Command, what: &str) -> serde_json::Value {
 #[cfg(test)]
 struct OutsideDir {
     path: PathBuf,
-    _lock: std::fs::File,
+    _lock: advisory_lock::FileLock,
 }
 
 #[cfg(test)]
 impl OutsideDir {
     fn create(checkout: &Path) -> Self {
         let digest = blake3::hash(checkout.as_os_str().as_encoded_bytes()).to_hex();
-        let path = PathBuf::from(format!("/tmp/tilo-outside-repo-{}", &digest[..16]));
+        let short = digest.get(..16).expect("a hex digest outlasts 16 digits");
+        let path = PathBuf::from(format!("/tmp/tilo-outside-repo-{short}"));
         let lock = std::fs::File::create(path.with_extension("lock")).expect("lock file");
-        lock.lock().expect("lock the outside directory");
+        let lock = advisory_lock::FileLock::exclusive(lock).expect("lock the outside directory");
         match std::fs::remove_dir_all(&path) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}

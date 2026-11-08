@@ -144,7 +144,6 @@ async fn start_host(
             allowed_origins: Vec::new(),
             plain_listen: None,
             public_origin: None,
-            country: None,
             fetch_proxy: None,
         })
         .await

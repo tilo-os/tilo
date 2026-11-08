@@ -17280,6 +17280,7 @@ dependencies = [
  "syn 2.0.117",
  "tempfile",
  "tilo-actions",
+ "tilo-advisory-lock",
  "tilo-app",
  "tilo-app-package",
  "tilo-automation",

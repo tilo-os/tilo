@@ -54,7 +54,7 @@ fn history(view: &mut ViewInstance) -> UiNode {
 
 /// The narrowest of `found`: the innermost entry of history that matches, never the step that
 /// holds it, whose row holds its changes' rows too.
-fn narrowest<'a>(found: Vec<&'a UiNode>) -> Option<&'a UiNode> {
+fn narrowest(found: Vec<&UiNode>) -> Option<&UiNode> {
     found.into_iter().min_by_key(|node| nodes(node).len())
 }
 

@@ -74,7 +74,7 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     let (_app, mine) = record("tasks", &ada());
     let mut first = Workspace::personal("tasks", &ada(), mine.clone());
     assert_eq!(
-        first.composed().props.get("overview_title"),
+        first.composed().props.get("title"),
         Some(&Value::text("Inbox")),
         "the window starts on the inbox"
     );
@@ -83,7 +83,7 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     let today = first.key_of("ui.NavItem", "label", "Today");
     first.fire(&today, "select", None);
     assert_eq!(
-        first.composed().props.get("overview_title"),
+        first.composed().props.get("title"),
         Some(&Value::text("Today"))
     );
 
@@ -102,7 +102,7 @@ fn the_place_a_person_picks_in_a_window_is_theirs_after_a_restart_and_no_one_els
     // A restart: a new window over the same record opens where they left it.
     let again = Workspace::personal("tasks", &ada(), mine);
     assert_eq!(
-        again.composed().props.get("overview_title"),
+        again.composed().props.get("title"),
         Some(&Value::text("Today")),
         "the place they picked is theirs again"
     );
@@ -114,7 +114,7 @@ fn a_window_shows_the_place_the_record_gives_it_after_it_drew() {
     // A window opened while the record holds nothing yet shows the inbox.
     let mut later = Workspace::personal("tasks", &ada(), mine.clone());
     assert_eq!(
-        later.composed().props.get("overview_title"),
+        later.composed().props.get("title"),
         Some(&Value::text("Inbox"))
     );
 
@@ -135,7 +135,7 @@ fn a_window_shows_the_place_the_record_gives_it_after_it_drew() {
     // The window that had drawn the inbox shows it, without anything else happening.
     later.frame();
     assert_eq!(
-        later.composed().props.get("overview_title"),
+        later.composed().props.get("title"),
         Some(&Value::text("Today")),
         "the place the record gives back reaches a window already drawn"
     );

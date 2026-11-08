@@ -59,13 +59,13 @@ impl Server {
         // Readiness is a connection the server answers, not the file it leaves: a session
         // killed outright leaves a socket behind that no one listens on, and a later start of
         // the same path binds over it.
-        let deadline = Instant::now() + Duration::from_secs(30);
+        let started = Instant::now();
         loop {
             if UnixStream::connect(&socket).is_ok() {
                 break;
             }
             assert!(
-                Instant::now() < deadline,
+                started.elapsed() < Duration::from_secs(30),
                 "the session's document media answers no one at {}",
                 socket.display()
             );
@@ -97,7 +97,7 @@ impl Drop for Server {
     }
 }
 
-/// A picture, as the connector fetched it from YouTube's CDN.
+/// A picture, as the connector fetched it from `YouTube`'s CDN.
 const PICTURE: &[u8] = b"\x89PNG\r\n\x1a\n a still, as the connector fetched it";
 
 #[test]

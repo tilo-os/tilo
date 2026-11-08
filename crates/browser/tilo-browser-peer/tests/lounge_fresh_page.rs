@@ -50,6 +50,7 @@ use collab_types::DocumentMutation;
 use collab_types::presence::Presence;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
+use tilo_automerge::ApplyIncoming as _;
 use tilo_browser_peer::invite::{ask_to_join, guest_certificate};
 use tilo_browser_peer::{Host, PeerEvent, PeerHandle};
 use tilo_peer_state::document_frame::DocumentRoute;
@@ -180,21 +181,21 @@ impl Lounge {
         let root_file = secrets.join("room-root-lounge");
         let owner_root = SigningKey::generate(&mut UnwrapErr(SysRng));
         std::fs::write(&root_file, hex::encode(owner_root.to_bytes())).expect("the owner root");
-        Self::start_at(state, root_file, Some(owner_root), None)
+        Self::start_at(state, &root_file, Some(owner_root), None)
     }
 
     fn start(from: &std::path::Path, refound: Option<&str>) -> Self {
         let (state, root_file) = Self::volume(from);
-        Self::start_at(state, root_file, None, refound)
+        Self::start_at(state, &root_file, None, refound)
     }
 
     fn start_at(
         state: tempfile::TempDir,
-        root_file: std::path::PathBuf,
+        root_file: &std::path::Path,
         owner_root: Option<SigningKey>,
         refound: Option<&str>,
     ) -> Self {
-        let owner_root = owner_root.unwrap_or_else(|| read_root(&root_file));
+        let owner_root = owner_root.unwrap_or_else(|| read_root(root_file));
         let entrypoint = entrypoint();
         let mut command = Command::new("sh");
         command
@@ -218,7 +219,7 @@ impl Lounge {
                 "TILO_ROOMS_SITE_ORIGINS",
                 "https://tilo.coffee,https://tilo.so",
             )
-            .env("TILO_ROOMS_ROOT_FILE", &root_file)
+            .env("TILO_ROOMS_ROOT_FILE", root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
             // The deployment starts without seeding Chat: the volume's record
             // cannot be served to new members until it is founded again.
@@ -328,7 +329,7 @@ impl Lounge {
         let page = self.page(&owner);
         page.join_placed(&self.workspace, "Lounge").unwrap();
         tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(support::ready(&[&page]))
+            tokio::runtime::Handle::current().block_on(support::ready(&[&page]));
         });
         let (done, reply) = std::sync::mpsc::sync_channel(1);
         page.rooms_then(
@@ -339,7 +340,7 @@ impl Lounge {
                 // number two asks would share.
                 request_id: *blake3::hash(&to.root.verifying_key().to_bytes()).as_bytes(),
                 role: WorkspaceRole::Editor,
-                expires_at_ns: tilo_clock::unix_now_ns() + 600_000_000_000,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
                 inviter_name: Some("The Lounge".into()),
                 wait_list_entry: None,
                 recipient: Some(to.root.verifying_key().to_bytes()),
@@ -563,7 +564,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     // page says it stopped waiting for them; what still waits is said as the
     // page says it.
     let mut frames: std::collections::BTreeMap<DocumentRoute, Vec<DocumentMutation>> =
-        Default::default();
+        std::collections::BTreeMap::default();
     let part = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: lounge.workspace.clone(),
@@ -585,7 +586,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         }
         let waiting = held_frames(&page);
         if frames.contains_key(&chat) && frames.contains_key(&part) {
-            arrived_at.get_or_insert(started.elapsed());
+            arrived_at.get_or_insert_with(|| started.elapsed());
         }
         // Done once nothing waits any more, or once the record and its part
         // have been here a while and the page says no more will come.
@@ -677,7 +678,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         page.status()
             .room_members
             .get(&lounge.workspace)
-            .map_or(0, |at| at.len())
+            .map_or(0, std::collections::BTreeSet::len)
     };
     println!(
         "the workspace's roster: {} on the first page, {} on the second",
@@ -694,7 +695,9 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         &first_device[..4]
     );
     assert!(
-        seen.is_some_and(|(x, y)| (x - at.0).abs() < 0.5 && (y - at.1).abs() < 0.5),
+        seen.is_some_and(
+            |(x, y)| (x - f64::from(at.0)).abs() < 0.5 && (y - f64::from(at.1)).abs() < 0.5
+        ),
         "the second page sees the first page's pointer where it put it: {seen:?}"
     );
 
@@ -775,7 +778,9 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
         other.status().channels
     );
     assert!(
-        seen.is_some_and(|(x, y)| (x - at.0).abs() < 0.5 && (y - at.1).abs() < 0.5),
+        seen.is_some_and(
+            |(x, y)| (x - f64::from(at.0)).abs() < 0.5 && (y - f64::from(at.1)).abs() < 0.5
+        ),
         "the second page sees the first page's pointer where it put it within {bound:?}: {seen:?}"
     );
 
@@ -786,7 +791,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
 /// Wait until `page` is in the workspace's live plane: the plane reports the
 /// devices it reads and the objects it heard, which it lists only once joined.
 async fn wait_for_plane(page: &PeerHandle) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let started = tokio::time::Instant::now();
     loop {
         let channels = page.status().channels;
         if channels
@@ -796,7 +801,7 @@ async fn wait_for_plane(page: &PeerHandle) {
             return;
         }
         assert!(
-            tokio::time::Instant::now() < deadline,
+            started.elapsed() < Duration::from_secs(60),
             "the page never joined the workspace's live plane; its channels:\n{channels}"
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -828,7 +833,7 @@ fn record_of(frames: &[DocumentMutation]) -> Option<automerge::AutoCommit> {
                     // A change whose base the page did not receive applies
                     // to nothing: it is a tail without its checkpoint, and
                     // what a reader of the window has is the checkpoint.
-                    let _ = doc.load_incremental(bytes);
+                    let _ = doc.load_incoming(bytes);
                 }
             }
         }
@@ -870,12 +875,12 @@ async fn presence_frames(
     Vec<([u8; 32], Vec<u8>)>,
     std::collections::BTreeSet<[u8; 32]>,
 ) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    let started = tokio::time::Instant::now();
     let mut frames = Vec::new();
     let mut people = std::collections::BTreeSet::new();
     loop {
         gather_presence(page, &mut frames, &mut people);
-        if tokio::time::Instant::now() >= deadline {
+        if started.elapsed() >= Duration::from_secs(secs) {
             return (frames, people);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -914,9 +919,14 @@ fn pointer_on(
     own: [u8; 32],
     workspace: &str,
     tab: u64,
-) -> Option<(f32, f32)> {
+) -> Option<(f64, f64)> {
     let mut board = tilo_live::presence::Board::new(workspace, own);
-    let now = tilo_clock::unix_now_ms() as f64;
+    // The clock presence is heard and drawn on, as the session's board keeps it.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("the clock reads past the epoch")
+        .as_secs_f64()
+        * 1000.0;
     for (from, body) in heard {
         if let Some(frame) = tilo_live::presence::decode(body) {
             board.hear(*from, &frame, now);
@@ -933,7 +943,7 @@ fn pointer_on(
         .placed(&tiles, now)
         .into_iter()
         .find(|placed| placed.tab == tab)
-        .map(|placed| (placed.x as f32, placed.y as f32))
+        .map(|placed| (placed.x, placed.y))
 }
 
 /// The host's plain listener, as a page's `fetch`: HTTP/1.1 to it, no TLS

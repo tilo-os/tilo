@@ -415,11 +415,15 @@ mod tests {
     fn an_actions_arguments_are_what_the_view_read_and_what_the_event_carries() {
         let cx = cx();
         let node: crate::node::Node = crate::ui::TextInputBuilder::new(&cx.key("draft")).into();
-        cx.action_with(
+        let wired = cx.action_with(
             &node,
             "submit",
             "post",
             vec![Arg::text("#general"), Arg::Event],
+        );
+        assert_eq!(
+            wired.invokes,
+            Some(("tube.channel:abc".to_owned(), "post".to_owned()))
         );
         let effect = cx.effect(&node.key, "submit").expect("recorded");
         assert_eq!(
