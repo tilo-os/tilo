@@ -67,6 +67,12 @@ impl HostStepServices for SessionActions {
         self.offered().rows
     }
 
+    /// A turn's steps: offered in the catalogue of an agent working a turn, and admitted by
+    /// that turn, exactly as an app's action the same agent takes in it is.
+    fn for_turns(&self) -> bool {
+        true
+    }
+
     fn start(&self, request: &HostStepRequest<'_>) -> Result<Pending<HostStepOutcome>, String> {
         let argument = request.argument.map(str::to_owned);
         let (done, asked) = pending();

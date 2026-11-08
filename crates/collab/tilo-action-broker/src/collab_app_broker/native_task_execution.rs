@@ -193,7 +193,7 @@ impl AppBrokerState {
         reask: &ChildReask<'_>,
     ) -> Result<(u64, tilo_actions::InvocationUpdate), BrokerError> {
         if let Some(steps) = super::host_steps::for_provider(&self.services, reask.target.provider)
-            .filter(|steps| steps.for_tasks())
+            .filter(|steps| steps.for_tasks() || steps.for_turns())
         {
             return self
                 .start_native_host_step(reask, steps.as_ref())
@@ -377,7 +377,7 @@ impl AppBrokerState {
             let run =
                 self.task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)?;
             if super::host_steps::for_provider(&self.services, reask.target.provider)
-                .is_some_and(|steps| steps.for_tasks())
+                .is_some_and(|steps| steps.for_tasks() || steps.for_turns())
             {
                 return self.native_host_step_observation(reask.run_id, reask.invocation);
             }

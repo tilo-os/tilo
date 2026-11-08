@@ -16,6 +16,76 @@ use tilo_actions::remote::{
     ActionHostError, Caller, InvocationReceipt, InvokeRequest, Pending, Reservation,
 };
 
+impl AppBrokerState {
+    /// Admit a host step marked for turns ([`HostStepServices::for_turns`]) as the turn's own,
+    /// exactly as the same agent's app action in that turn is admitted: the run the agent works
+    /// for the turn's message, decided by [`TrackerRuns::authorize_action`] over the person's,
+    /// the agent's and the run's live grants, and refused in the same words the app action
+    /// hears. A caller working no turn takes none of them.
+    ///
+    /// # Errors
+    /// The caller works no turn, the turn ended, or the turn's grants refuse the step.
+    fn admit_turn_step(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        steps: &dyn HostStepServices,
+        (descriptor, argument): (&tilo_actions::ActionDescriptor, &Option<String>),
+        turn: Option<&tilo_action_policy::turn::Turn>,
+    ) -> Result<(), ActionHostError> {
+        let actor = super::BrokerActor::for_caller(caller);
+        let turn = turn
+            .or_else(|| actor.turn())
+            .ok_or_else(|| ActionHostError::Refused {
+                reason: "a session step is a step of a turn's: this agent works no turn".into(),
+            })?;
+        let agent = actor.id().trim_start_matches("agent:");
+        let service = self
+            .tracker_runs(workspace)
+            .ok_or_else(|| ActionHostError::Unavailable {
+                reason: "this workspace's turns are not at hand".into(),
+            })?;
+        let run = service
+            .runs(workspace)
+            .map_err(|reason| ActionHostError::Unavailable { reason })?
+            .into_iter()
+            .find(|run| run.active && run.agent == agent && run.turn.as_ref() == Some(turn))
+            .ok_or_else(|| ActionHostError::Refused {
+                reason: format!("the turn this step answers is no longer going ({agent})"),
+            })?;
+        service
+            .check_agent(workspace, &run)
+            .map_err(|reason| ActionHostError::Refused { reason })?;
+        let requirement = crate::services::NativeTaskActionRequirement {
+            binding: crate::services::NativeTaskBinding {
+                task_id: run.issue.clone(),
+                agent_id: run.agent.clone(),
+                epoch: run.epoch,
+                revision: run.applied_revision(),
+                starter: Some(run.starter.clone()),
+                turn: run.turn.clone(),
+            },
+            app: steps.app_id().to_owned(),
+            resource_kind: descriptor.resource_kind.clone(),
+            resource: descriptor.address.resource.clone(),
+            action: descriptor.address.action.clone(),
+            need: descriptor.contract.need(),
+            consequential: descriptor.contract.asks_for_argument(argument.as_deref()),
+            attended: descriptor.contract.is_attended(),
+            confirmed: false,
+        };
+        service
+            .authorize_action(workspace, &run, &requirement)
+            .map_err(|reason| {
+                if crate::services::NativeTaskActionRequirement::awaits_confirmation(&reason) {
+                    ActionHostError::ConfirmationRequired
+                } else {
+                    ActionHostError::Refused { reason }
+                }
+            })
+    }
+}
+
 /// The installed host-step service that answers under `provider`, if any.
 pub(super) fn for_provider(
     services: &HostServices,
@@ -141,6 +211,35 @@ impl AppBrokerState {
         request: &InvokeRequest,
         run: Option<&super::TaskRunHost>,
     ) -> Result<InvocationReceipt, ActionHostError> {
+        self.invoke_host_step_within(caller, origin, steps, request, (run, None))
+    }
+
+    /// [`Self::invoke_host_step_in_run`], with the turn a step marked for turns answers
+    /// (`turn`: the caller's, which a run host's connection does not carry on its caller).
+    pub(super) fn invoke_host_step_in_turn(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        steps: &dyn HostStepServices,
+        request: &InvokeRequest,
+        run: Option<&super::TaskRunHost>,
+        turn: Option<&tilo_action_policy::turn::Turn>,
+    ) -> Result<InvocationReceipt, ActionHostError> {
+        self.invoke_host_step_within(caller, origin, steps, request, (run, turn))
+    }
+
+    /// [`Self::invoke_host_step_in_run`]'s body, with the caller's turn beside the run.
+    fn invoke_host_step_within(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        steps: &dyn HostStepServices,
+        request: &InvokeRequest,
+        (run, turn): (
+            Option<&super::TaskRunHost>,
+            Option<&tilo_action_policy::turn::Turn>,
+        ),
+    ) -> Result<InvocationReceipt, ActionHostError> {
         let abandon = |error: ActionHostError| {
             if let Ok(mut ledger) = self.remote_invocations.lock() {
                 ledger.abandon(&request.invocation);
@@ -173,14 +272,28 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             &self.witness_binding(policy.id(), workspace_id, request),
         );
-        self.framework_policy(
-            (&workspace, &policy, now),
-            (steps.app_id(), &descriptor),
-            request.confirmation.as_ref(),
-            witnessed,
-            false,
-        )
-        .map_err(abandon)?;
+        // A step marked for turns is decided by the turn's run, exactly as the same agent's app
+        // action in that turn is: the tracker's `authorize_action` over the person's, the
+        // agent's and the run's live grants. A caller outside a turn takes none of them, and one
+        // whose grant refuses it hears the refusal an app action hears. The turn's grants are the
+        // whole answer, as they are for the app action: `framework_policy` decides by the
+        // workspace's grants alone, and asking it again here would hold a step to the person's
+        // own record where the turn already held it to the same person's live grants.
+        let by_turn = steps.for_turns();
+        let turn = turn.or_else(|| caller.turn());
+        if by_turn {
+            self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)
+                .map_err(abandon)?;
+        } else {
+            self.framework_policy(
+                (&workspace, &policy, now),
+                (steps.app_id(), &descriptor),
+                request.confirmation.as_ref(),
+                witnessed,
+                false,
+            )
+            .map_err(abandon)?;
+        }
         if !Self::confirmed_as_asked(
             &policy,
             &descriptor,
@@ -220,13 +333,18 @@ impl AppBrokerState {
             ) {
                 return Err(ActionHostError::ConfirmationRequired);
             }
-            self.admit_answer(
-                (&workspace, &policy, now),
-                steps.app_id(),
-                &descriptor,
-                (argument.as_deref(), request.confirmation.as_ref()),
-                witnessed,
-            )?;
+            if by_turn {
+                // The turn still goes, and still lets this agent take this step.
+                self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)?;
+            } else {
+                self.admit_answer(
+                    (&workspace, &policy, now),
+                    steps.app_id(),
+                    &descriptor,
+                    (argument.as_deref(), request.confirmation.as_ref()),
+                    witnessed,
+                )?;
+            }
             Ok(policy)
         })?;
         let step = HostStepRequest {

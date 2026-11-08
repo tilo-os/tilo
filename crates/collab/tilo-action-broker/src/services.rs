@@ -1054,6 +1054,15 @@ pub trait HostStepServices: Send + Sync {
             })
             .collect()
     }
+    /// Whether its steps are a turn's steps (the session's own actions: the arrangement, its
+    /// undo, the windows and the notices). Such a step is offered in the catalogue of an agent
+    /// working a turn, and admitted by that turn exactly as the same agent's app action in it
+    /// is: the person's, the agent's turn's grants decide it, and a caller working no turn
+    /// takes none. Distinct from [`Self::for_tasks`], whose steps are a task run's programs and
+    /// carry a run host the turn has none of.
+    fn for_turns(&self) -> bool {
+        false
+    }
     /// Whether its steps are steps a task agent takes in its run (a task's
     /// programs): offered in a task agent's catalogue and admitted by its
     /// run. No other host step is a task agent's.

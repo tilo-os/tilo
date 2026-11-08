@@ -1178,6 +1178,12 @@ impl AppBrokerState {
                         record_id: String::new(),
                         browsable: true,
                     });
+                    // A step marked for turns is a turn's own, as an app action is: listed for
+                    // the agent working a turn and for no one else. Every other host step is
+                    // offered to the person's own controls.
+                    if steps.for_turns() && policy.turn().is_none() {
+                        continue;
+                    }
                     if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {
                         Self::host_step_rows((&workspace, &policy, now), steps.as_ref(), &mut rows);
                     }

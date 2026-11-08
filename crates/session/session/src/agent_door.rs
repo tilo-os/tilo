@@ -1244,12 +1244,9 @@ enum DoorAsk {
     },
 }
 
-/// What the session's own doors offer now, and the revision it stands at:
-/// equal revisions offer the same, so a cursor a page of it answered reads
-/// on in the next page of the same listing.
+/// What the session's own doors offer now.
 struct Offered {
     resources: Vec<tilo_actions::ResourceSpec>,
-    revision: String,
 }
 
 /// What the session's own doors offer now as catalogue rows, in the level
@@ -1270,24 +1267,8 @@ impl Steps {
 
 impl Offered {
     fn of(doors: &tilo_surface_host::Doors) -> Self {
-        let resources = doors.resources();
-        let revision = doors.revision().map_or_else(
-            // A surface that cannot tell where it stands: what is offered
-            // names the revision itself.
-            || {
-                use std::hash::{Hash as _, Hasher as _};
-                let mut hasher = std::hash::DefaultHasher::new();
-                for descriptor in tilo_actions::door::survey(&resources) {
-                    descriptor.address.resource.hash(&mut hasher);
-                    descriptor.address.action.hash(&mut hasher);
-                }
-                format!("session.{:016x}", hasher.finish())
-            },
-            |revision| format!("session.{revision:?}"),
-        );
         Self {
-            resources,
-            revision,
+            resources: doors.resources(),
         }
     }
 }
