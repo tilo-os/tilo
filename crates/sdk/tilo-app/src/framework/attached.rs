@@ -796,15 +796,14 @@ impl AttachedView {
         // What this participant did and has not taken stays its own. A part
         // first met through a peer's change is not this participant's to
         // publish whole: it starts from what the record already holds.
-        if !self.beside.contains_key(record) {
-            let heads = self
-                .records
-                .with(record, ui_core::automerge::AutoCommit::get_heads)
-                .unwrap_or_default();
-            self.beside
-                .insert(record.clone(), RecordSync::delivered(heads));
-        }
-        let sync = self.beside.get_mut(record).expect("the part was just held");
+        let heads = self
+            .records
+            .with(record, ui_core::automerge::AutoCommit::get_heads)
+            .unwrap_or_default();
+        let sync = self
+            .beside
+            .entry(record.clone())
+            .or_insert_with(move || RecordSync::delivered(heads));
         if sync.snapshotted() {
             sync.set_aside(&self.records, record).ok();
         }
