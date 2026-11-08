@@ -106,6 +106,13 @@ fn a_pointer_is_placed_on_the_tile_it_is_over_and_a_rest_draws_nothing() {
     let drawn = board.revision();
     board.hear([1; 32], &pointed(WORKSPACE, 3, 12.0, 34.0), 1_000.5);
     assert_eq!(board.revision(), drawn, "a resting pointer draws nothing");
+    assert_eq!(
+        board
+            .member([1; 32])
+            .and_then(|member| member.pointer_heard_at()),
+        Some(1_000.5),
+        "a resting pointer said again is still there"
+    );
     board.hear([1; 32], &Presence::pointer_left(WORKSPACE, 3), 2_000.0);
     assert!(
         board.pointers(3, 2_000.0).is_empty(),

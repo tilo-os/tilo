@@ -570,7 +570,13 @@ impl Board {
             .find(|member| member.publisher == from)
             .is_some_and(|member| member.here && member.pointer.newest() == Some(point));
         if heard {
-            // The same place said again: the pointer rests.
+            // The same place said again: the pointer rests. It is still said,
+            // though — a member restates what did not change on every
+            // keepalive, and a surface draws only a pointer said lately.
+            self.touch(from, |member| {
+                member.pointer.restated(now_ms);
+                false
+            });
             return false;
         }
         self.touch(from, |member| {
