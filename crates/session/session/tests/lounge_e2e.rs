@@ -39,7 +39,6 @@ use std::time::{Duration, Instant};
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerHandle};
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -55,9 +54,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 tilo_automerge_isolate::test_worker!();
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// The origin the deployment's ingress publishes for the room: what its pages and its links name.
 /// On this machine it is the address the room is reached at, because the room publishes its live
@@ -460,16 +456,11 @@ fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)>
 /// A desktop session of this computer, taking part in the collaboration plane, keeping the
 /// workspaces it holds beside `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: true,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: true,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// This computer's person: an identity of its own in `home` 's configuration and a device certified
@@ -1070,18 +1061,13 @@ fn session_opening(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: true,
-            state: Some(state.to_path_buf()),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        collab: true,
+        state: Some(state.to_path_buf()),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        ..Options::default()
+    });
     (session, apps)
 }
 

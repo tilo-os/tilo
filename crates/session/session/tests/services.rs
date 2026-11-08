@@ -114,16 +114,14 @@ fn session() -> Session {
     connectivity.settle();
     let services: Vec<Box<dyn Service>> =
         vec![Box::new(connectivity), Box::new(audio_over_lines())];
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 fn arguments(value: Value) -> Map<String, Value> {
@@ -373,16 +371,14 @@ impl FabricLink for Fabric {
 }
 
 fn fabric_session(fabric: &Fabric) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             fabric: Some(fabric.link()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// The speaker service keeps one view and one revision per process, so the tests that speak to it

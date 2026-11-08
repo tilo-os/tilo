@@ -158,16 +158,11 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
 
     let _settled = ui::motion::testing::settled();
     let launches = Arc::new(tilo_session::Launches::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            launches: Arc::clone(&launches),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        launches: Arc::clone(&launches),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
 
     // The app this session started, in the workspace it runs in, and its window.

@@ -41,7 +41,6 @@ use ed25519_dalek::Signer as _;
 use sha2::Digest as _;
 use test_http::{Reply, Responder};
 use tilo_browser_peer::{Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD, SharedDesktop};
 use tilo_desktop_model::{
@@ -59,9 +58,6 @@ use tilo_sheets::directory::{Listing, ListingAction, Status};
 // A host admits its members' records through an Automerge worker: this binary is that worker, as it
 // is the session's own.
 tilo_automerge_isolate::test_worker!();
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// The app the lounge's workspace talks in, and the record its people wrote there before this
 /// computer joined: the chat's own workspace record.
@@ -81,15 +77,10 @@ const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
 
 /// A session on the headless backend, taking no part in the collaboration plane.
 fn session() -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// Point this computer at the community site `site` for the test's lifetime. Returns the
@@ -1043,16 +1034,11 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
 /// A session that takes part in the collaboration plane, keeping the workspaces it holds beside
 /// `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: true,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: true,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// `key` 's certificate as a device of the person whose root key is `root` .

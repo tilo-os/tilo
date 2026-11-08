@@ -47,16 +47,14 @@ const KEY_LEFT_META: u32 = 125;
 /// A session on `outputs` , its wireless display sheet speaking to the projector on `projector`
 /// (`None`: the service's own socket).
 fn session(outputs: &[OutputConfig], projector: Option<PathBuf>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             projector,
             ..Options::default()
         },
-        outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

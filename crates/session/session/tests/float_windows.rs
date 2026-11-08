@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::arrangement::StripReading;
 use tilo_session::mount::shell::WINDOW_MENU;
@@ -54,27 +54,22 @@ const KEY_LEFT_META: u32 = 125;
 /// published, and the appearance section beside them.
 fn session() -> Session {
     let apps = common::seeded_apps();
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: common::PERSON.to_owned(),
-            shell: false,
-            collab: false,
-            search: tilo_session::SearchOptions {
-                // The apps installed on this device, as a real session reads them: the launcher
-                // opens them, and the desk names their windows by their own names.
-                lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
-                ..tilo_session::SearchOptions::default()
-            },
-            services: vec![
-                Box::new(apps),
-                Box::new(tilo_settings_service::SettingsService::new()),
-            ],
-            ..Options::default()
+    crate::common::headless(Options {
+        person: common::PERSON.to_owned(),
+        shell: false,
+        collab: false,
+        search: tilo_session::SearchOptions {
+            // The apps installed on this device, as a real session reads them: the launcher
+            // opens them, and the desk names their windows by their own names.
+            lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
+            ..tilo_session::SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+        services: vec![
+            Box::new(apps),
+            Box::new(tilo_settings_service::SettingsService::new()),
+        ],
+        ..Options::default()
+    })
 }
 
 fn step(session: &mut Session) {

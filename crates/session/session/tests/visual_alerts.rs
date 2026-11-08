@@ -13,6 +13,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -44,9 +46,9 @@ fn session(visual_alerts: bool) -> (Session, Rc<DesktopServices>) {
         )
         .expect("the desktop services"),
     );
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
             desktop: Some(Rc::clone(&desktop)),
@@ -60,9 +62,7 @@ fn session(visual_alerts: bool) -> (Session, Rc<DesktopServices>) {
             },
             ..Options::default()
         },
-        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     (session, desktop)
 }

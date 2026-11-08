@@ -28,7 +28,6 @@ use runtime_portal::tools::{
 };
 use tilo_action_broker::services::{LaunchPlace, LauncherServices as _};
 use tilo_app_launch::SessionEnvironment;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::Workspace;
 use tilo_desktop_policy::Window;
 use tilo_notifications_service::Notifications;
@@ -131,25 +130,20 @@ fn session(
         Some(launcher.path().to_owned()),
     ));
     let opened = Arc::new(Launches::default());
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&opened),
-            // The person's lists as the device reads them, read once: what the tools service serves
-            // Files is that same list.
-            search: SearchOptions {
-                lists: Lists::fixed(AppLists::read()),
-                ..SearchOptions::default()
-            },
-            drives,
-            wake: tilo_service::LoopWake::default(),
-            ..Options::default()
+    let session = crate::common::headless(Options {
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        launches: Arc::clone(&opened),
+        // The person's lists as the device reads them, read once: what the tools service serves
+        // Files is that same list.
+        search: SearchOptions {
+            lists: Lists::fixed(AppLists::read()),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+        drives,
+        wake: tilo_service::LoopWake::default(),
+        ..Options::default()
+    });
     (session, opened)
 }
 

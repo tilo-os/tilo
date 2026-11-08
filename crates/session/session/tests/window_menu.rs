@@ -14,6 +14,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use serde_json::{Value, json};
@@ -98,15 +100,13 @@ fn desk_tree() -> DesktopTree {
 
 /// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
 fn session_with(tree: DesktopTree) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session

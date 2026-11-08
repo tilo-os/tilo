@@ -22,12 +22,11 @@ use std::path::Path;
 use std::rc::Rc;
 
 use serde_json::Value;
-use tilo_compositor::OutputConfig;
 use tilo_model_host::ModelService;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
-use common::{HEIGHT, PERSON, WIDTH};
+use common::PERSON;
 
 const TRACKER: &str = "tasks.tracker";
 const ADDRESS: &str = "tasks.tracker";
@@ -55,20 +54,15 @@ fn session_at(state: &Path) -> Session {
         None,
     ));
     let services: Vec<Box<dyn tilo_service::Service>> = vec![Box::new(tracker())];
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            collab: false,
-            state: Some(state.to_path_buf()),
-            services,
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(apps),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        collab: false,
+        state: Some(state.to_path_buf()),
+        services,
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(apps),
+        ..Options::default()
+    })
 }
 
 /// The titles of the issues the session's record holds now.

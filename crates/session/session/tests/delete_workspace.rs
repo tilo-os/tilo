@@ -125,17 +125,15 @@ fn desk(root: &[u8; 32]) -> DesktopTree {
 /// A session of this computer taking part in the collaboration plane, keeping what it holds under
 /// `state` , on the desk showing the workspace.
 fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: true,
             person: "Ada".to_owned(),
             state: Some(state.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("a session");
+    );
     session.handle().replace_tree(desk(root));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("a frame");

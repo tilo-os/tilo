@@ -246,16 +246,14 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
     let _settled = ui::motion::testing::settled();
     let mut bands = Vec::new();
     for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
-        let mut session = Session::headless(
+        let mut session = crate::common::headless_on(
+            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
                 person: "Pat".to_owned(),
                 shell: true,
                 ..Options::default()
             },
-            &[OutputConfig::new("HEADLESS-1", WIDTH * pixels, HEIGHT * pixels).with_scale(scale)],
-        )
-        .expect("session");
+        );
         for _ in 0..400 {
             session.settle_services();
             session.step(Duration::from_millis(1)).unwrap();
@@ -304,17 +302,15 @@ fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
     let _settled = ui::motion::testing::settled();
     let width = WIDTH * 2;
     let height = HEIGHT * 2;
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             person: "Pat".to_owned(),
             shell: true,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height).with_scale(2.0)],
-    )
-    .expect("session");
+    );
     until(&mut session, |session| !session.shell_parts().is_empty());
     // The translucent style is where the glass rim shows.
     session

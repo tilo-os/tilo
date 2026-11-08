@@ -37,12 +37,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_test_env::{PrivateBus, SpawnUnderEnvLock as _};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const REFRESH: Duration = Duration::from_millis(16);
 /// The session's AT-SPI application root: every window it publishes hangs under it.
 const ROOT_PATH: &str = "/org/a11y/atspi/accessible/root";
@@ -226,16 +223,11 @@ fn a_screen_reader_reads_and_drives_the_session_over_atspi() {
     );
     let address = tilo_test_env::wait_for("the accessibility registry's address", atspi_address);
 
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(home.state().to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        state: Some(home.state().to_path_buf()),
+        ..Options::default()
+    });
     session.step(REFRESH).expect("a turn of the session");
     // Off, then on: the session's adapters wait for assistive technology to arrive, and arrive they
     // must now that it has. The bus follows that property from the moment its registry knows of a

@@ -48,16 +48,14 @@ fn session(
         None,
         Some(launcher.path().to_owned()),
     ));
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             launch: Some(Rc::clone(&launch)),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("a session");
+    );
     (session, launch, launcher)
 }
 
@@ -116,15 +114,13 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
 #[test]
 fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("a session");
+    );
     let display = session.compositor().listen().expect("a display");
     session
         .serve_folder_import(OsStr::new(&display))

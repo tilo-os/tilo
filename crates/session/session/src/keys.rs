@@ -426,7 +426,7 @@ impl DeskKeys {
     }
 }
 
-/// The key above Tab: `` ` ` `, and ` ~` with Shift held.
+/// The key above Tab: `` ` ``, and `~` with Shift held.
 const ABOVE_TAB: [u32; 2] = [keysyms::grave, keysyms::asciitilde];
 
 /// What a press is to the window switcher Alt+Tab opened, or to the chord that opens it.

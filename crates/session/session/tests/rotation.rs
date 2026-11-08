@@ -76,16 +76,14 @@ fn hold(root: &tempfile::TempDir, raw: (i32, i32, i32)) {
 
 /// A session on one built-in panel, reading `sensor` .
 fn session(root: &std::path::Path) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             accelerometer: Accelerometer::At(root.to_owned()),
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).unwrap();
     session
 }

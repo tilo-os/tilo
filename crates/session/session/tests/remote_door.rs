@@ -30,7 +30,6 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::remote_door::{ALPN, PersonalDevices, agent_id, open};
 use tilo_service::Questions;
@@ -41,7 +40,7 @@ use tilo_user_identity::{
     sign_revocation_entry,
 };
 
-use common::{HEIGHT, WIDTH, private_home};
+use common::private_home;
 
 /// A device key `n` certified by `root` , called `label` .
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
@@ -144,24 +143,19 @@ impl ThisBox {
         let root = private_home();
         let socket = root.path().join("agent.sock");
         let questions = Questions::new();
-        let session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                questions: Some(questions.clone()),
-                collab: false,
-                action_plane: ActionPlane::At(root.path().join("plane.sock")),
-                agent_door: Some(socket.clone()),
-                state: Some(home.state().to_path_buf()),
-                // The person's settings, as the session serves them: what the person sets this
-                // box's agent door with.
-                services: vec![std::boxed::Box::new(
-                    tilo_settings_service::SettingsService::new(),
-                )],
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
+        let session = crate::common::headless(Options {
+            questions: Some(questions.clone()),
+            collab: false,
+            action_plane: ActionPlane::At(root.path().join("plane.sock")),
+            agent_door: Some(socket.clone()),
+            state: Some(home.state().to_path_buf()),
+            // The person's settings, as the session serves them: what the person sets this
+            // box's agent door with.
+            services: vec![std::boxed::Box::new(
+                tilo_settings_service::SettingsService::new(),
+            )],
+            ..Options::default()
+        });
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()

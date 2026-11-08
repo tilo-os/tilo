@@ -10,6 +10,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -194,16 +196,14 @@ fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
 
     let setup = startup::before_desk(&identity, false).expect("the wait stands before the desk");
     assert!(matches!(setup, BeforeDesk::WaitForClock(_)));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             setup: Some(setup),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(
         session.setup_up(),

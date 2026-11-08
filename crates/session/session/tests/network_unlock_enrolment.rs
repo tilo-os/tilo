@@ -13,12 +13,14 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::io::{Read as _, Write as _};
 use std::time::{Duration, Instant};
 
 use tilo_compositor::OutputConfig;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
-use tilo_session::{Options, Session};
+use tilo_session::Options;
 use tilo_unlock_protocol::{
     ENROL_SOCKET, EnrolReply, EnrolRequest, Half, PROTOCOL_VERSION, SlotId, decode_frame,
     encode_frame, frame_len,
@@ -62,15 +64,13 @@ fn device_key() -> [u8; 32] {
 #[test]
 fn a_boot_key_enrols_through_the_sessions_socket() {
     let (runtime, _env, _root) = person();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: true,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     let socket = runtime.join(ENROL_SOCKET);
     let boot_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
     let half = Half::generate().expect("a fresh half");

@@ -27,7 +27,6 @@ use futures_util::FutureExt as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionOutput, DoorError, ResourcePresentation, ResourceSpec};
 use tilo_bluetooth_agent::{Method as PairingMethod, PairingDetails};
-use tilo_compositor::OutputConfig;
 use tilo_network_secret_agent::questions::{
     CannotJoinDetails, FieldDetails, FieldRule, Refusal, SecretsDetails, SimDetails, SimUnlockStep,
     Text,
@@ -44,22 +43,14 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileMode, FilePickerEffect};
 use tilo_sheets::portal::{Body, Dialog, Field, PortalEffect, Prompt, PromptKind};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 720;
-
 /// A session whose services ask their questions on its sheets.
 fn asking(services: Vec<Box<dyn Service>>) -> (Session, Questions) {
     let questions = Questions::new();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
-            services,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        questions: Some(questions.clone()),
+        services,
+        ..Options::default()
+    });
     (session, questions)
 }
 
@@ -1136,18 +1127,13 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
     let root = common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
-            collab: false,
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(socket.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        questions: Some(questions.clone()),
+        collab: false,
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(socket.clone()),
+        ..Options::default()
+    });
     // Nobody set this desk's owner up: the desk a device seeds is the person's own, and it is what
     // lets the Agent door's question be answered at all.
     assert!(desk_agents(&session).is_empty(), "nobody works here yet");
@@ -1226,18 +1212,13 @@ fn a_program_the_person_refuses_works_nowhere() {
     let root = common::private_home();
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
-            collab: false,
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(socket.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        questions: Some(questions.clone()),
+        collab: false,
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(socket.clone()),
+        ..Options::default()
+    });
 
     let (answers, received) = std::sync::mpsc::channel();
     let client = std::thread::spawn(move || door_client(&socket, &answers, None));

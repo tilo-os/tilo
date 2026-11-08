@@ -24,16 +24,11 @@ fn session_with_a_window() -> (
     std::process::Child,
 ) {
     let launches = Arc::new(tilo_session::Launches::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            launches: Arc::clone(&launches),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        launches: Arc::clone(&launches),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("a frame");
     let app_process = std::process::Command::new("sleep")
         .arg("120")
@@ -131,15 +126,10 @@ fn tab_apps(session: &Session) -> Vec<String> {
 fn the_send_key_over_an_empty_desk_opens_chat() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(tab_apps(&session).is_empty(), "the desk starts empty");
 

@@ -31,7 +31,7 @@ use runtime_collab::file_clipboard::{
     Command, Conflict, ObjectIdentity, Offer, Reply, SelectedDescriptor,
 };
 use runtime_portal::DescriptorStreamSource as _;
-use tilo_compositor::{OutputConfig, Selection};
+use tilo_compositor::Selection;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -45,8 +45,6 @@ use ui::dnd::COPIED_FILES_MIME;
 // is the session's own.
 tilo_automerge_isolate::test_worker!();
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose clipboard this is.
 const FILES: &str = "so.tilo.file-explorer";
 /// The workspace the session holds, as the desk names it.
@@ -179,24 +177,19 @@ fn session(socket: &Path, fixture: &Fixture) -> Session {
     // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), FILES, WORKSPACE, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: Some(fixture.state.clone()),
-            search: SearchOptions {
-                lists: Lists::default(),
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: Some(fixture.state.clone()),
+        search: SearchOptions {
+            lists: Lists::default(),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");

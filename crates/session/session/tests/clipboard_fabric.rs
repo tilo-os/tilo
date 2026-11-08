@@ -14,12 +14,14 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use tilo_compositor::Selection;
 use tilo_compositor::clipboard_history::TEXT_MIME;
-use tilo_compositor::{OutputConfig, Selection};
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -29,9 +31,6 @@ use tilo_device_fabric::{
     PersonalFabricAction,
 };
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// This device's fabric id.
 fn this_device() -> DeviceId {
@@ -158,15 +157,10 @@ impl FabricLink for FakeLink {
 
 fn session(link: &FakeLink) -> Session {
     let fabric: SharedLink = Arc::new(link.clone());
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            fabric: Some(fabric),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        fabric: Some(fabric),
+        ..Options::default()
+    })
 }
 
 /// Step the loop until `done` holds, for a couple of seconds: the fabric is read a few times a

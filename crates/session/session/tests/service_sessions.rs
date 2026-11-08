@@ -26,7 +26,6 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply, CollabClient,
 };
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -39,8 +38,6 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 // is the session's own.
 tilo_automerge_isolate::test_worker!();
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose website sessions these are.
 const BROWSER: &str = "so.tilo.browser";
 /// The keeper of the person's accounts.
@@ -314,24 +311,19 @@ fn session(socket: &Path, fixture: &Fixture, app: &str) -> Session {
     // for it names that process.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), app, WORKSPACE, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: Some(fixture.state.clone()),
-            search: SearchOptions {
-                lists: Lists::default(),
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: Some(fixture.state.clone()),
+        search: SearchOptions {
+            lists: Lists::default(),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(&fixture.keys));
     for _ in 0..4 {
         session

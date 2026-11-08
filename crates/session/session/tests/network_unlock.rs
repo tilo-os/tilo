@@ -20,6 +20,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::net::Ipv4Addr;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -231,29 +233,25 @@ impl Devices {
             .expect("the phone's endpoint binds"),
         );
         phone.connect(desk_addr);
-        let session = Session::headless(
+        let session = crate::common::headless_on(
+            &[OutputConfig::new("HEADLESS-1", 1280, 720)],
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
                 collab: false,
                 sync: Some(Rc::clone(&desk)),
                 questions: Some(questions.clone()),
                 ..Options::default()
             },
-            &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-        )
-        .expect("session");
+        );
         // The same person on their other device: its own desk, its own endpoint, and what the
         // person here answered carried to it.
-        let phone_session = Session::headless(
+        let phone_session = crate::common::headless_on(
+            &[OutputConfig::new("HEADLESS-2", 1280, 720)],
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
                 collab: false,
                 sync: Some(Rc::clone(&phone)),
                 ..Options::default()
             },
-            &[OutputConfig::new("HEADLESS-2", 1280, 720)],
-        )
-        .expect("the phone's session");
+        );
         phone
             .fabric()
             .expect("the phone's session keeps a fabric")

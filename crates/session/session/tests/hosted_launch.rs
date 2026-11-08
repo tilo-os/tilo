@@ -21,7 +21,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
@@ -30,7 +29,7 @@ use tilo_model_host::ModelService;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 
-use common::{HEIGHT, PERSON, WIDTH};
+use common::PERSON;
 
 /// The app the session serves here: Tasks, whose model runs in its own module.
 const APP: &str = "so.tilo.tasks";
@@ -187,20 +186,15 @@ fn session(state: &Path, apps: Rc<Apps>, served: bool) -> Session {
     } else {
         Vec::new()
     };
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            collab: false,
-            state: Some(state.to_path_buf()),
-            services,
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(apps),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        collab: false,
+        state: Some(state.to_path_buf()),
+        services,
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(apps),
+        ..Options::default()
+    })
 }
 
 #[test]

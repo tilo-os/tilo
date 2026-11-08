@@ -135,16 +135,11 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let _settled = ui::motion::testing::settled();
     let launches = Arc::new(tilo_session::Launches::default());
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            launches: Arc::clone(&launches),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        launches: Arc::clone(&launches),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("a frame");
 
     // The app runs in its own workspace, and its window stands in the one in front.

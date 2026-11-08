@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
@@ -133,17 +133,12 @@ fn probe_binary() -> PathBuf {
 /// The session the probe talks to: headless, its plane on `socket` , showing one window, keeping
 /// the person's settings as the session does.
 fn session_with(socket: &Path, tree: DesktopTree) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            services: vec![Box::new(SettingsService::new())],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        services: vec![Box::new(SettingsService::new())],
+        ..Options::default()
+    });
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session

@@ -20,30 +20,22 @@ mod common;
 
 use std::time::Duration;
 
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::portal::{Body, Dialog, PortalEffect};
 use ui::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// A headless session on its own home, with the sheets it hosts mounted.
 fn session() -> (tilo_test_env::TestHome, Session) {
     let home = tilo_test_env::TestHome::new().unwrap();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(home.state().to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        state: Some(home.state().to_path_buf()),
+        ..Options::default()
+    });
     session.step(REFRESH).expect("a turn of the session");
     (home, session)
 }

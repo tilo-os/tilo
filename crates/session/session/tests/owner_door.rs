@@ -20,7 +20,6 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
     WorkspaceSlot,
@@ -29,8 +28,6 @@ use tilo_session::surfaces::Surface;
 use tilo_session::{Options, Session};
 use tilo_test_env::ScopedEnv;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const PERSON: &str = "Pat";
 /// The window the desk shows: what the lock must not tell the owner's door about.
 const TITLE: &str = "Groceries";
@@ -141,19 +138,14 @@ fn lock_environment() -> ScopedEnv {
 /// The headless session: its desk with one window on it, both control sockets, and a lock screen
 /// that stays up.
 fn session(root: &Path) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            collab: false,
-            surfaces: vec![Surface::new("lock", lock_screen()).person(PERSON).lock()],
-            test_control: Some(root.join("test-control.sock")),
-            admin_control: Some(root.join("admin-control.sock")),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        collab: false,
+        surfaces: vec![Surface::new("lock", lock_screen()).person(PERSON).lock()],
+        test_control: Some(root.join("test-control.sock")),
+        admin_control: Some(root.join("admin-control.sock")),
+        ..Options::default()
+    });
     session.handle().replace_tree(desk_tree());
     session.step(Duration::from_millis(1)).expect("a turn");
     session

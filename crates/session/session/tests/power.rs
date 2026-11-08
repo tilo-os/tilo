@@ -23,7 +23,7 @@ use std::os::unix::net::UnixStream as StdUnixStream;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
-use tilo_compositor::{IdleConfig, InputEvent, OutputConfig};
+use tilo_compositor::{IdleConfig, InputEvent};
 use tilo_power_mgmt::inhibit::INHIBIT_IDLE;
 use tilo_power_mgmt::{PowerAction, PowerNotification, PowerPolicy, PowerSignal};
 use tilo_session::surfaces::Surface;
@@ -38,8 +38,6 @@ use zbus::{Connection, Guid};
 const LOGIND_PATH: &str = "/org/freedesktop/login1";
 const UPOWER_PATH: &str = "/org/freedesktop/UPower";
 const DISPLAY_PATH: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// What the stand-in daemons were asked.
 #[derive(Default)]
@@ -319,18 +317,13 @@ impl PasswordVerifier for Sesame {
 
 /// A session answering its power through `machine` .
 fn session(machine: &Machine, service: Box<dyn Service>) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![service],
-            power: Some(machine.link.clone()),
-            user: "ada".to_owned(),
-            verifier: Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        services: vec![service],
+        power: Some(machine.link.clone()),
+        user: "ada".to_owned(),
+        verifier: Arc::new(Sesame),
+        ..Options::default()
+    })
 }
 
 /// The lock screen the session starts when it locks: the app whose window asks the compositor for
@@ -348,20 +341,15 @@ fn lockable(machine: &Machine, service: Box<dyn Service>) -> (tempfile::TempDir,
     let plane = tempfile::tempdir().expect("a directory to serve the plane in");
     std::fs::set_permissions(plane.path(), std::fs::Permissions::from_mode(0o700))
         .expect("the plane's directory is this user's");
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![service],
-            power: Some(machine.link.clone()),
-            user: "ada".to_owned(),
-            verifier: Arc::new(Sesame),
-            action_plane: ActionPlane::At(plane.path().join("actions.sock")),
-            surfaces: vec![lock_screen()],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        services: vec![service],
+        power: Some(machine.link.clone()),
+        user: "ada".to_owned(),
+        verifier: Arc::new(Sesame),
+        action_plane: ActionPlane::At(plane.path().join("actions.sock")),
+        surfaces: vec![lock_screen()],
+        ..Options::default()
+    });
     (plane, session)
 }
 

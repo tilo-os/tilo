@@ -34,13 +34,12 @@ mod common;
 use std::time::Duration;
 
 use chat::Chat;
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 
 use common::{
-    CANVAS_ENTRY, HEIGHT, PERSON, WIDTH, arrangement, on_screen, private_home, show_preset, until,
-    wait_for,
+    CANVAS_ENTRY, PERSON, arrangement, on_screen, private_home, show_preset, until, wait_for,
 };
 
 /// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and the one the session
@@ -53,21 +52,16 @@ const KEY_ENTER: u32 = 28;
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(common::seeded_apps())],
-            questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(common::seeded_apps())],
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(root.join("agent.sock")),
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()

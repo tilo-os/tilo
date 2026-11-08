@@ -256,19 +256,14 @@ fn capture_parity_frames() {
     // The lock screen over the desk.
     {
         let plane = super::lock::private_home();
-        let mut session = Session::headless(
-            Options {
-                presentation: ui::headless::fixture_runner_inputs,
-                user: "ada".to_owned(),
-                verifier: std::sync::Arc::new(Sesame),
-                collab: false,
-                action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
-                surfaces: vec![super::lock::lock_screen()],
-                ..Options::default()
-            },
-            &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-        )
-        .expect("session");
+        let mut session = crate::common::headless(Options {
+            user: "ada".to_owned(),
+            verifier: std::sync::Arc::new(Sesame),
+            collab: false,
+            action_plane: tilo_session::ActionPlane::At(plane.path().join("actions.sock")),
+            surfaces: vec![super::lock::lock_screen()],
+            ..Options::default()
+        });
         let client = mapped(&mut session, "org.example.Terminal");
         settle(&mut session, 2);
         invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");

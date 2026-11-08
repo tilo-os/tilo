@@ -107,9 +107,13 @@ impl Service for Channels {
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(
+            "HEADLESS-1",
+            common::WIDTH,
+            common::HEIGHT,
+        )],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             person: common::PERSON.to_owned(),
             shell: true,
             collab: false,
@@ -121,13 +125,7 @@ fn session(root: &std::path::Path) -> Session {
             test_control: Some(root.join("test-control.sock")),
             ..Options::default()
         },
-        &[OutputConfig::new(
-            "HEADLESS-1",
-            common::WIDTH,
-            common::HEIGHT,
-        )],
-    )
-    .expect("session");
+    );
     common::show_preset(&mut session, "Frames");
     common::until(&mut session, "the canvas", |session| {
         common::on_screen(session, common::CANVAS_ENTRY).is_some()

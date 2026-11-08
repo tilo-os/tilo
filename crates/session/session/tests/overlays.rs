@@ -18,6 +18,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -106,16 +108,14 @@ fn desk_tree() -> DesktopTree {
 
 /// A headless session showing `tree` , with a turn taken so its desk has laid the windows out.
 fn session_with(tree: DesktopTree, panel: Option<Surface>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             surfaces: panel.into_iter().collect(),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session

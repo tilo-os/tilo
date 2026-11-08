@@ -47,18 +47,16 @@ fn session() -> (Session, String) {
 /// keeps.
 fn session_at(width: i32, height: i32) -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             person: PERSON.to_owned(),
             shell: true,
             collab: false,
             services: vec![Box::new(notebook)],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height)],
-    )
-    .expect("session");
+    );
     (session, notes)
 }
 
@@ -497,19 +495,14 @@ fn intersects(a: (f64, f64, f64, f64), b: (f64, f64, f64, f64)) -> bool {
 /// top of an id's high bits, so no place, strip or row fits an integer.
 fn salted_session() -> (Session, Vec<String>) {
     let (notebook, notes) = notebook();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            salt: 0x8000,
-            services: vec![Box::new(notebook)],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        salt: 0x8000,
+        services: vec![Box::new(notebook)],
+        ..Options::default()
+    });
     (session, notes)
 }
 

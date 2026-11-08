@@ -17,6 +17,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -35,7 +37,7 @@ use tilo_relay_protocol::certify::{
     PendingConfirmation,
 };
 use tilo_service::Questions;
-use tilo_session::{Options, Session};
+use tilo_session::Options;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, RevocationList};
 
 /// The person's identity and this device's certificate, in a directory of its own, as the desktop's
@@ -167,16 +169,14 @@ fn an_agents_question_reaches_the_person_and_its_answer_the_agent() {
         "TILO_COLLAB_HOSTS",
         serde_json::to_string(&vec![host_addr]).expect("the host's address encodes"),
     );
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: true,
             questions: Some(questions.clone()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
 
     let deadline = tilo_test_env::hang_deadline();
     let shown = loop {

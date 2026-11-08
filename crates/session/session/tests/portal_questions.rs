@@ -10,6 +10,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use futures_util::FutureExt as _;
@@ -24,16 +26,14 @@ const SETTLE: Duration = Duration::from_millis(1);
 /// A headless session whose services ask their questions on its sheets.
 fn asking() -> (Session, tilo_service::Questions) {
     let questions = tilo_service::Questions::new();
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             questions: Some(questions.clone()),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     (session, questions)
 }
 

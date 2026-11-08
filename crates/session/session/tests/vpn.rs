@@ -16,6 +16,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
@@ -260,9 +262,9 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
     let helper = Helper::at(&socket);
 
     let (sender, receiver) = tokio::sync::watch::channel(reading(Some(ActiveState::Activated)));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             vpn: Some(Vpn::with(Sources {
                 helper: socket,
@@ -270,9 +272,7 @@ fn a_profile_that_drops_blocks_traffic_and_says_so() {
             })),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("a frame");
     assert!(status_path().is_some(), "this session can publish");
     wait_for("the session to publish its status", || {
@@ -565,9 +565,9 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
     let fabric: SharedLink = Arc::new(KnownDevices::default());
 
     let (sender, receiver) = tokio::sync::watch::channel(reading(None));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             sync: Some(Rc::new(sync)),
             fabric: Some(fabric),
@@ -577,9 +577,7 @@ fn choosing_a_device_to_route_through_carries_its_networks_until_they_stop() {
             })),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     let _sender = sender;
 
     step_until(&mut session, "the tunnel to come up", || {
@@ -756,9 +754,9 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
     // The laptop was told where this device is: its route dials the tunnel by the same id.
     laptop_sync.connect(desk_addr.clone());
 
-    let mut laptop = Session::headless(
+    let mut laptop = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             user: PERSON.to_owned(),
             services: vec![Box::new(SettingsService::new())],
@@ -773,12 +771,10 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             })),
             ..Options::default()
         },
+    );
+    let mut desk = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("the laptop's session");
-    let mut desk = Session::headless(
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             user: PERSON.to_owned(),
             services: vec![Box::new(SettingsService::new())],
@@ -790,9 +786,7 @@ fn this_device_carries_the_persons_other_devices_and_turns_a_stranger_away() {
             vpn: Some(desk_vpn),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("this device's session");
+    );
 
     // This device can carry an exit: its helper is installed and its endpoint answers the tunnel.
     // Settings here says so, and that the person has not turned it on.

@@ -30,15 +30,13 @@ const HEIGHT: i32 = 700;
 
 /// A session on `outputs` , each `WIDTH` x `HEIGHT` at the place it names.
 fn session_at(outputs: &[OutputConfig]) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).unwrap();
     session
 }

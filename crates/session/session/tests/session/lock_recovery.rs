@@ -185,9 +185,9 @@ fn a_session_left_locked_comes_back_locked() {
             recovery.starts_locked(),
             "a session left locked is recovered locked"
         );
-        Session::headless(
+        crate::common::headless_on(
+            &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
             Options {
-                presentation: ui::headless::fixture_runner_inputs,
                 user: "ada".to_owned(),
                 verifier: std::sync::Arc::new(Sesame),
                 collab: false,
@@ -196,9 +196,7 @@ fn a_session_left_locked_comes_back_locked() {
                 recovery: Some(recovery),
                 ..Options::default()
             },
-            &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
         )
-        .expect("session")
     };
 
     let mut session = recovered(&home);

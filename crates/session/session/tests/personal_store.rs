@@ -26,7 +26,6 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::Signer as _;
 use runtime_collab::CollabClient;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_peer_state::TransportOrigin;
@@ -39,8 +38,6 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 /// alone until their other devices hear of it.
 const CONTACTS: &str = "so.tilo.contacts";
 const KIND: &str = "tilo.contacts.identities";
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// What Contacts declares of the person's own records, as its package ships.
 const SURFACE: &[u8] = b"[[resources]]\nkind = \"tilo.contacts.identities\"\nlabel = \"Contact identities\"\nversion = 2\nperson = true\nfields = []\n";
@@ -206,20 +203,15 @@ fn session(socket: &Path, person: &Person, cluster: &str, state: &Path) -> Sessi
     // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), CONTACTS, cluster, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: true,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: true,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(person, cluster));
     for _ in 0..4 {
         session

@@ -105,15 +105,13 @@ fn click_the_bar(session: &mut Session, width: u32) {
 
 /// A session on a display `width` wide, for the desk a phone shows.
 fn session_wide(width: i32) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
     )
-    .expect("session")
 }
 
 /// A running timer is the bar's pill, and the pill opens as its card over the desk.

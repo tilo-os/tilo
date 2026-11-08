@@ -107,17 +107,15 @@ impl Published for Mailbox {
 }
 
 fn session() -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            presentation: ui::headless::fixture_runner_inputs,
             state: None,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
-    .expect("session")
 }
 
 fn step(session: &mut Session) {
@@ -320,10 +318,10 @@ fn an_unnamed_view_is_the_resources_primary_and_no_resource_action_shows_it() {
 fn session_searching(
     index: std::sync::Arc<tilo_desktop_search::content_index::AppContentIndex>,
 ) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
             person: ADA.to_owned(),
-            presentation: ui::headless::fixture_runner_inputs,
             state: None,
             collab: false,
             search: tilo_session::SearchOptions {
@@ -332,9 +330,7 @@ fn session_searching(
             },
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
-    .expect("session")
 }
 
 /// Publish the mailbox into the index the session searches, as an app does: the entry opens the

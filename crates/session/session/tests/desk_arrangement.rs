@@ -28,12 +28,8 @@ mod common;
 // worker, as the session's own is.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
-
-const WIDTH: i32 = 1440;
-const HEIGHT: i32 = 900;
 
 /// The person at this device, as `dist/dev/shell-run.sh` mints them: a throwaway test identity
 /// whose certificate lets the device govern the workspaces it founds, so the session holds one
@@ -60,18 +56,13 @@ fn notices(session: &Session) -> Vec<String> {
 /// `TILO_SECRETS_DIR`, so this device holds no channel keys: the same state a
 /// development session starts in.
 fn session(state: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: true,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: true,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// The workspaces the desk shows, by name and id.

@@ -100,9 +100,9 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
             desktop: Some(Rc::clone(&desktop)),
@@ -110,9 +110,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
 
     let runtime = desktop.runtime();
     let call = ask_for_a_note(runtime, &bus);
@@ -199,9 +197,9 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
             desktop: Some(Rc::clone(&desktop)),
@@ -209,9 +207,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
 
     let runtime = desktop.runtime();
     let (app, proxy, id, mut invoked) = runtime.block_on(async {
@@ -393,9 +389,9 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: desktop.services(),
             wake,
             desktop: Some(Rc::clone(&desktop)),
@@ -403,9 +399,7 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
 
     let runtime = desktop.runtime();
     let (id, app) = runtime.block_on(async {

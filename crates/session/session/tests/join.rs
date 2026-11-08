@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use automerge::transaction::Transactable as _;
 use ed25519_dalek::Signer as _;
 use runtime_collab::CollabClient;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::device_fleet::DeviceFleetStore;
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
@@ -29,8 +28,6 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, AppLists, Launches, Lists, Options, SearchOptions, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose record the channel carries.
 const APP: &str = "so.tilo.notes";
 /// The record of `APP` the apps change.
@@ -185,24 +182,19 @@ fn serving(
     for app in apps {
         launches.started(std::process::id(), app, WORKSPACE, true);
     }
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            state: state.map(Path::to_path_buf),
-            search: SearchOptions {
-                lists,
-                ..SearchOptions::default()
-            },
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        state: state.map(Path::to_path_buf),
+        search: SearchOptions {
+            lists,
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(person));
     for _ in 0..4 {
         session

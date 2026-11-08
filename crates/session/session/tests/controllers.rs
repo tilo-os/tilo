@@ -29,7 +29,7 @@ use std::time::Duration;
 use common::window::{Client, pump};
 use os_actions::{ForwardedGamepadEvent, GamepadButton};
 use settings_store::hardware::ShortcutConfig;
-use tilo_compositor::{Compositor, InputEvent, OutputConfig};
+use tilo_compositor::{Compositor, InputEvent};
 use tilo_session::controller_nav::NavDirection;
 use tilo_session::controllers::{ControllerId, ControllerWake, GamepadSources, Source};
 use tilo_session::surfaces::Surface as SurfaceSpec;
@@ -39,9 +39,6 @@ use tilo_sheets::shortcut_guide::{Guide, Modality};
 use tilo_test_env::ScopedEnv;
 use ui::ControllerFamily;
 use ui::input::{ControllerButton, KeyLegend, KeyboardBinding, KeyboardModifier};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// What a key sends, evdev codes.
 const KEY_ESCAPE: u32 = 1;
@@ -167,18 +164,13 @@ fn panel() -> (SurfaceSpec, ScopedEnv) {
 /// A session with `fake` in the room, its presses read as the person's, and quick settings to open.
 fn session_with(fake: &Fake) -> (Session, ScopedEnv) {
     let (panel, environment) = panel();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            config: SessionConfig::default(),
-            surfaces: vec![panel],
-            controllers: Some(Source::Lent(Box::new(fake.clone()))),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        config: SessionConfig::default(),
+        surfaces: vec![panel],
+        controllers: Some(Source::Lent(Box::new(fake.clone()))),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("step");
     (session, environment)
 }

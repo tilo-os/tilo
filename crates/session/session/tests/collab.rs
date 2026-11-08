@@ -13,6 +13,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -200,16 +202,14 @@ fn session(sync: &Rc<Client>) -> Session {
 
 /// [`session`], with `apps` answering what an app asks or is asked to do.
 fn session_over(sync: &Rc<Client>, apps: Option<Rc<dyn AppActions>>) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             sync: Some(Rc::clone(sync)),
             apps,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(desk());
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");

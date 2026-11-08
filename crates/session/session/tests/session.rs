@@ -247,45 +247,30 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 
 fn session() -> Session {
     // Headless tests take no part in the collaboration plane: no endpoint, no workspace.
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// A session whose app lists are `lists` : what the desk offers to open.
 fn session_with_lists(lists: tilo_session::AppLists) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            search: tilo_session::SearchOptions {
-                lists: tilo_session::Lists::fixed(lists),
-                ..tilo_session::SearchOptions::default()
-            },
-            ..Options::default()
+    crate::common::headless(Options {
+        collab: false,
+        search: tilo_session::SearchOptions {
+            lists: tilo_session::Lists::fixed(lists),
+            ..tilo_session::SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+        ..Options::default()
+    })
 }
 
 /// A session that keeps this device's desk under `state` , the way one with a state directory does.
 fn session_keeping(state: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// Connect a client and open a toplevel of `app_id` , drawn at the size it was configured to, and
@@ -631,16 +616,11 @@ fn session_with_quick_settings() -> (Session, ScopedEnv) {
         "tilo-session",
         "tilo-surface-probe",
     ));
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            surfaces: vec![panel],
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        surfaces: vec![panel],
+        collab: false,
+        ..Options::default()
+    });
     (session, environment)
 }
 
@@ -819,21 +799,16 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
     let asked = Rc::new(RefCell::new(Vec::new()));
     let wireless = Rc::new(RefCell::new(Vec::new()));
     let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            // No quick settings app: the keys reach the services the resources belong to.
-            services: vec![
-                Box::new(Audio::speakers(Rc::clone(&asked))),
-                Box::new(Wire::on(Rc::clone(&wireless))),
-            ],
-            backlights: Some(Box::new(dials.clone())),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        // No quick settings app: the keys reach the services the resources belong to.
+        services: vec![
+            Box::new(Audio::speakers(Rc::clone(&asked))),
+            Box::new(Wire::on(Rc::clone(&wireless))),
+        ],
+        backlights: Some(Box::new(dials.clone())),
+        collab: false,
+        ..Options::default()
+    });
     assert!(
         !publishes(&session, tilo_session::QUICK_SETTINGS, "volume-up"),
         "nothing shows the panel's effects here"
@@ -1041,15 +1016,10 @@ fn taken_actions() -> Vec<tilo_session::SessionAction> {
 #[test]
 fn a_session_in_a_window_runs_no_idle_timers() {
     let _settled = ui::motion::testing::settled();
-    let mut hosted = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            machine: tilo_session::Machine::Window,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut hosted = crate::common::headless(Options {
+        machine: tilo_session::Machine::Window,
+        ..Options::default()
+    });
     assert_eq!(
         hosted.compositor().idle_config(),
         tilo_compositor::IdleConfig::never(),
@@ -1082,18 +1052,13 @@ fn a_session_in_a_window_runs_no_idle_timers() {
 fn a_session_in_a_window_takes_no_power_on_its_host() {
     use tilo_sheets::Seat as _;
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            machine: tilo_session::Machine::Window,
-            session_actions: record_session_action,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        machine: tilo_session::Machine::Window,
+        session_actions: record_session_action,
+        user: "ada".to_owned(),
+        verifier: std::sync::Arc::new(Sesame),
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     session
         .power_menu()
@@ -1194,16 +1159,11 @@ fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
     let _settled = ui::motion::testing::settled();
     let directory = tempfile::tempdir().expect("a directory");
     let control = directory.path().join("control.sock");
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            test_control: Some(control.clone()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        test_control: Some(control.clone()),
+        ..Options::default()
+    });
     let mut client = std::os::unix::net::UnixStream::connect(tilo_liveness::socket_path(&control))
         .expect("the door is bound beside the control socket");
     client
@@ -1325,17 +1285,12 @@ fn the_power_menus_shortcut_opens_it() {
 #[test]
 fn the_session_publishes_the_actions_only_it_can_carry_out() {
     let _settled = ui::motion::testing::settled();
-    let mut own = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            session_actions: record_session_action,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut own = crate::common::headless(Options {
+        session_actions: record_session_action,
+        user: "ada".to_owned(),
+        verifier: std::sync::Arc::new(Sesame),
+        ..Options::default()
+    });
     own.step(Duration::from_millis(1)).unwrap();
     let offered: Vec<(
         String,
@@ -1363,18 +1318,13 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
 
     // A session in a window of another desktop owns neither the machine's power nor its session
     // switching, so it offers none of them.
-    let mut windowed = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            machine: tilo_session::Machine::Window,
-            session_actions: record_session_action,
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut windowed = crate::common::headless(Options {
+        machine: tilo_session::Machine::Window,
+        session_actions: record_session_action,
+        user: "ada".to_owned(),
+        verifier: std::sync::Arc::new(Sesame),
+        ..Options::default()
+    });
     windowed.step(Duration::from_millis(1)).unwrap();
     let offered: Vec<String> = windowed
         .handle()
@@ -1654,15 +1604,10 @@ impl tilo_session::Service for Audio {
 fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
     let _settled = ui::motion::testing::settled();
     let asked = Rc::new(RefCell::new(Vec::new()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
+        ..Options::default()
+    });
 
     // The sound the service reads is on offer from the moment it reads it.
     pump(&mut session, &mut [], |session, _| {
@@ -1713,18 +1658,13 @@ fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
 #[test]
 fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
-                tilo_session::OnboardingView::new_tour(),
-            ))),
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        setup: Some(tilo_session::BeforeDesk::Ceremony(Box::new(
+            tilo_session::OnboardingView::new_tour(),
+        ))),
+        collab: false,
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).unwrap();
     assert!(session.setup_up());
     assert!(
@@ -2171,15 +2111,13 @@ delegate_noop!(Seen: ignore ZwpTextInputV3);
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
-    )
-    .expect("session");
+    );
     let arrangement = |session: &mut Session| {
         session
             .compositor()

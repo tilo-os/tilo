@@ -15,6 +15,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
@@ -467,9 +469,9 @@ fn session_with(
     let fabric: SharedLink = Arc::new(link.clone());
     let playing: Rc<RefCell<Option<serde_json::Value>>> = Rc::default();
     let moved: Rc<Cell<bool>> = Rc::default();
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services: vec![Box::new(Player {
                 playing: Rc::clone(&playing),
                 moved: Rc::clone(&moved),
@@ -504,9 +506,7 @@ fn session_with(
             ],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     Harness {
         session,
         playing,

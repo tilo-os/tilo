@@ -35,17 +35,15 @@ fn serving(captures: Option<InputCaptures>) -> (Session, PortalSide) {
         Some(captures) => link.with_captures(captures),
         None => link,
     };
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             wake,
             portal: Some(link),
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     (session, side)
 }
 

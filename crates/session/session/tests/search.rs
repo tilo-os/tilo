@@ -24,7 +24,7 @@ use tilo_actions::remote::{
     RemoteActionTarget, application_action_target, application_open_target,
 };
 use tilo_actions::{DoorError, ResourceSpec};
-use tilo_compositor::{InputEvent, KeyRepeat, OutputConfig};
+use tilo_compositor::{InputEvent, KeyRepeat};
 use tilo_desktop::desk_verbs::{
     CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND, launchpad_card_id,
 };
@@ -100,30 +100,25 @@ fn session_over(
     records: Option<tilo_session::Records>,
     content: Option<Arc<AppContentIndex>>,
 ) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(AppLists {
-                    applications: vec![AppEntry {
-                        id: "so.tilo.sheets".into(),
-                        title: "Sheets".into(),
-                        category: None,
-                        description: None,
-                    }],
-                    ..AppLists::default()
-                }),
-                content,
-                records,
-                ..SearchOptions::default()
-            },
-            apps: Some(host),
-            collab: false,
-            ..Options::default()
+    crate::common::headless(Options {
+        search: SearchOptions {
+            lists: Lists::fixed(AppLists {
+                applications: vec![AppEntry {
+                    id: "so.tilo.sheets".into(),
+                    title: "Sheets".into(),
+                    category: None,
+                    description: None,
+                }],
+                ..AppLists::default()
+            }),
+            content,
+            records,
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session")
+        apps: Some(host),
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// Run frames until `done` holds.
@@ -657,22 +652,17 @@ fn the_sessions_own_actions_are_found_and_run_on_its_published_surface() {
 /// A session with the settings service, over a home of its own: its search leaves out what the
 /// person switched off, as the desk reads that when it starts.
 fn session_with_settings() -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(tilo_settings_service::SettingsService::new())],
-            search: SearchOptions {
-                preferences: tilo_desktop_search::SearchPreferences::from_values(
-                    &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
-                ),
-                ..SearchOptions::default()
-            },
-            collab: false,
-            ..Options::default()
+    crate::common::headless(Options {
+        services: vec![Box::new(tilo_settings_service::SettingsService::new())],
+        search: SearchOptions {
+            preferences: tilo_desktop_search::SearchPreferences::from_values(
+                &settings_store::load_section(tilo_desktop_search::preferences::SECTION),
+            ),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session")
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// Search for `query` and choose the row titled `title` : a switch stays in view, anything else
@@ -1388,20 +1378,15 @@ fn the_palette_the_host_search_opens_takes_the_keys() {
 /// A session whose search lists the apps this device has — the machine's `Alacritty` and the
 /// person's `Notes` — with `host` taking the launches.
 fn host_session(host: Rc<Host>) -> Session {
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: SearchOptions {
-                lists: Lists::fixed(host_app_lists()),
-                ..SearchOptions::default()
-            },
-            apps: Some(host as Rc<dyn AppActions>),
-            collab: false,
-            ..Options::default()
+    let mut session = crate::common::headless(Options {
+        search: SearchOptions {
+            lists: Lists::fixed(host_app_lists()),
+            ..SearchOptions::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+        apps: Some(host as Rc<dyn AppActions>),
+        collab: false,
+        ..Options::default()
+    });
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

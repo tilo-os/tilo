@@ -210,15 +210,13 @@ fn pill_and_card(
 
 /// A session on a display `width` wide, as a phone stands.
 fn session_wide(width: i32) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, HEIGHT)],
     )
-    .expect("session")
 }
 
 /// The same, drawn in the light theme.
@@ -486,21 +484,16 @@ fn panel_session(
         "tilo-quick-settings",
         "tilo-quick-settings",
     ));
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(super::lock::PlayerService::new(
-                std::rc::Rc::clone(&asked),
-                published.clone(),
-            ))],
-            action_plane: tilo_session::ActionPlane::At(home.path().join("collab.sock")),
-            surfaces: vec![panel],
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        services: vec![Box::new(super::lock::PlayerService::new(
+            std::rc::Rc::clone(&asked),
+            published.clone(),
+        ))],
+        action_plane: tilo_session::ActionPlane::At(home.path().join("collab.sock")),
+        surfaces: vec![panel],
+        collab: false,
+        ..Options::default()
+    });
     (session, home, asked)
 }
 

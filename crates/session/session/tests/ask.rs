@@ -12,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use tilo_compositor::{InputEvent, OutputConfig};
@@ -28,15 +30,13 @@ const REFRESH: Duration = Duration::from_millis(16);
 
 /// A headless session `width` by `height` at its desk, drawn once.
 fn session_on(width: i32, height: i32) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height)],
-    )
-    .expect("session");
+    );
     session.step(SETTLE).expect("a frame");
     session
 }

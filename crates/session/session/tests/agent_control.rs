@@ -21,28 +21,22 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tilo_actions::ResourceSpec;
-use tilo_compositor::OutputConfig;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 
-use common::{HEIGHT, WIDTH, control, private_home};
+use common::{control, private_home};
 
 /// A headless session with the agent door open, and its questions asked on the session's sheets.
 fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questions) {
     let questions = Questions::new();
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions.clone()),
-            collab: false,
-            action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(socket.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        questions: Some(questions.clone()),
+        collab: false,
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(socket.to_path_buf()),
+        ..Options::default()
+    });
     (session, questions)
 }
 
@@ -235,19 +229,14 @@ fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
     .expect("the answers kept");
     let socket = root.path().join("agent.sock");
     let questions = Questions::new();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            questions: Some(questions),
-            collab: false,
-            state: Some(root.path().to_path_buf()),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(socket),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        questions: Some(questions),
+        collab: false,
+        state: Some(root.path().to_path_buf()),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(socket),
+        ..Options::default()
+    });
 
     pump(&mut session, |session| {
         said(session)

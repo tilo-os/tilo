@@ -55,14 +55,12 @@ fn session(count: usize) -> Session {
                 .at(WIDTH * i32::try_from(index - 1).unwrap(), 0)
         })
         .collect();
-    Session::headless(
+    crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             ..Options::default()
         },
-        &outputs,
     )
-    .expect("session")
 }
 
 /// The monitors attached now, as Settings sees them, and the set they make.
@@ -768,15 +766,13 @@ fn the_keyboard_types_in_the_next_input_source_and_keeps_the_choice() {
         ]),
     )
     .expect("the person's sources are kept");
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             config: SessionConfig::load(),
             ..Options::default()
         },
-        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     assert_eq!(
         session.active_input_source(),
         "us",

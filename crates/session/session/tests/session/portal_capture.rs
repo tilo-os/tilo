@@ -15,17 +15,15 @@ fn serving(directory: &std::path::Path, outputs: &[OutputConfig]) -> (Session, A
     let wake = tilo_service::LoopWake::default();
     let (capture, captures) =
         tilo_session::capture::channel_to(directory.to_owned(), wake.handle());
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             wake,
             captures: Some(captures),
             collab: false,
             ..Options::default()
         },
-        outputs,
-    )
-    .expect("session");
+    );
     (session, Arc::new(capture))
 }
 

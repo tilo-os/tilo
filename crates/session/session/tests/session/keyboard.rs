@@ -39,9 +39,12 @@ fn keyboard_binary() -> PathBuf {
 /// A session on two displays that starts its on-screen keyboard as the person's choice says,
 /// serving its services on `socket` .
 fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[
+            OutputConfig::new(FIRST, WIDTH, HEIGHT),
+            OutputConfig::new(SECOND, 1024, 768).at(WIDTH, 0),
+        ],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             user: "ada".to_owned(),
             collab: false,
             action_plane: ActionPlane::At(socket.to_path_buf()),
@@ -52,12 +55,7 @@ fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
             },
             ..Options::default()
         },
-        &[
-            OutputConfig::new(FIRST, WIDTH, HEIGHT),
-            OutputConfig::new(SECOND, 1024, 768).at(WIDTH, 0),
-        ],
     )
-    .expect("session")
 }
 
 /// The middle of `rect` : where a finger landing on a window touches it.

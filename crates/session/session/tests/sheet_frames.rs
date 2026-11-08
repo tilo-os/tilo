@@ -21,27 +21,18 @@ mod common;
 use std::path::Path;
 
 use serde_json::{Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::workspace_settings::Tab;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// A headless session on one display, its control socket at `socket` .
 fn session(socket: &Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            test_control: Some(socket.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        test_control: Some(socket.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// Invoke `action` of `resource` , as the person's own choice.

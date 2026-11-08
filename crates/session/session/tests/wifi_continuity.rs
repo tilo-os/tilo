@@ -21,7 +21,6 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{
     CollabClient, PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
 use tilo_service::LoopWake;
@@ -34,8 +33,6 @@ const SETTINGS: &str = "so.tilo.settings";
 const RECORD: &str = "uuid:5c07c075-0000-4000-8000-0000000000bb";
 /// The workspace the desk shows and the app is launched in.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 const SSID: &str = "Home";
 const PASSWORD: &str = "a passphrase sealed to the person's devices";
@@ -139,19 +136,14 @@ fn session(socket: &Path, person: &Person) -> Session {
     // for it names that process.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), SETTINGS, WORKSPACE, true);
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: true,
-            wake: LoopWake::default(),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: "Ada".to_owned(),
-            launches,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: true,
+        wake: LoopWake::default(),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: "Ada".to_owned(),
+        launches,
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(person));
     for _ in 0..4 {
         session

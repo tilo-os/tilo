@@ -33,18 +33,16 @@ const APP: &str = "so.tilo.settings";
 fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     let wake = LoopWake::default();
     let launches = Arc::new(Launches::default());
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             wake,
             launches: Arc::clone(&launches),
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
-    )
-    .expect("session");
+    );
     // The app runs in the workspace the session opened its desk on, which is the workspace it reads
     // the session's resources in.
     let workspace = session.handle().read(|tree| {

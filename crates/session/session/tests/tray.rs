@@ -25,15 +25,12 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_compositor::OutputConfig;
 use tilo_lock::MutexRecover as _;
 use tilo_session::desktop_services::{Bus, Buses, DesktopServices};
 use tilo_session::{Options, Session};
 use tilo_test_env::PrivateBus;
 use zbus::zvariant::{Array, Dict, OwnedObjectPath, OwnedValue, StructureBuilder, Value};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const SETTLE: Duration = Duration::from_millis(1);
 /// The entry of the fake item's menu this test chooses.
 const LOCK_ENTRY: i32 = 1;
@@ -188,19 +185,14 @@ fn session_on(bus: &PrivateBus) -> (Session, Rc<DesktopServices>) {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        services: desktop.services(),
+        wake,
+        desktop: Some(Rc::clone(&desktop)),
+        portal,
+        collab: false,
+        ..Options::default()
+    });
     (session, desktop)
 }
 

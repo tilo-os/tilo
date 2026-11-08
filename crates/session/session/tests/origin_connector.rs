@@ -30,11 +30,10 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use serde_json::json;
-use tilo_compositor::OutputConfig;
 use tilo_service::Questions;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 
-use common::{HEIGHT, PERSON, WIDTH, private_home};
+use common::{PERSON, private_home};
 
 /// The `YouTube` client, as a package names it.
 const TUBE: &str = "so.tilo.lang.tube";
@@ -143,25 +142,20 @@ fn session(
     ));
     let store = home.data().join("tilo-apps");
     let seeded = common::seeded_apps_in(&store);
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(seeded)],
-            questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.join("plane.sock")),
-            agent_door: Some(root.join("agent.sock")),
-            test_control: Some(root.join("test-control.sock")),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(apps),
-            launches: Arc::new(Launches::default()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(seeded)],
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.join("plane.sock")),
+        agent_door: Some(root.join("agent.sock")),
+        test_control: Some(root.join("test-control.sock")),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(apps),
+        launches: Arc::new(Launches::default()),
+        ..Options::default()
+    })
 }
 
 #[test]

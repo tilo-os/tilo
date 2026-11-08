@@ -15,13 +15,12 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use serde_json::{Map, Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_settings_service::{SettingsService, setting_resource};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const HIGH_CONTRAST: &str = "appearance.high_contrast";
 /// The appearance section's field the setting holds.
 const FIELD: &str = "high_contrast";
@@ -59,16 +58,11 @@ fn this_computers_person(home: &mut tilo_test_env::TestHome) -> (tempfile::TempD
 /// A session hosting the person's settings service, as the session starts it: the service is made
 /// without knowing who sits here, and the session tells it as it starts it.
 fn session() -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(SettingsService::new())],
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        services: vec![Box::new(SettingsService::new())],
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// The settings document's history, oldest first.

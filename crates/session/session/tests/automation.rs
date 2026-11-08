@@ -12,6 +12,8 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -22,13 +24,10 @@ use settings_store::notification_policy::NotificationPolicy;
 use tilo_automation::{
     CatchUp, FOCUS_DO_NOT_DISTURB, FocusTransition, SavedShortcut, Schedule, Shortcut, TriggerSpec,
 };
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_desktop_model::{Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// The workspace the desk shows, the id it has on every device, and the app whose records it holds.
 const WORKSPACE: &str = "5c07c075-0000-4000-8000-000000000042";
@@ -103,20 +102,15 @@ fn session_launching(
     person: &str,
     launches: Arc<Launches>,
 ) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(state.to_path_buf()),
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: person.to_owned(),
-            wake: LoopWake::default(),
-            launches,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(state.to_path_buf()),
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: person.to_owned(),
+        wake: LoopWake::default(),
+        launches,
+        ..Options::default()
+    })
 }
 
 /// The shortcut named `Tidy` in [`WORKSPACE`], with `trigger` , saved by this computer's person.

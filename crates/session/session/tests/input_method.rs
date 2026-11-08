@@ -28,15 +28,13 @@ const LAYOUT: Option<&str> = Some("English (US)");
 
 /// A session with one display, reading the sources the person kept.
 fn session() -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             config: SessionConfig::load(),
             ..Options::default()
         },
-        &[CompositorOutput::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
-    .expect("a session")
 }
 
 /// Step the session until `done` .

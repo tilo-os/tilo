@@ -68,19 +68,14 @@ fn an_apps_notification_is_shown_named_after_its_app_and_counted_by_the_bell() {
     let portal = desktop
         .portal()
         .map(|serving| link.with_captures(serving.input_captures().clone()));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: desktop.services(),
-            wake,
-            desktop: Some(Rc::clone(&desktop)),
-            portal,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: desktop.services(),
+        wake,
+        desktop: Some(Rc::clone(&desktop)),
+        portal,
+        collab: false,
+        ..Options::default()
+    });
 
     // The app the session knows by its window; the sender's process is the one that window's client
     // runs in.

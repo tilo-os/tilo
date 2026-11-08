@@ -13,28 +13,21 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use test_http::{Reply, Responder};
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 
 use crate::{
-    COMMUNITY_WORKSPACE, HEIGHT, WIDTH, a_device, community_site, held, invitation_for,
-    this_computer, wait_until,
+    COMMUNITY_WORKSPACE, a_device, community_site, held, invitation_for, this_computer, wait_until,
 };
 
 /// A computer's session, keeping the desk it is left with beside `state` : the same session that
 /// starts where the last one ended, beside what the person decided there.
 fn session_keeping(state: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// Let the session run `turns` turns: what a session has had the chance to do by, and what shows a
@@ -382,17 +375,12 @@ fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_bac
     let _config = community_site(&mut env, &responder.url());
     let state = tempfile::tempdir().expect("a directory for this computer's state");
     let cable = Cable::offline();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(state.path().to_path_buf()),
-            services: vec![Box::new(cable.service())],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        state: Some(state.path().to_path_buf()),
+        services: vec![Box::new(cable.service())],
+        ..Options::default()
+    });
     wait_until(&mut session, "the community's door was asked", |_| {
         asked.load(Ordering::SeqCst) == 1
     });

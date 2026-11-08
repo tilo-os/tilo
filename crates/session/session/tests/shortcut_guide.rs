@@ -64,16 +64,14 @@ fn take_turns() -> MutexGuard<'static, ()> {
 
 /// A session with the person's own settings.
 fn session_with(config: SessionConfig, outputs: &[OutputConfig]) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             config,
             ..Options::default()
         },
-        outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

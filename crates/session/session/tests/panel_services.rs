@@ -67,9 +67,9 @@ fn panel_binary() -> PathBuf {
 fn session_with_panel(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -77,27 +77,23 @@ fn session_with_panel(socket: &Path) -> Session {
             surfaces: vec![Surface::new("probe", panel_binary())],
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// A session with the sound service and its plane, starting no panel.
 fn session_alone(socket: &Path) -> Session {
     let wake = LoopWake::default();
     let services: Vec<Box<dyn Service>> = sound(&wake);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// The session's turns until the panel has reported, as the session runs its loop.

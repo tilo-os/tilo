@@ -15,15 +15,10 @@ const STUDIO: &str = tilo_capture_studio::RESOURCE;
 
 /// A session with the capture studio over it, keeping what it captures in `pictures` .
 fn studio_session(pictures: &std::path::Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            pictures: Some(pictures.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        pictures: Some(pictures.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// Invoke one of the studio's actions with `arguments` , as the key that takes a screenshot does.
@@ -391,17 +386,15 @@ fn asking_session(
     let (capture, captures) =
         tilo_session::capture::channel_to(directory.to_path_buf(), wake.handle());
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
-    let session = Session::headless(
+    let session = crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             pictures: Some(pictures.to_path_buf()),
             wake,
             captures: Some(captures),
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
-    )
-    .expect("session");
+    );
     (session, Arc::new(capture))
 }
 

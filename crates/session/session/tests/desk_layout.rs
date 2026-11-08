@@ -22,7 +22,6 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use tilo_action_policy::Role;
-use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, WindowWidth,
     Workspace, WorkspaceSlot,
@@ -32,9 +31,6 @@ use tilo_desktop_surface::notifications::NotificationSeverity;
 use tilo_desktop_surface::surface::window_menu::MOVE_TO_WORKSPACE;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// The app a test installs: a Tilo package whose window is a tab of the desk.
 const PROBE: &str = "so.tilo.probe";
@@ -156,20 +152,15 @@ fn one_window(app: &str, label: &str) -> DesktopTree {
 /// A session on the desk this device saved, starting `apps` when its windows are asked for. `None`
 /// : a session that starts nothing at all.
 fn session_keeping(state: &Path, apps: Option<Rc<Apps>>) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            apps: apps
-                .as_ref()
-                .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
-            launch: apps,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        apps: apps
+            .as_ref()
+            .map(|apps| Rc::clone(apps) as Rc<dyn AppActions>),
+        launch: apps,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// The apps this session starts, on its own display.

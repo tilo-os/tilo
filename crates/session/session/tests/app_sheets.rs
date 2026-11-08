@@ -24,24 +24,15 @@ use std::path::Path;
 use std::time::Duration;
 
 use tilo_actions::ResourceSpec;
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_session::{Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// A session on the headless backend, taking no part in the collaboration plane.
 fn session() -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// A program the person added to their apps, made of `copies` (the first is the one it starts).
@@ -545,16 +536,11 @@ fn a_registry_that_does_not_read_back_says_nothing_was_removed() {
     let _home = tilo_test_env::TestHome::new().expect("a home");
     // A registry of theirs this build cannot read: their apps would simply be gone from the
     // launcher, so they are told once instead.
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            services: vec![Box::new(NotReadBack)],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        services: vec![Box::new(NotReadBack)],
+        ..Options::default()
+    });
     until(&mut session, "the notice", |session| {
         !notices(session).is_empty()
     });

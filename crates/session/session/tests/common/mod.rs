@@ -471,6 +471,39 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
     (service, made)
 }
 
+/// A headless session of the test's own: one `HEADLESS-1` output of [`WIDTH`] by [`HEIGHT`],
+/// drawing the fixture runner's inputs, and `options` as the test needs them.
+///
+/// # Panics
+/// The session does not start.
+#[track_caller]
+pub fn headless(options: Options) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            ..options
+        },
+        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
+    )
+    .expect("session")
+}
+
+/// [`headless`] on the outputs `outputs` : a test that wants another display, or another size.
+///
+/// # Panics
+/// The session does not start.
+#[track_caller]
+pub fn headless_on(outputs: &[OutputConfig], options: Options) -> Session {
+    Session::headless(
+        Options {
+            presentation: ui::headless::fixture_runner_inputs,
+            ..options
+        },
+        outputs,
+    )
+    .expect("session")
+}
+
 /// The headless session with the shell as the whole screen and the seeded apps published (notes,
 /// tasks, chat and mail), its agent door and test-control socket at `root`, admitting this
 /// test's program to act as the person, and the framed canvas in front. The apps are the ones

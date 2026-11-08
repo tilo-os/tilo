@@ -18,14 +18,14 @@
     reason = "test fixtures: a failed step is the assertion, and the session outlives every call"
 )]
 
+mod common;
+
 use std::time::Duration;
 
 use automerge::ReadDoc as _;
-use tilo_compositor::{InputEvent, OutputConfig};
+use tilo_compositor::InputEvent;
 use tilo_session::{Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The person at this device, by their root identity (hex).
 const ADA: &str = "abababababababababababababababababababababababababababababababab";
 /// Another member of the same workspace.
@@ -37,32 +37,22 @@ fn session() -> Session {
 
 /// A session of `person` 's, on a device with no state of its own.
 fn session_as(person: &str) -> Session {
-    Session::headless(
-        Options {
-            person: person.to_owned(),
-            presentation: ui::headless::fixture_runner_inputs,
-            state: None,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: person.to_owned(),
+        state: None,
+        collab: false,
+        ..Options::default()
+    })
 }
 
 /// A session that keeps its state in `state` when it is given.
 fn session_in(state: Option<std::path::PathBuf>) -> Session {
-    Session::headless(
-        Options {
-            person: ADA.to_owned(),
-            presentation: ui::headless::fixture_runner_inputs,
-            state,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: ADA.to_owned(),
+        state,
+        collab: false,
+        ..Options::default()
+    })
 }
 
 fn step(session: &mut Session) {
@@ -1121,18 +1111,13 @@ fn maximizing_a_window_is_one_step_and_undone() {
 /// A session on a device whose salt is the top of an id's high bits: every place, strip and row
 /// here is above `i64::MAX` , so no id fits the integer an id-shaped verb would take.
 fn salted_session() -> Session {
-    Session::headless(
-        Options {
-            person: ADA.to_owned(),
-            presentation: ui::headless::fixture_runner_inputs,
-            state: None,
-            collab: false,
-            salt: 0x8000,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: ADA.to_owned(),
+        state: None,
+        collab: false,
+        salt: 0x8000,
+        ..Options::default()
+    })
 }
 
 // Every arranging press names the place, strip or row it presses, so on a device whose ids do not

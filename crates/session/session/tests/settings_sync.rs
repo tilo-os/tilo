@@ -15,12 +15,13 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde_json::Value;
-use tilo_compositor::OutputConfig;
 use tilo_device_fabric::link::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_device_fabric::speaker_group::SpeakerFabricState;
 use tilo_device_fabric::unlock::UnlockFabricState;
@@ -30,9 +31,6 @@ use tilo_device_fabric::{
     RoamingSetting,
 };
 use tilo_session::{Options, Session};
-
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 
 /// This device's fabric id.
 fn this_device() -> DeviceId {
@@ -226,15 +224,10 @@ impl FabricLink for FakeLink {
 
 fn session(link: &FakeLink) -> Session {
     let fabric: SharedLink = Arc::new(link.clone());
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            fabric: Some(fabric),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        fabric: Some(fabric),
+        ..Options::default()
+    })
 }
 
 fn step(session: &mut Session) {

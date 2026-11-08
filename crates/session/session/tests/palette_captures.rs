@@ -31,7 +31,6 @@ use ed25519_dalek::Signer as _;
 use runtime_collab::{CollabClient, Invocation};
 use tilo_actions::ResourceSpec;
 use tilo_actions::remote::InvokeArgument;
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{DESK_RESOURCE, SEARCH_RESOURCE, SEARCH_ROW_KIND};
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::provisioning::{FILE_SECRETS_ENV, IdentityStorage};
@@ -45,8 +44,6 @@ use tilo_user_identity::{DeviceCert, IdentityPaths};
 // is the session's own.
 tilo_automerge_isolate::test_worker!();
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 /// The app whose capture this is.
 const TASKS: &str = "so.tilo.lang.tasks";
 /// The workspace the session holds, as the desk names it.
@@ -202,21 +199,16 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
         tilo_app_launch::SessionEnvironment::from_process(),
         None,
     ));
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            action_plane: ActionPlane::At(socket.to_path_buf()),
-            person: principal(&fixture.cert.user_public_key),
-            launches,
-            state: Some(fixture.state.clone()),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        collab: false,
+        action_plane: ActionPlane::At(socket.to_path_buf()),
+        person: principal(&fixture.cert.user_public_key),
+        launches,
+        state: Some(fixture.state.clone()),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        ..Options::default()
+    });
     session.handle().replace_tree(desk(fixture));
     for _ in 0..4 {
         session.step(Duration::from_millis(1)).expect("step");

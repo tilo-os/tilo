@@ -488,9 +488,9 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
     let home = private_home();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             user: "ada".to_owned(),
             verifier: std::sync::Arc::new(Sesame),
             collab: false,
@@ -498,9 +498,7 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
             surfaces: Vec::new(),
             ..Options::default()
         },
-        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     let _client = mapped(&mut session, "org.example.Terminal");
     let desk = pictures(&mut session, &[DISPLAY]);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
@@ -681,23 +679,18 @@ fn the_lock_screens_transport_steers_whatever_plays() {
     let home = private_home();
     let asked = Rc::new(RefCell::new(Vec::new()));
     let published = Publishing::default();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            services: vec![Box::new(PlayerService::new(
-                Rc::clone(&asked),
-                published.clone(),
-            ))],
-            user: "ada".to_owned(),
-            verifier: std::sync::Arc::new(Sesame),
-            collab: false,
-            action_plane: ActionPlane::At(home.path().join("collab.sock")),
-            surfaces: vec![lock_screen()],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        services: vec![Box::new(PlayerService::new(
+            Rc::clone(&asked),
+            published.clone(),
+        ))],
+        user: "ada".to_owned(),
+        verifier: std::sync::Arc::new(Sesame),
+        collab: false,
+        action_plane: ActionPlane::At(home.path().join("collab.sock")),
+        surfaces: vec![lock_screen()],
+        ..Options::default()
+    });
     // The services publish what plays and what the pack holds; the session reads both, and the
     // screen shows what it read.
     published.set_playing(Some(song("Clair de lune", "Claude Debussy", true, true)));
@@ -1275,9 +1268,9 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     let home = private_home();
     let held = std::sync::Arc::new(Held::new());
     let asked = Rc::new(RefCell::new(Vec::new()));
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             user: "ada".to_owned(),
             verifier: std::sync::Arc::clone(&held)
                 as std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
@@ -1287,9 +1280,7 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
             services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
             ..Options::default()
         },
-        &[OutputConfig::new(DISPLAY, WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    );
     let _client = mapped(&mut session, "org.example.Terminal");
     let desk = pictures(&mut session, &[DISPLAY]);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");

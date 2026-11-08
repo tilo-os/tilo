@@ -12,15 +12,13 @@ use tilo_session::{BarShown, Session};
 /// plugged in on the right starts in.
 fn two_displays() -> Session {
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
     )
-    .expect("session")
 }
 
 /// Where each bar stands: the display it stands on, its ends across the desk, whether it is the
@@ -110,15 +108,13 @@ fn every_display_carries_a_bar_of_its_own() {
 #[test]
 fn a_display_arriving_or_going_changes_the_bars() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0)],
-    )
-    .expect("session");
+    );
     settle(&mut session, 4);
     assert_eq!(
         bars_by_display(&session),
@@ -258,15 +254,13 @@ fn a_fullscreen_window_on_a_display_takes_that_displays_bar_away() {
 
 /// One display, as a laptop on its own starts.
 fn one_display() -> Session {
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0)],
     )
-    .expect("session")
 }
 
 /// What a mouse's left button and the Super key send.

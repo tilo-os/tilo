@@ -117,15 +117,13 @@ fn session() -> Session {
 
 /// [`session`] drawing on a display `width` by `height` : a small one holds fewer cards.
 fn session_on(width: i32, height: i32) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", width, height)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", width, height)],
-    )
-    .expect("session");
+    );
     // A held Tab repeats on a desktop; here a key is pressed once, so a slow step does not turn one
     // press into several.
     session.compositor().set_key_repeat(KeyRepeat {

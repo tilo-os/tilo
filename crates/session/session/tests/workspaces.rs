@@ -14,32 +14,25 @@
     reason = "test fixtures: a failed step is the assertion"
 )]
 
+mod common;
+
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
 use tilo_app::framework::testing::HeadlessApp;
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::CHROME_RESOURCE;
 use tilo_session::{Options, Session};
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
-
 /// A session keeping this device's desk, and the person's list of their own workspaces, under
 /// `state` .
 fn session_keeping(state: &Path) -> Session {
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            collab: false,
-            state: Some(state.to_path_buf()),
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        collab: false,
+        state: Some(state.to_path_buf()),
+        ..Options::default()
+    })
 }
 
 /// The workspaces on this desk: id, name, the id it has on every device, in order.

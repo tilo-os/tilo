@@ -28,7 +28,6 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_action_policy::{ActionKind, Answer, Context};
 use tilo_actions::ResourceSpec;
 use tilo_app_launch::Connects as _;
-use tilo_compositor::OutputConfig;
 use tilo_desktop::desk_verbs::{CHROME_RESOURCE, DESK_RESOURCE, SEARCH_RESOURCE, WINDOW_KIND};
 use tilo_desktop_model::TileContent;
 use tilo_desktop_policy::{DesktopPolicy, Window};
@@ -525,24 +524,19 @@ fn session_through(
     let services = desktop
         .as_ref()
         .map_or_else(Vec::new, |desktop| desktop.services());
-    let session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            search: host_search(),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(Rc::clone(&apps)),
-            launches: Arc::clone(&started),
-            services,
-            wake,
-            // A login's services take part in no collaboration plane of their own; the tests of the
-            // desk alone do.
-            collab: desktop.is_none(),
-            desktop,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    let session = crate::common::headless(Options {
+        search: host_search(),
+        apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+        launch: Some(Rc::clone(&apps)),
+        launches: Arc::clone(&started),
+        services,
+        wake,
+        // A login's services take part in no collaboration plane of their own; the tests of the
+        // desk alone do.
+        collab: desktop.is_none(),
+        desktop,
+        ..Options::default()
+    });
     (session, apps, started)
 }
 

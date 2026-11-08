@@ -43,11 +43,9 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::{OutputConfig, Screenshot};
+use tilo_compositor::Screenshot;
 use tilo_session::{Options, Session};
 
-const WIDTH: i32 = 1280;
-const HEIGHT: i32 = 800;
 const PERSON: &str = "Pat";
 /// The person's appearance section, as the settings service publishes it: the resource whose
 /// `field-edit` action the theme is chosen through, and whose stored fields say what it holds.
@@ -127,21 +125,16 @@ impl Theme {
 /// appearance section the theme is chosen through.
 fn session() -> Session {
     let apps = common::seeded_apps();
-    Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![
-                Box::new(apps),
-                Box::new(tilo_settings_service::SettingsService::new()),
-            ],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session")
+    crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![
+            Box::new(apps),
+            Box::new(tilo_settings_service::SettingsService::new()),
+        ],
+        ..Options::default()
+    })
 }
 
 /// Run `frames` frames of the session.

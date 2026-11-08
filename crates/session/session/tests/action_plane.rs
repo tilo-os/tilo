@@ -46,9 +46,9 @@ fn session_hosting(
         "the-workspace",
         true,
     );
-    Session::headless(
+    crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             services,
             collab: false,
             wake,
@@ -56,9 +56,7 @@ fn session_hosting(
             action_plane: ActionPlane::At(socket.to_path_buf()),
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
-    .expect("session")
 }
 
 /// The session the app talks to: hosting the sound service, over a card in memory.

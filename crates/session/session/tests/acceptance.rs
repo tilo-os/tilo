@@ -25,7 +25,6 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, json};
-use tilo_compositor::OutputConfig;
 use tilo_session::{Options, Session};
 use tilo_surface_host::shell_part::DESK_RESOURCE;
 
@@ -40,17 +39,12 @@ use common::{
 #[test]
 fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
     let _settled = ui::motion::testing::settled();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        ..Options::default()
+    });
 
     // The bar: the shell's own parts, drawn over the whole output.
     until(&mut session, "the bar's parts", |session| {

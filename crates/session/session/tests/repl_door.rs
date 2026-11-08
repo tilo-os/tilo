@@ -22,15 +22,14 @@ mod common;
 use std::time::Duration;
 
 use serde_json::{Map, Value, json};
-use tilo_compositor::OutputConfig;
 use tilo_service::{Questions, Service as _, Started};
 use tilo_session::{ActionPlane, Options, Session};
 use tilo_sheets::portal::PortalEffect;
 use tilolang_tilo::records_service::RecordService;
 
 use common::{
-    CANVAS_ENTRY, HEIGHT, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, WIDTH, control,
-    on_screen, place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
+    CANVAS_ENTRY, MAIL, NOTE_TITLE, NOTES, PERSON, Repl, SUBJECT, control, on_screen,
+    place_the_inbox, placed, placed_resources, press_sheet, private_home, repl_session,
     seeded_session, show_preset, until,
 };
 
@@ -276,22 +275,17 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(apps)],
-            questions: Some(questions),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(apps)],
+        questions: Some(questions),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
     until(&mut session, "the bar's controls", |session| {
         on_screen(session, "Notifications").is_some()
     });
@@ -606,22 +600,17 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(apps)],
-            questions: Some(questions),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(apps)],
+        questions: Some(questions),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
@@ -686,22 +675,17 @@ fn my_mails_on_the_canvas_places_mails_root() {
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(apps)],
-            questions: Some(questions),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(apps)],
+        questions: Some(questions),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
@@ -1082,28 +1066,23 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
     let root = private_home();
     let apps = common::seeded_apps();
     let program = std::env::current_exe().expect("this test's program");
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(Withholding {
-                inner: apps,
-                // Every task's reading never comes: the window of the one placed has no record to
-                // draw.
-                withheld: "tl.so.tilo.lang.tasks.Task",
-                ids: std::cell::RefCell::new(None),
-            })],
-            questions: Some(Questions::new()),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(Withholding {
+            inner: apps,
+            // Every task's reading never comes: the window of the one placed has no record to
+            // draw.
+            withheld: "tl.so.tilo.lang.tasks.Task",
+            ids: std::cell::RefCell::new(None),
+        })],
+        questions: Some(Questions::new()),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()
@@ -1176,22 +1155,17 @@ fn the_repl_finds_what_place_found_places() {
     let questions = Questions::new();
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
-    let mut session = Session::headless(
-        Options {
-            presentation: ui::headless::fixture_runner_inputs,
-            person: PERSON.to_owned(),
-            shell: true,
-            collab: false,
-            services: vec![Box::new(apps)],
-            questions: Some(questions),
-            action_plane: ActionPlane::At(root.path().join("plane.sock")),
-            agent_door: Some(root.path().join("agent.sock")),
-            admit_repl: vec![program],
-            ..Options::default()
-        },
-        &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
-    )
-    .expect("session");
+    let mut session = crate::common::headless(Options {
+        person: PERSON.to_owned(),
+        shell: true,
+        collab: false,
+        services: vec![Box::new(apps)],
+        questions: Some(questions),
+        action_plane: ActionPlane::At(root.path().join("plane.sock")),
+        agent_door: Some(root.path().join("agent.sock")),
+        admit_repl: vec![program],
+        ..Options::default()
+    });
     show_preset(&mut session, "Frames");
     until(&mut session, "the canvas", |session| {
         on_screen(session, CANVAS_ENTRY).is_some()

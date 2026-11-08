@@ -45,15 +45,13 @@ fn docked() -> Session {
             OutputConfig::new(format!("HEADLESS-{index}"), WIDTH, HEIGHT).at(WIDTH * (index - 1), 0)
         })
         .collect();
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &outputs,
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             collab: false,
             ..Options::default()
         },
-        &outputs,
-    )
-    .expect("session");
+    );
     session.step(Duration::from_millis(1)).expect("step");
     session
 }

@@ -15,6 +15,8 @@
               outlives every call made into it"
 )]
 
+mod common;
+
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -133,17 +135,15 @@ fn session_with(tree: DesktopTree) -> Session {
 }
 
 fn session_with_config(tree: DesktopTree, config: SessionConfig) -> Session {
-    let mut session = Session::headless(
+    let mut session = crate::common::headless_on(
+        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
         Options {
-            presentation: ui::headless::fixture_runner_inputs,
             surfaces: vec![quick_settings::surface_of(panel_binary())],
             collab: false,
             config,
             ..Options::default()
         },
-        &[OutputConfig::new("HEADLESS-1", 1280, 800)],
-    )
-    .expect("session");
+    );
     session.handle().replace_tree(tree);
     session.step(REFRESH).expect("a turn of the session");
     session
