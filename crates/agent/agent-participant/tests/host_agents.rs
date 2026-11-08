@@ -36,357 +36,83 @@ mod participant;
 mod support;
 
 mod common;
+mod harness;
 
 // Agents hold each record in a confined app worker (this binary, started
 // again), whose changes are admitted through the Automerge isolate.
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
 
-use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::InvocationId;
-use tilo_actions::door::ActionAddress;
-use tilo_actions::remote::{
-    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
-    RemoteActionTarget,
-};
-use tilo_agent_participant::{AgentHost, ModelChoice, Replica, Seed};
-use tilo_browser_peer::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_actions::remote::InvokeArgument;
+use tilo_agent_participant::{ModelChoice, Replica, Seed};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_relay::certify::{ApproverDecision, ApproverReply, ConfirmationAnswer};
-use tilo_relay::daemon::{Relay, RelayIdentity};
-use tilo_relay::web::{LiveConfig, TlsSource, WebConfig, WebHandle};
+use tilo_relay::certify::{ApproverReply, ConfirmationAnswer};
+use tilo_relay::daemon::Relay;
 use tilo_relay_client::Approver;
 use tilo_relay_protocol::agents::{
-    AGENTS_PROVIDER, AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION,
-    REVOKE_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
-    agent_resource,
+    AgentStatus, AgentsStatus, GrantState, MESSAGE_ACTION, REQUEST_GRANT_ACTION, REVOKE_ACTION,
+    SPAWN_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState, agent_resource,
 };
 
-use tilo_user_identity::{
-    CertificationPolicy, DeviceCapabilities, RevocationList, issue_device_cert,
-};
+use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
-use support::{Device, WORKSPACE, enrol, ready, start_peer, workspace};
+use harness::hosted::{Hosted, Laptop, Options, Unlisted};
+use harness::page::Page as Browser;
+use support::{Device, WORKSPACE, enrol, workspace};
 
 const NOTES: &str = "so.tilo.notes";
 const SHEETS: &str = "so.tilo.sheets";
 const EBOOK: &str = "so.tilo.ebook";
 
-struct Hosted {
-    relay: Relay,
-    web: WebHandle,
-    agents: AgentHost,
-    /// The host's device, whose own documents the workspace holds too.
-    device: [u8; 32],
-}
-
+/// The host, offering every app the tests drive.
 async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
     start_with(root, host, state, ModelChoice::Scripted).await
 }
 
 async fn start_with(root: &SigningKey, host: &Device, state: &Path, model: ModelChoice) -> Hosted {
-    let user = root.verifying_key().to_bytes();
-    let cfg = tilo_relay::RelayConfig {
-        state_root: state.join("relay"),
-        ..Default::default()
-    };
-    let (relay, agents) = tilo_relay::agents::start(
-        cfg,
-        RelayIdentity {
-            user_public_key: user,
-            device_signing_key: host.key.clone(),
-            device_cert: host.cert.clone(),
-            revocations: RevocationList::new(),
-        },
-        tilo_relay::agents::AgentOptions {
-            state_dir: state.join("agents"),
-            model,
-            catalogue: Some(Arc::new(common::catalogue)),
-            feedback_reviewer: None,
-        },
+    harness::hosted::start(
+        root,
+        host,
+        state,
+        Options::offering(common::catalogue, model),
     )
     .await
-    .unwrap();
-    let web = relay
-        .serve_web(WebConfig {
-            listen: "127.0.0.1:0".parse().unwrap(),
-            tls: TlsSource::Development {
-                hosts: vec!["localhost".into(), "127.0.0.1".into()],
-                store: Some(state.join("web-dev-identity")),
-            },
-            allowed_origins: Vec::new(),
-            plain_listen: None,
-            public_origin: None,
-            limits: tilo_relay::web::WebLimits::default(),
-            country: None,
-            fetch_proxy: None,
-            live: LiveConfig::default(),
-        })
-        .await
-        .unwrap();
-    Hosted {
-        relay,
-        web,
-        agents,
-        device: host.cert.device_public_key,
-    }
 }
 
-impl Hosted {
-    /// Stop the host, after checking it carried nothing in the clear.
-    async fn stop(self) {
-        let retained = self
-            .relay
-            .workspace_records()
-            .retained(workspace())
-            .await
-            .unwrap();
-        let (readable, _) = common::member_documents(
-            retained
-                .into_iter()
-                .map(|retained| (retained.author, retained.body)),
-            &self.device,
-        );
-        assert_eq!(readable, 0, "nothing reaches the host in the clear");
-        drop(self.web);
-        self.agents.shutdown();
-        self.relay.shutdown().await;
-    }
+/// Stop the host, after checking it carried nothing in the clear.
+async fn stop(hosted: Hosted) {
+    let retained = hosted
+        .relay
+        .workspace_records()
+        .retained(workspace())
+        .await
+        .unwrap();
+    let (readable, _) = common::member_documents(
+        retained
+            .into_iter()
+            .map(|retained| (retained.author, retained.body)),
+        &hosted.device,
+    );
+    assert_eq!(readable, 0, "nothing reaches the host in the clear");
+    drop(hosted.web);
+    hosted.agents.shutdown();
+    hosted.relay.shutdown().await;
 }
 
 /// The laptop: a root holder answering every agent request with the
-/// agent's certificate and the delegation of exactly what was proposed.
+/// agent's certificate and the delegation of exactly what was proposed. The
+/// questions an agent puts to its person are the test's to answer.
 fn approve_agents(relay: &Relay, root: SigningKey, laptop: &Device) -> tokio::task::JoinHandle<()> {
-    let addr = relay.node_addr();
-    let cert = laptop.cert.clone();
-    let key = laptop.key.clone();
-    tokio::spawn(async move {
-        let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
-            .bind()
-            .await
-            .unwrap();
-        let mut approver = Approver::connect(&endpoint, addr, cert, &key, &RevocationList::new())
-            .await
-            .unwrap();
-        loop {
-            let proposals = approver.list_agent_proposals().await.unwrap();
-            for pending in approver.list_pending().await.unwrap() {
-                let Some(agent) = proposals
-                    .iter()
-                    .find(|agent| agent.request_digest == pending.request_digest)
-                else {
-                    continue;
-                };
-                assert!(pending.request.device_label.starts_with("Agent: "));
-                let now = tilo_clock::unix_now_ns();
-                let cert = issue_device_cert(
-                    &pending.request,
-                    &root,
-                    &CertificationPolicy::agent(),
-                    &RevocationList::new(),
-                    now,
-                )
-                .unwrap();
-                // A bare certificate is refused: an agent is approved with
-                // its delegation or not at all.
-                assert!(matches!(
-                    approver
-                        .decide(
-                            pending.request_digest,
-                            ApproverDecision::Issue(cert.clone())
-                        )
-                        .await
-                        .unwrap(),
-                    ApproverReply::Refused { .. }
-                ));
-                let delegation = agent
-                    .proposal
-                    .sign(&root, pending.request.device_public_key, now)
-                    .unwrap();
-                assert_eq!(
-                    approver
-                        .decide(
-                            pending.request_digest,
-                            ApproverDecision::IssueDelegate { cert, delegation }
-                        )
-                        .await
-                        .unwrap(),
-                    ApproverReply::Decided
-                );
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    })
-}
-
-/// A browser session: its peer, and every durable change it received.
-struct Browser {
-    peer: PeerHandle,
-    events: PeerEvents,
-    host_key: [u8; 32],
-    documents: BTreeMap<DocumentRoute, Vec<([u8; 32], Vec<u8>)>>,
+    Laptop::new([], Unlisted::Pending).spawn(relay, root, laptop)
 }
 
 impl Browser {
-    async fn open(hosted: &Hosted, device: &Device, host: &Device) -> Self {
-        let https = support::https::DevHttps::new(
-            hosted.web.addr,
-            hosted.web.certificate_sha256.as_ref().unwrap(),
-        );
-        let peer = start_peer(
-            Host::Https(https),
-            device.cert.clone(),
-            host.cert.clone(),
-            device.key.clone(),
-        );
-        let events = peer.events();
-        peer.join_placed(WORKSPACE, "Workspace").unwrap();
-        ready(&[&peer]).await;
-        Self {
-            peer,
-            events,
-            host_key: host.cert.device_public_key,
-            documents: BTreeMap::new(),
-        }
-    }
-
-    fn take(&mut self, event: PeerEvent) -> Option<PeerEvent> {
-        if let PeerEvent::Document(document) = &event {
-            if let Some(mutation) = document.mutation() {
-                let bytes = match mutation {
-                    collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes) => bytes,
-                };
-                self.documents
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push((document.author, bytes));
-            }
-            return None;
-        }
-        Some(event)
-    }
-
-    fn pump(&mut self) {
-        for event in self.events.drain() {
-            let _ = self.take(event);
-        }
-    }
-
-    /// One remote action to the host's agent supervisor.
-    async fn call(
-        &mut self,
-        resource: &str,
-        action: &str,
-        argument: InvokeArgument,
-    ) -> Result<serde_json::Value, String> {
-        let invocation = InvocationId::new();
-        let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(InvokeRequest {
-            on_behalf_of: None,
-            invocation,
-            target: RemoteActionTarget {
-                provider: AGENTS_PROVIDER.into(),
-                address: ActionAddress::new(resource, action),
-            },
-            argument,
-            context: None,
-            confirmation: None,
-            revision: None,
-            wait_ms: None,
-            appearance: None,
-        }))
-        .encode()
-        .unwrap();
-        self.peer
-            .send_remote_action(workspace(), self.host_key, frame)
-            .unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            assert!(
-                Instant::now() < deadline,
-                "no receipt for {resource}#{action}"
-            );
-            // Take the whole batch before answering: a document behind the
-            // receipt would otherwise be dropped with it.
-            let mut answer = None;
-            for event in self.events.drain() {
-                let Some(event) = self.take(event) else {
-                    continue;
-                };
-                match event {
-                    PeerEvent::RemoteAction { from, frame, .. } if from == self.host_key => {
-                        if let RemoteActionMessage::Receipt(receipt) =
-                            RemoteActionFrame::decode(&frame).unwrap().message
-                            && receipt.invocation == invocation
-                        {
-                            answer = Some(match receipt.status {
-                                ReceiptStatus::Completed { output } => {
-                                    Ok(output.value.unwrap_or_default())
-                                }
-                                other => Err(format!("{other:?}")),
-                            });
-                        }
-                    }
-                    PeerEvent::RemoteActionUndeliverable { reason, .. } => {
-                        panic!("undeliverable: {reason}")
-                    }
-                    _ => {}
-                }
-            }
-            if let Some(answer) = answer {
-                return answer;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    }
-
-    async fn status(&mut self) -> AgentsStatus {
-        serde_json::from_value(
-            self.call(SUPERVISOR_RESOURCE, STATUS_ACTION, InvokeArgument::None)
-                .await
-                .unwrap(),
-        )
-        .unwrap()
-    }
-
-    /// Wait until everything this page published is durable on the host.
-    async fn durable(&self) {
-        let receipt = self.peer.barrier().unwrap();
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            match receipt.try_recv() {
-                Ok(result) => return result.unwrap(),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
-                Err(error) => panic!("the barrier ended: {error}"),
-            }
-            assert!(
-                Instant::now() < deadline,
-                "the page's edits never became durable"
-            );
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    /// Wait until `done` holds for the supervisor's status.
-    async fn until(&mut self, what: &str, done: impl Fn(&AgentsStatus) -> bool) -> AgentsStatus {
-        let deadline = tilo_test_env::hang_deadline();
-        loop {
-            let status = self.status().await;
-            if done(&status) {
-                return status;
-            }
-            assert!(Instant::now() < deadline, "{what}: {status:#?}");
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    }
-
-    /// The document of every `app` record the browser received, as JSON,
-    /// merged from the changes `author` made.
+    /// The document of every `app` record the page received, as JSON, merged
+    /// from the changes `author` made.
     fn bodies(&mut self, app: &str, author: [u8; 32]) -> Vec<String> {
         self.pump();
         let catalogue = common::catalogue();
@@ -420,6 +146,7 @@ impl Browser {
             .collect()
     }
 
+    /// Wait until the page holds `text` in one of `app`'s records.
     async fn until_edited(&mut self, app: &str, author: [u8; 32], text: &str) {
         let deadline = tilo_test_env::hang_deadline();
         while !self
@@ -568,7 +295,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
     let saved = std::fs::read_to_string(hosted.agents.state_file()).unwrap();
     assert!(saved.contains(&grant) && saved.contains("Budget"));
     approver.abort();
-    hosted.stop().await;
+    stop(hosted).await;
 
     let hosted = start(&root, &host, state.path()).await;
 
@@ -626,7 +353,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         .await;
     browser.peer.close();
     approver.abort();
-    hosted.stop().await;
+    stop(hosted).await;
 
     let hosted = start(&root, &host, state.path()).await;
 
@@ -706,7 +433,7 @@ async fn the_host_runs_agents_a_browser_spawns_and_they_survive_a_restart() {
         "a revoked grant's key is forgotten"
     );
     browser.peer.close();
-    hosted.stop().await;
+    stop(hosted).await;
 }
 
 /// The record a document route names. A workspace-record app (Notes, Chat)
@@ -975,7 +702,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
         assert!(Instant::now() < deadline, "the reload replayed nothing");
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    hosted.stop().await;
+    stop(hosted).await;
 }
 
 /// The page that created a record and a page that joined it both see an
@@ -1065,7 +792,7 @@ async fn the_creator_and_a_joined_page_both_see_every_task_live() {
     joined
         .until_sheets(&mut second, &["Sheet1", "Budget", "Q4"])
         .await;
-    hosted.stop().await;
+    stop(hosted).await;
 }
 
 /// POST `body` to `url` (plain HTTP on loopback) and return the answer body.
@@ -1216,7 +943,7 @@ async fn an_agent_plans_on_metered_cloud_credits_until_they_run_out() {
             .contains("out of AI credits"),
         "{failed:?}"
     );
-    hosted.stop().await;
+    stop(hosted).await;
 }
 
 /// The person's own device: a root holder's approver session that answers
@@ -1443,7 +1170,7 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
         "{denied:?}"
     );
     device.close();
-    hosted.stop().await;
+    stop(hosted).await;
 }
 
 const CHAT: &str = "so.tilo.chat";
@@ -1598,5 +1325,5 @@ async fn agents_post_in_the_workspaces_chat_and_read_each_other_by_name() {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    hosted.stop().await;
+    stop(hosted).await;
 }
