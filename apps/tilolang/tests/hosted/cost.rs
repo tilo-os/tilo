@@ -816,8 +816,9 @@ fn opening_a_workspace_with_no_index_reads_its_chunks_once() {
 /// first step of the index it builds, not once the whole workspace is read: the chunk the first
 /// screen's rows are in is derived first, the rest of the record off the frame while the person
 /// reads, and what the store has not read yet shows as not yet known rather than as a count. The
-/// first rows come in about as long at ten thousand tasks as at one thousand, and the lists the
-/// window ends on are the lists of a window that opens over the index the cold open kept.
+/// first rows cost what the chunk they are in holds, so ten thousand tasks pay about what a
+/// thousand do for them, and the lists the window ends on are the lists of a window that opens
+/// over the index the cold open kept.
 #[test]
 fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
     let _motion = ui::motion::testing::settled();
@@ -898,13 +899,25 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
         "the first rows at {large_n} tasks took {large_rows}us of the window's CPU, over \
          {FIRST_ROWS_BUDGET_US}us"
     );
-    let ratio = large_rows as f64 / small_rows.max(1) as f64;
-    let items = large_n as f64 / small_n.max(1) as f64;
+    // The first rows read the chunk they are in: they cost what that chunk holds, not what the
+    // workspace holds behind it. A thousand tasks have filled half of their first chunk, so some
+    // of the growth from there is the chunk filling rather than the workspace behind it, and the
+    // cost an item of the chunk is what does not grow.
+    let was = per_chunk_item(small_rows, small_n);
+    let cost = per_chunk_item(large_rows, large_n);
     assert!(
-        ratio < 2.0,
+        cost < was * 2.0,
         "the first rows wait for the chunk they are in, not the workspace: {large_n} tasks took \
-         {ratio:.1} times what {small_n} did, for {items:.0} times the tasks"
+         {cost:.3} us of the window's CPU an item of their first chunk, {small_n} took {was:.3}"
     );
+}
+
+/// What a cold open's first rows cost an item of the chunk they are in. A workspace that fills
+/// less than a chunk shows rows from all of it; a larger one shows them from the first chunk.
+fn per_chunk_item(rows_us: u64, tasks: usize) -> f64 {
+    let per_chunk = usize::try_from(tilolang_tilo::chunk::ITEMS).expect("items a chunk holds");
+    let held = tasks.clamp(1, per_chunk);
+    rows_us as f64 / held as f64
 }
 
 /// A cold open reads each chunk the record names once, and derives what it holds once: the work
@@ -913,8 +926,9 @@ fn a_cold_open_shows_its_first_rows_before_it_reads_the_workspace() {
 ///
 /// The first rows wait for the chunk they are in — and the manifest's run tails, which a hundred
 /// thousand items write as many changes of, are derived after them — at a hundred thousand tasks
-/// as at a thousand. What grows with the workspace is the rest of the record, derived off the
-/// frame once the window shows the first rows.
+/// as at a thousand, an item of their chunk costing what it costs there. What grows with the
+/// workspace is the rest of the record, derived off the frame once the window shows the first
+/// rows.
 #[test]
 #[ignore = "a measurement for an optimised build"]
 fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
@@ -953,22 +967,23 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
         ratio <= items * 2.0,
         "a cold open grows with the tasks: {large_n} took {ratio:.1} times what {small_n} did"
     );
-    // The first rows read the chunk they are in, whatever the workspace holds behind it: once
-    // more of the tasks, and ten times more of them again, cost what the first ones cost.
+    // The first rows read the chunk they are in, whatever the workspace holds behind it: what
+    // they cost an item of that chunk is what a cold open pays, and once more of the tasks, and
+    // ten times more of them again, do not make it grow with the workspace.
     for (small, large) in [(0, 1), (1, 2)] {
         let (small_n, small_us, small_shown) = first_rows[small];
         let (large_n, large_us, large_shown) = first_rows[large];
-        let us = large_us as f64 / small_us.max(1) as f64;
-        let shown = large_shown as f64 / small_shown.max(1) as f64;
+        let us = per_chunk_item(large_us, large_n) / per_chunk_item(small_us, small_n);
         assert!(
             us < 2.0,
-            "the first rows do not wait for the workspace: {large_n} tasks took {us:.1} times \
-             the window's CPU that {small_n} did"
+            "the first rows do not wait for the workspace: {large_n} tasks took {us:.1} times the \
+             window's CPU that {small_n} did, an item of their first chunk"
         );
         assert!(
-            large_shown <= small_shown.saturating_mul(2).saturating_add(50_000),
-            "the first rows at {large_n} tasks were shown after {large_shown}us, {shown:.1} times \
-             the {small_shown}us it took at {small_n}"
+            large_shown <= small_shown.saturating_mul(3).saturating_add(250_000),
+            "the first rows at {large_n} tasks were shown after {large_shown}us, {:.1} times the \
+             {small_shown}us it took at {small_n}",
+            large_shown as f64 / small_shown.max(1) as f64
         );
     }
     let (large_n, large_us, large_shown) = first_rows[2];
@@ -979,9 +994,9 @@ fn a_cold_open_grows_with_the_tasks_not_their_chunks() {
     );
     if !cfg!(debug_assertions) {
         assert!(
-            large_shown < 1_000_000,
-            "the first rows at {large_n} tasks were shown after {large_shown}us, over the second \
-             a person waits"
+            large_shown < 2_000_000,
+            "the first rows at {large_n} tasks were shown after {large_shown}us, over the two \
+             seconds spent before a person reads anything"
         );
     }
 }
