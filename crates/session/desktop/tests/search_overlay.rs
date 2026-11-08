@@ -546,3 +546,81 @@ fn closing_search_repaints_the_whole_scrim() {
         "closing search repainted {repainted} of the {scrim:?} it dimmed: {repaint:?}"
     );
 }
+
+/// Typing into the open palette damages the card, not the display under it: the palette's own
+/// paint is one bounded part of the chrome's scene, so a key (and the caret it moves) repaints the
+/// card and the scrim stays as it was. A palette whose commands fall outside every part cannot be
+/// proven sparse, and then every frame of a search repaints the whole dimmed display — on a page
+/// drawing in software that is seconds a frame, and the bar the person typed into answers after
+/// seconds instead of at the pace of a key.
+#[test]
+fn typing_in_the_palette_repaints_the_card_not_the_display() {
+    use ui::retained_raster::Repaint;
+    let tree = desk_tree();
+    let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
+    session.frame();
+    session.handle.open_search(Scope::Workspace, None);
+    session.frame();
+    session.frame();
+    let card = session.card().expect("the palette is up");
+    let painted = ui::widget::floating_surface::painted_bounds(card, &ui::Theme::dark());
+    let mut shown = Presented::new(&session, (1280, 800));
+    // The frame that opens search draws the scrim and the card: everything changes.
+    shown.next(&mut session);
+    for _ in 0..2 {
+        shown.next(&mut session);
+    }
+    // No key typed yet: the settled card damages only what its own caret or a result changes,
+    // never the display it dims.
+    session.type_text("n");
+    let repaint = shown.next(&mut session);
+    let regions = match repaint {
+        Repaint::Regions(regions) => regions,
+        Repaint::Full(unknown) => panic!(
+            "a key in the open palette repaints the whole display ({unknown:?}), not the card \
+             it was typed into, {painted:?}"
+        ),
+    };
+    for region in &regions {
+        assert!(
+            painted
+                .union(painted.inflate(2.0, 2.0))
+                .contains_rect(*region),
+            "{region:?} is beyond the card's paint {painted:?}: a keystroke in the palette \
+             repaints the page around it"
+        );
+    }
+}
+
+/// A search the desk is still waiting on asks for the frames that finish it, from the chrome that
+/// draws it. The palette's own rows and an application's answer arrive off the frame (a worker's
+/// answer wakes the desk; a provider's answer comes on the host's clock), and a desk with nothing
+/// else to draw presents none — so the answer is looked for on a deadline, the same one the desk
+/// keeps for its own pass. Without it the palette shows the rows it had when the person stopped
+/// typing, and Enter on an app's row comes long after the person pressed it.
+#[test]
+fn a_search_still_filling_in_asks_for_frames_before_the_bar_ticks() {
+    let tree = desk_tree();
+    let mut session = session_parts(&tree, (1280, 800), Some(Rc::new(Many)), true);
+    session.frame();
+    session.search_chord();
+    session.frame();
+    assert!(session.handle.search_open(), "the chord opened the palette");
+    session.type_text("note");
+    // No frame drawn since the query: the search still owes its rows.
+    let now = ui::time::now();
+    assert!(
+        session.handle.search_searching(),
+        "the search is still filling in"
+    );
+    let wake = session
+        .chrome
+        .frame_schedule()
+        .next_wake_deadline
+        .expect("a search still filling in asks to be looked at again");
+    assert!(
+        wake <= now.checked_add(ui::time::Duration::from_secs(1)).unwrap(),
+        "the wake is at {wake:?}, not within a second of {now:?}: the page would wait for the \
+         bar's next minute to finish the search"
+    );
+}
