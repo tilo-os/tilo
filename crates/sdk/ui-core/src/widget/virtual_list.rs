@@ -425,6 +425,10 @@ pub struct VirtualList<M: ListModel> {
     last_cursor: Option<Point>,
     is_focused: bool,
     drag_scroll: DragScroller,
+    /// The row a left press landed on. A row takes the press for a gesture of its own (a
+    /// swipe) and the release is still a click on that row when it was a tap, so the press
+    /// is kept until the release, whoever the press went to.
+    pressed_row: Option<(usize, M::Key)>,
     reorder: ReorderController<M::Key>,
     reorder_validator: Option<ReorderValidator<M>>,
     reorder_commit: Option<ReorderCommit<M>>,
@@ -643,6 +647,7 @@ impl<M: ListModel> VirtualList<M> {
             last_cursor: None,
             is_focused: false,
             drag_scroll: DragScroller::new(),
+            pressed_row: None,
             reorder: ReorderController::new(),
             reorder_validator: None,
             reorder_commit: None,
@@ -2350,6 +2355,29 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
             return;
         }
         let taking_press = self.takes_row_press(event);
+        // A left press inside the list is a click waiting on its release, whichever widget the
+        // press goes to: a row with a swipe takes the press for the swipe, and a tap it lets go
+        // of without moving is still a click on that row. What the press landed on is taken
+        // from the list as soon as the finger lifts, whoever answers the release.
+        let pressed = match event {
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let inside = self
+                    .last_cursor
+                    .is_some_and(|point| self.rect.contains(point));
+                self.pressed_row = if inside { self.row_at_cursor() } else { None };
+                None
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Released,
+                button: MouseButton::Left,
+                ..
+            } => self.pressed_row.take(),
+            _ => None,
+        };
         if !taking_press && !self.drag_scroll.is_tracking() && !self.reorder.is_tracking() {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
@@ -2447,6 +2475,13 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
                     } else if let Some((index, key)) = self.row_at_cursor() {
                         self.press_row_at(index, key, *ctx.modifiers);
                     }
+                    *ctx.handled = true;
+                } else if let Some((index, key)) = pressed
+                    && self.row_at_cursor().is_some_and(|(_, at)| at == key)
+                {
+                    // The press went to a row's own gesture and came back without one: the
+                    // tap's click is the list's.
+                    self.press_row_at(index, key, *ctx.modifiers);
                     *ctx.handled = true;
                 }
             }

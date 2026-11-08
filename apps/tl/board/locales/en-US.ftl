@@ -1,6 +1,8 @@
 # tilolang messages: generated from the package's source, commit it. Translate in
 # locales/<language>.ftl beside it; edit the words in the source, not here.
 
+d-so-tilo-lang-board = Board
+
 d-s7oqe7sc = Card
     .doc = A card: one thing to get done, with notes, in one column of the board.
     .noun = { $count ->
@@ -14,6 +16,8 @@ d-6hfpfyn7 = Notes
 
 d-4oqrwuyr = Column
     .doc = The column it was in, before cards were kept in their columns.
+
+d-s7oqe7sc-filter-column = Column
 
 d-7jmgbfub = Column
     .doc = A column of the board: a stage the cards go through, such as "Doing", with its cards in order.

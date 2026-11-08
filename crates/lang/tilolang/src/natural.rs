@@ -356,6 +356,15 @@ fn phrase_at(texts: &[&str], i: usize, today: i64, led: bool, lang: Language) ->
     if first == "this" && w(1) == Some("weekend") {
         return day(today + (5 - weekday(today)).rem_euclid(7), 2);
     }
+    // "this evening", as "tonight": today's, even once the hour is past.
+    if first == "this" && w(1) == Some("evening") {
+        return Some(Found {
+            day: Some(today),
+            minutes: Some(18 * 60),
+            after: None,
+            words: 2,
+        });
+    }
     if first == "next" || matches!(first, "nächste" | "nächsten" | "naechste" | "naechsten") {
         let week = match first {
             "next" => "week",
@@ -699,6 +708,11 @@ mod tests {
         assert_eq!(read("x at 9").2, Some("2026-10-29T08:00:00Z".into()));
         assert_eq!(read("x noon").2, Some("2026-10-29T11:00:00Z".into()));
         assert_eq!(read("x tonight").2, Some("2026-10-29T19:00:00Z".into()));
+        assert_eq!(
+            read("x this evening").2,
+            Some("2026-10-29T17:00:00Z".into()),
+            "this evening is today's, as tonight is"
+        );
     }
 
     #[test]

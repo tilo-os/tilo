@@ -28,6 +28,26 @@ before creating VM files. This is a preflight check, not a reservation: another
 process can take the port before the VM starts. Creating an already registered
 VM remains a no-op and keeps its existing port.
 
+## Set up once, branch many
+
+Set up one VM the way you want every VM to start, then branch it:
+
+```sh
+tilo-vm vm create box        # once
+tilo-vm vm start box         # log in, add git/SSH keys, the t token, model API keys, sign in
+tilo-vm vm branch box a b c --stop   # shut box down cleanly, then three VMs, each a copy of it
+tilo-vm vm start a           # a, b and c run side by side and diverge from here
+tilo-vm vm list              # what each VM was branched from, and the bases they share
+tilo-vm vm rm box            # the branches keep working
+```
+
+Branching is copy-on-write, so it takes seconds and copies nothing. Each
+branch carries the whole disk (home, keys, vaults, settings) and gets its own
+name, UUID, MAC and SSH port; on first boot it notices the new UUID and gives
+itself a new device identity. `box` itself keeps working and keeps its
+identity; branch it again later for more. A frozen base is deleted only once
+no VM uses it (`tilo-vm guide concepts`, "Branch"). libvirt, WHPX and UTM.
+
 A board, a laptop or another real machine that runs a Tilo dev image is
 registered instead: `tilo-vm vm add <name> --ssh root@<address>`, or as its
 owner's account, `--ssh <user>@<address> --key <file>` (`tilo-vm guide

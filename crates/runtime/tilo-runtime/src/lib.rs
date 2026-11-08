@@ -27,6 +27,7 @@ pub mod mcp_process;
 pub mod offload;
 mod os_search;
 pub mod profile;
+pub mod remote_door;
 pub mod session_door;
 pub mod standalone;
 pub mod unix;
@@ -162,6 +163,13 @@ pub trait RuntimeServices: Sized {
     /// Where MCP answers read the content apps stored; `None` for a host
     /// without a content service.
     fn media(&self) -> Option<std::sync::Arc<dyn MediaReader>> {
+        None
+    }
+
+    /// The agent doors of the person's other devices, as this host reaches
+    /// them from its own endpoint: what a `--connect --device` client is
+    /// carried to. `None` for a host that reaches none.
+    fn remote_doors(&self) -> Option<std::sync::Arc<remote_door::Doors>> {
         None
     }
 }

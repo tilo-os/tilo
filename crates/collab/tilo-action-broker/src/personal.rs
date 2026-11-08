@@ -90,6 +90,20 @@ pub fn open(
 ) -> Result<PersonalStore, String> {
     let path = store_path(state);
     match std::fs::read(&path) {
+        // A machine copied from another re-keyed its device: the store kept
+        // here is the device it was copied from, which still holds it. It is
+        // set aside, never opened as this device's, and the person's records
+        // come back from their other devices as to any new one of theirs.
+        Ok(bytes)
+            if PersonalStore::kept_by(&bytes)
+                .is_some_and(|kept| kept != device.device_public_key) =>
+        {
+            let kept = PersonalStore::kept_by(&bytes).unwrap_or_default();
+            let aside = path.with_extension(format!("of-{}", hex::encode(&kept[..4])));
+            std::fs::rename(&path, &aside)
+                .map_err(|error| format!("{}: {error}", path.display()))?;
+            PersonalStore::open(root, device, now)
+        }
         Ok(bytes) => PersonalStore::restore(&bytes, &device, now),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             PersonalStore::open(root, device, now)
@@ -376,5 +390,41 @@ mod tests {
         let back = PersonalStore::restore(&bytes, &device, now).unwrap();
         assert_eq!(back.root(), root_key);
         assert_eq!(back.store_key(), store.store_key());
+    }
+
+    /// A machine copied from another opens the person's store as its own new
+    /// device: the store the source kept is set aside, never opened as this
+    /// device's, and is still there for the source's records.
+    #[test]
+    fn a_copied_machine_opens_the_store_as_its_own_device() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[5; 32]);
+        let root_key = root.verifying_key().to_bytes();
+        let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000);
+        let source = certificate(&root, 1, now);
+        let branch = certificate(&root, 2, now);
+        let state = tempfile::tempdir().unwrap();
+        let path = store_path(state.path());
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let kept = PersonalStore::open(root_key, source.clone(), now)
+            .unwrap()
+            .durable()
+            .unwrap();
+        std::fs::write(&path, &kept).unwrap();
+        assert_eq!(
+            PersonalStore::kept_by(&kept),
+            Some(source.device_public_key)
+        );
+
+        let opened = open(state.path(), root_key, branch.clone(), now).unwrap();
+        assert_eq!(opened.root(), root_key);
+        assert!(!path.exists(), "the source's store is not this device's");
+        let aside = path.with_extension(format!(
+            "of-{}",
+            hex::encode(&source.device_public_key[..4])
+        ));
+        assert_eq!(std::fs::read(aside).unwrap(), kept);
+        // The source's own store still opens on the source.
+        assert!(PersonalStore::restore(&kept, &source, now).is_ok());
+        assert!(PersonalStore::restore(&kept, &branch, now).is_err());
     }
 }

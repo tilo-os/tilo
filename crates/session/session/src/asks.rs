@@ -723,6 +723,7 @@ impl Shared {
             | ShortcutAction::NextWorkspace
             | ShortcutAction::MaximizeWindow
             | ShortcutAction::RestoreWindow
+            | ShortcutAction::ToggleFloat
             | ShortcutAction::ReopenClosedTab
             | ShortcutAction::ToggleMaximize
             | ShortcutAction::ToggleFullscreen

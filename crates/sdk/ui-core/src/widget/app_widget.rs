@@ -9,84 +9,7 @@
 // Re-export the extension at the app contract for hosts that import this module.
 use crate::widget::{AppKind, Widget};
 use std::cell::RefCell;
-use std::fmt;
-use std::path::PathBuf;
 use std::rc::Weak;
-
-/// An unguessable capability for one Files document-open route. A capability
-/// minted anywhere else is insufficient: the shell compares it against the
-/// exact capability installed in its current hosted Files inputs.
-#[derive(Clone, PartialEq, Eq)]
-pub struct DocumentOpenCapability(uuid::Uuid);
-
-impl DocumentOpenCapability {
-    #[must_use]
-    pub fn issue() -> Self {
-        Self(uuid::Uuid::new_v4())
-    }
-}
-
-impl fmt::Debug for DocumentOpenCapability {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("DocumentOpenCapability(..)")
-    }
-}
-
-/// One Files-to-shell document-open request. The Files widget owns the
-/// strong cell; the shell receives only a weak witness, so a detached widget
-/// cannot leave an actionable request behind.
-#[derive(Debug, PartialEq, Eq)]
-pub struct DocumentOpenReply {
-    token: u64,
-    result: Option<DocumentOpenOutcome>,
-}
-
-/// Shell-owned result for one exact Files document-open request.
-#[derive(Debug, PartialEq, Eq)]
-pub enum DocumentOpenOutcome {
-    Opened,
-    Refused(String),
-    Cancelled,
-}
-
-impl DocumentOpenReply {
-    #[must_use]
-    pub fn pending(token: u64) -> Self {
-        Self {
-            token,
-            result: None,
-        }
-    }
-
-    #[must_use]
-    pub fn token(&self) -> u64 {
-        self.token
-    }
-
-    #[must_use]
-    pub fn is_pending(&self, token: u64) -> bool {
-        self.token == token && self.result.is_none()
-    }
-
-    pub fn complete(&mut self, token: u64, result: Result<(), String>) {
-        if self.is_pending(token) {
-            self.result = Some(match result {
-                Ok(()) => DocumentOpenOutcome::Opened,
-                Err(reason) => DocumentOpenOutcome::Refused(reason),
-            });
-        }
-    }
-
-    pub fn cancel(&mut self, token: u64) {
-        if self.is_pending(token) {
-            self.result = Some(DocumentOpenOutcome::Cancelled);
-        }
-    }
-
-    pub fn take_result(&mut self, token: u64) -> Option<DocumentOpenOutcome> {
-        (self.token == token).then(|| self.result.take()).flatten()
-    }
-}
 
 /// The person's answer to [`AppHostIntent::AllowHostShell`]: `None` until
 /// they choose, then whether the device's own shell was allowed.
@@ -126,14 +49,6 @@ pub enum AppHostIntent {
     /// Open the platform search scoped to this app (or one part of it), with
     /// the query already typed. The shell focuses the source tab first.
     OpenSearch(crate::search::SearchRequest),
-    /// A Files-selected local document. The shell validates and admits it only
-    /// after the originating tile has released its record loan.
-    OpenDocument {
-        path: PathBuf,
-        capability: DocumentOpenCapability,
-        token: u64,
-        reply: Weak<RefCell<DocumentOpenReply>>,
-    },
     /// Terminal asks for the device's own shell, which the person has not
     /// allowed on this device yet. The shell raises its permission prompt
     /// and records the answer where the shell runtime reads it.
@@ -170,25 +85,6 @@ impl PartialEq for AppHostIntent {
                 left_resource == right_resource
                     && left_version == right_version
                     && left_entry == right_entry
-            }
-            (
-                Self::OpenDocument {
-                    path: left_path,
-                    capability: left_capability,
-                    token: left_token,
-                    reply: left_reply,
-                },
-                Self::OpenDocument {
-                    path: right_path,
-                    capability: right_capability,
-                    token: right_token,
-                    reply: right_reply,
-                },
-            ) => {
-                left_path == right_path
-                    && left_capability == right_capability
-                    && left_token == right_token
-                    && Weak::ptr_eq(left_reply, right_reply)
             }
             (Self::OpenSearch(left), Self::OpenSearch(right)) => left == right,
             (

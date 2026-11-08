@@ -1362,8 +1362,17 @@ fn offers_actions(ty: &Type) -> bool {
     }
 }
 
+/// Whether a value of `ty` shows text: text, or an option or list of it.
+pub(super) fn shows_text(ty: &Ty) -> bool {
+    match ty {
+        Ty::Text => true,
+        Ty::Option(inner) | Ty::List(inner) => shows_text(inner),
+        _ => false,
+    }
+}
+
 /// Whether a prop of `ty` shows text: text, or an option or list of it.
-fn shows_words(ty: &Type) -> bool {
+pub(super) fn shows_words(ty: &Type) -> bool {
     match ty {
         Type::Text => true,
         Type::Option(inner) | Type::List(inner) => shows_words(inner),

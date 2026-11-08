@@ -100,6 +100,8 @@ pub mod scroll_copy;
 pub mod settings;
 #[path = "share_links.rs"]
 pub mod share_links;
+#[path = "support/checklist.rs"]
+pub mod support_checklist;
 #[path = "surface_report.rs"]
 pub mod surface_report;
 #[path = "surface_semantics.rs"]

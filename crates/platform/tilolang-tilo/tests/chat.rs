@@ -1242,6 +1242,8 @@ struct EchoWords;
 impl tilolang_runtime::Words for EchoWords {
     fn add(&self, _catalogues: &[(String, String)]) {}
 
+    fn add_used(&self, _catalogues: &[(String, String)]) {}
+
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         if key.starts_with("d-") {
             source.to_owned()

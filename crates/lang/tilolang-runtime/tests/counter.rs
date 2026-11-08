@@ -342,6 +342,10 @@ fn a_packages_catalogues_reach_the_runtimes_words() {
         fn add(&self, catalogues: &[(String, String)]) {
             self.0.borrow_mut().extend_from_slice(catalogues);
         }
+
+        fn add_used(&self, catalogues: &[(String, String)]) {
+            self.0.borrow_mut().extend_from_slice(catalogues);
+        }
         fn word(&self, _key: &str, _args: &[(String, String)], source: &str) -> String {
             source.to_owned()
         }

@@ -78,6 +78,9 @@ platform's format (relative times, avatar and name, localized money), never form
 
 - `remove_where(predicate) -> Int` and similar collection functions in `std`, instead of loops
   with counters.
+- `flat_map(x -> ...) -> List<T>`: the lists the lambda gives for each item, joined in the order
+  the items and their own lists keep — a group's channels and the channels beside it, one list
+  of what both hold. A list of one type fits the list of a union the join gives.
 - `index_of(item) -> Option<Int>`: where an item stands among the items, or none when it is not
   one of them — a sibling's place, a lane's first card.
 - `at(place) -> Option<T>`: the item at the place `index_of` answers for it, or none where the

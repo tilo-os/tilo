@@ -123,6 +123,7 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
         vec![
             FULLSCREEN,
             MAXIMIZE,
+            FLOAT,
             WIDTH,
             HALF,
             WIDTH_NARROW,
@@ -143,11 +144,13 @@ fn every_row_the_desktop_has_for_a_window_is_offered_in_its_order() {
         groups,
         vec![
             vec![FULLSCREEN, MAXIMIZE],
+            vec![FLOAT],
             vec![WIDTH],
             vec![NEW_TAB],
             vec![CLOSE_WINDOW],
         ],
-        "covering and filling the window, its share of the strip, what it shows, and closing it"
+        "covering and filling the window, lifting it over the desk, its share of
+            the strip, what it shows, and closing it"
     );
     // Nowhere to move it to: the place offers no row at all, rather than one
     // that cannot be chosen.
@@ -266,6 +269,69 @@ fn the_full_screen_row_covers_the_display_and_gives_it_back() {
         back.width() < 1280.0 - 0.5,
         "it takes its place on the strip again: {back:?}"
     );
+}
+
+/// The float row lifts the window over the desk at the floating size, and
+/// the row then offers to put it back into its strip.
+#[test]
+fn the_float_row_lifts_the_window_over_the_desk_and_puts_it_back() {
+    let (surface, handle) = apps_desk(2);
+    let mut frame = present(surface);
+    let route = first_route(&handle);
+    let floating = |handle: &DesktopHandle| {
+        handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .any(|workspace| workspace.arrangement.float_of(route.group).is_some())
+        })
+    };
+    let rect_of = |handle: &DesktopHandle, tab: TabId| {
+        handle
+            .shown_tabs()
+            .into_iter()
+            .find(|(drawn, _)| *drawn == tab)
+            .map(|(_, rect)| rect)
+            .expect("the window is drawn")
+    };
+
+    assert!(!floating(&handle));
+    let was = rect_of(&handle, route.tab);
+    assert!(row(&handle.window_menu(route.tab), FLOAT).is_some());
+    assert!(row(&handle.window_menu(route.tab), SNAP_BACK).is_none());
+
+    handle.choose_window_menu(route.tab, FLOAT, None).unwrap();
+    settle(&mut frame);
+    assert!(floating(&handle), "the record has it floating");
+    let floated = rect_of(&handle, route.tab);
+    assert!(
+        (floated.width() - 640.0).abs() < 1.0,
+        "it takes the floating width: {floated:?}"
+    );
+    let after = rect_of(&handle, tab_at(&handle, 1));
+    assert!(
+        (after.x0 - was.x0).abs() < 16.0,
+        "the window after it takes the place it had in the strip: {after:?}"
+    );
+    let rows = handle.window_menu(route.tab);
+    assert!(row(&rows, FLOAT).is_none(), "it reads as snapping back");
+    assert!(row(&rows, SNAP_BACK).is_some());
+
+    handle
+        .choose_window_menu(route.tab, SNAP_BACK, None)
+        .unwrap();
+    settle(&mut frame);
+    assert!(!floating(&handle), "the record has it back in its strip");
+    let back = rect_of(&handle, route.tab);
+    assert!(
+        (back.x0 - was.x0).abs() < 0.5 && (back.width() - was.width()).abs() < 0.5,
+        "it takes the place in its strip it had again: {back:?}"
+    );
+    let beside = rect_of(&handle, tab_at(&handle, 1));
+    assert!(
+        (beside.width() - back.width()).abs() < 1.0,
+        "the two windows share the strip again: {back:?} and {beside:?}"
+    );
+    assert_eq!(row(&handle.window_menu(route.tab), SNAP_BACK), None);
 }
 
 /// Filling the strip is offered, and once filled the row gives the strip

@@ -37,6 +37,15 @@ pub fn key_of(id: &str) -> String {
     key
 }
 
+/// The key of the message of the filter `key` a type with the stable id `ty` declares: a
+/// filter's own words, which a translation replaces (`d-<ty>-filter-<key>`). It is the filter's
+/// own even where it shows a field's label, since `filter watch_later "Watch later"` says
+/// something else than the field is called.
+#[must_use]
+pub fn filter_key(ty: &str, key: &str) -> String {
+    key_of(&format!("{ty}-filter-{key}"))
+}
+
 /// The comment that marks a message of the source catalogue as the author's own.
 pub const REFINED: &str = "# refined";
 
@@ -185,11 +194,23 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
         "# tilolang messages: generated from the package's source, commit it. Translate in\n\
          # locales/<language>.ftl beside it; edit the words in the source, not here.\n",
     );
+    if !meta.title.is_empty() {
+        message(&mut out, &meta.app, &meta.title, "");
+    }
     for ty in &meta.types {
         message(&mut out, &ty.id, &label(&ty.name), &ty.doc);
         attribute(&mut out, "noun", &noun(ty));
         for field in &ty.fields {
             message(&mut out, &field.id, &label(&field.name), &field.doc);
+        }
+        for filter in &ty.search.filters {
+            // What a filter is, for agents, is its field's doc: the field's message says it.
+            named(
+                &mut out,
+                &filter_key(&ty.id, &filter.key),
+                &filter.label,
+                "",
+            );
         }
     }
     for en in &meta.enums {
@@ -236,7 +257,12 @@ fn noun(ty: &TypeMeta) -> String {
 
 /// One message: its words, and its description as an attribute when it has one.
 fn message(out: &mut String, id: &str, words: &str, doc: &str) {
-    let _ = writeln!(out, "\n{} = {}", key_of(id), pattern(words));
+    named(out, &key_of(id), words, doc);
+}
+
+/// One message under the key `key`, complete as a catalogue writes it.
+fn named(out: &mut String, key: &str, words: &str, doc: &str) {
+    let _ = writeln!(out, "\n{key} = {}", pattern(words));
     let description = summary(doc);
     if !description.is_empty() && description != words.trim() {
         attribute(out, "doc", &pattern(&description));

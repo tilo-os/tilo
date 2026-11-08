@@ -1,21 +1,22 @@
-//! A computer joins a real room service: the composition its deployment runs,
-//! started from this tree, with nothing of its join path stood in for.
+//! A computer joins a real workspace service: the composition its deployment
+//! runs, started from this tree, with nothing of its join path stood in for.
 //!
-//! The room is `tilo-relay room --persistent` as the Lounge image starts it: a
-//! governed workspace on a temporary state volume, a generated owner root, the
-//! members' desktop shared, people taken by invitation. It names its site in
-//! an `entry.json` written as the web entry image writes one — the home
+//! The service is `tilo-relay room --persistent` as the Lounge image starts
+//! it: a governed workspace on a temporary state volume, a generated owner
+//! root, the members' desktop shared, people taken by invitation. It names its
+//! site in an `entry.json` written as the web entry image writes one — the home
 //! workspace, its admission door, and the site's directory — and every route
 //! the session reads is the service's own: the entry, the directory's listing,
 //! the door's invitation and the host's answer to the enrollment.
 //!
-//! A member lays out the workspace's shared desktop through the same path a
-//! page uses (a `so.tilo.browser-desktop` write over the host's own session)
-//! and says where their pointer is. A desktop session whose person the
-//! workspace invited then opens "Join a workspace", reads the site, joins
+//! What a person's *page* does in the Lounge is the publish gate's
+//! (`os/containers/tilo-lounge/integration/people.mjs`, two real browsers);
+//! this binary is the same join from the desktop session itself, which no page
+//! test can reach: the session opens "Join a workspace", reads the site, joins
 //! through its door, and shows what the member laid out and where their
 //! pointer is. A person nobody invited is refused in the door's own words, and
-//! the desk is unchanged.
+//! the desk is unchanged. An app the person opens in the joined workspace is
+//! launched there and shows its window.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -47,7 +48,6 @@ use tilo_desktop_model::{
 };
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
 use tilo_session::mount::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
 use tilo_sheets::directory::{ListingAction, Status};
@@ -207,15 +207,6 @@ impl Room {
         }
     }
 
-    /// A person of `seed`: a root this test generates, and a device the root
-    /// certifies.
-    fn member(seed: u8, label: &str) -> Member {
-        let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
-        let cert = certified(&root, &key, label, DeviceCapabilities::member());
-        Member { key, cert }
-    }
-
     /// The room's person: the root it serves, and its own device.
     fn owner_member(&self) -> Member {
         let key = ed25519_dalek::SigningKey::from_bytes(&[0x2f; 32]);
@@ -334,29 +325,6 @@ fn client() -> Result<tilo_net::Client, String> {
         .connect_timeout(Duration::from_secs(10))
         .build()
         .map_err(|error| error.to_string())
-}
-
-/// Send one POST of `body` to `url`, as JSON.
-fn post(
-    runtime: &tokio::runtime::Runtime,
-    url: &str,
-    body: &[u8],
-) -> Result<(u16, Vec<u8>), String> {
-    let client = client()?;
-    let response = runtime
-        .block_on(
-            client
-                .post(url)
-                .header("content-type", "application/json")
-                .body(body.to_vec())
-                .send(),
-        )
-        .map_err(|error| error.to_string())?;
-    let status = response.status().as_u16();
-    let bytes = runtime
-        .block_on(response.bytes())
-        .map_err(|error| error.to_string())?;
-    Ok((status, bytes.to_vec()))
 }
 
 /// The host's certificate, as a page certified by it pinned.
@@ -874,106 +842,6 @@ fn invite(room: &Room, member_page: &PeerHandle, person: [u8; 32]) -> String {
         panic!("the room issued no invitation: {reply:?}");
     };
     tilo_workspace_join::encode_invitation_text(&signed_invitation)
-}
-
-/// Ask the room's door to let `person` in, as the site's door does: a POST of
-/// the join request at the address its directory names.
-fn ask_door(room: &Room, person: [u8; 32], name: &str) -> Result<String, String> {
-    let route = tilo_relay_protocol::directory::door_path(&room.workspace);
-    let door = format!("{}/peer/v1/{route}join", room.plain);
-    let body = serde_json::to_vec(&tilo_relay_protocol::directory::DoorJoin {
-        user_public_key: hex::encode(person),
-        display_name: name.to_owned(),
-    })
-    .expect("a join request");
-    let (status, bytes) = post(&room.runtime, &door, &body).expect("the door answers");
-    let answer = String::from_utf8_lossy(&bytes).into_owned();
-    if !(200..300).contains(&status) {
-        let said = serde_json::from_str::<serde_json::Value>(&answer)
-            .ok()
-            .and_then(|refusal| refusal["error"].as_str().map(str::to_owned))
-            .unwrap_or(answer);
-        return Err(said);
-    }
-    let answer: tilo_relay_protocol::directory::DoorAnswer =
-        serde_json::from_str(&answer).expect("a door's answer");
-    Ok(answer.invitation)
-}
-
-/// The room's directory, as a person's sheet reads it.
-fn directory(room: &Room) -> tilo_relay_protocol::directory::DirectoryPage {
-    let (status, bytes) = post(
-        &room.runtime,
-        &format!("{}/peer/v1/directory", room.plain),
-        b"{}",
-    )
-    .expect("the directory answers");
-    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&bytes));
-    serde_json::from_slice(&bytes).expect("a directory page")
-}
-
-/// The room's door hands an invited person their invitation and turns a
-/// stranger away in its own words, and its directory lists the Lounge. This is
-/// the door's own behaviour, checked where a page reaches it.
-#[test]
-fn the_room_services_door_lets_in_only_who_it_invited() {
-    let room = Room::start();
-    let member = room.owner_member();
-    let invited = Room::member(0x51, "Ada");
-    let stranger = Room::member(0x61, "Cy");
-    let member_page = page(&room, &member);
-
-    // The room's directory lists the Lounge, and its door turns a stranger
-    // away in its own words: nobody was pre-admitted for them.
-    let listed = directory(&room);
-    let entry = listed
-        .workspaces
-        .iter()
-        .find(|entry| entry.name == "Lounge")
-        .expect("the directory lists the Lounge");
-    assert_eq!(entry.workspace, room.workspace);
-    let refused = ask_door(&room, stranger.cert.user_public_key, "Cy")
-        .expect_err("the door turns a stranger away");
-    assert_eq!(refused, "this workspace is joined by invitation");
-
-    // Once the members invite them, the door hands them the invitation the
-    // room issued, and only them: a stranger still gets nothing.
-    let invitation = invite(&room, &member_page, invited.cert.user_public_key);
-    assert!(!invitation.is_empty());
-    assert_eq!(
-        ask_door(&room, stranger.cert.user_public_key, "Cy").expect_err("a stranger is still away"),
-        "this workspace is joined by invitation"
-    );
-    let granted = ask_door(&room, invited.cert.user_public_key, "Ada")
-        .expect("the door hands the invited person their invitation");
-    assert_eq!(
-        granted, invitation,
-        "the invitation the room issued is the one the door answers with"
-    );
-
-    // The invitation is redeemable, as the invited device redeems it over the
-    // host's own join exchange.
-    let reply = room
-        .runtime
-        .block_on(tilo_relay_client::https::join(
-            &Plain(room.plain.clone()),
-            &JoinStep::Inspect {
-                invitation: tilo_workspace_join::decode_and_verify_invitation_text(
-                    &granted,
-                    Some(invited.cert.user_public_key),
-                    &tilo_user_identity::RevocationList::new(),
-                    tilo_clock::unix_now_ns(),
-                )
-                .expect("the invitation is for this person")
-                .signed_invitation()
-                .to_vec(),
-            },
-        ))
-        .expect("the host answers");
-    assert!(
-        matches!(reply, JoinReply::Invitation { .. }),
-        "the host offers the workspace this invitation grants: {reply:?}"
-    );
 }
 
 /// A computer joins a real room service through its own door and shows the

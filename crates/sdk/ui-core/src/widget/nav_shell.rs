@@ -1704,19 +1704,33 @@ impl NavShell {
         let policy_inputs = Rc::clone(&inputs);
         let policy: Rc<crate::widget::manual::Policy> =
             Rc::new(move |ctx: &mut ManualContext<'_>| place_parts(&policy_inputs.borrow(), ctx));
-        let toggle = Self::shell_button("nav-shell-sidebar", Icon::PanelLeft, "Hide sidebar", {
-            let requests = Rc::clone(&requests);
-            move || requests.toggle.set(true)
-        });
-        let back = Self::shell_button("nav-shell-back", Icon::ChevronLeft, "Back", {
-            let requests = Rc::clone(&requests);
-            move || requests.back.set(true)
-        });
-        let inspector_toggle =
-            Self::shell_button("nav-shell-inspector", Icon::PanelRight, "Hide inspector", {
+        let toggle = Self::shell_button(
+            "nav-shell-sidebar",
+            Icon::PanelLeft,
+            &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar"),
+            {
+                let requests = Rc::clone(&requests);
+                move || requests.toggle.set(true)
+            },
+        );
+        let back = Self::shell_button(
+            "nav-shell-back",
+            Icon::ChevronLeft,
+            &crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+            {
+                let requests = Rc::clone(&requests);
+                move || requests.back.set(true)
+            },
+        );
+        let inspector_toggle = Self::shell_button(
+            "nav-shell-inspector",
+            Icon::PanelRight,
+            &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-inspector"),
+            {
                 let requests = Rc::clone(&requests);
                 move || requests.inspector.set(true)
-            });
+            },
+        );
         Self {
             id: None,
             sidebar: None,
@@ -2776,21 +2790,21 @@ impl NavShell {
             .shortcut(self.conventions)
             .label(self.conventions);
         let sidebar_open = self.is_sidebar_open();
-        let name = if sidebar_open {
-            "Hide sidebar"
+        let name = crate::i18n::I18nManager::lookup_plain(if sidebar_open {
+            "window-toolbar-hide-sidebar"
         } else {
-            "Show sidebar"
-        };
-        self.toggle.set_accessible_name(name);
+            "window-toolbar-show-sidebar"
+        });
+        self.toggle.set_accessible_name(&name);
         self.toggle
             .set_tooltip(Some(format!("{name} ({shortcut})")));
-        let name = if self.is_inspector_open() {
-            "Hide inspector"
+        let name = crate::i18n::I18nManager::lookup_plain(if self.is_inspector_open() {
+            "window-toolbar-hide-inspector"
         } else {
-            "Show inspector"
-        };
-        self.inspector_toggle.set_accessible_name(name);
-        self.inspector_toggle.set_tooltip(Some(name.to_owned()));
+            "window-toolbar-show-inspector"
+        });
+        self.inspector_toggle.set_accessible_name(&name);
+        self.inspector_toggle.set_tooltip(Some(name));
     }
 
     // --- parts -------------------------------------------------------------

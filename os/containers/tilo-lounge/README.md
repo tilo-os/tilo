@@ -106,11 +106,9 @@ at a host of its own and forwards to the listener, and two headless Chromium
 contexts open it, join the Lounge through its door as two people, chat, share
 a desk and see each other present through the plane they pinned. With the
 ingress taken away, a page says in its members' place that it cannot reach
-live presence and says it once in its console. It also starts the image on the
-state the previous release left and proves either that this build opens it
-(keeping the record it migrated) or that it refuses it by the format's name
-and version. It is the gate `publish-site` runs before publishing, so a
-dispatched build publishes nothing a person cannot use.
+live presence and says it once in its console. It is the gate `publish-site`
+runs before publishing, so a dispatched build publishes nothing a person
+cannot use.
 
 ```
 bash os/containers/tilo-lounge/test-integration.sh \
@@ -124,14 +122,3 @@ toolchain (the image's own `tilo-crypto` mints the site's certificate;
 `publish-site` builds: `lounge-binaries.sh` +
 `lounge-context.sh` + `publish/oci-build.sh` for the image, and
 `web-desktop-bundle.sh wasm` + `web-desktop-bundle.sh bundle` for the bundle.
-`integration/previous-state.tar.b64` is the state one fresh start of the
-previous release wrote, unpacked into the volume before the start; it holds a
-version 2 governed workspace record, which is what makes the migration path a
-check and not a hope. The records are binary, so the fixture is the tar of
-that volume that git can hold; re-make it from a volume the published image
-started on, keeping the tar's order and timestamps fixed:
-
-```
-tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
-  -C previous-state -cf - . | base64 -w 76 > previous-state.tar.b64
-```

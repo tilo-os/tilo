@@ -67,6 +67,13 @@ pub struct RelayConfig {
     #[serde(default = "default_iroh_listen")]
     pub iroh_listen: SocketAddr,
 
+    /// Where this host runs its own iroh packet relay. A page has no UDP
+    /// socket, so it reaches a host only through a relay: the host advertises
+    /// this one in the address it signs, and its own transport uses it too.
+    /// `None` leaves the host on the public relays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub packet_relay: Option<SocketAddr>,
+
     /// Which peers this relay accepts. Defaults to the matching-
     /// user policy — only peers whose cert chains to the same user
     /// identity as this relay's cert.
@@ -143,6 +150,7 @@ impl Default for RelayConfig {
             full_replica_status: default_full_replica_status(),
             home_peer_bundle: default_home_peer_bundle(),
             iroh_listen: default_iroh_listen(),
+            packet_relay: None,
             trust_policy: TrustPolicy::default(),
             device_role: default_device_role(),
             services: default_services(),

@@ -46,6 +46,7 @@ use crate::vmbuild;
 
 mod admin;
 mod artifact;
+mod branch;
 mod builder;
 mod device;
 #[cfg(test)]
@@ -1366,6 +1367,7 @@ impl App {
             } => self.vm_ssh(name.or(vm).as_deref(), raw, &command),
             VmCommand::Status { name } => self.vm_status(name.as_deref()),
             VmCommand::Create(args) => self.vm_create(args),
+            VmCommand::Branch(args) => self.vm_branch(&args),
             VmCommand::Add(args) => self.vm_add(&args),
             VmCommand::Start { name } => self.vm_start(name.as_deref()),
             VmCommand::Wake { name } => self.vm_wake(name.as_deref()),
@@ -1380,7 +1382,12 @@ impl App {
             }
             VmCommand::Restart { name } => self.vm_restart(name.as_deref()),
             VmCommand::Stop { name, force } => self.vm_stop(name.as_deref(), force),
-            VmCommand::Rm { name, force } => self.vm_rm(&name, force),
+            VmCommand::Rm { name, force } => {
+                let mut runner = SystemRunner {
+                    cwd: self.runner.cwd.clone(),
+                };
+                self.vm_rm(&mut runner, &name, force)
+            }
             VmCommand::Upgrade(args) => self.vm_upgrade(&args),
             VmCommand::RollbackImage { name, no_reboot } => {
                 self.vm_rollback_image(name.as_deref(), no_reboot)
@@ -1543,7 +1550,12 @@ impl App {
     /// Delete a VM: power it off (with `force`), unregister it from the
     /// hypervisor, remove the files `vm create` made for it, and drop it
     /// from the registry. The image it was created from stays.
-    fn vm_rm(&mut self, name: &str, force: bool) -> Result<Outcome, CliError> {
+    fn vm_rm(
+        &mut self,
+        runner: &mut dyn Runner,
+        name: &str,
+        force: bool,
+    ) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(Some(name))?;
         let adapter = Self::adapter(&vm)?;
         // vm create gives every VM it makes its own key in keys/. A VM
@@ -1551,15 +1563,15 @@ impl App {
         // hypervisor, disk and key are not ours to delete.
         let own_key = sshkey::key_path(&self.registry_path, &vm.name);
         let owned = vm.entry.key.as_deref().map(Path::new) == Some(own_key.as_path());
-        if owned && adapter.running(&vm.vm(), &mut self.runner) == Some(true) {
+        if owned && adapter.running(&vm.vm(), runner) == Some(true) {
             if !force {
                 return Err(CliError::VmRunning { vm: vm.name });
             }
             if let Some(off) = adapter.power_off(&vm.vm()) {
-                run_all(&mut self.runner, &[off])?;
+                run_all(runner, &[off])?;
             }
             let started = Instant::now();
-            while adapter.running(&vm.vm(), &mut self.runner) == Some(true) {
+            while adapter.running(&vm.vm(), runner) == Some(true) {
                 if started.elapsed() > Duration::from_secs(60) {
                     return Err(CliError::VmRunning { vm: vm.name });
                 }
@@ -1571,11 +1583,11 @@ impl App {
         {
             // The adapter cannot tell whether it runs; a hard power-off of a
             // VM that is already off is harmless.
-            let _ = self.runner.output(&off);
+            let _ = runner.output(&off);
         }
         let mut removed = Vec::new();
         if owned {
-            run_all(&mut self.runner, &adapter.destroy(&vm.vm()))?;
+            run_all(runner, &adapter.destroy(&vm.vm()))?;
             let mut files = vm
                 .entry
                 .disk
@@ -1597,6 +1609,7 @@ impl App {
         if registry.default.as_deref() == Some(vm.name.as_str()) {
             registry.default = None;
         }
+        let bases = branch::release_bases(&mut registry, &mut self.warnings);
         registry.save(&self.registry_path)?;
         let mut text = if owned && !adapter.powers_on() {
             format!(
@@ -1614,12 +1627,24 @@ impl App {
         for file in &removed {
             let _ = write!(text, "\n  removed {file}");
         }
-        if let Some(image) = &vm.entry.image {
-            let _ = write!(text, "\n  kept its image {image}");
+        for base in &bases {
+            let _ = write!(text, "\n  removed base {base}: no VM uses it any more");
+        }
+        if let Some(image) = vm.entry.image.as_ref().filter(|i| !bases.contains(i)) {
+            let users = registry.base_users(image);
+            if users.is_empty() {
+                let _ = write!(text, "\n  kept its image {image}");
+            } else {
+                let _ = write!(
+                    text,
+                    "\n  kept its base {image}, which {} still use",
+                    users.join(", ")
+                );
+            }
         }
         Ok(Outcome::new(
             text,
-            json!({ "vm": vm.name, "deleted": owned, "removed": removed, "image": vm.entry.image }),
+            json!({ "vm": vm.name, "deleted": owned, "removed": removed, "image": vm.entry.image, "bases_removed": bases }),
         )
         .next(&["tilo-vm vm list"]))
     }
@@ -1642,15 +1667,37 @@ impl App {
             if current.as_ref() == Some(name) {
                 marks.push("in use here");
             }
+            let from = entry
+                .branched_from
+                .as_ref()
+                .map(|from| format!("branch of {from}"));
+            marks.extend(from.as_deref());
             lines.push(format!(
                 "  {name:<16} {:<8} {}",
                 entry.hypervisor,
                 marks.join(", ")
             ));
         }
+        if !registry.bases.is_empty() {
+            lines.push(
+                "bases (frozen disks branches share; each is deleted once nothing uses it):".into(),
+            );
+        }
+        let mut bases = serde_json::Map::new();
+        for (id, base) in &registry.bases {
+            let users = registry.base_users(&base.disk);
+            lines.push(format!(
+                "  {id}: {}'s disk on {}, used by {}\n    {}",
+                base.from,
+                base.frozen,
+                users.join(", "),
+                base.disk
+            ));
+            bases.insert(id.clone(), json!({ "base": base, "users": users }));
+        }
         let mut outcome = Outcome::new(
             lines.join("\n"),
-            json!({ "registry": self.registry_path, "vms": registry.vms, "default": registry.default, "current": current }),
+            json!({ "registry": self.registry_path, "vms": registry.vms, "bases": bases, "default": registry.default, "current": current }),
         );
         if registry.vms.is_empty() {
             outcome = outcome.next(&["tilo-vm vm create <name>", "tilo-vm guide quickstart"]);
@@ -1835,6 +1882,21 @@ impl App {
             args.image.as_deref(),
             args.boot_esp.as_deref(),
         )?;
+        let registry = self.registry()?;
+        let image_text = image.as_ref().map(|i| i.display().to_string());
+        if let Some((owner, _)) = registry
+            .vms
+            .iter()
+            .find(|(_, vm)| vm.disk.is_some() && vm.disk == image_text)
+        {
+            return Err(CliError::Unsupported {
+                what: format!("--image with the disk of VM {owner}"),
+                alternative: format!(
+                    "a child of that disk breaks once {owner} boots or is removed; branch {owner} instead: tilo-vm vm branch {owner} {}",
+                    args.name
+                ),
+            });
+        }
         let published = if image.is_none() && args.template.is_none() {
             Some(self.resolve_published(
                 args.tag.as_deref(),
@@ -2087,8 +2149,14 @@ impl App {
             }
             _ => {}
         }
+        // A UUID and MAC of its own, written into its definition, so a VM
+        // branched from it later can tell it is not this one.
+        let (uuid, nic_mac) = hypervisor::new_identity();
+        let identified = matches!(plan.choice.adapter, "libvirt" | "whpx");
         let entry = VmEntry {
             hypervisor: plan.choice.adapter.to_owned(),
+            uuid: identified.then_some(uuid),
+            nic_mac: identified.then_some(nic_mac),
             ssh: args.ssh,
             key: Some(key.display().to_string()),
             image,
@@ -7257,6 +7325,9 @@ fn swap_transport<T>(
 mod swap_wake_tests;
 
 #[cfg(test)]
+mod branch_tests;
+
+#[cfg(test)]
 mod host_layer_tests;
 
 #[cfg(test)]
@@ -8235,7 +8306,8 @@ mod tests {
             );
         }
         {
-            let removed = app.vm_rm("opi", false).unwrap();
+            let mut runner = SystemRunner { cwd: None };
+            let removed = app.vm_rm(&mut runner, "opi", false).unwrap();
             assert!(
                 removed.text.contains("the device itself is untouched"),
                 "{}",

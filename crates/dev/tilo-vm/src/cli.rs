@@ -826,8 +826,8 @@ pub enum VmCommand {
         #[command(subcommand)]
         command: DeviceActionCommand,
     },
-    /// List registered VMs and which one this worktree uses.
-    #[command(after_help = "Examples:\n  tilo-vm vm list")]
+    /// List registered VMs, which one this worktree uses, and what each was branched from.
+    #[command(alias = "ls", after_help = "Examples:\n  tilo-vm vm list")]
     List,
     /// Choose the VM for this worktree (writes .tilo-vm), or for everyone with --global.
     #[command(after_help = "Examples:\n  tilo-vm vm use dev\n  tilo-vm vm use shared --global")]
@@ -865,6 +865,11 @@ pub enum VmCommand {
         after_help = "Checks the hypervisor and its tools, --image, the published disk and free space\nbefore it downloads or creates anything, and names the missing piece with its fix.\n\nExamples:\n  tilo-vm vm create dev                       # newest published disk (needs FORGEJO_TOKEN, or fgj/tea login)\n  tilo-vm vm create dev --tag main-1a2b3c4\n  tilo-vm vm create dev --image ~/images/tilo-vm.qcow2 --disk ~/vms/dev.qcow2\n  tilo-vm vm create try1 --image os/output/disk/disk.raw   # a raw disk from os/dev/disk-image.sh --raw\n  tilo-vm vm create esp1 --image base.raw --boot-esp override.raw   # boot a candidate ESP (os/dev/make-boot-esp.sh) first\n  tilo-vm vm create mac --hypervisor utm --template 'Tilo Dev'\n  tilo-vm vm create arm --arch aarch64 --emulated --image arm.qcow2 --disk arm-dev.qcow2\n  tilo-vm vm create 5k --heads 2 --resolution 5120x2880   # 5K first monitor, 1080p-capable second\n  tilo-vm vm create gpu --gl                   # virgl: render on the host GPU"
     )]
     Create(CreateArgs),
+    /// Branch a stopped VM into new VMs that start as copies of it, then diverge: copy-on-write, in seconds.
+    #[command(
+        after_help = "Examples:\n  tilo-vm vm branch dev a b c          # three new VMs, each a copy of dev as it is now\n  tilo-vm vm branch dev review --stop  # shut dev down cleanly first\n  tilo-vm vm branch a a2               # a branch of a branch\n\nThe source must be off. Its disk is frozen as a read-only base, and the\nsource and every new VM each get a copy-on-write child of it, so nothing is\ncopied and the VMs never see each other's writes. A base is deleted once no\nVM uses it: vm rm of the source or of any branch never breaks the others.\nEach new VM gets its own name, UUID (the guest's SMBIOS system UUID), MAC\nand SSH port; the guest sees the new UUID on first boot and gives itself a\nnew device identity, keeping everything else on the disk (home, keys,\nvaults, settings). libvirt, whpx and utm. Details: tilo-vm guide concepts."
+    )]
+    Branch(BranchArgs),
     /// Register a real machine that already runs a Tilo dev image (a board or a laptop), reached over SSH, after checking what tilo-vm needs there.
     #[command(
         after_help = "Examples:\n  tilo-vm vm add opi --ssh root@10.0.0.108                       # root with its own key; prints the key install\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --key ~/.ssh/yoga_ed25519   # the owner's account; root through sudo -n\n  tilo-vm vm add yoga --ssh me@10.0.0.223 --grant-sudo           # sudo asks for me's password once, here\n  tilo-vm vm use yoga\n  tilo-vm swap --slot device tilo-session --from sha:1a2b3c4      # a board's own session\n\nEvery remote command runs as root: as root@ with the device's own key\n(keys/<name>_ed25519 beside vms.toml, installed once with the command vm add\nprints), or as another account through sudo -n, for a device whose SSH lets\nonly its owner in (the installer's dev SSH setup). vm add checks SSH, root,\ntilo-vmd and its protocol, the toolchain and bootc, names each fix, and\nregisters the device only once SSH, root and tilo-vmd work; rerun it after a\nfix. Nothing is installed on the device but what --grant-sudo writes\n(/etc/sudoers.d/tilo-vm-<user>). tilo-vm cannot power a device on, so vm\nrestart reboots it over SSH. Details: tilo-vm guide devices."
@@ -1051,6 +1056,18 @@ pub struct AddArgs {
     /// asks for that user's password once, on this terminal.
     #[arg(long)]
     pub grant_sudo: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct BranchArgs {
+    /// The VM to branch: one `vm create` made, shut down (or --stop).
+    pub source: String,
+    /// The new VMs' names.
+    #[arg(required = true)]
+    pub names: Vec<String>,
+    /// Shut the source down cleanly first if it runs.
+    #[arg(long)]
+    pub stop: bool,
 }
 
 #[derive(Debug, Args)]

@@ -323,7 +323,8 @@ impl Platform for HostPlatform {
         self.phrases.language()
     }
 
-    fn add_words(&self, catalogues: &[(String, String)]) {
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        let _ = window;
         self.phrases.add_package(catalogues);
     }
 

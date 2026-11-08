@@ -36,9 +36,10 @@ const KEY_F10: u32 = 68;
 const KEY_LEFT_META: u32 = 125;
 
 /// The rows the desk offers a lone window, in order.
-const ROWS: [&str; 5] = [
+const ROWS: [&str; 6] = [
     "Full screen",
     "Fill the strip",
+    "Float this window",
     "Width",
     "New tab of this app",
     "Close this window",
@@ -402,7 +403,7 @@ fn the_menu_groups_what_it_offers_and_hides_places_there_are_none_of() {
 
     // A rule between groups, never at either end and never two together.
     let groups: Vec<&[Value]> = rows.split(|row| row["separator"] == json!(true)).collect();
-    assert_eq!(groups.len(), 4, "the rows read in groups: {reading}");
+    assert_eq!(groups.len(), 5, "the rows read in groups: {reading}");
     assert!(
         groups.iter().all(|group| !group.is_empty()),
         "a rule stands between groups, not beside one: {reading}"

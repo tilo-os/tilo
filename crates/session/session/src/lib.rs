@@ -136,6 +136,7 @@ pub mod quick_settings;
 mod record_index;
 mod records;
 pub mod recovery;
+mod remote_door;
 mod rotation;
 pub mod run;
 mod seams;
@@ -546,6 +547,8 @@ struct Shared {
     /// What a connection of any door asks of the session's own doors: answered
     /// on the loop's pass, the only place that may touch them.
     session_doors: std::sync::Arc<agent_door::SessionDoors>,
+    /// The agent door toward the person's other devices.
+    remote: std::sync::Arc<remote_door::Remote>,
     /// The installed folder importer's side of this login, once the session
     /// serves it: what it asks on whether first use is over, and the review
     /// it saved to be opened when it is.
@@ -1172,11 +1175,14 @@ impl Session {
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
+        // The agent door toward the person's other devices: answered on this
+        // device's endpoint, and served by the agent door once it opens.
+        let remote = remote_door::Remote::new(options.wake.handle());
         let sync = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
-            beside,
+            (beside, &remote),
             Some(sync::PeerDocuments::new(
                 std::sync::Arc::clone(&channels_broker),
                 std::sync::Arc::clone(&channels_fanout),
@@ -1652,12 +1658,14 @@ impl Session {
             .as_deref()
             .and_then(|control| compositor.serve_liveness(control, agent_door::bind_private));
         let agent_door = door.map(|door| {
-            door.serve(
+            let mut door = door.serve(
                 action_plane.as_ref().and_then(Plane::agent_broker),
                 action_plane
                     .as_ref()
                     .map(|plane| std::sync::Arc::clone(&plane.desk)),
-            )
+            );
+            door.hear_remote(std::sync::Arc::clone(&remote));
+            door
         });
         let automation = automation::Automation::new(
             options.state.as_deref(),
@@ -1880,6 +1888,7 @@ impl Session {
             asker,
             agent_door: RefCell::new(agent_door),
             session_doors,
+            remote,
             folder_import: RefCell::new(None),
             sync,
             engine,
@@ -2403,6 +2412,19 @@ impl Session {
     #[must_use]
     pub fn resources(&self) -> Vec<ResourceSpec> {
         self.shared.doors.resources()
+    }
+
+    /// The door this session answers agents on the person's other devices
+    /// at, admitting the devices `devices` says are theirs: what this
+    /// device's endpoint serves on [`tilo_runtime::remote_door::ALPN`], over
+    /// the person's own store. Whoever serves it hands this session's agent
+    /// door each connection it opens.
+    #[must_use]
+    pub fn remote_door(
+        &self,
+        devices: std::sync::Arc<dyn tilo_runtime::remote_door::PersonsDevices>,
+    ) -> tilo_runtime::remote_door::RemoteDoor {
+        self.shared.remote.door(devices)
     }
 
     /// The windows the overview pictures as the compositor draws them now:

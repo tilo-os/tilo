@@ -77,9 +77,14 @@ impl Platform for Packages {
     }
 
     /// The package's words, and the one language its window is laid out in: the person's when
-    /// the package ships it, the package's source language otherwise.
-    fn add_words(&self, catalogues: &[(String, String)]) {
-        ui::i18n::speak_window_language(catalogues);
+    /// the package ships it, the package's source language otherwise. A package the window uses
+    /// (another app's view it calls) only rides along in that language.
+    fn add_words(&self, window: bool, catalogues: &[(String, String)]) {
+        if window {
+            ui::i18n::speak_window_language(catalogues);
+        } else {
+            tilo_ui_host::i18n::add_shared_catalogues(catalogues);
+        }
     }
 
     /// A fixed instant, so every run lays out the same dates: the clock the capture pins
@@ -377,14 +382,16 @@ impl Staged {
                 continue;
             };
             for field in &schema.fields {
-                if let (Some(item_ty), Some(tilolang_tilo::DynValue::Collection(items))) =
-                    (&field.record, record.get(&field.id))
-                {
-                    out.extend(items.ids().map(|id| ResourceRef {
-                        id: format!("{doc}/{}", id.as_str()),
-                        ty: item_ty.clone(),
-                    }));
-                }
+                // Each item's type is its own: a collection of a union of record types (a
+                // category, a channel or a direct message) declares none for the field, so the
+                // item's record is the only thing that says which type it is.
+                let Some(tilolang_tilo::DynValue::Collection(items)) = record.get(&field.id) else {
+                    continue;
+                };
+                out.extend(items.iter().map(|(id, item)| ResourceRef {
+                    id: format!("{doc}/{}", id.as_str()),
+                    ty: item.schema().id.clone(),
+                }));
             }
         }
         out
@@ -429,6 +436,33 @@ impl Staged {
             }
         }
         out
+    }
+
+    /// Tap the window at `at`, as a finger does, and let it answer: a row of a list is painted
+    /// by the list, one widget without a place of its own to tap by name, so a person's hand
+    /// lands on where the row is drawn.
+    pub fn tap_at(&mut self, at: (f64, f64)) -> Result<(), String> {
+        self.harness.tap_at(at.0, at.1);
+        self.exchange();
+        self.settle()
+    }
+
+    /// The resource the window shows where a person holding it is looking: nothing while the
+    /// sidebar stands in front, and the page the window pushed in front of its list (or opened
+    /// over it) once that does.
+    pub fn front_target(&mut self) -> Option<ResourceRef> {
+        let window = self.window()?;
+        let sidebar = matches!(
+            window.shell_ref().map(ui::widget::NavShell::front_pane),
+            Some(ui::widget::NavPane::Sidebar | ui::widget::NavPane::Overview)
+        );
+        if sidebar {
+            return None;
+        }
+        window
+            .detail_target()
+            .or_else(|| window.root_target())
+            .cloned()
     }
 
     /// The tree the window composed from what the app sent, as sent: every view that ran is in
@@ -1123,6 +1157,96 @@ mod tests {
             || node.children.iter().any(|child| shows_dialog(child, label))
     }
 
+    /// How many of the tasks of `app` the window's workspace reminds anyone of.
+    fn reminded(staged: &Staged, app: &str) -> usize {
+        let host = staged.instance.host().expect("a host");
+        let root = host.root_of(app).expect("the tasks root");
+        let tilolang_tilo::runtime::Value::List(items) =
+            host.runtime().read(&root, "items").expect("the items")
+        else {
+            panic!("the tasks are a list");
+        };
+        items
+            .into_iter()
+            .filter(|item| {
+                let tilolang_tilo::runtime::Value::Ref(task) = item else {
+                    return false;
+                };
+                matches!(
+                    host.runtime().read(&task.target, "remind"),
+                    Ok(tilolang_tilo::runtime::Value::Opt(Some(_)))
+                )
+            })
+            .count()
+    }
+
+    /// The reminder's form, opened from a task's row menu as a finger opens it: the menu's
+    /// "Remind me…" row asks when.
+    fn open_reminder_form(staged: &mut Staged) {
+        let reminder = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
+        };
+        staged.press(&reminder, true).expect("its menu opens");
+        staged.freshen().expect("the menu comes to rest");
+        let row = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::painted_row_named(root, "Remind me…")
+                .expect("the menu offers its row")
+        };
+        press_at(staged, row);
+        assert!(
+            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "the row opens the reminder's form"
+        );
+    }
+
+    /// A form of one question is answered by the choice a person picks: the pick submits it, so
+    /// it closes with the task reminded, with nothing else to press.
+    #[test]
+    fn a_quick_choice_answers_a_one_question_form_in_one_press() {
+        tilo_ui_host::i18n::ensure();
+        let packages = app_packages("tasks");
+        let app = packages.0.last().expect("the app").meta.app.clone();
+        let (width, height) = (390, 844);
+        let mut staged = Staged::over(
+            &app,
+            &packages,
+            "a busy week",
+            (width, height),
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        staged
+            .lay_out(
+                (width, height),
+                ui::Theme::light(),
+                ui::interaction::InteractionEnvironment::TOUCH,
+                1.0,
+            )
+            .expect("the window lies out for a finger");
+        let before = reminded(&staged, &app);
+        open_reminder_form(&mut staged);
+        let choice = {
+            let root = &staged.harness().inspection().root;
+            crate::layout_check::button_named(root, "Tomorrow morning")
+                .expect("the form offers the moments a person names")
+        };
+        staged.press(&choice, true).expect("the choice presses");
+        staged.freshen().expect("the window comes to rest");
+        assert!(
+            !shows_dialog(&staged.harness().inspection().root, "Remind me…"),
+            "picking when answers the form: it closes"
+        );
+        assert_eq!(
+            reminded(&staged, &app),
+            before + 1,
+            "and the task is reminded"
+        );
+    }
+
     /// A menu row on a touchscreen is pressed where it stands, by a finger: a mouse press there
     /// only dismisses the menu the finger opened, and the row runs nothing.
     #[test]
@@ -1149,25 +1273,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
-        let reminder = {
-            let root = &staged.harness().inspection().root;
-            crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
-        };
-        staged.press(&reminder, true).expect("its menu opens");
-        staged.freshen().expect("the menu comes to rest");
-        let row = {
-            let root = &staged.harness().inspection().root;
-            crate::layout_check::painted_row_named(root, "Remind me…")
-                .expect("the menu offers its row")
-        };
-        let center = row.center();
-        staged
-            .press_at(center.x, center.y)
-            .expect("the row presses");
-        assert!(
-            shows_dialog(&staged.harness().inspection().root, "Remind me…"),
-            "the row opens the reminder's form"
-        );
+        open_reminder_form(&mut staged);
     }
 
     /// Press `bounds` as a person presses them, and let the window and its app answer.

@@ -690,6 +690,7 @@ impl Shell {
             }
             window_menu::MAXIMIZE => ShortcutAction::MaximizeWindow,
             window_menu::RESTORE => ShortcutAction::RestoreWindow,
+            window_menu::FLOAT | window_menu::SNAP_BACK => ShortcutAction::ToggleFloat,
             window_menu::SPLIT_RIGHT => ShortcutAction::DetachTab,
             window_menu::WIDER => ShortcutAction::ResizeWider,
             window_menu::NARROWER => ShortcutAction::ResizeNarrower,

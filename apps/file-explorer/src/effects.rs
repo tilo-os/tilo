@@ -317,10 +317,6 @@ pub enum FilesEffect {
         entry: String,
         #[param("The application to open it with")]
         app: String,
-        #[param("Always open files of this type with it")]
-        always: Option<bool>,
-        #[param("Access to the original file", choices = ["read-only", "edit-in-parent"])]
-        access: Option<String>,
     },
     /// Browse a provider folder without mounting it.
     #[effect(label = "Browse account", view)]

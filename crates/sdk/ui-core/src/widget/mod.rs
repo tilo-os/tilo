@@ -3255,8 +3255,8 @@ pub use tile_host::{
 mod app_widget;
 pub(crate) use app_widget::BoundAppWidget;
 pub use app_widget::{
-    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, DocumentOpenCapability,
-    DocumentOpenOutcome, DocumentOpenReply, HostShellAllow, IconDescriptor, WindowPublication,
+    AppCommand, AppHostIntent, AppWidget, DeviceDisplayMoveReply, HostShellAllow, IconDescriptor,
+    WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;
@@ -3334,10 +3334,10 @@ pub(crate) use overflow_door::give_way;
 pub use overflow_door::{OverflowDoor, plan as plan_overflow};
 mod group_row;
 pub use group_row::{
-    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, GroupRow, GroupTopology,
-    HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX,
-    STRIP_TOP_GAP_PX, StripLane, TabDropTarget, WheelJumpAccum, pan_within_canvas,
-    wheel_jump_detents,
+    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FloatAsk, GroupRow,
+    GroupTopology, HintPlaces, JUMP_PX_PER_DETENT, OutputSpan, Pan, STRIP_BOTTOM_GUTTER_PX,
+    STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripLane, TabDropTarget, WheelJumpAccum,
+    pan_within_canvas, wheel_jump_detents,
 };
 mod finger_path;
 mod strip_deck;

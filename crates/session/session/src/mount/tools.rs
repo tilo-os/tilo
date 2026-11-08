@@ -11,18 +11,21 @@
 
 use std::io::{BufRead, BufReader, ErrorKind, Read as _, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::Path;
 use std::sync::Arc;
 use std::sync::mpsc::SyncSender;
 use std::time::Duration;
 
 use runtime_portal::tools::{
-    AppEntry, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES, MAX_WIRE_BYTES,
-    TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest, WorkspaceSettingsRoute,
+    AppEntry, DocumentApp, DriveEntry, MAX_LISTED_APPS, MAX_LISTED_DRIVES, MAX_REPLY_BYTES,
+    MAX_WIRE_BYTES, TOOL_PROTOCOL_VERSION, ToolIntent, ToolReply, ToolRequest,
+    WorkspaceSettingsRoute,
 };
 use tilo_action_broker::services::{
     ApplicationChange, ApplicationServices, DriveChange, DriveServices, LaunchPlace,
 };
 use tilo_app_launch::Launch;
+use tilo_app_launch::routing;
 use tilo_desktop_model::app::AppKind as Builtin;
 use tilo_lock::MutexRecover as _;
 use tilo_service::Wake;
@@ -413,6 +416,10 @@ fn answer(inner: &Inner, caller: Option<&Caller>, request: &ToolRequest) -> Tool
                 ..ToolReply::default()
             }
         }
+        ToolIntent::DocumentApps { path } => document_apps(caller, path),
+        ToolIntent::OpenDocument { path, app } => {
+            open_document(inner, caller, path, app.as_deref())
+        }
         ToolIntent::OpenApplication { app } => open_application(inner, caller, app),
         ToolIntent::UninstallApplication { app } => uninstall(inner, caller, app),
         ToolIntent::WorkspaceSettings { route } => workspace_settings(inner, caller, *route),
@@ -494,6 +501,99 @@ fn open_drive(inner: &Inner, caller: &Caller, drive: &str) -> ToolReply {
         LaunchPlace::Focus,
         None,
     ) {
+        Ok(()) => accepted("opened"),
+        Err(message) => refused(&message),
+    }
+}
+
+/// The apps that open the document at `path` on this device, with the app
+/// lists they were read from.
+fn documents_of(
+    path: &Path,
+) -> (
+    Vec<Launch>,
+    Vec<app_catalogue::apps::InstalledApp>,
+    desktop_entry::Scan,
+) {
+    let (installed, entries) = super::apps::routes();
+    let launches = routing::documents(path, &installed, &entries);
+    (launches, installed, entries)
+}
+
+/// The app a document launch names: a Tilo package's id, or the machine's
+/// desktop id.
+fn document_id(launch: &Launch) -> Option<&str> {
+    match launch {
+        Launch::Package { app, .. } => Some(app),
+        Launch::Host { desktop_id, .. } => Some(desktop_id),
+        _ => None,
+    }
+}
+
+/// The apps that open the document at `path`, the one this device opens it
+/// with today first: what Files' "Open with" lists.
+fn document_apps(caller: &Caller, path: &str) -> ToolReply {
+    if caller.app != files() {
+        return refused("the apps that open a document are listed for Files alone");
+    }
+    let (launches, installed, entries) = documents_of(Path::new(path));
+    let locales = crate::app_names::entry_locales();
+    let documents = launches
+        .iter()
+        .take(MAX_LISTED_APPS)
+        .enumerate()
+        .filter_map(|(index, launch)| {
+            let id = document_id(launch)?.to_owned();
+            let name = match launch {
+                Launch::Package { .. } => installed
+                    .iter()
+                    .find(|listed| listed.package_id == id)
+                    .map_or_else(|| id.clone(), |listed| listed.name_in(&locales).to_owned()),
+                _ => entries
+                    .entries
+                    .iter()
+                    .find(|entry| entry.id == id)
+                    .map_or_else(|| id.clone(), |entry| entry.name.clone()),
+            };
+            Some(DocumentApp {
+                id,
+                name,
+                is_default: index == 0,
+            })
+        })
+        .collect();
+    ToolReply {
+        accepted: true,
+        message: "listed".into(),
+        documents,
+        ..ToolReply::default()
+    }
+}
+
+/// Open the document at `path` in `app`, one of the apps that open its type,
+/// or in the app this device opens the type with today.
+fn open_document(inner: &Inner, caller: &Caller, path: &str, app: Option<&str>) -> ToolReply {
+    if caller.app != files() {
+        return refused("a document is opened from Files alone");
+    }
+    let (launches, _, _) = documents_of(Path::new(path));
+    let launch = match app {
+        Some(app) => launches
+            .into_iter()
+            .find(|launch| document_id(launch) == Some(app)),
+        None => launches.into_iter().next(),
+    };
+    let Some(launch) = launch else {
+        return refused(if app.is_some() {
+            "no such app opens this document"
+        } else {
+            "nothing on this device opens this document"
+        });
+    };
+    match inner
+        .launches
+        .ask(launch, &caller.workspace, LaunchPlace::Focus, None)
+    {
         Ok(()) => accepted("opened"),
         Err(message) => refused(&message),
     }
@@ -633,6 +733,17 @@ mod tests {
             listed[0].open_at.is_none(),
             "a mount the machine does not have is not open"
         );
+    }
+
+    #[test]
+    fn the_apps_that_open_a_document_are_answered_to_files_alone() {
+        let caller = Caller {
+            app: "so.tilo.notes".into(),
+            workspace: "ws".into(),
+        };
+        let reply = document_apps(&caller, "/home/you/notes.pdf");
+        assert!(!reply.accepted);
+        assert!(reply.documents.is_empty());
     }
 
     #[test]

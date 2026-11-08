@@ -39,7 +39,12 @@ Downloaded dev disks are cached in the platform cache dir
 (`~/.cache/tilo-vm/disks/` on Linux). A VM's disk is a copy-on-write child
 of its cached disk, so keep that file while the VM exists. `tilo-vm vm rm <vm>`
 deletes a VM with its disk, UEFI variables, logs and key, and keeps the cached
-disk. Images imported from a network path (`tilo-vm guide platforms`) are
+disk. `tilo-vm vm branch` freezes a VM's disk as a read-only base in `bases/`
+beside it; the VM and its branches are copy-on-write children of it, and it
+is deleted with the last VM that uses it. A branch of a branch adds a base
+over the first, so a long-lived box branched many times builds a chain of
+bases; each is only what changed since the one before.
+Images imported from a network path (`tilo-vm guide platforms`) are
 cached in `~/.cache/tilo-vm/imports/`; delete one once no VM is made from it.
 
 `tilo-vm vm upgrade --from local` keeps one uncompressed copy of the VM's image

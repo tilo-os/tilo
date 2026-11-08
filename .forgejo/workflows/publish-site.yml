@@ -138,10 +138,9 @@ jobs:
 
       - name: Run the Lounge with people in it
         # The gate before publishing: the image the deployment runs starts on
-        # a fresh volume and on the previous release's state, lists itself in
-        # its directory, and hosts two people's browsers in the shared desk —
-        # chat, windows and presence — with the same programs and entry the
-        # deployment uses.
+        # a fresh volume, lists itself in its directory, and hosts two
+        # people's browsers in the shared desk — chat, windows and presence —
+        # with the same programs and entry the deployment uses.
         run: bash os/containers/tilo-lounge/test-integration.sh "$OUT/lounge/image.oci.tar" "$OUT/web-desktop/bundle" "$OUT/lounge-gate"
 
       - name: Keep the gate's diagnostics

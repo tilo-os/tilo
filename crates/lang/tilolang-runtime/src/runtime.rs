@@ -129,7 +129,7 @@ impl Runtime {
     /// package's declaration ids.
     pub fn load_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
-        self.add_catalogues(wasm);
+        self.add_catalogues(wasm, crate::words::WordsRole::Window);
         self.check_exports(&hash, &meta)?;
         let lines = tilolang::meta::lines_from_wasm(wasm);
         let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
@@ -154,8 +154,21 @@ impl Runtime {
     pub fn reload_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
         // The version loaded now brings its own words: a package reloaded after its catalogues
-        // were translated reads them, not the ones it was loaded with before.
-        self.add_catalogues(wasm);
+        // were translated reads them, not the ones it was loaded with before. The window's own
+        // package still chooses the language; another app's, running here inline, rides along.
+        let role = if self
+            .core
+            .registry
+            .borrow()
+            .packages()
+            .iter()
+            .any(|package| package.foreign && package.meta.app == meta.app)
+        {
+            crate::words::WordsRole::Used
+        } else {
+            crate::words::WordsRole::Window
+        };
+        self.add_catalogues(wasm, role);
         self.check_exports(&hash, &meta)?;
         let lines = tilolang::meta::lines_from_wasm(wasm);
         let pkg = crate::registry::Package::with_lines(hash.clone(), meta, &lines)
@@ -279,7 +292,7 @@ impl Runtime {
     /// As [`Runtime::load_package`].
     pub fn load_foreign_package(&self, wasm: &[u8], meta: Meta) -> Result<PackageId, RuntimeError> {
         let hash = self.core.engine.compile(wasm)?;
-        self.add_catalogues(wasm);
+        self.add_catalogues(wasm, crate::words::WordsRole::Used);
         self.check_exports(&hash, &meta)?;
         let app = meta.app.clone();
         let pkg = crate::registry::Package::foreign_with_code(hash.clone(), meta)
@@ -1000,9 +1013,13 @@ impl Runtime {
 
     /// Where the words packages and the platform show come from, in the reader's language
     /// (`phrase(id, ...)`, a declaration's label and noun). It takes every package's catalogues
-    /// loaded so far, and those loaded after. Until it is set, the source words stand.
+    /// loaded so far, and those loaded after: the window's own package's as the word `Words::add`
+    /// takes them, a package's it uses as `Words::add_used` does. Until it is set, the source
+    /// words stand.
     pub fn set_words(&self, words: impl crate::words::Words + 'static) {
-        words.add(&self.core.catalogues.borrow());
+        for (role, catalogues) in self.core.catalogues.borrow().iter() {
+            role.hand(&words, catalogues);
+        }
         *self.core.words.borrow_mut() = Box::new(words);
     }
 
@@ -1014,14 +1031,15 @@ impl Runtime {
         std::cell::Ref::map(self.core.words.borrow(), |words| &**words)
     }
 
-    /// Takes in the catalogues the module `wasm` carries.
-    fn add_catalogues(&self, wasm: &[u8]) {
+    /// Takes in the catalogues the module `wasm` carries, as `role` says which package of the
+    /// window they belong to.
+    fn add_catalogues(&self, wasm: &[u8], role: crate::words::WordsRole) {
         let catalogues = tilolang::meta::locales_from_wasm(wasm);
         if catalogues.is_empty() {
             return;
         }
-        self.core.words.borrow().add(&catalogues);
-        self.core.catalogues.borrow_mut().extend(catalogues);
+        role.hand(&**self.core.words.borrow(), &catalogues);
+        self.core.catalogues.borrow_mut().push((role, catalogues));
     }
 
     /// What a reference to a resource the person cannot read says, in their language: the

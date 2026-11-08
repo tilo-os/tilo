@@ -1952,7 +1952,7 @@ macro_rules! shortcut_actions {
 
 #[rustfmt::skip]
 shortcut_actions! {
-    64;
+    65;
 
     Search => "search", System, Session, None, default_chord(&["Super"], "space");
 
@@ -2085,6 +2085,12 @@ shortcut_actions! {
     DictationToggle => "dictation-toggle", Accessibility, Session, None, default_chord(&["Shift", "Super"], "d");
     DictationFinish => "dictation-finish", Accessibility, Session, None, default_chord(&["Alt", "Super"], "d");
     DictationCancel => "dictation-cancel", Accessibility, Session, None, default_chord(&["Shift", "Super"], "escape");
+
+    // Next to Super+F, which covers the display with the window: this lifts
+    // it out of its strip instead.
+    /// Lift the focused window above the desk, or put it back into its
+    /// strip.
+    ToggleFloat => "toggle-float", Windows, Desk, None, default_chord(&["Shift", "Super"], "f");
 }
 impl ShortcutAction {
     /// The strip position a `FocusGroupN` action selects, counting from 0.
@@ -3333,7 +3339,7 @@ mod tests {
         }
         {
             let cfg = ShortcutConfig::default();
-            assert_eq!(cfg.bindings.len(), 64);
+            assert_eq!(cfg.bindings.len(), 65);
             let unique: BTreeSet<_> = cfg.bindings.values().collect();
             assert_eq!(unique.len(), cfg.bindings.len());
             assert_eq!(

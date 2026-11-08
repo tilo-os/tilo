@@ -11,10 +11,14 @@
 )]
 tilo_automerge_isolate::test_worker!();
 
+mod common;
+
+use common::{addr, device, localhost_endpoint, workspace};
+
 use ed25519_dalek::SigningKey;
 use iroh::endpoint::RecvStream;
 use iroh::protocol::Router;
-use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
+use iroh::{Endpoint, EndpointAddr};
 use neighbour_wire::actions::{DeviceAction, PlaneFrame, SignedDeviceAction};
 use std::sync::Arc;
 use std::time::Duration;
@@ -29,7 +33,6 @@ use tilo_peer_state::join::{
     InviteGrant, JoinChallenge, MemberRole, VerifiedRedemption, decode_and_verify_invitation,
     issue_invitation, sign_join_proof, verify_join_proof,
 };
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
     sign_device_cert, sign_revocation_entry,
@@ -42,22 +45,6 @@ const ELSEWHERE: &str = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 
 /// How long a test waits for an answer before it counts as lost.
 const PATIENCE: Duration = Duration::from_secs(20);
-
-/// A device key `n` certified by `root` as one of its person's devices.
-fn device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
-    let key = SigningKey::from_bytes(&[n; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    (key, cert)
-}
 
 /// A device `root` delegates to `agent`: its own key, and a certificate that
 /// holds none of the person's capabilities.
@@ -74,25 +61,6 @@ fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     };
     sign_device_cert(&mut cert, root).unwrap();
     (key, cert)
-}
-
-/// A localhost endpoint with no relay whose identity is the device `key`.
-async fn endpoint(key: &SigningKey) -> Endpoint {
-    Endpoint::builder(presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .secret_key(SecretKey::from_bytes(&key.to_bytes()))
-        .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    EndpointAddr::new(endpoint.id()).with_ip_addr(std::net::SocketAddr::from((
-        std::net::Ipv4Addr::LOCALHOST,
-        endpoint.bound_sockets().first().unwrap().port(),
-    )))
 }
 
 fn ns(at: SystemTime) -> u64 {
@@ -148,7 +116,7 @@ impl Engine {
         dispatcher: Arc<TestHost>,
         bounds: Bounds,
     ) -> Self {
-        let endpoint = endpoint(&key).await;
+        let endpoint = localhost_endpoint(&key).await;
         let plane = ActionPlane::with_bounds(key.clone(), dispatcher.clone(), bounds);
         plane.hold(replica.clone());
         let router = Router::builder(endpoint.clone())
@@ -176,34 +144,9 @@ impl Engine {
     }
 }
 
-/// The workspace `a.1` creates and seeds, with `roster` certified as the
-/// workspace's devices.
-fn workspace(a: &(SigningKey, DeviceCert), roster: &[DeviceCert]) -> StatePeer {
-    let now = SystemTime::now();
-    let mut peer = StatePeer::new(
-        WORKSPACE,
-        a.1.clone(),
-        roster.to_vec(),
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    peer.select_admission_v5().unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a.1, roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a.0,
-        now,
-    )
-    .unwrap();
-    peer
-}
-
 /// A device of `key` that only asks: its own plane, with nothing to answer.
 async fn asking(key: &SigningKey) -> (Endpoint, ActionPlane) {
-    let endpoint = endpoint(key).await;
+    let endpoint = localhost_endpoint(key).await;
     let plane = ActionPlane::new(key.clone(), Arc::new(TestHost::new()));
     (endpoint, plane)
 }
@@ -286,7 +229,7 @@ async fn an_action_reaches_the_device_it_names_and_is_answered() {
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
@@ -352,7 +295,7 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
@@ -444,7 +387,7 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
@@ -494,7 +437,7 @@ async fn a_person_who_left_the_workspace_is_refused() {
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
@@ -604,7 +547,7 @@ async fn a_delegated_agent_acts_as_itself_and_not_once_its_window_closed() {
     let roster = vec![a.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
@@ -682,7 +625,7 @@ async fn changes_spend_their_budget_while_reading_spends_none() {
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds {
@@ -727,7 +670,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let roster = vec![a.1.clone(), b.1.clone()];
     let dispatcher = Arc::new(TestHost::new());
     let engine = Engine::serving(
-        Replica::new(workspace(&a, &roster)),
+        Replica::new(workspace(WORKSPACE, &a, &roster)),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),

@@ -36,8 +36,13 @@ use tilo_peer_state::document_frame::{
 };
 use tilo_relay_client::https::{HttpClient, HttpsLink, LinkError};
 
+mod connect;
 mod plane;
 mod voice;
+
+use connect::Dial;
+#[cfg(all(test, feature = "iroh"))]
+use connect::{connect, iroh_link_error};
 
 /// Longest wait between reconnect attempts.
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
@@ -129,8 +134,8 @@ const MAX_FAILURES: usize = 16;
 pub enum Host {
     /// Its HTTPS origin, through this client (the page's `fetch`).
     Https(Arc<dyn HttpClient>),
-    /// Its iroh endpoint (native peers).
-    #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+    /// Its iroh endpoint.
+    #[cfg(feature = "iroh")]
     Iroh {
         addr: iroh_base::EndpointAddr,
         /// An iroh relay server to dial it through, if any.
@@ -794,10 +799,8 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
-        let mut channels = crate::channels::Channels::new(
-            config.cert.device_public_key,
-            store.channel_vault().unwrap_or_else(rand::random),
-        );
+        let vault = store.channel_vault().unwrap_or_else(rand::random);
+        let mut channels = crate::channels::Channels::new(config.cert.device_public_key, vault);
         let saved = store
             .load_channels()
             .and_then(|bytes| SavedPeerChannels::decode(&bytes))
@@ -812,6 +815,7 @@ impl PeerHandle {
             config,
             signer,
             store,
+            dial: Dial::for_page(&vault),
             shared: shared.clone(),
             workspaces: BTreeSet::new(),
             placing: BTreeMap::new(),
@@ -1311,6 +1315,8 @@ struct Task {
     config: PeerConfig,
     signer: Arc<dyn DeviceSigner>,
     store: Arc<dyn PeerStore>,
+    /// Where this session dials its host from, kept across reconnects.
+    dial: Dial,
     shared: Arc<Mutex<Shared>>,
     workspaces: BTreeSet<u64>,
     /// Workspaces of this device's person joined once the host governs them:
@@ -1663,7 +1669,7 @@ impl Task {
                 };
                 status.next_attempt_at_ms = None;
             });
-            match connect(&self.config, self.signer.as_ref()).await {
+            match self.connect().await {
                 Ok(client) => {
                     attempt = 0;
                     refusals = 0;
@@ -2167,7 +2173,7 @@ impl Task {
             }
             // Workspaces are administered over HTTPS only: a native peer joins
             // workspaces placed for it otherwise.
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Link::Iroh { .. } => placed(),
         }
         true
@@ -2251,7 +2257,7 @@ impl Task {
                     done(reply.map_err(|error| error.to_string()));
                 });
             }
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Some(Link::Iroh { .. }) => done(Err("who is here is served over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
@@ -2274,7 +2280,7 @@ impl Task {
                     done(reply.map_err(|error| error.to_string()));
                 });
             }
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Some(Link::Iroh { .. }) => done(Err("workspaces are administered over HTTPS".into())),
             None => done(Err("not connected to the host".into())),
         }
@@ -2291,7 +2297,7 @@ impl Task {
                     done(Ok(info.ok().and_then(|info| info.session)));
                 });
             }
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Some(Link::Iroh { .. }) => done(Ok(None)),
             None => done(Err("not connected to the host".into())),
         }
@@ -3585,12 +3591,16 @@ fn renew_after(expires_at_ns: u64, now_ns: u64) -> Duration {
 )]
 enum Link {
     Https(HttpsLink),
-    #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+    #[cfg(feature = "iroh")]
     Iroh {
         client: tilo_relay_session::RelayClient,
         /// The endpoint the session dialled the host from: the workspace
         /// planes are joined over it, beside the session.
         endpoint: iroh::Endpoint,
+        /// This device's statement that the endpoint speaks for it, when the
+        /// device key could not dial itself (a page): the planes' grants carry
+        /// it. Empty for a device that dialled as itself.
+        delegation: Vec<u8>,
     },
 }
 
@@ -3600,13 +3610,13 @@ impl Link {
     fn fetch_proxy_session(&self) -> Option<String> {
         match self {
             Self::Https(link) => link.fetch_proxy().then(|| link.session().to_owned()),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { .. } => None,
         }
     }
 
     #[cfg_attr(
-        any(not(feature = "iroh"), target_arch = "wasm32"),
+        not(feature = "iroh"),
         allow(
             clippy::unnecessary_wraps,
             reason = "an iroh link has no session token"
@@ -3615,7 +3625,7 @@ impl Link {
     fn session_token(&self) -> Option<String> {
         match self {
             Self::Https(link) => Some(link.session().to_owned()),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { .. } => None,
         }
     }
@@ -3623,7 +3633,7 @@ impl Link {
     fn resumable(&self) -> bool {
         match self {
             Self::Https(link) => link.resumable(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { .. } => false,
         }
     }
@@ -3631,7 +3641,7 @@ impl Link {
     fn compacts(&self) -> bool {
         match self {
             Self::Https(link) => link.compacts(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { .. } => false,
         }
     }
@@ -3639,7 +3649,7 @@ impl Link {
     fn send(&self, envelope: Envelope) -> Result<(), Box<Envelope>> {
         match self {
             Self::Https(link) => link.send(envelope),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { client, .. } => client.send(envelope),
         }
     }
@@ -3647,7 +3657,7 @@ impl Link {
     /// How long until this session is renewed, [`RENEW_AHEAD`] of the end
     /// its host set; `None` for a carrier whose session has no fixed end.
     #[cfg_attr(
-        any(not(feature = "iroh"), target_arch = "wasm32"),
+        not(feature = "iroh"),
         allow(
             clippy::unnecessary_wraps,
             reason = "the iroh carrier's sessions have no fixed end"
@@ -3656,7 +3666,7 @@ impl Link {
     fn renew_after(&self, now_ns: u64) -> Option<Duration> {
         match self {
             Self::Https(link) => Some(renew_after(link.expires_at_ns(), now_ns)),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { .. } => None,
         }
     }
@@ -3664,101 +3674,20 @@ impl Link {
     async fn recv(&mut self) -> Option<Envelope> {
         match self {
             Self::Https(link) => link.recv().await,
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { client, .. } => client.recv().await,
         }
     }
 
     #[cfg_attr(
-        any(not(feature = "iroh"), target_arch = "wasm32"),
+        not(feature = "iroh"),
         allow(clippy::unused_async, reason = "the iroh carrier awaits its close")
     )]
     async fn close(self) {
         match self {
             Self::Https(link) => link.close(),
-            #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
+            #[cfg(feature = "iroh")]
             Self::Iroh { client, .. } => client.close().await,
-        }
-    }
-}
-
-async fn connect(config: &PeerConfig, signer: &dyn DeviceSigner) -> Result<Link, LinkError> {
-    match &config.host {
-        Host::Https(client) => HttpsLink::connect_as(
-            client.clone(),
-            &config.cert,
-            config.host_cert.device_public_key,
-            &config.revocations,
-            signer,
-            config.background,
-        )
-        .await
-        .map(Link::Https),
-        #[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-        Host::Iroh { addr, relay_url } => {
-            use tilo_relay_session::RelayClient;
-            let mut builder = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal);
-            // A live plane's admission binds the certificate's device to the
-            // endpoint the handshake names, so a peer that holds the device's
-            // key dials under it, as every device's session does.
-            if let Some(key) = signer.device_signing_key() {
-                builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
-            }
-            if let Some(url) = relay_url {
-                builder = builder.relay_mode(iroh::RelayMode::Custom(url.clone().into()));
-            }
-            let endpoint = builder
-                .bind()
-                .await
-                .map_err(|error| LinkError::Unavailable(error.to_string()))?;
-            let host = match relay_url {
-                Some(url) => addr.clone().with_relay_url(url.clone()),
-                None => addr.clone(),
-            };
-            let planes = endpoint.clone();
-            RelayClient::connect_with_signer(
-                endpoint,
-                host,
-                Some(config.cert.user_public_key),
-                Some(config.host_cert.device_public_key),
-                config.cert.clone(),
-                signer,
-                config.revocations.clone(),
-            )
-            .await
-            .map(|client| Link::Iroh {
-                client,
-                endpoint: planes,
-            })
-            .map_err(iroh_link_error)
-        }
-    }
-}
-
-/// How a failed iroh dial reads to the session loop: reachability
-/// (`Unavailable`, `Malformed`, retried with backoff) or a host that turned
-/// this device away without saying why (`Refused`, which fails the session
-/// after `REFUSALS_BEFORE_FAILING` in a row). Every variant is named, so a new
-/// client error must be classified here rather than fall into a default.
-#[cfg(all(not(target_arch = "wasm32"), feature = "iroh"))]
-fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkError {
-    use tilo_relay_session::ClientError;
-    match error {
-        ClientError::UnsupportedProtocol => {
-            LinkError::Unavailable("host does not speak tilo-relay/1".into())
-        }
-        ClientError::Iroh(reason) => LinkError::Unavailable(reason),
-        ClientError::Sign(reason) => LinkError::Sign(reason),
-        ClientError::Codec(reason) => LinkError::Malformed(reason),
-        ClientError::PeerVersion { theirs } => LinkError::PeerVersion { theirs },
-        // A host that turns a device away closes the handshake stream
-        // without a word.
-        ClientError::NoHandshakeAnswer(reason) => LinkError::Refused(reason),
-        // A host that rejects the device either fails its ack (auth) or
-        // closes the handshake stream, which surfaces as an I/O error on the
-        // next frame read.
-        error @ (ClientError::Auth(_) | ClientError::Io(_)) => {
-            LinkError::Refused(error.to_string())
         }
     }
 }

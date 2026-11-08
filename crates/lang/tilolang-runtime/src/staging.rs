@@ -103,9 +103,13 @@ pub fn state_value(
             .iter()
             .find(|t| t.name == queried)
             .ok_or_else(|| format!("`{app}` declares no type `{queried}`"))?;
-        let filter = filters_of(declared, &meta.enums).into_iter().find(
-            |f| matches!(f, Value::Tuple(parts) if parts.first() == Some(&Value::text(name))),
-        );
+        // A staged value is the query a check asks a view to start from, not words a window
+        // shows: it keeps the words the app wrote.
+        let filter = filters_of(declared, &meta.enums, &|_, source| source.to_owned())
+            .into_iter()
+            .find(
+                |f| matches!(f, Value::Tuple(parts) if parts.first() == Some(&Value::text(name))),
+            );
         return filter.ok_or_else(|| {
             let keys: Vec<&str> = declared
                 .search

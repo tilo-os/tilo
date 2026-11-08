@@ -1,5 +1,7 @@
 # Notes in German. Keys are the declarations' stable ids (app.ids); see locales/en-US.ftl.
 
+d-so-tilo-lang-notes = Notizen
+
 d-mavvhka7 = Notiz
     .doc = Eine Notiz: ein Titel, ein Text und ihre Schlagwörter.
     .noun = { $count ->
@@ -14,6 +16,10 @@ d-olsyp3aw = Text
 d-gfk6rqxp = Angeheftet
 
 d-xcpasjg7 = Schlagwörter
+
+d-mavvhka7-filter-pinned = Angeheftet
+
+d-mavvhka7-filter-tags = Schlagwörter
 
 d-qymo5lg2 = Neue Notiz
     .doc = Beginnt eine Notiz.

@@ -2,6 +2,7 @@
 //! [`settings_sections`]', which the session keeps as records too; what is
 //! here words them for the panes.
 
+pub use settings_sections::agent_door::AgentDoorDevice;
 pub use settings_sections::desktop::*;
 pub use settings_sections::device_vpn::DeviceVpnPrefs;
 pub use settings_sections::identity::IdentityPrefs;

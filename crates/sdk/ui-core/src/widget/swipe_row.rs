@@ -79,6 +79,8 @@ struct Drag {
     from: f64,
     /// Whether the drag is sideways: unknown until it moved past [`SLOP`].
     sideways: Option<bool>,
+    /// Whether the finger left where it came down: a contact that never did is a tap.
+    dragged: bool,
     /// The last two samples of the finger, for its velocity at release.
     samples: [(f64, Instant); 2],
 }
@@ -268,6 +270,7 @@ impl SwipeRow {
                     start: at,
                     from,
                     sideways: None,
+                    dragged: false,
                     samples: [(at.x, now), (at.x, now)],
                 });
                 false
@@ -277,8 +280,12 @@ impl SwipeRow {
                     return false;
                 };
                 let moved = at - drag.start;
-                if drag.sideways.is_none() && moved.hypot() >= SLOP {
-                    drag.sideways = Some(moved.x.abs() > moved.y.abs());
+                if moved.hypot() >= SLOP {
+                    // The finger left where it came down: this contact is a drag, not a tap.
+                    drag.dragged = true;
+                    if drag.sideways.is_none() {
+                        drag.sideways = Some(moved.x.abs() > moved.y.abs());
+                    }
                 }
                 drag.samples = [drag.samples[1], (at.x, now)];
                 match drag.sideways {
@@ -306,7 +313,10 @@ impl SwipeRow {
                 // Where the finger lifted, and when: a finger held still before it lifts
                 // throws nothing.
                 drag.samples = [drag.samples[1], (at.x, now)];
-                let sideways = drag.sideways == Some(true);
+                // A finger that lifted where it came down tapped the row: the platform turns
+                // that into a click, and the row's list answers it, opening what was tapped.
+                // Only a drag that headed across is the row's.
+                let sideways = drag.sideways == Some(true) && drag.dragged;
                 self.release(&drag, phase == TouchPhase::Cancelled);
                 sideways
             }
