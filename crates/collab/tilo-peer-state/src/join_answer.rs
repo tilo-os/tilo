@@ -284,13 +284,13 @@ fn complete(
 ) -> Result<JoinBootstrap, JoinError> {
     let request_id = request.proof.challenge.request_id;
     let proof_digest = request_digest(&request.proof)?;
-    if let Some(prior) = workspace.ledger().completed(
-        &workspace.governed(),
-        remote_endpoint,
-        request_id,
-        proof_digest,
-        now,
-    )? {
+    let prior = {
+        let governed = workspace.governed();
+        workspace
+            .ledger()
+            .completed(&governed, remote_endpoint, request_id, proof_digest, now)?
+    };
+    if let Some(prior) = prior {
         return Ok(prior);
     }
     let redemption =

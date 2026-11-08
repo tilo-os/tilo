@@ -108,7 +108,6 @@ tilo-content = { path = "../../system/content" }
 tilo-content-device = { path = "../../system/content-device" }
 # The workspace store this device holds for the workspaces it belongs to, and
 # the admission door it answers with: the engine's own membership.
-tilo-store-link = { path = "../../collab/tilo-store-link" }
 # The relay session a joined room syncs through.
 tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

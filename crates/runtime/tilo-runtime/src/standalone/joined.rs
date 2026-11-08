@@ -29,9 +29,7 @@ use tilo_peer_state::owner::{
     session::{Connect, DialError, Holder, Input, Link, Reach, Scope, hold},
 };
 use tilo_peer_state::owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService};
-use tilo_relay_protocol::{DeviceMeshProfile, DeviceRole, ReplicationIntent, ServiceCapabilities};
 use tilo_relay_session::{Inbound, RelayCoeditSession};
-use tilo_store_link::StoreService;
 use tokio::sync::Notify;
 
 #[path = "joined_content.rs"]
@@ -169,53 +167,6 @@ impl Joined {
     /// This device's endpoint, which the profile's other services share.
     pub(super) fn endpoint(&self) -> iroh::Endpoint {
         self.endpoint.clone()
-    }
-
-    /// The store this profile keeps for the workspaces it holds, at `root`.
-    ///
-    /// A profile that runs a workspace host keeps the workspaces it hosts
-    /// whole and the ones it only holds for their members on demand; a
-    /// profile that hosts nothing is no store and gets `None`. Who is
-    /// admitted is the membership this device's engine holds, so the store
-    /// answers no one its own workspaces do not.
-    ///
-    /// # Errors
-    /// The store's root cannot be read back.
-    pub(super) fn store(
-        &self,
-        root: &Path,
-        own: WorkspaceId,
-        governs: bool,
-    ) -> Result<Option<StoreService>, String> {
-        let profile = DeviceMeshProfile {
-            device: self.custody.device_cert.device_public_key,
-            role: if self.custody.device_cert.capabilities.can_act_as_host {
-                DeviceRole::AlwaysOnServer
-            } else {
-                DeviceRole::Hybrid
-            },
-            services: ServiceCapabilities {
-                workspace_replication: governs,
-                ..ServiceCapabilities::default()
-            },
-            replication: self
-                .owner
-                .workspaces()
-                .into_iter()
-                .filter_map(|workspace| {
-                    let intent = if governs && workspace == own {
-                        ReplicationIntent::FullWorkspace
-                    } else {
-                        ReplicationIntent::OnDemand
-                    };
-                    let workspace = tilo_store_link::workspace_of(&workspace.to_string()).ok()?;
-                    Some((workspace, intent))
-                })
-                .collect(),
-            filesystem_endpoints: Vec::new(),
-        };
-        StoreService::open(root, &profile, Arc::new(self.owner.clone()))
-            .map_err(|error| format!("the workspace store: {error}"))
     }
 
     /// How this profile asks the other devices of its workspaces whether they

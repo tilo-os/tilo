@@ -56,7 +56,7 @@ pub(super) struct Written {
 impl GovernedWorkspace {
     /// The workspace as its join ledger reads it: committed now.
     pub(super) fn governed(&self) -> Governed<'_> {
-        governed(&self.record, self.peer())
+        governed(&self.record, self.peer().into())
     }
 
     /// Keep the people `removed` out of the workspace's public door for the
@@ -79,7 +79,10 @@ impl GovernedWorkspace {
 }
 
 /// `record` and `peer`, a workspace's committed state, as its join ledger reads it.
-fn governed<'a>(record: &'a WorkspaceRecord, peer: &'a tilo_peer_state::StatePeer) -> Governed<'a> {
+fn governed<'a>(
+    record: &'a WorkspaceRecord,
+    peer: tilo_peer_state::join_ledger::PeerRef<'a>,
+) -> Governed<'a> {
     Governed {
         peer,
         host: &record.authority,
@@ -89,7 +92,7 @@ fn governed<'a>(record: &'a WorkspaceRecord, peer: &'a tilo_peer_state::StatePee
         // holding its complete committed document. What the record retains of
         // its own publications builds on that document, so it reaches the
         // newcomer through the workspace's sync, not through this answer.
-        governance_messages: peer,
+        governance_messages: None,
     }
 }
 
@@ -769,7 +772,7 @@ impl Workspaces {
         // A member removed takes every way in the workspace handed them with
         // them, as when a member's own device sends the removal.
         let removed: std::collections::BTreeSet<_> =
-            super::member_roots(workspace.peer(), system_time(now))
+            super::member_roots(&workspace.peer(), system_time(now))
                 .difference(&super::member_roots(&changed, system_time(now)))
                 .copied()
                 .collect();
@@ -803,10 +806,6 @@ impl Workspaces {
     ///
     /// [`WorkspaceMembershipCommand::InstallBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::InstallBot
     /// [`WorkspaceMembershipCommand::RenewBot`]: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand::RenewBot
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace remains locked through the committed and published administration decision"
-    )]
     pub async fn govern_bot(
         &self,
         workspace: &str,
@@ -951,10 +950,6 @@ impl Workspaces {
     /// Apply `command` to `workspace` as `member`, whom the workspace must allow the
     /// governance action `gate`, and publish it; `tag` names the request
     /// kind in its digest.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the workspace remains locked through the committed and published administration decision"
-    )]
     async fn govern_as_member(
         &self,
         workspace: &str,
@@ -1204,7 +1199,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     ) -> Result<(), CollaborationError> {
         self.workspace
             .commit(peer, self.key, system_time(now), |record, peer| {
-                ledger(&governed(record, peer)).map_err(|error| error.to_string())
+                ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
             })?;
         // The commit wrote the whole record, the ledger staged before
         // included.
@@ -1221,7 +1216,7 @@ impl WorkspaceTxn for HeldWorkspace<'_> {
     ) -> Result<(), CollaborationError> {
         self.workspace
             .commit_admission(peer, self.key, system_time(now), |record, peer| {
-                ledger(&governed(record, peer)).map_err(|error| error.to_string())
+                ledger(&governed(record, peer.into())).map_err(|error| error.to_string())
             })?;
         self.staged = false;
         self.committed = true;

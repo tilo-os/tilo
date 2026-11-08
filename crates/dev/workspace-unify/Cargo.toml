@@ -1304,8 +1304,6 @@ doc = false
 "tilo-spotify" = { path = "../../../crates/platform/tilo-spotify", default-features = false, features = ["default", "native"] }
 "tilo-staging-reclaim" = { path = "../../../crates/system/staging-reclaim", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
-"tilo-store-link" = { path = "../../../crates/collab/tilo-store-link", default-features = false, features = [] }
-"tilo-store-node" = { path = "../../../crates/hosting/tilo-store-node", default-features = false, features = [] }
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-surface-host" = { path = "../../../crates/session/surface-host", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }
@@ -3887,8 +3885,6 @@ doc = false
 "tilo-spotify" = { path = "../../../crates/platform/tilo-spotify", default-features = false, features = ["default", "native"] }
 "tilo-staging-reclaim" = { path = "../../../crates/system/staging-reclaim", default-features = false, features = [] }
 "tilo-startup-metrics" = { path = "../../../crates/system/tilo-startup-metrics", default-features = false, features = [] }
-"tilo-store-link" = { path = "../../../crates/collab/tilo-store-link", default-features = false, features = [] }
-"tilo-store-node" = { path = "../../../crates/hosting/tilo-store-node", default-features = false, features = [] }
 "tilo-subject" = { path = "../../../crates/platform/tilo-subject", default-features = false, features = [] }
 "tilo-surface-host" = { path = "../../../crates/session/surface-host", default-features = false, features = [] }
 "tilo-system-info" = { path = "../../../crates/platform/tilo-system-info", default-features = false, features = [] }

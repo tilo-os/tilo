@@ -15,6 +15,8 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
+use std::ops::Deref;
+use std::sync::MutexGuard;
 
 use web_time::SystemTime;
 
@@ -110,11 +112,42 @@ impl From<String> for JoinError {
     }
 }
 
+/// The workspace's admitted state, as a ledger reads it: handed over by the
+/// device that holds it, or held out of the engine's lock for one decision.
+pub enum PeerRef<'a> {
+    /// A replica the caller holds.
+    Borrowed(&'a StatePeer),
+    /// A replica behind the engine's lock, held while the ledger reads it.
+    Held(MutexGuard<'a, StatePeer>),
+}
+
+impl Deref for PeerRef<'_> {
+    type Target = StatePeer;
+
+    fn deref(&self) -> &StatePeer {
+        match self {
+            Self::Borrowed(peer) => peer,
+            Self::Held(peer) => peer,
+        }
+    }
+}
+
+impl<'a> From<&'a StatePeer> for PeerRef<'a> {
+    fn from(peer: &'a StatePeer) -> Self {
+        Self::Borrowed(peer)
+    }
+}
+
+impl<'a> From<MutexGuard<'a, StatePeer>> for PeerRef<'a> {
+    fn from(peer: MutexGuard<'a, StatePeer>) -> Self {
+        Self::Held(peer)
+    }
+}
+
 /// The governed workspace a ledger answers for, as committed now.
-#[derive(Clone, Copy)]
 pub struct Governed<'a> {
     /// The workspace's admitted state.
-    pub peer: &'a StatePeer,
+    pub peer: PeerRef<'a>,
     /// The device answering the join: a device of the workspace's owner.
     pub host: &'a DeviceCert,
     /// The workspace's relay shard on the wire
@@ -122,8 +155,10 @@ pub struct Governed<'a> {
     pub workspace_id: u64,
     /// The workspace's committed generation.
     pub generation: u64,
-    /// The signed governance a joining member admits, oldest first.
-    pub governance_messages: &'a dyn GovernanceMessages,
+    /// Where a governor keeps the signed governance a joining member admits,
+    /// oldest first, when it keeps them apart from the replica; a governor
+    /// without one answers with its replica's own workspace document.
+    pub governance_messages: Option<&'a dyn GovernanceMessages>,
 }
 
 /// Where a governor keeps the signed governance a joining member admits.
@@ -157,10 +192,11 @@ impl Governed<'_> {
         device_cert: DeviceCert,
         role: MemberRole,
     ) -> Result<JoinBootstrap, JoinError> {
-        let messages = self
-            .governance_messages
-            .governance_messages()
-            .map_err(JoinError::new)?;
+        let messages = match self.governance_messages {
+            Some(messages) => messages.governance_messages(),
+            None => self.peer.governance_messages(),
+        }
+        .map_err(JoinError::new)?;
         Ok(JoinBootstrap {
             version: 1,
             invite_id,
@@ -322,10 +358,11 @@ impl JoinCompletionRecord {
             certified_roster: workspace.peer.certificates(),
             revocations: workspace.peer.revocations(),
             records: workspace.peer.rows(),
-            governance_messages: workspace
-                .governance_messages
-                .governance_messages()
-                .map_err(JoinError::new)?,
+            governance_messages: match workspace.governance_messages {
+                Some(messages) => messages.governance_messages(),
+                None => workspace.peer.governance_messages(),
+            }
+            .map_err(JoinError::new)?,
             ..self.bootstrap.clone()
         };
         if bootstrap_digest(&rebuilt)?.as_slice() != delivered {

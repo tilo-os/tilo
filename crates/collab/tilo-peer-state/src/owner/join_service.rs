@@ -105,11 +105,11 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
 
     fn governed(&self) -> Governed<'_> {
         Governed {
-            peer: self.candidate.peer(),
+            peer: self.candidate.peer().into(),
             host: self.candidate.device(),
             workspace_id: self.workspace_id,
             generation: self.candidate.generation(),
-            governance_messages: self,
+            governance_messages: None,
         }
     }
 
@@ -138,13 +138,12 @@ impl WorkspaceTxn for OwnerWorkspace<'_> {
             .checked_add(1)
             .ok_or_else(|| JoinError::new("native join generation exhausted"))?;
         let answered = {
-            let messages = &next.peer;
             let governed = Governed {
-                peer: &next.peer,
+                peer: (&next.peer).into(),
                 host: next.device(),
                 workspace_id: self.workspace_id,
                 generation,
-                governance_messages: messages,
+                governance_messages: None,
             };
             decide(&governed)?
         };
@@ -300,14 +299,13 @@ impl NativeWorkspaceOwner {
             .require_invitation_authority(key, request.role.into(), now)?;
         let mut ledger = candidate.record.join_ledger.clone();
         let issued = {
-            let messages = candidate.peer();
             let governed = Governed {
-                peer: &candidate.peer,
+                peer: (&candidate.peer).into(),
                 host: candidate.device(),
                 workspace_id: crate::join::room_workspace_id(&workspace.to_string())
                     .map_err(|error| error.to_string())?,
                 generation: candidate.generation(),
-                governance_messages: messages,
+                governance_messages: None,
             };
             ledger
                 .issue(

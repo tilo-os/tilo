@@ -234,6 +234,10 @@ fn a_renewal_grants_no_more_than_the_certificate_it_replaces() {
 /// as the device it renews, it is held in the old one's place before the
 /// governor answers, and the answer is the workspace with the member's role.
 #[test]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the governed workspace reads the peer through each step of the decision"
+)]
 fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member() {
     let Fixture {
         mut peer,
@@ -249,11 +253,11 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let challenge = {
         let host_cert = peer.owner_certificates()[0].clone();
         let workspace = Governed {
-            peer: &peer,
+            peer: (&peer).into(),
             host: &host_cert,
             workspace_id: 7,
             generation: 1,
-            governance_messages: &messages,
+            governance_messages: Some(&messages),
         };
         ledger
             .membership_challenge(
@@ -276,11 +280,11 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
     let renewal = {
         let host_cert = peer.owner_certificates()[0].clone();
         let workspace = Governed {
-            peer: &peer,
+            peer: (&peer).into(),
             host: &host_cert,
             workspace_id: 7,
             generation: 1,
-            governance_messages: &messages,
+            governance_messages: Some(&messages),
         };
         ledger
             .membership_renewal(&workspace, renewed.device_public_key, &request, now_ns)
@@ -292,11 +296,11 @@ fn a_member_proving_with_its_renewed_certificate_is_answered_as_the_same_member(
         .unwrap();
     let host_cert = peer.owner_certificates()[0].clone();
     let workspace = Governed {
-        peer: &peer,
+        peer: (&peer).into(),
         host: &host_cert,
         workspace_id: 7,
         generation: 2,
-        governance_messages: &messages,
+        governance_messages: Some(&messages),
     };
     assert_eq!(
         ledger

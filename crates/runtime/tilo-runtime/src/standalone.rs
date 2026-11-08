@@ -59,7 +59,6 @@ use tilo_identity_host::{
 };
 use tilo_peer_state::owner_commit::OwnerCommitService;
 use tilo_peer_state::{PeerPersonal, PersonalSync};
-use tilo_store_link::StoreService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 use workspaces::Workspaces;
 
@@ -69,8 +68,6 @@ const COLLABORATION_HISTORY: &str = "state/tilo/collaboration/history";
 /// Where the workspace host this runtime runs keeps its workspaces: the
 /// directory profiles already keep it in.
 const HOST_STORE: &str = "room-host";
-/// Where this device keeps the workspace state it holds for their members.
-const STORE: &str = "store";
 
 /// A standalone service session over one profile. Drop applications first.
 pub struct Standalone {
@@ -97,8 +94,6 @@ pub struct Standalone {
     /// The agent doors of the person's other devices, dialed from this
     /// runtime's endpoint as the device its store certifies.
     remote_doors: Arc<crate::remote_door::Doors>,
-    /// The workspaces this device keeps, served on that same router.
-    _store_link: Option<StoreService>,
     _lock: advisory_lock::FileLock,
 }
 
@@ -174,7 +169,7 @@ impl Standalone {
         let personal = serve_personally(PersonalServing {
             root,
             identity: &identity,
-            workspace: (&workspace_id, &workspace),
+            workspace_id: &workspace_id,
             joined: &joined,
             channels: Arc::clone(&channels),
             fanout: Arc::clone(&fanout),
@@ -234,7 +229,6 @@ impl Standalone {
             _personal: personal.sync.store(),
             _personal_door: personal.door,
             _personal_router: personal.router,
-            _store_link: personal.store_link,
             _lock: lock,
         })
     }
@@ -849,8 +843,8 @@ fn serve_device_grants(root: &Path, apps: &apps::Apps) {
 struct PersonalServing<'a> {
     root: &'a Path,
     identity: &'a tilo_identity_host::registry::IdentityProfile,
-    /// The workspace this runtime runs, by its id and as it holds it.
-    workspace: (&'a str, &'a ProfileWorkspace),
+    /// The workspace this runtime runs, by its id.
+    workspace_id: &'a str,
     joined: &'a Joined,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
@@ -860,11 +854,9 @@ struct PersonalServing<'a> {
 struct PersonalParts {
     sync: PersonalSync,
     door: tilo_action_broker::personal::Door,
-    /// The endpoint's accept loop, answering the store's link and the
-    /// workspaces' alike.
+    /// The endpoint's accept loop, answering the person's store to their
+    /// other devices.
     router: iroh::protocol::Router,
-    /// The workspaces this device keeps, answered on that same router.
-    store_link: Option<StoreService>,
 }
 
 /// Open the person's own store on the identity this device acts as, and serve
@@ -880,7 +872,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
     let PersonalServing {
         root,
         identity,
-        workspace: (workspace_id, workspace),
+        workspace_id,
         joined,
         channels,
         fanout,
@@ -897,16 +889,12 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         .map_err(io::Error::other)?,
         key,
     );
-    let store_link = workspace_store(root, joined, workspace)?;
     let runtime = tilo_rt::app().handle();
     let router = {
         let _entered = runtime.enter();
-        let mut router = iroh::protocol::Router::builder(joined.endpoint())
-            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone());
-        if let Some(workspaces) = &store_link {
-            router = router.accept(tilo_store_link::ALPN, workspaces.handler());
-        }
-        router.spawn()
+        iroh::protocol::Router::builder(joined.endpoint())
+            .accept(tilo_peer_state::PERSONAL_ALPN, sync.clone())
+            .spawn()
     };
     let door = tilo_action_broker::personal::Door::serve(
         runtime,
@@ -917,12 +905,7 @@ fn serve_personally(serving: PersonalServing<'_>) -> io::Result<PersonalParts> {
         channels,
         fanout,
     );
-    Ok(PersonalParts {
-        sync,
-        door,
-        router,
-        store_link,
-    })
+    Ok(PersonalParts { sync, door, router })
 }
 
 /// The agent doors of the person's other devices, dialed from `joined`'s
@@ -1101,22 +1084,6 @@ fn joined_workspaces_and_keys(
         channels,
     )?;
     Ok((joined, keys))
-}
-
-/// The store this profile keeps for the workspaces it holds, under the
-/// profile's own root: the workspaces it governs whole, the ones it only holds
-/// for their members as work it takes on. A profile that governs nothing keeps
-/// no store.
-fn workspace_store(
-    root: &Path,
-    joined: &Joined,
-    workspace: &ProfileWorkspace,
-) -> io::Result<Option<StoreService>> {
-    let own = WorkspaceId::parse(&workspace.workspace())
-        .ok_or_else(|| io::Error::other("invalid runtime workspace"))?;
-    joined
-        .store(&root.join(STORE), own, workspace.governs())
-        .map_err(io::Error::other)
 }
 
 /// The workspaces this profile joined, synced as this device over an endpoint
