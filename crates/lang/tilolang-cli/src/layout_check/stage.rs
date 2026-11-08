@@ -1187,7 +1187,28 @@ mod tests {
 
     /// The reminder's form, opened from a task's row menu as a finger opens it: the menu's
     /// "Remind me…" row asks when.
-    fn open_reminder_form(staged: &mut Staged) {
+    fn open_reminder_form(staged: &mut Staged, packages: &Rc<Packages>) {
+        // The task stands open as its page: the reminder's menu is part of the document, and a
+        // page takes the presses the controls of a row's document do not (yet) reach.
+        let meta = &packages.0.last().expect("the app's meta").meta;
+        let task_type = &meta
+            .types
+            .iter()
+            .find(|ty| ty.name == "Task")
+            .expect("a task type")
+            .id;
+        let page_view = &meta
+            .views
+            .iter()
+            .find(|view| view.name == "task_page")
+            .expect("a task page")
+            .id;
+        let task = staged
+            .resources()
+            .into_iter()
+            .find(|resource| &resource.ty == task_type)
+            .expect("the scenario holds a task");
+        staged.open_with(&task, page_view);
         let reminder = {
             let root = &staged.harness().inspection().root;
             crate::layout_check::button_named(root, "Remind").expect("the task offers its reminder")
@@ -1250,7 +1271,7 @@ mod tests {
             )
             .expect("the window lies out for a finger");
         let before = reminded(&staged, &app);
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
         let choice = {
             let root = &staged.harness().inspection().root;
             let moment = announced(root, "Tomorrow morning")
@@ -1362,7 +1383,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
     }
 
     /// Press `bounds` as a person presses them, and let the window and its app answer.
@@ -1430,6 +1451,17 @@ mod tests {
             .expect("a task type")
             .id
             .clone();
+        let page_view = packages
+            .0
+            .last()
+            .expect("the app's meta")
+            .meta
+            .views
+            .iter()
+            .find(|view| view.name == "task_page")
+            .expect("a task page")
+            .id
+            .clone();
         let (width, height) = (1280, 800);
         let mut staged = Staged::over(
             &app,
@@ -1448,7 +1480,8 @@ mod tests {
             .into_iter()
             .find(|resource| resource.ty == task_type)
             .expect("the scenario holds a task");
-        staged.open(task);
+        // Asked for as a page, as its row's menu asks: the page holds the menu that files it.
+        staged.open_with(&task, &page_view);
         let descriptors = publish_actions(&mut staged);
         // The facts menu files the task into a project, its own included, so filing it back
         // into the inbox is a row bound to that action.
