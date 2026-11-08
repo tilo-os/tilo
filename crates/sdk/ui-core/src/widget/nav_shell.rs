@@ -30,8 +30,8 @@ use crate::widget::flap::{FlapState, SplitLayout};
 use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::{HistoryControl, WindowHeader};
 use crate::widget::{
-    AppModel, Button, DescribedList, Element, ModelPath, NavList, SearchField, StructureChange,
-    TaffyTreeExt, Widget, WidgetLayoutError,
+    AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavList, SearchField,
+    StructureChange, TaffyTreeExt, Widget, WidgetLayoutError,
 };
 
 mod back;
@@ -413,9 +413,14 @@ struct ColumnFit {
     /// The index of the first action that belongs in the menu: the row shows its everyday actions
     /// and the menu holds the rest. `None` while they all fit.
     menu_from: Option<usize>,
+    /// The index of the action the row never gives up: the one the app marks primary, or the
+    /// first that stands in the row rather than in its menu.
+    primary: Option<usize>,
     /// How many actions stand in the row; the rest are in the More menu.
     /// `None` until the first layout decides.
     shown: Option<usize>,
+    /// What the last layout settled on for the row, for an audit to read.
+    header: Option<crate::widget::HeaderRow>,
 }
 
 /// Everything the geometry depends on. Shared with the layout policy the
@@ -2321,17 +2326,32 @@ impl NavShell {
             let capable: Vec<bool> = header
                 .actions
                 .iter_mut()
-                .map(|action| button_of(&**action).is_some_and(Button::compacts_to_icon))
+                .map(|action| button_of(&**action).is_some_and(Button::shrinks_to_icon))
                 .collect();
             let compact_now: Vec<bool> = header
                 .actions
                 .iter()
-                .map(|action| button_of(&**action).is_some_and(Button::is_compact_presentation))
+                .map(|action| button_of(&**action).is_some_and(Button::is_shown_compact))
                 .collect();
             let menu_from = header
                 .actions
                 .iter()
                 .position(|action| button_of(&**action).is_some_and(Button::is_menu_only));
+            // The action the row never gives up: the one the app marks primary, else the first
+            // that stands in the row rather than in the menu.
+            let primary = header
+                .actions
+                .iter()
+                .position(|action| {
+                    button_of(&**action).is_some_and(|button| {
+                        button.role_of() == ButtonRole::Primary && !button.is_menu_only()
+                    })
+                })
+                .or_else(|| {
+                    header.actions.iter().position(|action| {
+                        button_of(&**action).is_none_or(|button| !button.is_menu_only())
+                    })
+                });
             if slot.capable != capable || slot.compact_now.len() != compact_now.len() {
                 *slot = ColumnFit {
                     full: vec![None; capable.len()],
@@ -2339,11 +2359,14 @@ impl NavShell {
                     compact_now,
                     compact: false,
                     menu_from,
+                    primary,
                     shown: None,
+                    header: None,
                 };
             } else {
                 slot.compact_now = compact_now;
                 slot.menu_from = menu_from;
+                slot.primary = primary;
             }
         }
     }
@@ -4161,6 +4184,22 @@ impl Widget for NavShell {
 
     fn minimum_window_width(&self) -> Option<f64> {
         Some(self.minimum_width())
+    }
+
+    /// Each column's header row as the last layout left it: what its title says against what the
+    /// row gave it, and what its actions kept of their labels and their place in the row.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        let inputs = self.inputs.borrow();
+        let fit = inputs.fit.borrow();
+        let mut rows: [Option<crate::widget::HeaderRow>; 4] = [None; 4];
+        for (row, slot) in rows.iter_mut().zip(fit.iter()) {
+            *row = slot.header;
+        }
+        rows.iter()
+            .any(Option::is_some)
+            .then_some(crate::widget::LayoutInfo::Headers(
+                crate::widget::HeaderRows { rows },
+            ))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
