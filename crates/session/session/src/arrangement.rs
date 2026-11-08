@@ -765,6 +765,30 @@ impl Arrangement {
         self.desk.records().into_iter().collect()
     }
 
+    /// Every record a place of the desk shows, by the id of the workspace (a hex device key) the
+    /// place stands in: what the outside services keeping those records in step are due for. A
+    /// workspace's places and the records of the apps' windows there are all of them, on every
+    /// workspace of the desk, not only the one in front.
+    #[must_use]
+    pub fn records_by_workspace(&self) -> BTreeMap<String, std::collections::BTreeSet<String>> {
+        let records = self.records();
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .map(|held| {
+                    let shown = held
+                        .strips
+                        .iter()
+                        .flat_map(|row| row.window_groups.iter())
+                        .flat_map(|group| group.tabs.iter())
+                        .filter_map(|tab| records.get(&tab.id).cloned())
+                        .collect();
+                    (held.id().to_string(), shown)
+                })
+                .collect()
+        })
+    }
+
     /// The arrangement as the session publishes it now: what [`resources`] publishes, with a
     /// resource of its own for every row, strip and place, named by its record key. A press
     /// names the thing it presses (`shell:place:<key>`), so a key is never read as a number,

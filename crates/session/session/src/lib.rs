@@ -2124,7 +2124,7 @@ impl Session {
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());
-        mount::connectors::start_all(&session);
+        mount::connectors::reconcile(&session);
         if starts_locked {
             session.compositor.lock_now()?;
         }
