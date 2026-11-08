@@ -1178,10 +1178,11 @@ impl AppBrokerState {
                         record_id: String::new(),
                         browsable: true,
                     });
-                    // A step marked for turns is a turn's own, as an app action is: listed for
-                    // the agent working a turn and for no one else. Every other host step is
-                    // offered to the person's own controls.
-                    if steps.for_turns() && policy.turn().is_none() {
+                    // A step marked for turns is a turn's own for an agent, as an app action
+                    // is: listed for the agent working a turn and for no agent outside one. The
+                    // person at this seat is offered it as they are their other steps: the REPL
+                    // types what the agent would, and it runs as the person (shell.md §8.1).
+                    if steps.for_turns() && policy.is_agent() && policy.turn().is_none() {
                         continue;
                     }
                     if scope.wants(steps.provider()) && scope.wants_app(steps.app_id()) {

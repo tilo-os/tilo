@@ -272,14 +272,17 @@ impl AppBrokerState {
             request.confirmation.as_ref(),
             &self.witness_binding(policy.id(), workspace_id, request),
         );
-        // A step marked for turns is decided by the turn's run, exactly as the same agent's app
-        // action in that turn is: the tracker's `authorize_action` over the person's, the
-        // agent's and the run's live grants. A caller outside a turn takes none of them, and one
-        // whose grant refuses it hears the refusal an app action hears. The turn's grants are the
-        // whole answer, as they are for the app action: `framework_policy` decides by the
-        // workspace's grants alone, and asking it again here would hold a step to the person's
-        // own record where the turn already held it to the same person's live grants.
-        let by_turn = steps.for_turns();
+        // A step marked for turns is a turn's step for an agent, decided by the turn's run
+        // exactly as the same agent's app action in that turn is: the tracker's
+        // `authorize_action` over the person's, the agent's and the run's live grants. An agent
+        // outside a turn takes none of them, and one whose grant refuses it hears the refusal an
+        // app action hears. The person at this seat needs no turn — their own input is the
+        // authority a turn borrows — so their step is decided as every other step is, by the
+        // workspace's grants and the native seat's custody. For an agent the turn's grants are
+        // the whole answer, as they are for the app action: `framework_policy` decides by the
+        // workspace's grants alone, and asking it again would hold a step to the person's own
+        // record where the turn already held it to the same person's live grants.
+        let by_turn = steps.for_turns() && policy.is_agent();
         let turn = turn.or_else(|| caller.turn());
         if by_turn {
             self.admit_turn_step(caller, workspace_id, steps, (&descriptor, &argument), turn)

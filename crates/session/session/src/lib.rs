@@ -571,6 +571,8 @@ pub struct Session {
     /// Where the session's own actions stood when every agent following the catalogue was last
     /// handed them: a change of what it offers is a new catalogue.
     session_actions_seen: std::cell::Cell<Option<u64>>,
+    /// The session's own actions, as the broker's steps: what each pass hands the rows it read.
+    session_actions: Option<std::sync::Arc<session_actions::SessionActions>>,
     /// When the desk's own bookkeeping last read it.
     kept_at: Instant,
     /// What the desk's input a tool handed the loop cost this pass, read with
@@ -2084,6 +2086,7 @@ impl Session {
             first_frame: false,
             active_workspace: None,
             session_actions_seen: std::cell::Cell::default(),
+            session_actions: Some(std::sync::Arc::clone(&session_actions)),
             kept_at: Instant::now(),
             tool_input: std::time::Duration::ZERO,
             magnifier: (
@@ -2439,6 +2442,17 @@ impl Session {
     #[must_use]
     pub fn arrangement(&self) -> &Rc<RefCell<arrangement::Arrangement>> {
         &self.shared.arrangement
+    }
+
+    /// The broker this session's apps and agents reach its actions through, while it serves
+    /// one: what a test asks for the catalogue an agent working a turn is offered, and invokes
+    /// a step of it through, as the agent door does.
+    #[cfg(test)]
+    #[must_use]
+    pub fn action_broker(
+        &self,
+    ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
+        self.action_plane.as_ref().and_then(Plane::agent_broker)
     }
 
     /// Chat's record of the workspace `workspace` as this session holds it: the
@@ -2800,6 +2814,13 @@ impl Session {
             return;
         }
         self.session_actions_seen.set(Some(revision));
+        // The rows are read here, on the loop that holds the arrangement, and handed to the
+        // broker's catalogue: nothing off this thread reads a place.
+        if let Some(actions) = &self.session_actions {
+            actions.offer(tilo_actions::door::survey_placed(
+                &self.shared.doors.resources(),
+            ));
+        }
         broker.state().host_steps_changed();
     }
 
