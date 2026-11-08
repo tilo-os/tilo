@@ -42,7 +42,7 @@ pub mod registry;
 )]
 pub mod ui;
 
-pub use cx::{Effect, ViewCx};
+pub use cx::{Arg, Effect, ViewCx};
 pub use node::{Binding, BuildError, Event, Node, Offered, Picture, Principal, ResourceRef, Value};
 pub use registry::{View, ViewRegistry, ViewResource};
 

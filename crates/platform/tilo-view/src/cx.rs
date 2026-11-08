@@ -16,13 +16,56 @@ use std::collections::BTreeMap;
 
 use crate::node::{Binding, Event, Node, Principal, ResourceRef, Value};
 
+/// One argument of an action a view's event runs, besides the resource it is on.
+///
+/// A tilolang view hands an action what it read (`post(c, text)`); a Rust view does the same.
+/// What the control's event carries at the press (a field's `submit` carries its text, a picked
+/// emoji, the row a list activated) reaches the action where [`Arg::Event`] stands, exactly as a
+/// tilolang view's `event` argument does, and the view's own state where [`Arg::State`] stands,
+/// as a tilolang view's `draft`.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Arg {
+    /// A value the view read.
+    Value(Value),
+    /// What the event carries at the press.
+    Event,
+    /// The view's own state `name`, read at the press: the text a bound control holds, which a
+    /// send button hands the action the composer's field is bound to.
+    State(String),
+}
+
+impl Arg {
+    /// A text argument: `Arg::text(channel)`.
+    #[must_use]
+    pub fn text(value: impl Into<String>) -> Self {
+        Self::Value(Value::Text(value.into()))
+    }
+
+    /// The view's own state `name`, read at the press (`Arg::state("Composer")`).
+    #[must_use]
+    pub fn state(name: impl Into<String>) -> Self {
+        Self::State(name.into())
+    }
+}
+
+impl From<Value> for Arg {
+    fn from(value: Value) -> Self {
+        Self::Value(value)
+    }
+}
+
 /// What an event of a control does, as the host reads it back.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub enum Effect {
-    /// Run the action `action` of the view's resource (the resource the place shows).
-    Action { action: String },
-    /// Run the action `action` of the resource `target`.
-    On { target: ResourceRef, action: String },
+    /// Run the action `action` of the view's resource (the resource the place shows), with
+    /// `args` (in the order the action's parameters after its subject declare them).
+    Action { action: String, args: Vec<Arg> },
+    /// Run the action `action` of the resource `target`, with `args`.
+    On {
+        target: ResourceRef,
+        action: String,
+        args: Vec<Arg>,
+    },
     /// Show `target` (`open(r)`): the place goes on to it, as a press on a row does.
     Open {
         target: ResourceRef,
@@ -106,11 +149,25 @@ impl ViewCx {
     /// The event of the control `node` named `event` that runs `action` on the view's resource.
     #[must_use]
     pub fn action(&self, node: &Node, event: &str, action: impl Into<String>) -> Event {
+        self.action_with(node, event, action, Vec::new())
+    }
+
+    /// [`Self::action`] with the arguments the action takes after its resource: what the view
+    /// read (`post(c, text)`), or [`Arg::Event`] for what the event carries.
+    #[must_use]
+    pub fn action_with(
+        &self,
+        node: &Node,
+        event: &str,
+        action: impl Into<String>,
+        args: Vec<Arg>,
+    ) -> Event {
         self.attach(
             node,
             event,
             Effect::Action {
                 action: action.into(),
+                args,
             },
         )
     }
@@ -125,12 +182,26 @@ impl ViewCx {
         target: ResourceRef,
         action: impl Into<String>,
     ) -> Event {
+        self.action_on_with(node, event, target, action, Vec::new())
+    }
+
+    /// [`Self::action_on`] with the arguments the action takes after its resource.
+    #[must_use]
+    pub fn action_on_with(
+        &self,
+        node: &Node,
+        event: &str,
+        target: ResourceRef,
+        action: impl Into<String>,
+        args: Vec<Arg>,
+    ) -> Event {
         self.attach(
             node,
             event,
             Effect::On {
                 target,
                 action: action.into(),
+                args,
             },
         )
     }
@@ -176,11 +247,11 @@ impl ViewCx {
     /// and the event's name, so a press runs through the same door a tilolang view's does.
     fn attach(&self, node: &Node, event: &str, effect: Effect) -> Event {
         let wire = match &effect {
-            Effect::Action { action } => Event {
+            Effect::Action { action, .. } => Event {
                 toggles: None,
                 invokes: Some((self.resource.id_string(), action.clone())),
             },
-            Effect::On { target, action } => Event {
+            Effect::On { target, action, .. } => Event {
                 toggles: None,
                 invokes: Some((target.id_string(), action.clone())),
             },
@@ -270,6 +341,16 @@ impl ViewCx {
             name: name.into(),
         }
     }
+
+    /// The name of a binding to the control `name`, for assistive technology: what a control
+    /// bound to the view's state announces.
+    #[must_use]
+    pub fn bind_state(name: impl Into<String>) -> Binding {
+        Binding {
+            field: None,
+            name: name.into(),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -328,5 +409,25 @@ mod tests {
         cx.set_state("open", Value::Bool(true));
         assert!(cx.state_flag("open", false));
         assert_eq!(cx.state_text("tab", "all"), "all");
+    }
+
+    #[test]
+    fn an_actions_arguments_are_what_the_view_read_and_what_the_event_carries() {
+        let cx = cx();
+        let node: crate::node::Node = crate::ui::TextInputBuilder::new(&cx.key("draft")).into();
+        cx.action_with(
+            &node,
+            "submit",
+            "post",
+            vec![Arg::text("#general"), Arg::Event],
+        );
+        let effect = cx.effect(&node.key, "submit").expect("recorded");
+        assert_eq!(
+            effect,
+            Effect::Action {
+                action: "post".to_owned(),
+                args: vec![Arg::Value(Value::Text("#general".to_owned())), Arg::Event,],
+            }
+        );
     }
 }

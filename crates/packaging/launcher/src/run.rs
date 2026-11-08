@@ -304,6 +304,13 @@ pub struct RunOptions {
     /// A URI to open, forwarded as one opaque argv value. The caller must
     /// validate its scheme against the freshly-read installed manifest.
     pub open_uri: Option<String>,
+    /// A GUI launch's own arguments, after `--`, forwarded verbatim as
+    /// `argv[1..]` exactly as a CLI launch's `passthrough_argv` is. The app's
+    /// own parser decides what they mean — `--index` reads a record for
+    /// search, `--surface` reports what it publishes — and the launcher only
+    /// carries them. [`Self::open_document`] and [`Self::open_uri`] are the one
+    /// argument a person opens with; a caller passes those *or* these.
+    pub gui_argv: Vec<String>,
     /// Open [`Self::open_uri`] in a window that browses as a visitor: the
     /// app is handed [`runtime_portal::windows::VISITOR_WINDOW_FLAG`] after
     /// the address.
@@ -355,6 +362,7 @@ impl Default for RunOptions {
             app_id: None,
             open_document: None,
             open_uri: None,
+            gui_argv: Vec::new(),
             open_as_visitor: false,
             headless_console: None,
             tilolang_hosted: false,
@@ -385,6 +393,10 @@ fn gui_open_args(opts: &RunOptions) -> Vec<String> {
             .to_string(),
         ]);
     }
+    // The app's own arguments ride the same opaque tail a CLI launch's
+    // passthrough does: after the entrypoint token, which bwrap forwards to
+    // the child as `argv[1..]`.
+    args.extend(opts.gui_argv.iter().cloned());
     args
 }
 
@@ -6059,6 +6071,80 @@ mod render_service_launch_tests {
             "{argv:?}"
         );
         assert_eq!(argv.last().map(String::as_str), Some("/app/browser"));
+    }
+}
+
+#[cfg(test)]
+mod gui_argv_tests {
+    use super::*;
+
+    /// A GUI launch carries the app's own arguments after the entrypoint, as
+    /// a CLI launch carries its passthrough, and alongside the one a person
+    /// opens with rather than instead of it.
+    ///
+    /// Without this a sandboxed app never receives `--index`: the record
+    /// reader the session runs as the app's own binary to index a record for
+    /// search starts with no arguments, so it tries to open a window instead
+    /// and, in a launch that hands it no session connection, fails attaching
+    /// a runtime host. The app's parser is the one that decides what an
+    /// argument means; the launcher only carries it.
+    #[test]
+    fn a_gui_launch_forwards_the_apps_own_arguments() {
+        {
+            let opts = RunOptions {
+                gui_argv: vec!["--index".to_owned()],
+                ..RunOptions::default()
+            };
+            assert_eq!(gui_open_args(&opts), ["--index"]);
+        }
+        {
+            // A document the person opened with comes first, then the app's
+            // own arguments; neither displaces the other.
+            let opts = RunOptions {
+                open_document: Some(PathBuf::from("/workspace/a.note")),
+                gui_argv: vec!["--index".to_owned()],
+                ..RunOptions::default()
+            };
+            assert_eq!(gui_open_args(&opts), ["/workspace/a.note", "--index"]);
+        }
+        {
+            // No argv at all is the ordinary launch, unchanged.
+            let opts = RunOptions::default();
+            assert!(gui_open_args(&opts).is_empty());
+        }
+    }
+
+    /// The argv a GUI launch builds keeps those arguments after the
+    /// entrypoint token, where bwrap forwards them to the child as
+    /// `argv[1..]` — the same place a CLI launch's passthrough lands.
+    #[test]
+    fn the_arguments_reach_the_sandboxed_program_after_its_entrypoint() {
+        let manifest: ManifestView = crate::manifest::test_manifest(
+            "id = \"so.tilo.chat\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"",
+            "[entrypoint]\nbin = \"bin/chat\"\n",
+        );
+        let opts = RunOptions {
+            gui_argv: vec!["--index".to_owned()],
+            ..RunOptions::default()
+        };
+        let (argv, _, tail) = build_initial_argv(
+            &manifest,
+            Path::new("/host/pkg"),
+            &opts,
+            None,
+            &[],
+            None,
+            None,
+            &CapabilityPlan::empty(),
+        )
+        .unwrap();
+        assert_eq!(tail, ["--index"], "the app's argument rides the tail");
+        // The last token is the program bwrap execs; everything after it is
+        // that program's own argv, which the spawn appends.
+        assert_eq!(
+            argv.last().map(String::as_str),
+            Some("/var/tilo-apps/so.tilo.chat/bin/chat")
+        );
     }
 }
 

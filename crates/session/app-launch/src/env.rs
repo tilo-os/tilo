@@ -63,6 +63,11 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
+    // The document-media socket this session serves its apps, where it serves one that is not
+    // the image's (`fs serve-media`, `docs/architecture/apps.md`): the launcher reads it to
+    // scope every app's capability, and a session started from a build under test serves its
+    // own, because the image's daemon speaks another build's wire.
+    "TILO_FS_BLOB_SOCKET",
     "XDG_DATA_HOME",
     "XDG_CONFIG_HOME",
     "XDG_CACHE_HOME",
@@ -260,6 +265,27 @@ mod tests {
         assert!(
             !variables.contains_key("TILO_WORKSPACE_ID"),
             "a workspace is chosen per launch, never inherited"
+        );
+    }
+
+    /// The document-media socket a session serves its apps is the session's own, and every
+    /// app it starts must be told it: the launcher falls back to the installed
+    /// `/run/tilo/fs-blobs.sock` when it is not handed one, and a session started from a build
+    /// under test then hands its apps a daemon of another build, whose wire they do not speak.
+    #[test]
+    fn a_package_is_told_the_session_s_own_document_media_socket() {
+        let socket = "/tmp/run/fs-blobs.sock";
+        let session = SessionEnvironment::reading(|name| match name {
+            "TILO_FS_BLOB_SOCKET" => Some(socket.into()),
+            _ => None,
+        });
+        assert_eq!(
+            session
+                .variables()
+                .get("TILO_FS_BLOB_SOCKET")
+                .map(String::as_str),
+            Some(socket),
+            "an app reads its content through the socket this session serves"
         );
     }
 

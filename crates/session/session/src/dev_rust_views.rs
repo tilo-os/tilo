@@ -2,28 +2,95 @@
 //!
 //! Built only with `dev-rust-views` (a shot of a Rust app's view on the canvas,
 //! `dist/dev/shell-run.sh --dev-rust-views`): the sample catalogue of Tube's channels and videos,
-//! each a resource of the app `tube`, published as the session publishes any app's resources, and
-//! the views `#[view]` declared in the crate registered with the shell's runtime, so a place that
-//! shows a channel draws Tube's own `page` (one-app-model.md §2). A person's session, and every
-//! production image, carries none of it.
+//! each a resource of the app `tube`, and the demo workspace's `#design-crit` channel of Chat,
+//! each a resource of its app, published as the session publishes any app's resources, and the
+//! views `#[view]` declared in the crates registered with the shell's runtime, so a place that
+//! shows a channel draws that app's own `page` (one-app-model.md §2). Chat's channel posts: its
+//! `post` action writes into the demo workspace the same service keeps, so the composer a
+//! person types in adds a message the page draws. A person's session, and every production
+//! image, carries none of it.
 
 use serde_json::Value as Json;
 use tilo_actions::{DoorError, ResourceSpec};
 use tilo_service::{Service, Started};
 
-/// Tube's sample channels and videos, as the session publishes them: each a resource of the app
-/// `tube`, a channel through its `page` view.
+/// The chat channel the demo workspace opens: what a place showing it draws Chat's page over.
+const CHAT_CHANNEL: &str = "c_crit";
+
+/// A small channel of the demo workspace, holding one message: a page whose whole transcript
+/// stands within its view, so a shot of an attachment's press has the row in reach.
+pub const CHAT_SHORT_CHANNEL: &str = "c_general";
+
+/// Tube's sample channels and videos and Chat's demo conversation, as the session publishes
+/// them: each a resource of its app, a channel through its `page` view.
 pub struct RustApps {
     model: tube::model::TubeModel,
+    /// Chat's demo workspace, read and written as its window does: the channel's messages and
+    /// what its composer posts.
+    chat: chat::demo::Workspace,
 }
 
 impl RustApps {
     /// The apps' sample catalogue, and the views this crate links registered with the shell.
     #[must_use]
     pub fn new() -> Self {
-        Self {
+        let mut apps = Self {
             model: tube::sample::model(),
-        }
+            chat: chat::demo::Workspace::demo().expect("the demo chat"),
+        };
+        apps.share_a_record();
+        apps
+    }
+
+    /// The demo conversation's page, as its place draws it.
+    fn chat_channel(&self) -> chat::views::Channel {
+        chat::views::Channel::read(
+            &self.chat.read(),
+            &self.chat.message_rows(CHAT_CHANNEL),
+            CHAT_CHANNEL,
+            chat::model::ME,
+        )
+    }
+
+    /// The page of the small demo channel `CHAT_SHORT_CHANNEL`, whose whole transcript stands
+    /// within a place: what a shot of an attachment's press draws.
+    fn chat_short_channel(&self) -> chat::views::Channel {
+        chat::views::Channel::read(
+            &self.chat.read(),
+            &self.chat.message_rows(CHAT_SHORT_CHANNEL),
+            CHAT_SHORT_CHANNEL,
+            chat::model::ME,
+        )
+    }
+
+    /// Share the sample video `vid_rust_async` in the small demo channel, as a person sharing a
+    /// record does: the message the channel then shows carries a row that places the video,
+    /// which the session publishes (Tube's own). A development fixture, so a shot of an
+    /// attachment's press has one to press, in a transcript short enough to reach it.
+    fn share_a_record(&mut self) {
+        let video = self
+            .model
+            .videos
+            .iter()
+            .find(|video| video.id == "vid_rust_async")
+            .expect("the sample video");
+        let at = tilo_reference::ResourceAt {
+            app: "so.tilo.tube".to_owned(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "tube.video",
+                format!("tube.video:{}", video.id),
+                video.title.clone(),
+            ),
+        };
+        let invoke =
+            chat::parts::ChatPart::SHARE_RESOURCE.with(chat::messages::chat_part::ShareResource {
+                channel: tilo_resource::Id::from_raw(CHAT_SHORT_CHANNEL),
+                attached: at,
+                text: Some("Worth a watch".to_owned()),
+                mentions: None,
+            });
+        let _ = self.chat.apply_part_as(chat::model::ME, invoke);
     }
 }
 
@@ -68,7 +135,33 @@ impl Service for RustApps {
             spec.app_id = Some("tube".to_owned());
             spec
         });
-        channels.chain(videos).collect()
+        let conversations = [self.chat_channel(), self.chat_short_channel()];
+        let chat: Vec<ResourceSpec> = conversations
+            .into_iter()
+            .map(|conversation| {
+                let mut chat = ResourceSpec::new(
+                    conversation.resource().id,
+                    "chat.workspace.channels",
+                    format!("#{}", conversation.name),
+                )
+                .with_view(tilo_actions::ResourceViewSpec::new(
+                    "page",
+                    conversation.name.clone(),
+                    "open",
+                ))
+                .with_type(tilo_actions::ResourceType {
+                    noun: tilo_actions::Noun::new("channel", "channels"),
+                    app: tilo_actions::Noun::new("Chat", "Chat"),
+                    root: false,
+                });
+                // What the page's composer runs: the chat's own post, as an agent's step and
+                // the window both post through.
+                chat = chat.with_action(post_action());
+                chat.app_id = Some("chat".to_owned());
+                chat
+            })
+            .collect();
+        channels.chain(videos).chain(chat).collect()
     }
 
     fn read(&self, resource: &str) -> Option<Json> {
@@ -84,15 +177,104 @@ impl Service for RustApps {
                 .find(|video| video.id == id)
                 .and_then(|video| serde_json::to_value(video).ok());
         }
+        if let Some(rest) = resource
+            .strip_prefix("chat.workspace/channels/")
+            .or_else(|| resource.strip_prefix("chat.workspace.channels:"))
+        {
+            let id = rest.to_owned();
+            let conversation = [self.chat_channel(), self.chat_short_channel()]
+                .into_iter()
+                .find(|channel| channel.id == id)?;
+            return serde_json::to_value(&conversation).ok();
+        }
         None
     }
 
     fn invoke(
         &mut self,
-        _resource: &str,
-        _action: &str,
-        _arguments: &serde_json::Map<String, Json>,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, Json>,
     ) -> Result<Started, DoorError> {
+        // The composer's send, as the chat's own verb writes it: a message from the person
+        // typing, in the channel it names.
+        if action == "post"
+            && (resource.starts_with("chat.workspace/channels/")
+                || resource.starts_with("chat.workspace.channels:"))
+        {
+            let channel = arguments
+                .get("channel")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            let text = arguments
+                .get("text")
+                .and_then(Json::as_str)
+                .unwrap_or_default();
+            if !text.trim().is_empty() {
+                self.chat
+                    .say(chat::model::ME, channel, text)
+                    .map_err(|error| DoorError::Failed(format!("{error:?}")))?;
+            }
+            return Ok(Started::Done(tilo_actions::ActionOutput::default()));
+        }
         Ok(Started::Done(tilo_actions::ActionOutput::default()))
+    }
+}
+
+/// The chat's `post` action, as its record publishes it: a message from the person to the
+/// channel they name. The encoding carries no arguments; what the door runs reads them from the
+/// invocation, as the demo workspace needs.
+fn post_action() -> tilo_actions::ActionSpec {
+    use tilo_actions::{ActionArgs, EncodedAction, ExecutionLocus, ParamType};
+    tilo_actions::ActionSpec::typed(
+        "post",
+        "Post a message",
+        "a message",
+        ExecutionLocus::ClientLocal,
+        vec![
+            tilo_actions::ActionParam::required("channel", ParamType::Text, "The channel"),
+            tilo_actions::ActionParam::required("text", ParamType::Text, "What it says"),
+        ],
+        |_: &ActionArgs| EncodedAction::written("chat.post".to_owned(), Vec::new()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_chat_channel_service_publishes_its_messages_and_their_people() {
+        let apps = RustApps::new();
+        let published: Vec<String> = apps
+            .resources()
+            .into_iter()
+            .filter(|spec| spec.kind == "chat.workspace.channels")
+            .map(|spec| spec.id.as_str().to_owned())
+            .collect();
+        assert_eq!(
+            published,
+            [
+                "chat.workspace.channels:c_crit",
+                "chat.workspace.channels:c_general"
+            ],
+            "the demo's conversation and its short channel are published"
+        );
+        let reading = apps
+            .read("chat.workspace.channels:c_crit")
+            .expect("the channel's reading");
+        let channel: chat::views::Channel =
+            serde_json::from_value(reading).expect("the reading is a channel");
+        assert_eq!(channel.name, "design-crit");
+        assert!(
+            !channel.messages.is_empty(),
+            "the demo channel holds messages"
+        );
+        let first = &channel.messages[0];
+        assert!(!first.text.trim().is_empty(), "a message says something");
+        let author = channel
+            .person(&first.author)
+            .unwrap_or_else(|| panic!("the page names {} in {:?}", first.author, channel.people));
+        assert_ne!(author.name, first.author, "a person is named, not their id");
     }
 }
