@@ -58,8 +58,11 @@ tl_apps=(discussion notes tasks chat mail tube)
 # The Rust apps it installs beside them, by the directory under `apps/`: Chat's record
 # (`so.tilo.chat`) is the one the session's agents answer in and the one the canvas's ask
 # conversation is a channel of (`docs/designs/app-language/shell.md` §8.1), so a session
-# that asks must have it, as a person's device has the app installed.
-rust_apps=(chat)
+# that asks must have it, as a person's device has the app installed. The agent
+# (`so.tilo.agent`) is the app the session starts to answer those conversations
+# (`Apps::start_agent`): without it installed, asking on the canvas makes a turn no process
+# answers, so a session that asks installs the app that answers.
+rust_apps=(chat agent)
 build=1
 size=1280x800
 apps=(--seed-apps)

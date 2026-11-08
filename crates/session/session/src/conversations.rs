@@ -65,6 +65,23 @@ impl Held {
             .find(|facts| facts.workspace == workspace)
             .ok_or_else(|| format!("this session holds no workspace {workspace}"))
     }
+
+    /// Whether `self` and `other` give different turns to deliver: the same
+    /// workspaces, the same agents, and the same runs in each. The policy they
+    /// were decided against is not part of it — a grant changing is announced
+    /// elsewhere, and delivery is about which turns go, not what they may do.
+    fn differs_from(&self, other: &Self) -> bool {
+        self.workspaces.len() != other.workspaces.len()
+            || self
+                .workspaces
+                .iter()
+                .zip(&other.workspaces)
+                .any(|(was, now)| {
+                    was.workspace != now.workspace
+                        || was.turns != now.turns
+                        || was.agents != now.agents
+                })
+    }
 }
 
 /// The turns, as the broker's run channel reads them, and what their agents spent.
@@ -399,10 +416,18 @@ impl Conversations {
         ))
     }
 
-    /// Read each workspace's conversations as `person` , and hand the turns they give to the run
-    /// channel.
+    /// Read each workspace's conversations as `person`, and hand the turns
+    /// they give to the run channel.
+    ///
+    /// A pass that read different turns than the one before announces them
+    /// ([`tilo_identity_host::policy_change::announce`]): the broker re-reads
+    /// what it delivers when that changes, not on a clock, so a new turn — the
+    /// person typing an ask into a conversation Chat had no message in — is
+    /// only handed to its agent because this says it exists. Nothing is
+    /// announced while the turns are the ones already read, so a quiet desk
+    /// costs the broker no re-read.
     pub(crate) fn feed(&self, person: &str, workspaces: Vec<WorkspaceFacts>) {
-        let read = workspaces
+        let read: Vec<Facts> = workspaces
             .into_iter()
             .map(|facts| {
                 let (turns, agents) = self.turns(&facts, person);
@@ -416,8 +441,26 @@ impl Conversations {
             .collect();
         let held = Held { workspaces: read };
         self.runs.prune_reported(&held);
-        if let Ok(mut current) = self.runs.held.lock() {
-            *current = held;
+        let changed = match self.runs.held.lock() {
+            Ok(mut current) => {
+                let changed = current.differs_from(&held);
+                *current = held;
+                changed
+            }
+            Err(error) => {
+                // A poisoned run source keeps the turns it already held: this
+                // pass's read was not stored, so announcing it would have the
+                // broker re-read turns that are not there. The session's log
+                // says the delivery stopped, rather than the ask failing
+                // silently.
+                tracing::warn!(%error, "the turns' run source is poisoned; this pass delivers nothing");
+                false
+            }
+        };
+        // Announced after the read is in place: the broker that wakes re-reads
+        // what this just stored, never the pass before it.
+        if changed {
+            tilo_identity_host::policy_change::announce();
         }
     }
 
@@ -891,5 +934,38 @@ mod tests {
         assert!(runs.check_agent("w1", &run).is_ok());
         run.agent = "other".into();
         assert!(runs.check_agent("w1", &run).is_err());
+    }
+
+    /// A pass that read different turns than the one before is what wakes the
+    /// broker to deliver a new one: the person typing an ask into a
+    /// conversation Chat held no message in is only handed to its agent
+    /// because [`Held::differs_from`] says the turns changed.
+    #[test]
+    fn a_new_turn_is_a_change_and_the_same_turns_are_not() {
+        let chat = workspace();
+        let asked = part(vec![("m1", message(ME, "what is on my task list?", 10))]);
+        let (entries, agents) = turns(&chat, &asked, ME);
+        let facts = |turns: Vec<Entry>| Held {
+            workspaces: vec![Facts {
+                workspace: "w1".into(),
+                agents: agents.clone(),
+                policy: None,
+                turns,
+            }],
+        };
+        let nothing = Held::default();
+        let waiting = facts(entries.clone());
+        assert!(
+            nothing.differs_from(&waiting),
+            "a turn that was not there is a change to deliver"
+        );
+        assert!(
+            !waiting.differs_from(&facts(entries)),
+            "the same turns delivered again are no change"
+        );
+        assert!(
+            facts(Vec::new()).differs_from(&waiting),
+            "a turn that ended is a change too: its run stops"
+        );
     }
 }
