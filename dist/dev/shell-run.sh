@@ -77,7 +77,7 @@ done
 
 bin=$repo_root/target/debug
 if ((build)); then
-    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package and tilo-runtime-bundle"
+    say "building tilo-session, tilolang, tilo-control, tilo-launcher, tilo-install, tilo-app-package, nested-session-bus and tilo-runtime-bundle"
     # A shot of a Rust app's view on the canvas builds the session with Tube's sample
     # resources and views linked (`--dev-rust-views`, development builds only).
     session_features=()
@@ -87,9 +87,10 @@ if ((build)); then
         -p tilolang-cli --bin tilolang -p tilo-control --bin tilo-control \
         -p launcher --bin tilo-launcher -p install --bin tilo-install \
         -p tilo-app-package-cli --bin tilo-app-package \
+        -p nested-session-bus --bin nested-session-bus \
         -p runtime-bundle --bin tilo-runtime-bundle)
 fi
-for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package tilo-runtime-bundle; do
+for tool in tilo-session tilolang tilo-control tilo-launcher tilo-install tilo-app-package nested-session-bus tilo-runtime-bundle; do
     [[ -x $bin/$tool ]] || die "no $bin/$tool (run without --no-build)"
 done
 # The thin-app build every Tilo runtime here is made of: `dist/dev/nested-session-build.sh`
