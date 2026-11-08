@@ -37,16 +37,16 @@ pub struct DisplaySheet {
     controller: ProjectionController,
     /// Where a live projection's frames are read from.
     video: Option<std::path::PathBuf>,
-    /// The receiver the person chose on this opening, by id. Its stream
-    /// options and its PIN show only once one is chosen or a stream runs.
+    /// The receiver the person chose on this opening, by id. Its stream options and its PIN show
+    /// only once one is chosen or a stream runs.
     chosen: Option<String>,
     /// The opening the search was made for, so every opening looks again.
     searched: Option<u64>,
 }
 
-/// Include `device`'s screen `output` in the shared arrangement, or leave
-/// it out, as the person chose it against `revision`. A screen the
-/// arrangement moved since the sheet drew it is not changed under them.
+/// Include `device` 's screen `output` in the shared arrangement, or leave it out, as the person
+/// chose it against `revision` . A screen the arrangement moved since the sheet drew it is not
+/// changed under them.
 fn include(device: &str, output: &str, revision: u64, include: bool) {
     let Some((_, layout)) = crate::shared_displays::person() else {
         tracing::info!(%device, %output, "no shared display arrangement is published");
@@ -76,9 +76,8 @@ fn include(device: &str, output: &str, revision: u64, include: bool) {
     }
 }
 
-/// The person's screens on their other devices, as the shared
-/// arrangement lays them out, and whether the person may change which of
-/// them take part here.
+/// The person's screens on their other devices, as the shared arrangement lays them out, and
+/// whether the person may change which of them take part here.
 fn screens() -> (Vec<Screen>, bool) {
     let Some((_, layout)) = crate::shared_displays::person() else {
         return (Vec::new(), false);
@@ -105,9 +104,8 @@ fn screens() -> (Vec<Screen>, bool) {
 }
 
 impl DisplaySheet {
-    /// The sheet, streaming over the projector service on `socket` (`None`:
-    /// the service's own), waking the session's loop with `wake` when the
-    /// service has news.
+    /// The sheet, streaming over the projector service on `socket` (`None`: the service's own),
+    /// waking the session's loop with `wake` when the service has news.
     pub(crate) fn new(
         seat: Option<DisplaysSeat>,
         socket: Option<std::path::PathBuf>,
@@ -126,11 +124,10 @@ impl DisplaySheet {
         }
     }
 
-    /// The desktop's frames for a live projection: the projector's video
-    /// socket and the profile its receiver is sent at. `None` when no
-    /// projector session is running, and for the receivers the projector
-    /// shows the desktop to with their own capture — a Miracast or `AirPlay`
-    /// session captures the screen itself.
+    /// The desktop's frames for a live projection: the projector's video socket and the profile its
+    /// receiver is sent at. `None` when no projector session is running, and for the receivers the
+    /// projector shows the desktop to with their own capture — a Miracast or `AirPlay` session
+    /// captures the screen itself.
     #[must_use]
     pub(crate) fn video_stream(&self) -> Option<VideoStream> {
         let (ProjectionStatus::Connecting { device_id }
@@ -163,15 +160,14 @@ impl DisplaySheet {
         self.seat.as_ref()
     }
 
-    /// Its presentation: where it sits and whether it is up, which the sheets
-    /// over the desktop are placed by.
+    /// Its presentation: where it sits and whether it is up, which the sheets over the desktop are
+    /// placed by.
     #[must_use]
     pub(crate) fn presentation(&self) -> Option<&tilo_sheets::Presentation> {
         self.seat.as_ref().map(tilo_sheets::Seat::presentation)
     }
 
-    /// Put the sheet up, as a key or an action asked: a sheet already up
-    /// stays as it is.
+    /// Put the sheet up, as a key or an action asked: a sheet already up stays as it is.
     pub(crate) fn open(&self) {
         let Some(seat) = &self.seat else {
             return;
@@ -189,9 +185,8 @@ impl DisplaySheet {
         seat.presentation().close();
     }
 
-    /// One pass of the sheet: for a new opening, look for wireless displays
-    /// again; hear what the projector answered; carry out what the person
-    /// chose; and show what stands now.
+    /// One pass of the sheet: for a new opening, look for wireless displays again; hear what the
+    /// projector answered; carry out what the person chose; and show what stands now.
     pub(crate) fn follow(
         &mut self,
         outputs: &[OutputInfo],
@@ -228,8 +223,8 @@ impl DisplaySheet {
     /// Carry out one choice from the sheet.
     fn carry_out(&mut self, effect: DisplaysEffect, invocations: &Invocations) {
         match effect {
-            // A layout is the session's own published action, as the display
-            // key and Settings use it.
+            // A layout is the session's own published action, as the display key and Settings use
+            // it.
             DisplaysEffect::Extend => self.choose_layout(Layout::Extend, invocations),
             DisplaysEffect::Mirror => self.choose_layout(Layout::Mirror, invocations),
             DisplaysEffect::BuiltinOnly => self.choose_layout(Layout::BuiltinOnly, invocations),
@@ -238,9 +233,8 @@ impl DisplaySheet {
             // which has a sheet of its own that stands on every display
             // (see [`crate::display_confirm`]).
             DisplaysEffect::Keep | DisplaysEffect::Revert => {}
-            // A screen of the person's other devices takes part in the
-            // shared layout, or leaves it: the arrangement is the document
-            // Settings edits, and this writes the same one.
+            // A screen of the person's other devices takes part in the shared layout, or leaves it:
+            // the arrangement is the document Settings edits, and this writes the same one.
             DisplaysEffect::Include {
                 device,
                 output,
@@ -275,9 +269,8 @@ impl DisplaySheet {
         }
     }
 
-    /// Ask for `layout` of the desktop, and stream wireless displays that
-    /// way too: a receiver is an external display, so only this screen has
-    /// no stream.
+    /// Ask for `layout` of the desktop, and stream wireless displays that way too: a receiver is an
+    /// external display, so only this screen has no stream.
     fn choose_layout(&mut self, layout: Layout, invocations: &Invocations) {
         if let Some(mode) = wireless_mode_of(layout)
             && (self.controller.devices.is_empty()
@@ -293,8 +286,8 @@ impl DisplaySheet {
         );
     }
 
-    /// The receiver whose stream the sheet configures: the one streaming or
-    /// connecting, else the one the person chose on this opening.
+    /// The receiver whose stream the sheet configures: the one streaming or connecting, else the
+    /// one the person chose on this opening.
     fn target(&self) -> Option<&ProjectionDevice> {
         let live = match &self.controller.status {
             ProjectionStatus::Connecting { device_id }
@@ -313,7 +306,7 @@ impl DisplaySheet {
         self.select(receiver);
     }
 
-    /// Stream to `receiver`, with the PIN typed for it when there is one.
+    /// Stream to `receiver` , with the PIN typed for it when there is one.
     fn connect(&mut self, receiver: &str, pin: &str) {
         if self.select(receiver) {
             self.controller.options.credential = (!pin.is_empty()).then(|| pin.to_owned());
@@ -321,7 +314,7 @@ impl DisplaySheet {
         }
     }
 
-    /// Select `receiver`, by id.
+    /// Select `receiver` , by id.
     fn select(&mut self, receiver: &str) -> bool {
         let Some(index) = self
             .controller
@@ -355,8 +348,8 @@ impl DisplaySheet {
         self.restart_live_stream();
     }
 
-    /// Restart the running stream so a changed option takes effect: the
-    /// receiver is sent the options once, when it connects.
+    /// Restart the running stream so a changed option takes effect: the receiver is sent the
+    /// options once, when it connects.
     fn restart_live_stream(&mut self) {
         let live = matches!(
             &self.controller.status,
@@ -369,8 +362,8 @@ impl DisplaySheet {
         }
     }
 
-    /// What the sheet shows now: the layouts the attached displays allow, and
-    /// what the projector reported of the wireless ones.
+    /// What the sheet shows now: the layouts the attached displays allow, and what the projector
+    /// reported of the wireless ones.
     fn sheet(&self, outputs: &[OutputInfo], answering_a_display_change: bool) -> Sheet {
         let active = self.active_layout(outputs);
         let layouts = Layout::ALL
@@ -380,8 +373,8 @@ impl DisplaySheet {
                 layout,
                 enabled: !answering_a_display_change,
                 current: active == Some(layout),
-                // A layout the session applies is applied at once: nothing
-                // waits here for Keep or Revert.
+                // A layout the session applies is applied at once: nothing waits here for Keep or
+                // Revert.
                 stages: false,
             })
             .collect();
@@ -443,22 +436,20 @@ impl DisplaySheet {
         }
     }
 
-    /// The layout the sheet marks as current: the desktop's when two or more
-    /// displays are attached, else the wireless stream's.
+    /// The layout the sheet marks as current: the desktop's when two or more displays are attached,
+    /// else the wireless stream's.
     fn active_layout(&self, outputs: &[OutputInfo]) -> Option<Layout> {
         if outputs.len() > 1 {
             Some(layout_of(displays::current(outputs)))
         } else {
-            // One display shows nothing to arrange; a receiver is the only
-            // other screen there is.
+            // One display shows nothing to arrange; a receiver is the only other screen there is.
             self.target()
                 .map(|_| layout_of(wireless_layout_of(self.controller.options.mode)))
         }
     }
 
-    /// Whether `layout` is something the displays or a receiver can do now:
-    /// the attached displays can be arranged into it, or the chosen receiver
-    /// can stream it. Nothing else is shown.
+    /// Whether `layout` is something the displays or a receiver can do now: the attached displays
+    /// can be arranged into it, or the chosen receiver can stream it. Nothing else is shown.
     fn layout_possible(&self, layout: Layout, outputs: &[OutputInfo]) -> bool {
         let arranged = outputs.len() > 1
             && match layout {
@@ -475,7 +466,7 @@ impl DisplaySheet {
     }
 }
 
-/// The `set-mode` action's name for `layout`.
+/// The `set-mode` action's name for `layout` .
 fn layout_name(layout: Layout) -> &'static str {
     match layout {
         Layout::Extend => "extend",
@@ -485,7 +476,7 @@ fn layout_name(layout: Layout) -> &'static str {
     }
 }
 
-/// The layout the sheet names for `mode`.
+/// The layout the sheet names for `mode` .
 fn layout_of(mode: DisplayMode) -> Layout {
     match mode {
         DisplayMode::Next | DisplayMode::Extend => Layout::Extend,
@@ -495,8 +486,8 @@ fn layout_of(mode: DisplayMode) -> Layout {
     }
 }
 
-/// The wireless stream layout that corresponds to a desktop layout. A
-/// receiver is an external display, so "only this screen" has no stream.
+/// The wireless stream layout that corresponds to a desktop layout. A receiver is an external
+/// display, so "only this screen" has no stream.
 fn wireless_mode_of(layout: Layout) -> Option<ProjectionMode> {
     match layout {
         Layout::Extend => Some(ProjectionMode::Extend),
@@ -531,9 +522,8 @@ mod tests {
         }
     }
 
-    /// A live projection of a receiver of a protocol that captures the screen
-    /// itself is not streamed to: its own protocol already carries the
-    /// desktop.
+    /// A live projection of a receiver of a protocol that captures the screen itself is not
+    /// streamed to: its own protocol already carries the desktop.
     #[test]
     fn only_a_receiver_that_cannot_capture_for_itself_is_sent_the_desktops_frames() {
         let wake: tilo_service::Wake = std::sync::Arc::new(|| ());
@@ -606,8 +596,8 @@ mod tests {
         );
     }
 
-    /// The name a layout is chosen by is the one the displays' own action
-    /// takes, so a choice at the sheet arranges them.
+    /// The name a layout is chosen by is the one the displays' own action takes, so a choice at the
+    /// sheet arranges them.
     #[test]
     fn every_layout_is_chosen_by_the_name_its_arrangement_answers_to() {
         for (layout, mode) in [
@@ -624,8 +614,8 @@ mod tests {
         }
     }
 
-    /// A published view of the person's devices: this laptop's own panel and
-    /// the tablet's screen, with the arrangement they are laid out by.
+    /// A published view of the person's devices: this laptop's own panel and the tablet's screen,
+    /// with the arrangement they are laid out by.
     fn published() -> tilo_test_env::TestHome {
         use settings_store::person_displays::{DeviceOutput, PersonDevice};
         let home = tilo_test_env::TestHome::new().expect("a home");
@@ -687,8 +677,8 @@ mod tests {
         home
     }
 
-    /// The sheet lists the person's other devices' screens, and choosing one
-    /// includes it or leaves it out of the shared arrangement.
+    /// The sheet lists the person's other devices' screens, and choosing one includes it or leaves
+    /// it out of the shared arrangement.
     #[test]
     fn the_sheet_lists_the_person_s_other_screens_and_keeps_their_choice() {
         let _home = published();
@@ -720,8 +710,8 @@ mod tests {
             "the sheet shows it left out: {shown:?}"
         );
 
-        // A choice made against a revision the arrangement moved past does
-        // not change it under the person.
+        // A choice made against a revision the arrangement moved past does not change it under the
+        // person.
         let revision = arrangement
             .entry("tablet", &tablet.output)
             .expect("still arranged")

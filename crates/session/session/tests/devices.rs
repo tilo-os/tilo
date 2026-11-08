@@ -1,6 +1,6 @@
-//! The person's other devices in quick settings: the fabric's devices become
-//! the Devices section's rows and the places an accessory can move to, and a
-//! press on one sends it what plays here, or opens the device's settings.
+//! The person's other devices in quick settings: the fabric's devices become the Devices section's
+//! rows and the places an accessory can move to, and a press on one sends it what plays here, or
+//! opens the device's settings.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -111,8 +111,7 @@ impl MagicPackets for Packets {
     }
 }
 
-/// This machine's interfaces, fixed so the test does not depend on the
-/// machine running it.
+/// This machine's interfaces, fixed so the test does not depend on the machine running it.
 struct FixedInterfaces(Vec<WakeRoute>);
 
 impl WakeInterfaces for FixedInterfaces {
@@ -121,8 +120,7 @@ impl WakeInterfaces for FixedInterfaces {
     }
 }
 
-/// The fabric as a stand-in transport keeps it, and what the session sent
-/// through it.
+/// The fabric as a stand-in transport keeps it, and what the session sent through it.
 #[derive(Default)]
 struct Fabric {
     converged: DeviceFabric,
@@ -146,8 +144,8 @@ struct FakeLink {
 }
 
 impl FakeLink {
-    /// A link on a fabric this device has joined, with `laptop` online too
-    /// and showing (a monitor, when `display`).
+    /// A link on a fabric this device has joined, with `laptop` online too and showing (a monitor,
+    /// when `display` ).
     fn joined(display: bool) -> Self {
         let link = Self::default();
         *link.identity.lock().expect("the identity") = Some(this_device());
@@ -157,8 +155,7 @@ impl FakeLink {
         link
     }
 
-    /// A device of the person's, awake now, reporting that `mac` on `on`
-    /// wakes it.
+    /// A device of the person's, awake now, reporting that `mac` on `on` wakes it.
     fn joined_awake_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
         self.put_device(
             device,
@@ -170,8 +167,7 @@ impl FakeLink {
         );
     }
 
-    /// A device of the person's, asleep off the network, reporting that
-    /// `mac` on `on` wakes it.
+    /// A device of the person's, asleep off the network, reporting that `mac` on `on` wakes it.
     fn joined_sleeping_device(&self, device: DeviceId, label: &str, mac: u8, on: &str) {
         self.put_device(
             device,
@@ -200,8 +196,8 @@ impl FakeLink {
         );
     }
 
-    /// Both of the person's devices on their home network, which is what
-    /// lets one follow a lock on the other.
+    /// Both of the person's devices on their home network, which is what lets one follow a lock on
+    /// the other.
     fn joined_at_home(display: bool) -> Self {
         let link = Self::default();
         *link.identity.lock().expect("the identity") = Some(this_device());
@@ -225,8 +221,7 @@ impl FakeLink {
         link
     }
 
-    /// A device of the person's says of itself what it says now, at a
-    /// revision newer than its last.
+    /// A device of the person's says of itself what it says now, at a revision newer than its last.
     fn put_device(
         &self,
         device: DeviceId,
@@ -361,8 +356,7 @@ impl FabricLink for FakeLink {
     }
 }
 
-/// A password the session can check, so it locks when the person's other
-/// devices do.
+/// A password the session can check, so it locks when the person's other devices do.
 struct Sesame;
 
 impl tilo_session::unlock::PasswordVerifier for Sesame {
@@ -408,9 +402,8 @@ impl AppActions for Host {
     }
 }
 
-/// The player the session hosts: what plays here, published as the audio
-/// service publishes it, and whether that reading moved since the session
-/// last read it.
+/// The player the session hosts: what plays here, published as the audio service publishes it, and
+/// whether that reading moved since the session last read it.
 struct Player {
     playing: Rc<RefCell<Option<serde_json::Value>>>,
     moved: Rc<Cell<bool>>,
@@ -438,8 +431,8 @@ impl tilo_session::Service for Player {
         action: &str,
         _arguments: &Arguments,
     ) -> Result<tilo_service::Started, DoorError> {
-        // It offers no actions: the tests move what plays between devices
-        // through the fabric, never through its own transport.
+        // It offers no actions: the tests move what plays between devices through the fabric, never
+        // through its own transport.
         Err(DoorError::Unknown(tilo_actions::ActionAddress::new(
             resource, action,
         )))
@@ -450,8 +443,7 @@ impl tilo_session::Service for Player {
     }
 }
 
-/// The session and the device host behind its panel, which the test hands
-/// what plays.
+/// The session and the device host behind its panel, which the test hands what plays.
 struct Harness {
     session: Session,
     /// What the player publishes, as the fixture hands it what plays.
@@ -464,8 +456,8 @@ fn session(link: &FakeLink, host: Rc<Host>) -> Harness {
     session_with(link, host, None, None)
 }
 
-/// The session, with what it sends its wake packets through and which
-/// interfaces it offers to be woken on.
+/// The session, with what it sends its wake packets through and which interfaces it offers to be
+/// woken on.
 fn session_with(
     link: &FakeLink,
     host: Rc<Host>,
@@ -523,8 +515,8 @@ fn session_with(
 }
 
 impl Harness {
-    /// The person's devices as the session publishes them, once it has: the
-    /// reading the Quick Settings app and everything else read.
+    /// The person's devices as the session publishes them, once it has: the reading the Quick
+    /// Settings app and everything else read.
     fn reading(&self) -> Option<DevicesReading> {
         self.session
             .read(tilo_session::DEVICES_RESOURCE)
@@ -538,8 +530,7 @@ impl Harness {
             .unwrap_or_default()
     }
 
-    /// What plays here: a browser stream, playing at 1:12, as the audio
-    /// service publishes it.
+    /// What plays here: a browser stream, playing at 1:12, as the audio service publishes it.
     fn playing(&self) {
         *self.playing.borrow_mut() = Some(
             serde_json::to_value(what_plays())
@@ -552,8 +543,8 @@ impl Harness {
         self.session.step(Duration::from_millis(1)).expect("step");
     }
 
-    /// Press a row of the person's devices, as the panel does: the session's
-    /// published verb, through the door every caller uses.
+    /// Press a row of the person's devices, as the panel does: the session's published verb,
+    /// through the door every caller uses.
     fn press(&mut self, row: &str, part: RowPart) {
         self.session
             .invoke(
@@ -577,8 +568,8 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     harness.playing();
     for _ in 0..40 {
         harness.step();
-        // The rows come before what the player published is read, so the
-        // wait is for the row that answers with it.
+        // The rows come before what the player published is read, so the wait is for the row that
+        // answers with it.
         if harness
             .rows()
             .iter()
@@ -621,9 +612,8 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
     );
 }
 
-/// Step the session until `done` holds: what the person's other devices say is
-/// followed on the pass that brings it, and the screen the lock shows comes up
-/// and leaves on its own clock.
+/// Step the session until `done` holds: what the person's other devices say is followed on the pass
+/// that brings it, and the screen the lock shows comes up and leaves on its own clock.
 #[track_caller]
 fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
     let deadline = tilo_test_env::hang_deadline();
@@ -639,24 +629,24 @@ fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
     }
 }
 
-/// The person's session on their other devices: locking the laptop locks this
-/// one, unlocking it again undoes that where the person was here, and this
-/// device says its own session to theirs while doing so.
+/// The person's session on their other devices: locking the laptop locks this one, unlocking it
+/// again undoes that where the person was here, and this device says its own session to theirs
+/// while doing so.
 #[test]
 fn the_person_s_lock_follows_their_other_devices() {
     let _settled = ui::motion::testing::settled();
     let link = FakeLink::joined_at_home(true);
     let mut harness = session(&link, Rc::new(Host::default()));
-    // The laptop is locked a moment after the person last touched this one:
-    // this device has not been used since, so the lock is followed. The time
-    // is the laptop's own clock, ahead of this device's by a moment.
+    // The laptop is locked a moment after the person last touched this one: this device has not
+    // been used since, so the lock is followed. The time is the laptop's own clock, ahead of this
+    // device's by a moment.
     link.laptop_session(OwnerSession {
         locked: true,
         changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(1),
         active_unix_ms: 0,
     });
-    // The device's own state reaches the fabric on a pass of its own: the wait
-    // takes in the publication too, rather than reading what it said before.
+    // The device's own state reaches the fabric on a pass of its own: the wait takes in the
+    // publication too, rather than reading what it said before.
     until(&mut harness, |harness| {
         harness.session.compositor().locked()
             && harness.session.surfaces().running("lock")
@@ -675,8 +665,8 @@ fn the_person_s_lock_follows_their_other_devices() {
         "a followed lock is not the person's here, and does not spread further"
     );
 
-    // Unlocking the laptop undoes the lock this device followed, because the
-    // person was here when it locked.
+    // Unlocking the laptop undoes the lock this device followed, because the person was here when
+    // it locked.
     link.laptop_session(OwnerSession {
         locked: false,
         changed_unix_ms: tilo_clock::unix_now_ms().saturating_add(2),
@@ -780,8 +770,8 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         "a device without a screen is managed on the devices page"
     );
 
-    // With media continuity turned off, what plays here stays here: the press
-    // opens the device's settings instead.
+    // With media continuity turned off, what plays here stays here: the press opens the device's
+    // settings instead.
     let host = Rc::new(Host::default());
     let link = FakeLink::joined(false);
     link.set_media(false);
@@ -797,8 +787,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
         "its settings page opens instead"
     );
 
-    // A device that shows has its display placed beside this one's, so its
-    // press opens that page.
+    // A device that shows has its display placed beside this one's, so its press opens that page.
     let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
     let mut harness = session(&link, Rc::clone(&host));
@@ -819,8 +808,8 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
 #[test]
 fn this_device_s_row_does_nothing() {
     let _settled = ui::motion::testing::settled();
-    // The steps this test takes change nothing, the bar's own clock included:
-    // a minute turning over on it is not the frame it checks.
+    // The steps this test takes change nothing, the bar's own clock included: a minute turning over
+    // on it is not the frame it checks.
     let _clock = tilo_test_env::held_wall_clock();
     let link = FakeLink::joined(true);
     let host = Rc::new(Host::default());
@@ -916,8 +905,8 @@ fn a_device_on_the_sleeping_device_s_network_is_asked_when_this_one_is_away() {
     let link = FakeLink::joined(false);
     link.joined_awake_device(server(), "Server", 0x11, LAN);
     link.joined_sleeping_device(desk(), "Desk", 0x0f, LAN);
-    // This machine is on another network, so it shares nothing to broadcast
-    // on: the device that does sends the packet.
+    // This machine is on another network, so it shares nothing to broadcast on: the device that
+    // does sends the packet.
     let packets = Arc::new(Packets::default());
     let interfaces = Arc::new(FixedInterfaces(vec![wake_route(0x03, AWAY)]));
     let mut harness = session_with(
@@ -983,8 +972,8 @@ fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
     );
 }
 
-/// Step until the session publishes the Devices section's rows: the reading is
-/// the session's, so it has its rows with no panel open.
+/// Step until the session publishes the Devices section's rows: the reading is the session's, so it
+/// has its rows with no panel open.
 fn open_devices(harness: &mut Harness) {
     for _ in 0..40 {
         harness.step();
@@ -1004,7 +993,7 @@ fn row(harness: &Harness, key: &str) -> tilo_quick_settings::hosted::HostedRow {
         .unwrap_or_else(|| panic!("the row {key} is in the section"))
 }
 
-/// The one row whose key starts with `prefix`.
+/// The one row whose key starts with `prefix` .
 fn the_row(harness: &Harness, prefix: &str) -> tilo_quick_settings::hosted::HostedRow {
     let rows = harness.rows();
     let found = rows
@@ -1016,8 +1005,8 @@ fn the_row(harness: &Harness, prefix: &str) -> tilo_quick_settings::hosted::Host
     found.into_iter().next().expect("the row")
 }
 
-/// Pick the sound this device plays and send it to the laptop, answering the
-/// offers the route and the ask need. Returns the route's session.
+/// Pick the sound this device plays and send it to the laptop, answering the offers the route and
+/// the ask need. Returns the route's session.
 fn sent_our_sound(harness: &mut Harness, link: &FakeLink) -> String {
     harness.playing();
     open_devices(harness);
@@ -1071,8 +1060,8 @@ fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
     assert_eq!(waiting.detail, "Waiting for Laptop to allow it");
     assert_eq!(waiting.actions, HostedActions::Select("Stop".into()));
 
-    // The picker's entry was spent on the offer: the sound the person can
-    // send again is a fresh one, and none is picked.
+    // The picker's entry was spent on the offer: the sound the person can send again is a fresh
+    // one, and none is picked.
     assert!(
         !harness
             .rows()
@@ -1206,9 +1195,8 @@ fn what_plays() -> tilo_audio_service::media::Media {
     }
 }
 
-/// What plays reaches the desk's own widget from the same reading the panel
-/// shows, with the panel never opened: the widget is a view of the audio
-/// service's players, not of the panel.
+/// What plays reaches the desk's own widget from the same reading the panel shows, with the panel
+/// never opened: the widget is a view of the audio service's players, not of the panel.
 #[test]
 fn what_plays_reaches_the_desk_with_the_panel_closed() {
     let _settled = ui::motion::testing::settled();

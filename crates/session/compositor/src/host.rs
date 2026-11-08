@@ -43,8 +43,8 @@ impl Region {
     }
 }
 
-/// How many pixels a side of one coverage cell is: the granularity at which
-/// a frame says what it shows.
+/// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
+/// shows.
 const CELL: u32 = 8;
 
 /// What one cell of a frame holds.
@@ -58,9 +58,9 @@ enum Cell {
     Opaque,
 }
 
-/// What a frame shows and what of it nothing shows through, by cells: kept as
-/// the host draws into the frame, so a layer costs what it draws where it
-/// draws it rather than the whole frame it draws in.
+/// What a frame shows and what of it nothing shows through, by cells: kept as the host draws into
+/// the frame, so a layer costs what it draws where it draws it rather than the whole frame it draws
+/// in.
 #[derive(Clone, Debug)]
 struct Coverage {
     columns: u32,
@@ -83,8 +83,8 @@ impl Coverage {
         }
     }
 
-    /// Read the cells `regions` (frame pixels) of `pixels` (premultiplied
-    /// RGBA, `width` pixels a row) now hold.
+    /// Read the cells `regions` (frame pixels) of `pixels` (premultiplied RGBA, `width` pixels a
+    /// row) now hold.
     fn record(&mut self, pixels: &[u8], size: (u32, u32), regions: &[Region]) {
         let width = size.0;
         let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
@@ -129,8 +129,8 @@ impl Coverage {
                         continue;
                     };
                     *cell = if whole {
-                        // The drawn part is the whole cell: what it holds now
-                        // is what the cell holds.
+                        // The drawn part is the whole cell: what it holds now is what the cell
+                        // holds.
                         if opaque {
                             Cell::Opaque
                         } else if shows {
@@ -139,14 +139,13 @@ impl Coverage {
                             Cell::Empty
                         }
                     } else if opaque && *cell == Cell::Opaque {
-                        // Opaque pixels over part of an opaque cell leave it
-                        // opaque.
+                        // Opaque pixels over part of an opaque cell leave it opaque.
                         Cell::Opaque
                     } else if !shows && *cell == Cell::Empty {
                         Cell::Empty
                     } else {
-                        // Part of it is not the part drawn: the rest of what
-                        // it holds is not known from this draw.
+                        // Part of it is not the part drawn: the rest of what it holds is not known
+                        // from this draw.
                         Cell::Partly
                     };
                 }
@@ -187,8 +186,8 @@ impl Coverage {
         ))
     }
 
-    /// The parts of the frame that are wholly opaque, as whole cells merged
-    /// into as few rectangles as the rows give.
+    /// The parts of the frame that are wholly opaque, as whole cells merged into as few rectangles
+    /// as the rows give.
     fn opaque(&self, size: (u32, u32)) -> Vec<Region> {
         let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
         let mut done: Vec<Region> = Vec::new();
@@ -247,8 +246,8 @@ impl Coverage {
     }
 }
 
-/// The part of `region` inside a frame of `size` pixels, as
-/// `(left, top, right, bottom)`: `None` where it lies outside it.
+/// The part of `region` inside a frame of `size` pixels, as `(left, top, right, bottom)` : `None`
+/// where it lies outside it.
 fn clip(region: &Region, size: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
     let left = region.x.min(size.0);
     let top = region.y.min(size.1);
@@ -257,7 +256,7 @@ fn clip(region: &Region, size: (u32, u32)) -> Option<(u32, u32, u32, u32)> {
     (left < right && top < bottom).then_some((left, top, right, bottom))
 }
 
-/// The alpha of the pixel at `(x, y)` of `pixels`, `width` pixels a row.
+/// The alpha of the pixel at `(x, y)` of `pixels` , `width` pixels a row.
 fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
     let index = usize::try_from(y)
         .ok()?
@@ -268,19 +267,17 @@ fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
     pixels.get(index).copied()
 }
 
-/// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer
-/// the compositor draws, so a host only hands over what changed.
-///
-/// It also keeps what it shows: which part of it holds anything, and which
-/// part is wholly opaque. A layer the size of a display that paints a bar
-/// costs its bar, not the display, and nothing under an opaque part of it is
-/// drawn.
+/// The pixels a hosted surface shows: premultiplied RGBA, kept as the buffer the compositor draws,
+/// so a host only hands over what changed.
+/// It also keeps what it shows: which part of it holds anything, and which part is wholly opaque. A
+/// layer the size of a display that paints a bar costs its bar, not the display, and nothing under
+/// an opaque part of it is drawn.
 #[derive(Clone, Debug)]
 pub struct HostFrame {
     buffer: MemoryRenderBuffer,
     size: (u32, u32),
-    /// The cell map of the frames written into it; `None` for a buffer this
-    /// side did not see drawn, whose frame is taken whole.
+    /// The cell map of the frames written into it; `None` for a buffer this side did not see drawn,
+    /// whose frame is taken whole.
     coverage: Option<Arc<Coverage>>,
     /// The part of the frame it shows anything in, in its own pixels.
     shown: Option<Region>,
@@ -313,9 +310,8 @@ impl HostFrame {
         &self.buffer
     }
 
-    /// A frame showing `buffer`, a surface of `size` physical pixels: for a
-    /// host that made its own. What it shows is taken to be all of it, as
-    /// this side has not seen it drawn.
+    /// A frame showing `buffer` , a surface of `size` physical pixels: for a host that made its
+    /// own. What it shows is taken to be all of it, as this side has not seen it drawn.
     #[must_use]
     pub const fn from_buffer(buffer: MemoryRenderBuffer, size: (u32, u32)) -> Self {
         Self {
@@ -332,17 +328,16 @@ impl HostFrame {
         self.size
     }
 
-    /// The part of the frame it shows anything in, in its own pixels:
-    /// nothing when the host has drawn nothing (or drew it all transparent)
-    /// and there is no layer to composite.
+    /// The part of the frame it shows anything in, in its own pixels: nothing when the host has
+    /// drawn nothing (or drew it all transparent) and there is no layer to composite.
     #[must_use]
     pub const fn shown(&self) -> Option<Region> {
         self.shown
     }
 
-    /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes
-    /// a row of this frame's surface) into the frame, telling it and the
-    /// compositor what changed, and what the frame now shows.
+    /// Copy the `regions` of `pixels` (premultiplied RGBA, `width * 4` bytes a row of this frame's
+    /// surface) into the frame, telling it and the compositor what changed, and what the frame now
+    /// shows.
     pub fn set_pixels(&mut self, pixels: &[u8], regions: &[Region]) {
         if regions.is_empty() {
             return;
@@ -395,8 +390,8 @@ impl HostFrame {
         if let Err(never) = drawn {
             match never {}
         }
-        // What nothing under shows through: the compositor draws no layer
-        // beneath it and clears no pixel it covers.
+        // What nothing under shows through: the compositor draws no layer beneath it and clears no
+        // pixel it covers.
         if let Some(coverage) = coverage {
             let opaque = coverage
                 .opaque(size)
@@ -422,16 +417,15 @@ impl HostFrame {
 pub struct HostLayer {
     /// The buffer's top-left corner in the logical layout.
     pub location: (i32, i32),
-    /// The size it covers in the logical layout: the buffer is scaled to
-    /// fit, so a host draws at the output's (possibly fractional) scale.
+    /// The size it covers in the logical layout: the buffer is scaled to fit, so a host draws at
+    /// the output's (possibly fractional) scale.
     pub size: (i32, i32),
     /// The pixels; the buffer's own render context records what changed.
     pub frame: HostFrame,
 }
 
-/// A drag a hosted app starts: bytes per format (files as
-/// `text/uri-list`) and, optionally, an image under the pointer with its
-/// hotspot (logical pixels from its top left).
+/// A drag a hosted app starts: bytes per format (files as `text/uri-list` ) and, optionally, an
+/// image under the pointer with its hotspot (logical pixels from its top left).
 #[derive(Debug, Clone)]
 pub struct HostDrag {
     pub offer: Vec<(String, Vec<u8>)>,
@@ -441,19 +435,18 @@ pub struct HostDrag {
     )>,
 }
 
-/// A text field a hosted surface draws, when it is the one the person types
-/// into: what an input method serves it with — how to compose in it, and
-/// where its composition stands.
+/// A text field a hosted surface draws, when it is the one the person types into: what an input
+/// method serves it with — how to compose in it, and where its composition stands.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct HostTextInput {
-    /// The field's content hint, as `text-input-v3` names it: what it takes
-    /// and whether it may be shown, learned from or completed.
+    /// The field's content hint, as `text-input-v3` names it: what it takes and whether it may be
+    /// shown, learned from or completed.
     pub hint: u32,
-    /// The field's purpose, as `text-input-v3` names it: text, a name, an
-    /// email, a URL, digits, a password, a terminal.
+    /// The field's purpose, as `text-input-v3` names it: text, a name, an email, a URL, digits, a
+    /// password, a terminal.
     pub purpose: u32,
-    /// Where its caret stands, in the desk's logical coordinates: the
-    /// candidate window and the composition go under it.
+    /// Where its caret stands, in the desk's logical coordinates: the candidate window and the
+    /// composition go under it.
     pub x: f64,
     pub y: f64,
     pub width: f64,
@@ -463,11 +456,10 @@ pub struct HostTextInput {
 /// What an input method sends a hosted surface's field.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HostIme {
-    /// The composed text is in the field: insert it, replacing any
-    /// composition shown before.
+    /// The composed text is in the field: insert it, replacing any composition shown before.
     Commit(String),
-    /// The composition in progress (empty when it ended), with the byte
-    /// offsets its cursor and selection stand at (`None` for no selection).
+    /// The composition in progress (empty when it ended), with the byte offsets its cursor and
+    /// selection stand at (`None` for no selection).
     Preedit(String, Option<(usize, usize)>),
     /// The field is the one an input method serves from now on.
     Enabled,
@@ -477,47 +469,42 @@ pub enum HostIme {
 
 /// A hosted surface app, as the compositor sees it.
 pub trait SurfaceHost {
-    /// The layers this surface shows now, bottom first. Hosts draw above
-    /// every window ([`Self::below_windows`] aside), later hosts above
-    /// earlier ones.
+    /// The layers this surface shows now, bottom first. Hosts draw above every window
+    /// ([`Self::below_windows`] aside), later hosts above earlier ones.
     fn layers(&self) -> Vec<HostLayer>;
 
-    /// Whether this surface lies under every window rather than above
-    /// them: the desktop itself (its wallpaper, window bars and strips).
-    /// It takes the pointer only where no window is.
+    /// Whether this surface lies under every window rather than above them: the desktop itself (its
+    /// wallpaper, window bars and strips). It takes the pointer only where no window is.
     fn below_windows(&self) -> bool {
         false
     }
 
-    /// Whether this surface shows over the session's lock. Only what the
-    /// session itself stands up shows then (the hardware keys' readout, and
-    /// the lock view when the lock screen's app is not there), and what
-    /// wants the keyboard or the pointer of those takes them: a locked
-    /// session gives every other surface nothing.
+    /// Whether this surface shows over the session's lock. Only what the session itself stands up
+    /// shows then (the hardware keys' readout, and the lock view when the lock screen's app is not
+    /// there), and what wants the keyboard or the pointer of those takes them: a locked session
+    /// gives every other surface nothing.
     fn above_lock(&self) -> bool {
         false
     }
 
-    /// Whether this surface is the lock itself, drawn by the session where
-    /// the lock screen's app cannot draw it: the lock is what the outputs
-    /// show, so nothing waits for the app's frame, and a capture of a locked
-    /// display is the placeholder as it is for the app's.
+    /// Whether this surface is the lock itself, drawn by the session where the lock screen's app
+    /// cannot draw it: the lock is what the outputs show, so nothing waits for the app's frame, and
+    /// a capture of a locked display is the placeholder as it is for the app's.
     fn drawn_over_lock(&self) -> bool {
         false
     }
 
-    /// Whether a capture may not show what this surface draws now: it shows
-    /// a secret, such as what the person typed into a password field. Every
-    /// copy of the desktop's pixels — a screenshot, a recording, a share
-    /// stream, the portal's screenshot — draws its layers as the
-    /// placeholder instead, while the person's own display keeps showing
-    /// them (see [`crate::capture::protect`]).
+    /// Whether a capture may not show what this surface draws now: it shows a secret, such as what
+    /// the person typed into a password field. Every copy of the desktop's pixels — a screenshot, a
+    /// recording, a share stream, the portal's screenshot — draws its layers as the placeholder
+    /// instead, while the person's own display keeps showing them (see
+    /// [`crate::capture::protect`]).
     fn withholds_captures(&self) -> bool {
         false
     }
 
-    /// Whether the pointer at this logical point belongs to this surface
-    /// rather than to what lies beneath it.
+    /// Whether the pointer at this logical point belongs to this surface rather than to what lies
+    /// beneath it.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool;
 
     /// The pointer moved to this logical point over the surface.
@@ -529,32 +516,30 @@ pub trait SurfaceHost {
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
 
-    /// A pointer button was pressed at this logical point, somewhere other
-    /// than this surface (a window, the desk, another surface): an open
-    /// popover closes.
+    /// A pointer button was pressed at this logical point, somewhere other than this surface (a
+    /// window, the desk, another surface): an open popover closes.
     fn pressed_elsewhere(&mut self, _x: f64, _y: f64) {}
 
-    /// The pointer button that press came from is up again, at this logical
-    /// point: the press is over, and so is everything it was still doing.
+    /// The pointer button that press came from is up again, at this logical point: the press is
+    /// over, and so is everything it was still doing.
     fn press_ended(&mut self, _x: f64, _y: f64) {}
 
     /// Scroll over the surface, in logical pixels.
     fn pointer_axis(&mut self, _horizontal: f64, _vertical: f64) {}
 
-    /// Whether keys should come to this surface instead of the focused
-    /// window (an open launcher or menu).
+    /// Whether keys should come to this surface instead of the focused window (an open launcher or
+    /// menu).
     fn wants_keyboard(&self) -> bool {
         false
     }
 
-    /// A key, while [`SurfaceHost::wants_keyboard`] holds, or one this
-    /// surface claimed (its press, repeats and release).
+    /// A key, while [`SurfaceHost::wants_keyboard`] holds, or one this surface claimed (its press,
+    /// repeats and release).
     fn key(&mut self, _key: &HostKey) {}
 
-    /// The text field this surface draws that the person types into now, when
-    /// it has the focus: an input method serves it as it serves a client's
-    /// field — composing into it, its candidate window under the caret — and
-    /// keys it does not use come back to the field.
+    /// The text field this surface draws that the person types into now, when it has the focus: an
+    /// input method serves it as it serves a client's field — composing into it, its candidate
+    /// window under the caret — and keys it does not use come back to the field.
     fn text_input(&self) -> Option<HostTextInput> {
         None
     }
@@ -583,48 +568,43 @@ pub trait SurfaceHost {
         Vec::new()
     }
 
-    /// The regions this surface draws translucent material in, which take
-    /// a blur of what lies below them ([`crate::backdrop`]).
+    /// The regions this surface draws translucent material in, which take a blur of what lies below
+    /// them ([`crate::backdrop`]).
     fn backdrops(&self) -> Vec<crate::BackdropRequest> {
         Vec::new()
     }
 
-    /// Blurred images of what lies below [`SurfaceHost::backdrops`]'
-    /// regions, in their order; `None` where nothing changed since the
-    /// last.
+    /// Blurred images of what lies below [`SurfaceHost::backdrops`]' regions, in their order;
+    /// `None` where nothing changed since the last.
     fn set_backdrops(&mut self, _images: Vec<Option<crate::BackdropImage>>) {}
 
-    /// A frame is about to be drawn: bring the layers up to date, and say
-    /// whether this surface drew or changed what it shows. A host that did
-    /// not leaves the frame to whoever else has something new; a host that
-    /// never knows draws every frame (`true`).
+    /// A frame is about to be drawn: bring the layers up to date, and say whether this surface drew
+    /// or changed what it shows. A host that did not leaves the frame to whoever else has something
+    /// new; a host that never knows draws every frame (`true`).
     fn prepare_frame(&mut self) -> bool {
         true
     }
 
-    /// Keep what it holds in step without drawing any of it: what a surface the
-    /// shell stands in front of still does every frame, so the changes the
-    /// person and the session ask of it take effect even though nothing of it
-    /// shows. Whether any of it moved, so the frame it stands under is drawn
-    /// again.
+    /// Keep what it holds in step without drawing any of it: what a surface the shell stands in
+    /// front of still does every frame, so the changes the person and the session ask of it take
+    /// effect even though nothing of it shows. Whether any of it moved, so the frame it stands
+    /// under is drawn again.
     fn advance(&mut self) -> bool {
         false
     }
 
-    /// When this surface next needs a frame with no input to bring one: now
-    /// when a wake it took has not drawn yet, else the earliest deadline its
-    /// content sets (a banner's exit, a caret's blink). A surface whose
-    /// content only moves draws on the display's cadence the compositor gave
-    /// it ([`SurfaceHost::set_frame_interval`]), not once per turn of the
-    /// loop. The loop waits no longer than this; `None` leaves it to the
-    /// loop's own idle.
+    /// When this surface next needs a frame with no input to bring one: now when a wake it took has
+    /// not drawn yet, else the earliest deadline its content sets (a banner's exit, a caret's
+    /// blink). A surface whose content only moves draws on the display's cadence the compositor
+    /// gave it ([`SurfaceHost::set_frame_interval`]), not once per turn of the loop. The loop waits
+    /// no longer than this; `None` leaves it to the loop's own idle.
     fn next_deadline(&self) -> Option<std::time::Instant> {
         None
     }
 
-    /// How long the displays this surface is shown on hold each frame: a
-    /// frame of its own is due once per one of these, so the screens show as
-    /// many frames as they run at and not one per turn of the loop.
+    /// How long the displays this surface is shown on hold each frame: a frame of its own is due
+    /// once per one of these, so the screens show as many frames as they run at and not one per
+    /// turn of the loop.
     fn set_frame_interval(&mut self, _interval: std::time::Duration) {}
 
     /// The outputs as they stand, now and whenever one is added, removed,
@@ -634,16 +614,15 @@ pub trait SurfaceHost {
     /// so what it paints is as crisp as the display allows.
     fn outputs_changed(&mut self, _outputs: &[crate::output::HostedOutput]) {}
 
-    /// The pointer shape while the pointer is over the surface (a text
-    /// beam over a field, a hand over a link).
+    /// The pointer shape while the pointer is over the surface (a text beam over a field, a hand
+    /// over a link).
     fn cursor(&self) -> CursorIcon {
         CursorIcon::Default
     }
 
-    /// A drag (from a Wayland window, an X11 window or a hosted surface)
-    /// is over the surface at this logical point, offering these formats
-    /// (files as `text/uri-list`): the format the surface takes if it is
-    /// dropped here, or `None` to refuse it. Asked again as it moves.
+    /// A drag (from a Wayland window, an X11 window or a hosted surface) is over the surface at
+    /// this logical point, offering these formats (files as `text/uri-list` ): the format the
+    /// surface takes if it is dropped here, or `None` to refuse it. Asked again as it moves.
     fn drop_offered(&mut self, _mimes: &[String], _x: f64, _y: f64) -> Option<String> {
         None
     }
@@ -651,19 +630,18 @@ pub trait SurfaceHost {
     /// The drag left the surface without a drop.
     fn drop_left(&mut self) {}
 
-    /// The drag was dropped on the surface: its data in the format
-    /// [`SurfaceHost::drop_offered`] chose, once it has been read.
+    /// The drag was dropped on the surface: its data in the format [`SurfaceHost::drop_offered`]
+    /// chose, once it has been read.
     fn drop_data(&mut self, _mime: &str, _data: Vec<u8>) {}
 
-    /// A drag the app started while handling the input just routed to it
-    /// (a press held and moved on something draggable); the compositor
-    /// carries it like [`crate::Compositor::start_host_drag`].
+    /// A drag the app started while handling the input just routed to it (a press held and moved on
+    /// something draggable); the compositor carries it like [`crate::Compositor::start_host_drag`].
     fn take_drag(&mut self) -> Option<HostDrag> {
         None
     }
 
-    /// A drag this surface started ([`crate::Compositor::start_drag`])
-    /// ended: `dropped` when a target took it.
+    /// A drag this surface started ([`crate::Compositor::start_drag`]) ended: `dropped` when a
+    /// target took it.
     fn drag_ended(&mut self, _dropped: bool) {}
 }
 

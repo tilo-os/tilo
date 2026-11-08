@@ -1,23 +1,17 @@
 //! Handing the heap a closed window freed back to the kernel.
-//!
-//! glibc keeps memory it has been given back. A whole-frame buffer freed
-//! after the allocator's dynamic mmap threshold rose past its size stays
-//! inside the arena it came from, and an arena returns only the free space
-//! at its very top. So after a window closed, its frames, its atlas space
-//! and the converted copies of its pixels stayed resident.
-//!
-//! Closing a window is when a lot is freed at once, so a close asks for one
-//! `malloc_trim(0)`, which walks every arena and releases each whole free
-//! page. The trim runs on a thread of its own, never the compositor's: it
-//! takes each arena's lock while it walks it. It waits until the closes have
-//! settled (a client often destroys several surfaces in a row) and runs at
-//! most once per `MIN_INTERVAL`. Between requests the thread sleeps on a
-//! condition variable, so an idle session never wakes for it.
-//!
-//! Between closes the session's memory can still run short, so the same trim
-//! is asked for when the session's cgroup reports memory pressure
-//! ([`watch_pressure`], a PSI trigger the thread blocks on, never a timer) and
-//! when the compositor goes quiet after work ([`request_when_quiet`]).
+//! glibc keeps memory it has been given back. A whole-frame buffer freed after the allocator's
+//! dynamic mmap threshold rose past its size stays inside the arena it came from, and an arena
+//! returns only the free space at its very top. So after a window closed, its frames, its atlas
+//! space and the converted copies of its pixels stayed resident.
+//! Closing a window is when a lot is freed at once, so a close asks for one `malloc_trim(0)` ,
+//! which walks every arena and releases each whole free page. The trim runs on a thread of its own,
+//! never the compositor's: it takes each arena's lock while it walks it. It waits until the closes
+//! have settled (a client often destroys several surfaces in a row) and runs at most once per
+//! `MIN_INTERVAL` . Between requests the thread sleeps on a condition variable, so an idle session
+//! never wakes for it.
+//! Between closes the session's memory can still run short, so the same trim is asked for when the
+//! session's cgroup reports memory pressure ([`watch_pressure`], a PSI trigger the thread blocks
+//! on, never a timer) and when the compositor goes quiet after work ([`request_when_quiet`]).
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Condvar, Mutex, OnceLock, PoisonError};
@@ -25,8 +19,8 @@ use std::time::{Duration, Instant};
 
 /// Quiet time after the last request before trimming.
 const SETTLE: Duration = Duration::from_secs(1);
-/// Longest a request waits for quiet: a client that destroys surfaces
-/// continuously must not postpone the trim forever.
+/// Longest a request waits for quiet: a client that destroys surfaces continuously must not
+/// postpone the trim forever.
 const MAX_DELAY: Duration = Duration::from_secs(5);
 /// Shortest time between two trims.
 const MIN_INTERVAL: Duration = Duration::from_secs(10);
@@ -34,11 +28,10 @@ const MIN_INTERVAL: Duration = Duration::from_secs(10);
 /// search, font warm-up) has freed its scratch, for the one trim that returns
 /// it.
 pub const STARTUP_SETTLED: Duration = Duration::from_secs(30);
-/// How long the compositor stays quiet after work before a quiet trim
-/// ([`request_when_quiet`]).
+/// How long the compositor stays quiet after work before a quiet trim ([`request_when_quiet`]).
 const QUIET_SETTLE: Duration = Duration::from_secs(2);
 
-/// `instant` plus `duration`; an instant past the clock's range stays put.
+/// `instant` plus `duration` ; an instant past the clock's range stays put.
 fn after(instant: Instant, duration: Duration) -> Instant {
     instant.checked_add(duration).unwrap_or(instant)
 }
@@ -86,8 +79,7 @@ impl Schedule {
         )
     }
 
-    /// Whether to trim at `now`; if so, the requests due by then count as
-    /// served.
+    /// Whether to trim at `now` ; if so, the requests due by then count as served.
     fn take(&mut self, now: Instant) -> bool {
         if self.due().is_some_and(|due| due <= now) {
             self.pending = None;
@@ -113,12 +105,11 @@ static TRIMMER: OnceLock<Option<&'static Trimmer>> = OnceLock::new();
 static TRIMS: AtomicU64 = AtomicU64::new(0);
 static STARTUP_TRIMMED: AtomicBool = AtomicBool::new(false);
 
-/// The PSI trigger asked of the session's cgroup: some task stalled on memory
-/// for 200 ms within a 2 s window (an unprivileged trigger's window is a
-/// multiple of 2 s).
+/// The PSI trigger asked of the session's cgroup: some task stalled on memory for 200 ms within a 2
+/// s window (an unprivileged trigger's window is a multiple of 2 s).
 const PRESSURE_TRIGGER: &str = "some 200000 2000000";
 
-/// The cgroup v2 path in `/proc/self/cgroup`'s text (`0::/user.slice/...`).
+/// The cgroup v2 path in `/proc/self/cgroup` 's text (`0::/user.slice/...`).
 fn own_cgroup(text: &str) -> Option<&str> {
     text.lines()
         .find_map(|line| line.strip_prefix("0::"))
@@ -126,10 +117,9 @@ fn own_cgroup(text: &str) -> Option<&str> {
         .filter(|path| path.starts_with('/'))
 }
 
-/// Ask for a trim whenever the session's cgroup reports memory pressure: a
-/// thread that blocks on a PSI trigger of the cgroup's `memory.pressure`
-/// and wakes only when the kernel says tasks stall on memory. Without PSI
-/// (or a cgroup that refuses the trigger) nothing is watched.
+/// Ask for a trim whenever the session's cgroup reports memory pressure: a thread that blocks on a
+/// PSI trigger of the cgroup's `memory.pressure` and wakes only when the kernel says tasks stall on
+/// memory. Without PSI (or a cgroup that refuses the trigger) nothing is watched.
 fn watch_pressure() {
     #[cfg(target_os = "linux")]
     {
@@ -192,9 +182,9 @@ fn watch_pressure() {
     }
 }
 
-/// Ask for freed heap to be returned soon: a window closed, or something
-/// else released a lot at once. Cheap and non-blocking on the caller's
-/// thread; any number of requests within a few seconds make one trim.
+/// Ask for freed heap to be returned soon: a window closed, or something else released a lot at
+/// once. Cheap and non-blocking on the caller's thread; any number of requests within a few seconds
+/// make one trim.
 pub fn request() {
     let Some(trimmer) = trimmer() else {
         return;
@@ -216,15 +206,14 @@ pub fn window_closed() {
     request();
 }
 
-/// Windows closed so far, for a caller to tell whether one closed since its
-/// last look.
+/// Windows closed so far, for a caller to tell whether one closed since its last look.
 pub fn windows_closed() -> u64 {
     WINDOWS_CLOSED.load(Ordering::Acquire)
 }
 
-/// Ask for one trim `delay` from now, whatever is requested meanwhile: work
-/// that frees its scratch at no single moment (a session's startup) is
-/// trimmed once it is over. The trim thread sleeps until then, one wakeup.
+/// Ask for one trim `delay` from now, whatever is requested meanwhile: work that frees its scratch
+/// at no single moment (a session's startup) is trimmed once it is over. The trim thread sleeps
+/// until then, one wakeup.
 pub fn request_after(delay: Duration) {
     let Some(trimmer) = trimmer() else {
         return;
@@ -237,9 +226,9 @@ pub fn request_after(delay: Duration) {
     trimmer.wake.notify_one();
 }
 
-/// The compositor goes quiet after work (its startup, a burst of input):
-/// trim once it has stayed quiet a moment. A later call replaces an earlier
-/// one not yet served, so work that keeps going never trims mid-way.
+/// The compositor goes quiet after work (its startup, a burst of input): trim once it has stayed
+/// quiet a moment. A later call replaces an earlier one not yet served, so work that keeps going
+/// never trims mid-way.
 pub fn request_when_quiet() {
     let Some(trimmer) = trimmer() else {
         return;
@@ -252,8 +241,8 @@ pub fn request_when_quiet() {
     trimmer.wake.notify_one();
 }
 
-/// Whether the trim asked for at startup ([`request_after`]) has run, so
-/// startup's scratch is back with the kernel.
+/// Whether the trim asked for at startup ([`request_after`]) has run, so startup's scratch is back
+/// with the kernel.
 pub fn startup_trimmed() -> bool {
     STARTUP_TRIMMED.load(Ordering::Acquire)
 }
@@ -263,9 +252,8 @@ pub fn trims_completed() -> u64 {
     TRIMS.load(Ordering::Acquire)
 }
 
-/// Whether a trim a close asked for is still to run, or a trim is running:
-/// what a reader of the compositor's footprint after closing windows waits
-/// out. Never starts the trim thread.
+/// Whether a trim a close asked for is still to run, or a trim is running: what a reader of the
+/// compositor's footprint after closing windows waits out. Never starts the trim thread.
 pub fn close_trim_pending() -> bool {
     TRIMMER.get().copied().flatten().is_some_and(|trimmer| {
         let schedule = trimmer
@@ -342,10 +330,9 @@ const fn supported() -> bool {
     cfg!(all(target_os = "linux", target_env = "gnu"))
 }
 
-/// One `HEAP-MILESTONE` line for the session log: glibc's heap in use and free
-/// and the process's anonymous RSS, at `what` (the compositor's start, its
-/// first frame, each trim). The vm-acceptance memory checks quote these
-/// lines, so an over-budget compositor says when its heap grew.
+/// One `HEAP-MILESTONE` line for the session log: glibc's heap in use and free and the process's
+/// anonymous RSS, at `what` (the compositor's start, its first frame, each trim). The vm-acceptance
+/// memory checks quote these lines, so an over-budget compositor says when its heap grew.
 pub fn log_milestone(what: &str) {
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     {

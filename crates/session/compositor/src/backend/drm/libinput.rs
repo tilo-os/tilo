@@ -1,15 +1,11 @@
-//! libinput devices: configured as they arrive, their events shaped by the
-//! person's settings before the compositor routes them.
-//!
-//! Each device gets the plan [`input_config::plan_for`] decides when it is
-//! added and again whenever the configuration changes. Key edges pass the
-//! accessibility filters ([`AccessKeys`]); tablet tools are mapped by their
-//! tablet's own settings ([`super::tablet`]).
-//!
-//! Tablet pads go to the client of the focused surface when it takes them
-//! ([`State::pad_input`]). A pad button the person mapped to a shortcut
-//! presses that shortcut wherever the focus is, as GNOME does, and the
-//! client never sees it; a ring or strip no client takes scrolls.
+//! libinput devices: configured as they arrive, their events shaped by the person's settings before
+//! the compositor routes them.
+//! Each device gets the plan [`input_config::plan_for`] decides when it is added and again whenever
+//! the configuration changes. Key edges pass the accessibility filters ([`AccessKeys`]); tablet
+//! tools are mapped by their tablet's own settings ([`super::tablet`]).
+//! Tablet pads go to the client of the focused surface when it takes them ([`State::pad_input`]). A
+//! pad button the person mapped to a shortcut presses that shortcut wherever the focus is, as GNOME
+//! does, and the client never sees it; a ring or strip no client takes scrolls.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -55,25 +51,22 @@ pub(super) struct Input {
     config: InputConfig,
     devices: Vec<Device>,
     access: AccessKeys,
-    /// The assists' timer (a mouse-keys glide, a slow key, automatic
-    /// switch scanning), while one is armed.
+    /// The assists' timer (a mouse-keys glide, a slow key, automatic switch scanning), while one is
+    /// armed.
     ticker: Option<RegistrationToken>,
-    /// The keymap shortcut chords are typed on, and the layout it was
-    /// compiled for.
+    /// The keymap shortcut chords are typed on, and the layout it was compiled for.
     keymap: Option<(crate::config::KeyboardLayout, xkb::Keymap)>,
     /// Pad rings and strips turned into scroll steps.
     dials: super::input_source::DialSteps,
     pads: Vec<Pad>,
-    /// The keyboard that typed last, by its identity: whose source list a
-    /// switch of input source picks from.
+    /// The keyboard that typed last, by its identity: whose source list a switch of input source
+    /// picks from.
     active_keyboard: Option<String>,
-    /// The devices and that keyboard, as published for Settings and the
-    /// session.
+    /// The devices and that keyboard, as published for Settings and the session.
     published: PublishedInputs,
 }
 
-/// A tablet pad as clients are told about it, and the mode its groups are
-/// in.
+/// A tablet pad as clients are told about it, and the mode its groups are in.
 struct Pad {
     device: Device,
     event: TabletPadEvent,
@@ -95,8 +88,8 @@ impl Input {
         }
     }
 
-    /// Take the person's typing and pointing assists, returning the events
-    /// that switching one off releases.
+    /// Take the person's typing and pointing assists, returning the events that switching one off
+    /// releases.
     pub(super) fn set_assists(
         &mut self,
         assists: &crate::Assists,
@@ -112,10 +105,9 @@ impl Input {
     }
 }
 
-/// The attached devices and the keyboard that typed last, published in the
-/// private runtime directory: which keyboards are attached decides whose
-/// source list a switch of input source picks from
-/// ([`settings_store::keyboard_sources::active_scope`]).
+/// The attached devices and the keyboard that typed last, published in the private runtime
+/// directory: which keyboards are attached decides whose source list a switch of input source picks
+/// from ([`settings_store::keyboard_sources::active_scope`]).
 #[derive(Default)]
 struct PublishedInputs {
     snapshot: Option<settings_store::hardware::InputHardwareSnapshot>,
@@ -191,12 +183,11 @@ fn typed_on(event: &DeviceEvent<LibinputInputBackend>) -> Option<String> {
     ))
 }
 
-/// How far one ring or strip step scrolls, in logical pixels (a wheel
-/// notch).
+/// How far one ring or strip step scrolls, in logical pixels (a wheel notch).
 const DIAL_SCROLL: f64 = 15.0;
 
-/// Route one tablet pad event. `mode` is the mode group of the control
-/// and its mode, as libinput reports it with every event.
+/// Route one tablet pad event. `mode` is the mode group of the control and its mode, as libinput
+/// reports it with every event.
 pub(super) fn dispatch_pad(
     input: &Rc<RefCell<Input>>,
     device: &Device,
@@ -234,8 +225,7 @@ pub(super) fn dispatch_pad(
             }),
             _ => None,
         };
-        // Followed even while a client takes the control, so a scroll
-        // starts afresh where it is.
+        // Followed even while a client takes the control, so a scroll starts afresh where it is.
         let steps = this.dials.steps(&action);
         let scroll = f64::from(steps) * DIAL_SCROLL * this.config.scroll_speed;
         (switched, event, chord, (steps != 0).then_some(scroll))
@@ -270,8 +260,7 @@ impl Pad {
     }
 }
 
-/// A pad's buttons, rings and strips in libinput's mode groups, and the
-/// mode each group is in.
+/// A pad's buttons, rings and strips in libinput's mode groups, and the mode each group is in.
 fn pad_layout(device: &Device) -> (TabletPadDescriptor, Vec<u32>) {
     let count = |n: i32| u32::try_from(n).unwrap_or(0);
     let buttons = count(device.tablet_pad_number_of_buttons());
@@ -308,8 +297,8 @@ impl Input {
             .any(|device| device.has_capability(DeviceCapability::Touch))
     }
 
-    /// A new pad: clients are told about it, attached to the pen tablet of
-    /// its device group (the pad itself when that tablet is not known).
+    /// A new pad: clients are told about it, attached to the pen tablet of its device group (the
+    /// pad itself when that tablet is not known).
     fn add_pad(&mut self, device: &Device) -> Vec<InputEvent> {
         let (pad, modes) = pad_layout(device);
         let group = device.device_group();
@@ -354,8 +343,8 @@ impl Input {
     /// The chord a pad button is mapped to in its tablet's settings.
     fn pad_chord(&self, device: &Device, button: u32) -> Option<KeyChord> {
         let key = device_key(device.id_vendor(), device.id_product(), device.name());
-        // A pad is its own libinput device; its tablet's settings are found
-        // by the pad's name, else by the tablet's model.
+        // A pad is its own libinput device; its tablet's settings are found by the pad's name, else
+        // by the tablet's model.
         let model = format!("{:04x}:{:04x}:", device.id_vendor(), device.id_product());
         self.config
             .tablets
@@ -393,9 +382,8 @@ pub(super) fn dispatch(
                     Vec::new()
                 };
                 this.devices.push(device);
-                // The on-screen keyboard runs wherever the machine can be
-                // typed on by touching it, so a tap into a field never waits
-                // for a keyboard process to start.
+                // The on-screen keyboard runs wherever the machine can be typed on by touching it,
+                // so a tap into a field never waits for a keyboard process to start.
                 state.note_touchscreen(this.has_touchscreen());
                 this.published
                     .refresh(&this.devices, this.active_keyboard.as_deref());
@@ -490,8 +478,8 @@ pub(super) fn show_alert(input: &Rc<RefCell<Input>>, state: &mut State, now: Ins
     }
 }
 
-/// A touch's place in the logical layout: on the touchscreen's own output
-/// (see [`super::touch_map`]).
+/// A touch's place in the logical layout: on the touchscreen's own output (see
+/// [`super::touch_map`]).
 fn touch_position<E>(event: &E, state: &State) -> (f64, f64)
 where
     E: smithay::backend::input::AbsolutePositionEvent<LibinputInputBackend>,
@@ -542,8 +530,8 @@ where
     crate::input::touch_slot(event.slot())
 }
 
-/// Keep the assists' timer armed while they owe anything: a mouse-keys
-/// glide, a held slow key, the focus walking on by itself.
+/// Keep the assists' timer armed while they owe anything: a mouse-keys glide, a held slow key, the
+/// focus walking on by itself.
 pub(super) fn arm_ticker(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static, LoopData>) {
     let mut this = input.borrow_mut();
     if this.ticker.is_some() {
@@ -577,8 +565,8 @@ pub(super) fn arm_ticker(input: &Rc<RefCell<Input>>, handle: &LoopHandle<'static
 }
 
 impl Input {
-    /// A tablet tool event shaped by its tablet's settings, plus the keys
-    /// of a shortcut a remapped button or eraser presses.
+    /// A tablet tool event shaped by its tablet's settings, plus the keys of a shortcut a remapped
+    /// button or eraser presses.
     fn tablet<E: TabletToolEvent<LibinputInputBackend>>(
         &mut self,
         event: &E,
@@ -626,8 +614,7 @@ impl Input {
         self.remap(shaped, &config, state.keyboard.as_ref())
     }
 
-    /// Apply the tablet's button and eraser mapping; shortcut chords type on
-    /// `layout`.
+    /// Apply the tablet's button and eraser mapping; shortcut chords type on `layout` .
     fn remap(
         &mut self,
         mut event: TabletEvent,
@@ -660,8 +647,8 @@ impl Input {
                     };
                 }
                 ButtonOutcome::Shortcut(shortcut) => {
-                    // The chord runs on the press; the release is the
-                    // button's own and goes nowhere.
+                    // The chord runs on the press; the release is the button's own and goes
+                    // nowhere.
                     event.phase = TabletPhase::Motion;
                     if pressed {
                         chord = Some(shortcut);
@@ -677,16 +664,16 @@ impl Input {
         events
     }
 
-    /// The key events that type `chord`: modifiers down, the key down and
-    /// up, modifiers up in reverse.
+    /// The key events that type `chord` : modifiers down, the key down and up, modifiers up in
+    /// reverse.
     fn chord(
         &mut self,
         chord: &KeyChord,
         layout: Option<&crate::config::KeyboardLayout>,
     ) -> Vec<InputEvent> {
-        // A shortcut types on the layout the person chose, and on US until
-        // settings reach the compositor; an empty name is xkb's own US
-        // because the keymap reads none from the environment.
+        // A shortcut types on the layout the person chose, and on US until settings reach the
+        // compositor; an empty name is xkb's own US because the keymap reads none from the
+        // environment.
         let layout = layout.cloned().unwrap_or_default();
         if self
             .keymap
@@ -714,9 +701,9 @@ impl Input {
     }
 }
 
-/// The keymap `layout` compiles. Every name is stated and the context reads
-/// none from the environment, so the machine's own layout and options
-/// (`XKB_DEFAULT_*`) cannot decide what a shortcut types.
+/// The keymap `layout` compiles. Every name is stated and the context reads none from the
+/// environment, so the machine's own layout and options (`XKB_DEFAULT_*`) cannot decide what a
+/// shortcut types.
 fn compile_keymap(layout: &crate::config::KeyboardLayout) -> Option<xkb::Keymap> {
     let context = xkb::Context::new(xkb::CONTEXT_NO_ENVIRONMENT_NAMES);
     xkb::Keymap::new_from_names(
@@ -767,10 +754,9 @@ impl TabletEvent {
     }
 }
 
-/// libinput half of [`ConfigurableDevice`]. Every failure is ignored:
-/// libinput errors on an unsupported setting, and [`input_config::plan_for`]'s
-/// capability gates already avoid asking; anything left is a driver quirk
-/// that must not take the session down.
+/// libinput half of [`ConfigurableDevice`]. Every failure is ignored: libinput errors on an
+/// unsupported setting, and [`input_config::plan_for`]'s capability gates already avoid asking;
+/// anything left is a driver quirk that must not take the session down.
 impl ConfigurableDevice for Device {
     fn caps(&self) -> DeviceCaps {
         device_caps(self)

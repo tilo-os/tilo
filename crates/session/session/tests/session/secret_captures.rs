@@ -36,9 +36,9 @@ fn colours(frame: &tilo_compositor::Screenshot) -> std::collections::BTreeSet<[u
         .collect()
 }
 
-/// While the session is locked, whatever the person types into the lock
-/// screen's password field never leaves the display: a copy of it is the one
-/// placeholder, and the person still sees their lock screen.
+/// While the session is locked, whatever the person types into the lock screen's password field
+/// never leaves the display: a copy of it is the one placeholder, and the person still sees their
+/// lock screen.
 #[test]
 fn a_capture_of_the_lock_screen_withholds_the_password_field() {
     let _settled = ui::motion::testing::settled();
@@ -62,8 +62,8 @@ fn a_capture_of_the_lock_screen_withholds_the_password_field() {
     super::lock::type_word(&mut session, "sesame");
     session.step(Duration::from_millis(50)).expect("a turn");
 
-    // The copy shows nothing of the lock screen: one flat placeholder over
-    // the whole display, the same wherever it is read.
+    // The copy shows nothing of the lock screen: one flat placeholder over the whole display, the
+    // same wherever it is read.
     let copy = copied(&mut session);
     let withheld = colours(&copy);
     assert_eq!(
@@ -86,8 +86,8 @@ fn a_capture_of_the_lock_screen_withholds_the_password_field() {
     );
 }
 
-/// The shell-ui connection of a window of `app` the launch `pid` runs, with
-/// `messages` written on it as the app's own frames.
+/// The shell-ui connection of a window of `app` the launch `pid` runs, with `messages` written on
+/// it as the app's own frames.
 fn shell_ui_connection(
     launches: &Arc<tilo_session::Launches>,
     app: &str,
@@ -148,11 +148,10 @@ fn answer(
     panic!("the session did not answer");
 }
 
-/// An app that says over its own shell-ui connection that its windows show a
-/// secret has them withheld from captures — the session answers once the
-/// compositor installs it, and a copy of the display is the placeholder while
-/// the person's own display still shows the window. The mark goes when the
-/// app's connection does.
+/// An app that says over its own shell-ui connection that its windows show a secret has them
+/// withheld from captures — the session answers once the compositor installs it, and a copy of the
+/// display is the placeholder while the person's own display still shows the window. The mark goes
+/// when the app's connection does.
 #[test]
 fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     use ui::floating_surface::{FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage};
@@ -214,8 +213,8 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
         "the app is told the compositor has it"
     );
 
-    // The window left the copy, and only it: one flat placeholder where it
-    // stands, still on the person's own display.
+    // The window left the copy, and only it: one flat placeholder where it stands, still on the
+    // person's own display.
     let copy = copied(&mut session);
     let placeholder = copy.pixel(centre.0, centre.1).expect("inside the copy");
     assert_ne!(placeholder, content, "the window's pixels are gone");

@@ -1,5 +1,5 @@
-//! The shell's send key asks the window the person works in to open its box:
-//! the app draws it alone, and a desk with nothing in front still opens Chat.
+//! The shell's send key asks the window the person works in to open its box: the app draws it
+//! alone, and a desk with nothing in front still opens Chat.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -12,12 +12,11 @@ use ui::floating_surface::{
 use super::window_warmth::Window;
 use super::*;
 
-/// The app a window of this test runs: no app of this package, so nothing but
-/// the session's own answers replies on its connection.
+/// The app a window of this test runs: no app of this package, so nothing but the session's own
+/// answers replies on its connection.
 const APP: &str = "org.example.Notes";
 
-/// A session with a window of [`APP`] in front, and that window's own
-/// shell-ui connection.
+/// A session with a window of [`APP`] in front, and that window's own shell-ui connection.
 fn session_with_a_window() -> (
     Session,
     Arc<tilo_session::Launches>,
@@ -45,8 +44,8 @@ fn session_with_a_window() -> (
     let mut window = Window::open(&launches, APP, "private", app_process.id());
     window.hello();
     window.say(&FloatingSurfaceClientMessage::SelectionCapable);
-    // The pass that takes the window's word answers its hello, so the box is
-    // asked for after the window has heard of the session at all.
+    // The pass that takes the window's word answers its hello, so the box is asked for after the
+    // window has heard of the session at all.
     for _ in 0..200 {
         session.step(Duration::from_millis(2)).expect("step");
         if window.next().is_some() {
@@ -63,8 +62,8 @@ fn press_send_key(session: &mut Session) {
     key(session, keys::LEFT_META, false);
 }
 
-/// Whether the session asks the window to send within a few passes, whatever
-/// else it tells the window meanwhile.
+/// Whether the session asks the window to send within a few passes, whatever else it tells the
+/// window meanwhile.
 fn asked_to_send(app: &mut Window, session: &mut Session) -> bool {
     asked_for_box(app, session).is_some()
 }
@@ -84,8 +83,7 @@ fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<Vec<Recipien
     None
 }
 
-/// The send key over a window that opens a box asks that window, and opens no
-/// Chat window for it.
+/// The send key over a window that opens a box asks that window, and opens no Chat window for it.
 #[test]
 fn the_send_key_asks_the_window_in_front_to_open_its_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -127,8 +125,8 @@ fn tab_apps(session: &Session) -> Vec<String> {
     })
 }
 
-/// The send key over a desk with no window in front opens Chat, which is what
-/// a send with nothing to be about has always opened.
+/// The send key over a desk with no window in front opens Chat, which is what a send with nothing
+/// to be about has always opened.
 #[test]
 fn the_send_key_over_an_empty_desk_opens_chat() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -153,8 +151,8 @@ fn the_send_key_over_an_empty_desk_opens_chat() {
     );
 }
 
-/// The workspace and the conversation a report about Tilo itself goes to, as
-/// the config this test's computer is told names them.
+/// The workspace and the conversation a report about Tilo itself goes to, as the config this test's
+/// computer is told names them.
 const FEEDBACK_WORKSPACE: &str = "w_tilo";
 const FEEDBACK_CHANNEL: &str = "c_feedback";
 
@@ -180,9 +178,9 @@ fn press_report_key(session: &mut Session) {
     key(session, keys::LEFT_META, false);
 }
 
-/// The report chord asks the window in front for its box, with the one place
-/// this computer sends reports on it: the person writes what went wrong over
-/// the window it is about, and nothing but the words is left to fill in.
+/// The report chord asks the window in front for its box, with the one place this computer sends
+/// reports on it: the person writes what went wrong over the window it is about, and nothing but
+/// the words is left to fill in.
 #[test]
 fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _home = told_where_reports_go();
@@ -203,8 +201,8 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _ = app_process.wait();
 }
 
-/// A computer told nowhere to send reports asks no window for a box: a report
-/// with nowhere to go is not written at all.
+/// A computer told nowhere to send reports asks no window for a box: a report with nowhere to go is
+/// not written at all.
 #[test]
 fn a_computer_told_nowhere_asks_no_window_for_a_report() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");

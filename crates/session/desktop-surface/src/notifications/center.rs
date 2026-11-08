@@ -32,12 +32,12 @@ use ui::TextRole;
 
 /// Rows the panel asks room for; the rest scroll rather than page.
 const PREFERRED_ROWS: usize = 7;
-/// Lines of body a row shows before the rest is left to the reader: enough
-/// for a message or a failure's reason, short enough that a list scans.
+/// Lines of body a row shows before the rest is left to the reader: enough for a message or a
+/// failure's reason, short enough that a list scans.
 const BODY_LINES: usize = 2;
 
-/// `text` wrapped at `width` into at most `lines` lines, the last elided
-/// when the text runs on. Whitespace is normalised as in [`preview_line`].
+/// `text` wrapped at `width` into at most `lines` lines, the last elided when the text runs on.
+/// Whitespace is normalised as in [`preview_line`].
 fn preview_lines(
     renderer: &mut TextRenderer,
     text: &str,
@@ -58,8 +58,7 @@ fn preview_lines(
             line
         };
     }
-    // The longest prefix, in whole characters, that still fits with its
-    // ellipsis.
+    // The longest prefix, in whole characters, that still fits with its ellipsis.
     let chars: Vec<char> = line.chars().collect();
     let with_ellipsis = |count: usize| {
         let prefix: String = chars.iter().take(count).collect();
@@ -77,8 +76,8 @@ fn preview_lines(
     with_ellipsis(lo)
 }
 
-/// Rows promise one line per field; the complete text remains in their
-/// accessible description. Use toolkit shaping/elision, including graphemes.
+/// Rows promise one line per field; the complete text remains in their accessible description. Use
+/// toolkit shaping/elision, including graphemes.
 fn preview_line(
     renderer: &mut TextRenderer,
     text: &str,
@@ -89,8 +88,8 @@ fn preview_line(
     renderer.elide_to_width_style(&line, width, style)
 }
 
-/// Measured shared action faces and typography, cached by the host for
-/// drawing, pointer hit-testing and accessibility between frames.
+/// Measured shared action faces and typography, cached by the host for drawing, pointer hit-testing
+/// and accessibility between frames.
 #[derive(Clone, Debug)]
 pub struct CenterMetrics {
     lines: (f64, f64),
@@ -102,15 +101,14 @@ pub struct CenterMetrics {
     clear_width: f64,
     undo_width: f64,
     height: f64,
-    /// A notification's own choices: compact, as on its banner, a small
-    /// step under its text.
+    /// A notification's own choices: compact, as on its banner, a small step under its text.
     choice_height: f64,
     choice_gap: f64,
     choice_lead: f64,
     choice_foot: f64,
-    /// The theme rows are measured in, so a row is as tall as its body
-    /// wraps to and its choices as wide as their labels. Without one (bare
-    /// line boxes) every row keeps room for the full preview.
+    /// The theme rows are measured in, so a row is as tall as its body wraps to and its choices as
+    /// wide as their labels. Without one (bare line boxes) every row keeps room for the full
+    /// preview.
     theme: Option<std::sync::Arc<Theme>>,
 }
 
@@ -140,19 +138,19 @@ impl From<&CenterMetrics> for CenterMetrics {
     }
 }
 
-/// What sizes one row: the lines its body wraps to and the widths its own
-/// choices ask for, secondary then primary. A row is as tall as what it
-/// holds, so a one-line message is not followed by an empty line.
+/// What sizes one row: the lines its body wraps to and the widths its own choices ask for,
+/// secondary then primary. A row is as tall as what it holds, so a one-line message is not followed
+/// by an empty line.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RowShape {
     body_lines: usize,
     choices: usize,
     widths: (f64, f64),
-    /// Whether the row leads with its source line. Rows inside a group do
-    /// not: their header already names the app.
+    /// Whether the row leads with its source line. Rows inside a group do not: their header already
+    /// names the app.
     source: bool,
-    /// Whether the row is a member under a group header, which sits one
-    /// mark column in from the header's own mark.
+    /// Whether the row is a member under a group header, which sits one mark column in from the
+    /// header's own mark.
     grouped: bool,
 }
 
@@ -170,7 +168,7 @@ impl Default for RowShape {
 }
 
 impl RowShape {
-    /// A row whose body wraps to `body_lines` (at most `BODY_LINES`).
+    /// A row whose body wraps to `body_lines` (at most `BODY_LINES` ).
     #[must_use]
     pub fn new(body_lines: usize) -> Self {
         Self {
@@ -188,8 +186,8 @@ impl RowShape {
     pub fn has_source(&self) -> bool {
         self.source
     }
-    /// The same row as a member under a group header: no source line (the
-    /// header names the app) and one mark column further in.
+    /// The same row as a member under a group header: no source line (the header names the app) and
+    /// one mark column further in.
     #[must_use]
     pub fn grouped(mut self) -> Self {
         self.source = false;
@@ -227,20 +225,18 @@ pub struct CenterLayout {
     caption_lh: f64,
     label_lh: f64,
     actions: CenterMetrics,
-    /// The centre is a level of a drill-in panel (the native quick
-    /// settings): its leading control goes back there. Otherwise the centre
-    /// stands alone and the control closes it.
+    /// The centre is a level of a drill-in panel (the native quick settings): its leading control
+    /// goes back there. Otherwise the centre stands alone and the control closes it.
     drill_in: bool,
-    /// Fresh banners are being held (Do Not Disturb, presenting, a focus
-    /// schedule): the header carries a status line saying so, where the
-    /// person looks for what they missed, instead of a card over their
-    /// work.
+    /// Fresh banners are being held (Do Not Disturb, presenting, a focus schedule): the header
+    /// carries a status line saying so, where the person looks for what they missed, instead of a
+    /// card over their work.
     quiet: bool,
 }
 
 impl CenterLayout {
-    /// Space the cleared band claims under the last row: a related step, the
-    /// band, the panel padding.
+    /// Space the cleared band claims under the last row: a related step, the band, the panel
+    /// padding.
     fn cleared_reserve(&self) -> f64 {
         qs::RELATED_GAP + self.actions.height + qs::PANEL_PAD
     }
@@ -265,8 +261,7 @@ impl CenterLayout {
             }
     }
 
-    /// The quiet status line under the header's controls; zero height when
-    /// banners show normally.
+    /// The quiet status line under the header's controls; zero height when banners show normally.
     pub fn quiet_rect(&self) -> Rect {
         let y0 = self.panel.y0 + self.controls_height();
         let height = if self.quiet { self.caption_lh } else { 0.0 };
@@ -311,10 +306,9 @@ impl CenterLayout {
         }
     }
 
-    /// Whether the title starts at its band's leading edge: a standalone
-    /// centre reads "Notifications" then its controls, as every panel with
-    /// a trailing close does; a drill-in level centres it between Back and
-    /// Clear all.
+    /// Whether the title starts at its band's leading edge: a standalone centre reads
+    /// "Notifications" then its controls, as every panel with a trailing close does; a drill-in
+    /// level centres it between Back and Clear all.
     fn title_leads(&self) -> bool {
         !self.drill_in
     }
@@ -367,15 +361,15 @@ impl CenterLayout {
         }
     }
 
-    /// The line boxes of the caption and label roles the centre paints
-    /// with, in `theme`: what [`Self::new`] lays rows out from.
+    /// The line boxes of the caption and label roles the centre paints with, in `theme` : what
+    /// [`Self::new`] lays rows out from.
     pub fn type_lines(theme: &ui::Theme) -> (f64, f64) {
         let line = |role| f64::from(theme.text(role).line_height_px());
         (line(TextRole::Caption), line(TextRole::Label))
     }
 
-    /// Use [`Self::metrics`] for measured shared actions. Legacy line-box tuples
-    /// from [`Self::type_lines`] remain accepted.
+    /// Use [`Self::metrics`] for measured shared actions. Legacy line-box tuples from
+    /// [`Self::type_lines`] remain accepted.
     pub fn new(panel: Rect, metrics: impl Into<CenterMetrics>) -> Self {
         let actions = metrics.into();
         Self {
@@ -394,8 +388,8 @@ impl CenterLayout {
         self.quiet = quiet;
         self
     }
-    /// This centre is a level of a drill-in panel: its leading control
-    /// reads "Back" and returns there, instead of closing the centre.
+    /// This centre is a level of a drill-in panel: its leading control reads "Back" and returns
+    /// there, instead of closing the centre.
     #[must_use]
     pub fn drill_in(mut self) -> Self {
         self.drill_in = true;
@@ -415,11 +409,10 @@ impl CenterLayout {
     pub fn panel(&self) -> Rect {
         self.panel
     }
-    /// The header's way out, centred in the title band: "‹ Back" on the
-    /// leading padding in a drill-in panel (a textual Back survives
-    /// enlarged text where a small icon would not), and a square close
-    /// button on the trailing padding where the centre stands alone, where
-    /// every other panel's close is.
+    /// The header's way out, centred in the title band: "‹ Back" on the leading padding in a
+    /// drill-in panel (a textual Back survives enlarged text where a small icon would not), and a
+    /// square close button on the trailing padding where the centre stands alone, where every other
+    /// panel's close is.
     pub fn back(&self) -> Rect {
         let p = self.panel;
         let x0 = if self.drill_in {
@@ -434,8 +427,7 @@ impl CenterLayout {
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
-    /// The reader's way back to the list: "‹ Notifications", naming where
-    /// it goes.
+    /// The reader's way back to the list: "‹ Notifications", naming where it goes.
     pub fn reader_back(&self) -> Rect {
         let p = self.panel;
         let width = self
@@ -450,9 +442,8 @@ impl CenterLayout {
             p.y0 + qs::RELATED_GAP + self.actions.height,
         )
     }
-    /// The "Clear all" chip: on the trailing padding, mirroring Back in a
-    /// drill-in panel, and just before the close button where the centre
-    /// stands alone.
+    /// The "Clear all" chip: on the trailing padding, mirroring Back in a drill-in panel, and just
+    /// before the close button where the centre stands alone.
     pub fn clear(&self) -> Rect {
         let p = self.panel;
         let x1 = if self.drill_in {
@@ -507,19 +498,18 @@ impl CenterLayout {
         };
         Rect::new(x0, y0, x1, y0 + self.caption_lh)
     }
-    /// Top of the first row: one related step under the header. The list
-    /// carries no "2 notifications" line: what fits is plain to see, and
-    /// the rest scrolls.
+    /// Top of the first row: one related step under the header. The list carries no "2
+    /// notifications" line: what fits is plain to see, and the rest scrolls.
     fn rows_top(&self) -> f64 {
         self.panel.y0 + self.header_height() + qs::RELATED_GAP
     }
-    /// One row with the full preview: source/time, title and
-    /// `BODY_LINES` lines of body on the control padding.
+    /// One row with the full preview: source/time, title and `BODY_LINES` lines of body on the
+    /// control padding.
     pub fn row_h(&self) -> f64 {
         self.text_extent(&RowShape::default())
     }
-    /// A row's text on the control padding: source/time when it has a
-    /// source line, title and the lines its body wraps to.
+    /// A row's text on the control padding: source/time when it has a source line, title and the
+    /// lines its body wraps to.
     fn text_extent(&self, shape: &RowShape) -> f64 {
         2.0 * qs::CONTROL_PAD
             + if shape.has_source() {
@@ -530,9 +520,8 @@ impl CenterLayout {
             + self.label_lh
             + f64_of_usize(shape.body_lines) * self.caption_lh
     }
-    /// A row's height: its text, then its own choices padded as on its
-    /// banner, a related step under the text and the card's padding under
-    /// them.
+    /// A row's height: its text, then its own choices padded as on its banner, a related step under
+    /// the text and the card's padding under them.
     fn row_extent(&self, shape: &RowShape) -> f64 {
         self.text_extent(shape)
             + if shape.choices > 0 {
@@ -542,17 +531,15 @@ impl CenterLayout {
                 0.0
             }
     }
-    /// The width a row's text wraps to: the panel less the padding, the
-    /// sender's mark before it (one column further in for a group's member
-    /// rows), and the controls it keeps clear of.
+    /// The width a row's text wraps to: the panel less the padding, the sender's mark before it
+    /// (one column further in for a group's member rows), and the controls it keeps clear of.
     fn text_width(&self, grouped: bool) -> f64 {
         self.panel.width()
             - 2.0 * (qs::PANEL_PAD + qs::CONTROL_INSET)
             - Self::mark_column()
             - if grouped { Self::mark_column() } else { 0.0 }
     }
-    /// The width a sender's mark takes before a row's text: one glyph and
-    /// the related gap after it.
+    /// The width a sender's mark takes before a row's text: one glyph and the related gap after it.
     fn mark_column() -> f64 {
         qs::GLYPH + qs::RELATED_GAP
     }
@@ -579,8 +566,7 @@ impl CenterLayout {
             (qs::GLYPH, qs::GLYPH),
         )
     }
-    /// The box a group header's sender mark fills: after the fold chevron
-    /// that opens the header.
+    /// The box a group header's sender mark fills: after the fold chevron that opens the header.
     pub fn group_mark(&self, row: Rect, shape: &RowShape) -> Rect {
         let mark = self.row_mark(row, shape);
         Rect::new(
@@ -598,8 +584,8 @@ impl CenterLayout {
             |text| f(theme, text),
         ))
     }
-    /// The lines `body` wraps to in a row, at most `BODY_LINES`. Before
-    /// the panel has a width, or without a theme, the full preview.
+    /// The lines `body` wraps to in a row, at most `BODY_LINES` . Before the panel has a width, or
+    /// without a theme, the full preview.
     pub fn body_lines(&self, body: &str, grouped: bool) -> usize {
         let line = body.split_whitespace().collect::<Vec<_>>().join(" ");
         if line.is_empty() {
@@ -638,13 +624,12 @@ impl CenterLayout {
             })
             .collect()
     }
-    /// The `index`th visible row of a list of full-preview rows.
+    /// The `index` th visible row of a list of full-preview rows.
     pub fn row(&self, index: usize) -> Rect {
         self.row_in(index, &[])
     }
-    /// The `index`th visible row, where `shapes` sizes the visible rows
-    /// from the first; rows past its end have the full preview and no
-    /// choices.
+    /// The `index` th visible row, where `shapes` sizes the visible rows from the first; rows past
+    /// its end have the full preview and no choices.
     pub fn row_in(&self, index: usize, shapes: &[RowShape]) -> Rect {
         let shape = |at: usize| shapes.get(at).copied().unwrap_or_default();
         let y0 = (0..index).fold(self.rows_top(), |y, at| {
@@ -657,8 +642,8 @@ impl CenterLayout {
             y0 + self.row_extent(&shape(index)),
         )
     }
-    /// How many of `shapes`' rows fit, in order from the first row's
-    /// place, above `bottom_reserve` at the panel's foot.
+    /// How many of `shapes` ' rows fit, in order from the first row's place, above `bottom_reserve`
+    /// at the panel's foot.
     fn fitting(&self, shapes: &[RowShape], bottom_reserve: f64) -> usize {
         let limit = self.panel.y1 - bottom_reserve + 1e-6;
         let mut y = self.rows_top();
@@ -673,8 +658,8 @@ impl CenterLayout {
         }
         count
     }
-    /// The band at the panel's foot, on the panel padding: where the
-    /// cleared status and its Undo stand.
+    /// The band at the panel's foot, on the panel padding: where the cleared status and its Undo
+    /// stand.
     pub fn footer(&self) -> Rect {
         let p = self.panel;
         Rect::new(
@@ -688,14 +673,13 @@ impl CenterLayout {
     pub fn visible_rows(&self, total: usize) -> usize {
         self.visible_rows_in(&vec![RowShape::default(); total], 0)
     }
-    /// Complete rows the panel shows from `start`, where `shapes` sizes
-    /// every row. The rest scrolls: a row is never cut at the panel's foot.
+    /// Complete rows the panel shows from `start` , where `shapes` sizes every row. The rest
+    /// scrolls: a row is never cut at the panel's foot.
     pub fn visible_rows_in(&self, shapes: &[RowShape], start: usize) -> usize {
         self.fitting(shapes.get(start..).unwrap_or_default(), qs::PANEL_PAD)
             .max(1)
     }
-    /// The last first row worth scrolling to: from it, the rest of the list
-    /// fills the panel.
+    /// The last first row worth scrolling to: from it, the rest of the list fills the panel.
     fn max_start(&self, shapes: &[RowShape]) -> usize {
         let total = shapes.len();
         if self.fitting(shapes, qs::PANEL_PAD) >= total {
@@ -721,13 +705,13 @@ impl CenterLayout {
         }
         first
     }
-    /// The height the centre wants to show `rows`. An empty centre keeps the
-    /// drill-in's one-row band for its message.
+    /// The height the centre wants to show `rows` . An empty centre keeps the drill-in's one-row
+    /// band for its message.
     pub fn preferred_height(rows: usize, metrics: impl Into<CenterMetrics>) -> f64 {
         Self::new(Rect::ZERO, metrics).height_showing(&vec![RowShape::default(); rows])
     }
-    /// The height that shows `shown` from the panel's top, ending on the
-    /// panel padding under the last row.
+    /// The height that shows `shown` from the panel's top, ending on the panel padding under the
+    /// last row.
     fn height_showing(&self, shown: &[RowShape]) -> f64 {
         let Some(last) = shown.len().checked_sub(1) else {
             return DrillInList::list_height(self.header_height(), 0)
@@ -745,9 +729,8 @@ impl CenterLayout {
         )
     }
 
-    /// A row's dismiss button, in the trailing corner, centred on the first
-    /// line it takes the place of (the source/time line, or the title of a
-    /// row without one).
+    /// A row's dismiss button, in the trailing corner, centred on the first line it takes the place
+    /// of (the source/time line, or the title of a row without one).
     pub fn row_controls(&self, row: Rect, shape: &RowShape) -> Rect {
         let size = self.actions.height.min(row.height());
         let line = if shape.has_source() {
@@ -799,8 +782,8 @@ fn leading_label(layout: &CenterLayout) -> String {
     }
 }
 
-/// The tone a notification's severity marks, for the rail a warning or a
-/// failure keeps; plain information carries no rail.
+/// The tone a notification's severity marks, for the rail a warning or a failure keeps; plain
+/// information carries no rail.
 fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::widget::Tone> {
     match severity {
         super::model::NotificationSeverity::Info => None,
@@ -809,15 +792,14 @@ fn severity_tone(severity: super::model::NotificationSeverity) -> Option<ui::wid
     }
 }
 
-/// A control on a row: its icon buttons, or one of the notification's own
-/// actions by position.
+/// A control on a row: its icon buttons, or one of the notification's own actions by position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RowControl {
     Dismiss,
     Action(usize),
 }
 
-/// The host's choices for `notification`, at most two as on the banner.
+/// The host's choices for `notification` , at most two as on the banner.
 fn row_actions_of(
     host: &dyn NotificationHost,
     notification: &Notification,
@@ -876,8 +858,8 @@ impl NotificationCenter {
         self.reader.take().is_some()
     }
 
-    /// Read retained notification `id` in full, as choosing it does when it
-    /// opens nothing: a live banner the person asked to read lands here.
+    /// Read retained notification `id` in full, as choosing it does when it opens nothing: a live
+    /// banner the person asked to read lands here.
     pub fn open_reader(&mut self, id: u64) {
         self.selected = Some(RowIdentity::Item(id));
         self.row_control = None;
@@ -940,9 +922,8 @@ impl NotificationCenter {
         host.log().rows(&self.collapsed)
     }
 
-    /// What sizes each of `rows` in `layout`: the lines its body wraps to
-    /// and its own choices. A group header shows its newest title while
-    /// folded and nothing under its label while open.
+    /// What sizes each of `rows` in `layout` : the lines its body wraps to and its own choices. A
+    /// group header shows its newest title while folded and nothing under its label while open.
     fn shapes(
         host: &dyn NotificationHost,
         layout: &CenterLayout,
@@ -978,8 +959,8 @@ impl NotificationCenter {
             .collect()
     }
 
-    /// The panel height the centre asks for over `host`'s log in `layout`:
-    /// up to [`PREFERRED_ROWS`] rows, each as tall as it holds.
+    /// The panel height the centre asks for over `host` 's log in `layout` : up to
+    /// [`PREFERRED_ROWS`] rows, each as tall as it holds.
     fn preferred_height_in(&self, host: &dyn NotificationHost, layout: &CenterLayout) -> f64 {
         let height = if self.is_reading() {
             layout.height_showing(&[RowShape::default(); PREFERRED_ROWS])
@@ -994,9 +975,8 @@ impl NotificationCenter {
         }
     }
 
-    /// The panel height the centre asks for over `host`'s log at
-    /// `metrics`, before the host knows its width: every row keeps room for
-    /// the full preview.
+    /// The panel height the centre asks for over `host` 's log at `metrics` , before the host knows
+    /// its width: every row keeps room for the full preview.
     pub fn preferred_height(
         &self,
         host: &dyn NotificationHost,
@@ -1070,8 +1050,8 @@ impl NotificationCenter {
             .position(|row| row.identity(history).as_ref() == Some(selected))
     }
 
-    /// Keep the window valid when records expire, are cleared or the panel
-    /// shrinks. Returns whether the position moved.
+    /// Keep the window valid when records expire, are cleared or the panel shrinks. Returns whether
+    /// the position moved.
     fn clamp_start(&mut self, layout: &CenterLayout, shapes: &[RowShape]) -> bool {
         let next = self.start.min(layout.max_start(shapes));
         let changed = next != self.start;
@@ -1079,8 +1059,8 @@ impl NotificationCenter {
         changed
     }
 
-    /// Move through the rows newest first. Positive movement reveals older
-    /// rows. Row-based, so wheels and keys land identically.
+    /// Move through the rows newest first. Positive movement reveals older rows. Row-based, so
+    /// wheels and keys land identically.
     fn scroll(&mut self, host: &dyn NotificationHost, layout: &CenterLayout, movement: isize) {
         let max_start = layout.max_start(&Self::shapes(host, layout, &self.rows(host)));
         let current = self.start.min(max_start);
@@ -1096,10 +1076,9 @@ impl NotificationCenter {
         }
     }
 
-    /// Scroll from a pointer wheel over the panel. Pixel deltas accumulate
-    /// into 48px row steps; line deltas name rows and apply immediately. A
-    /// small touchpad movement stays the centre's until it makes a whole
-    /// row, rather than scrolling whatever is under the panel.
+    /// Scroll from a pointer wheel over the panel. Pixel deltas accumulate into 48px row steps;
+    /// line deltas name rows and apply immediately. A small touchpad movement stays the centre's
+    /// until it makes a whole row, rather than scrolling whatever is under the panel.
     pub fn wheel(
         &mut self,
         host: &dyn NotificationHost,
@@ -1155,8 +1134,8 @@ impl NotificationCenter {
         host.changed();
     }
 
-    /// Move the selection by `delta` rows. With nothing selected the first
-    /// press selects the first visible row.
+    /// Move the selection by `delta` rows. With nothing selected the first press selects the first
+    /// visible row.
     fn move_selection(&mut self, host: &dyn NotificationHost, layout: &CenterLayout, delta: isize) {
         let rows = self.rows(host);
         let current = self.selected_row(&rows, host.log().history());
@@ -1179,8 +1158,8 @@ impl NotificationCenter {
         }
     }
 
-    /// The rows from the first visible one, the bands they carry, and how
-    /// many show: the window paint, hit-testing and accessibility share.
+    /// The rows from the first visible one, the bands they carry, and how many show: the window
+    /// paint, hit-testing and accessibility share.
     fn window(
         &self,
         host: &dyn NotificationHost,
@@ -1228,10 +1207,9 @@ impl NotificationCenter {
         None
     }
 
-    /// Act on row `index`: a group header folds or unfolds; a notification
-    /// goes where it leads, or the given control. A notification with
-    /// nowhere to go opens in the reader instead, its focus shown only when
-    /// the keyboard opened it.
+    /// Act on row `index` : a group header folds or unfolds; a notification goes where it leads, or
+    /// the given control. A notification with nowhere to go opens in the reader instead, its focus
+    /// shown only when the keyboard opened it.
     fn activate_row(
         &mut self,
         host: &dyn NotificationHost,
@@ -1294,8 +1272,7 @@ impl NotificationCenter {
         CenterOutcome::Handled
     }
 
-    /// Dismiss row `index`: one notification, or every notification of a
-    /// group header.
+    /// Dismiss row `index` : one notification, or every notification of a group header.
     fn dismiss_row(&mut self, host: &dyn NotificationHost, layout: &CenterLayout, index: usize) {
         let rows = self.rows(host);
         match rows.get(index) {
@@ -1314,8 +1291,8 @@ impl NotificationCenter {
         self.reselect_after_removal(host, layout, index);
     }
 
-    /// Keep a keyboard selection on the row that slid into the removed
-    /// row's place, so repeated Delete walks down the list.
+    /// Keep a keyboard selection on the row that slid into the removed row's place, so repeated
+    /// Delete walks down the list.
     fn reselect_after_removal(
         &mut self,
         host: &dyn NotificationHost,
@@ -1373,8 +1350,7 @@ impl NotificationCenter {
             self.selected = None;
             self.row_control = None;
         } else if let Some((row, control)) = self.row_hit(host, layout, p) {
-            // A pointer press acts on the row without leaving a keyboard
-            // selection ring behind it.
+            // A pointer press acts on the row without leaving a keyboard selection ring behind it.
             self.selected = None;
             self.row_control = None;
             self.back_focused = false;
@@ -1386,10 +1362,9 @@ impl NotificationCenter {
         CenterOutcome::Handled
     }
 
-    /// Keyboard navigation, available without pointer hover so the retained
-    /// history stays usable by keyboard and assistive-technology users.
-    /// Consumes at either edge too, so arrows never start moving whatever is
-    /// under the panel once the list has reached its beginning or end.
+    /// Keyboard navigation, available without pointer hover so the retained history stays usable by
+    /// keyboard and assistive-technology users. Consumes at either edge too, so arrows never start
+    /// moving whatever is under the panel once the list has reached its beginning or end.
     fn reading_key(&mut self, host: &dyn NotificationHost, logical_key: &Key) -> bool {
         if let Some(reader) = self.reader.as_mut() {
             if matches!(logical_key, Key::Named(NamedKey::Tab)) {
@@ -1412,9 +1387,8 @@ impl NotificationCenter {
         false
     }
 
-    /// The row, then its controls in reading order: the icon buttons on its
-    /// first line, then its own actions under the text. The same order as
-    /// the row's accessibility children.
+    /// The row, then its controls in reading order: the icon buttons on its first line, then its
+    /// own actions under the text. The same order as the row's accessibility children.
     fn row_focus_order(host: &dyn NotificationHost, row: &HistoryRow) -> Vec<Option<RowControl>> {
         let mut order = vec![None, Some(RowControl::Dismiss)];
         let actions = Self::row_actions(host, row).len();
@@ -1572,8 +1546,8 @@ impl NotificationCenter {
         outcome
     }
 
-    /// `tilo-control list-targets` names for the centre's header chips, rows
-    /// and their trailing controls, under `prefix`.
+    /// `tilo-control list-targets` names for the centre's header chips, rows and their trailing
+    /// controls, under `prefix` .
     pub fn semantic_rects(
         &self,
         host: &dyn NotificationHost,
@@ -1612,9 +1586,8 @@ impl NotificationCenter {
         out
     }
 
-    /// What the centre says about itself: why nothing pops up (the
-    /// header's quiet status line, read first), then how many rows it
-    /// keeps.
+    /// What the centre says about itself: why nothing pops up (the header's quiet status line, read
+    /// first), then how many rows it keeps.
     fn description(host: &dyn NotificationHost, total: usize) -> String {
         let rows = if total == 0 {
             t("a11y-notifications-none")
@@ -1627,10 +1600,9 @@ impl NotificationCenter {
         }
     }
 
-    /// The centre as one modal dialog: the row list, Clear all, and while
-    /// it can still be undone, the cleared status and Undo. `now` is one
-    /// clock edge for every row, so adjacent rows cannot label their ages
-    /// across a relative-time boundary.
+    /// The centre as one modal dialog: the row list, Clear all, and while it can still be undone,
+    /// the cleared status and Undo. `now` is one clock edge for every row, so adjacent rows cannot
+    /// label their ages across a relative-time boundary.
     pub fn accessibility(
         &self,
         host: &dyn NotificationHost,
@@ -1751,8 +1723,8 @@ impl NotificationCenter {
         }
     }
 
-    /// Move keyboard focus to the dialog node at `path` (relative to the
-    /// dialog). Returns whether the path named something focusable.
+    /// Move keyboard focus to the dialog node at `path` (relative to the dialog). Returns whether
+    /// the path named something focusable.
     pub fn focus_accessibility_path(
         &mut self,
         host: &dyn NotificationHost,
@@ -1818,10 +1790,9 @@ impl NotificationCenter {
         true
     }
 
-    /// One accessibility node per visible row, matching the painted rows
-    /// one-to-one so a focus path names the row it lights. Group headers are
-    /// level-one items with an expanded state; their notifications are
-    /// level two.
+    /// One accessibility node per visible row, matching the painted rows one-to-one so a focus path
+    /// names the row it lights. Group headers are level-one items with an expanded state; their
+    /// notifications are level two.
     fn accessibility_rows(
         &self,
         host: &dyn NotificationHost,
@@ -1901,8 +1872,7 @@ impl NotificationCenter {
             .collect()
     }
 
-    /// The accessibility node of one retained notification row and its
-    /// trailing controls.
+    /// The accessibility node of one retained notification row and its trailing controls.
     fn item_node(
         &self,
         host: &dyn NotificationHost,
@@ -1956,8 +1926,8 @@ impl NotificationCenter {
             .with_children(controls)
     }
 
-    /// Paint the centre into `layout`'s panel. The host paints the panel
-    /// surface itself; `cursor` lights the hovered controls.
+    /// Paint the centre into `layout` 's panel. The host paints the panel surface itself; `cursor`
+    /// lights the hovered controls.
     #[allow(
         clippy::too_many_lines,
         reason = "the render handles, the host, the layout and the pointer are each independent inputs; paint and hit rectangles share one layout pass so they cannot drift"
@@ -2039,8 +2009,7 @@ impl NotificationCenter {
         if quiet.height() > 0.0
             && let Some(status) = host.quiet_status()
         {
-            // The quiet line is one centred caption, from the shared text-line
-            // painter.
+            // The quiet line is one centred caption, from the shared text-line painter.
             let line = ui::widget::TextLineFace::styled(&status, &caption_style, TextRole::Caption);
             line.paint(
                 &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
@@ -2079,8 +2048,8 @@ impl NotificationCenter {
         let shapes = Self::shapes(host, layout, &rows);
         let _ = self.clamp_start(layout, &shapes);
         let selected = self.selected_row(&rows, history);
-        // Resizing or growing text must keep the focused row/control visible.
-        // Retain the same identity and control, and only move the viewport.
+        // Resizing or growing text must keep the focused row/control visible. Retain the same
+        // identity and control, and only move the viewport.
         if let Some(index) = selected {
             self.start = layout.start_showing(&shapes, self.start, index);
         }
@@ -2128,9 +2097,8 @@ impl NotificationCenter {
                     let Some(newest) = history.get(*newest) else {
                         continue;
                     };
-                    // A group is one card around its header and the members
-                    // it shows: the members are its children, not rows of
-                    // their own.
+                    // A group is one card around its header and the members it shows: the members
+                    // are its children, not rows of their own.
                     let members = if *expanded { *count } else { 0 };
                     let last = position
                         .saturating_add(members)
@@ -2184,26 +2152,23 @@ impl NotificationCenter {
             };
             let controls = layout.row_controls(row, &shape);
             let leading_control = controls;
-            // A row is a resting Control surface (HIG §9.5): the lift floor
-            // with its derived edge, never a ramp-slot wash. A group's
-            // member has no surface of its own: it sits in its header's
-            // card, and only lifts inside it while pointed at or selected.
+            // A row is a resting Control surface (HIG §9.5): the lift floor with its derived edge,
+            // never a ramp-slot wash. A group's member has no surface of its own: it sits in its
+            // header's card, and only lifts inside it while pointed at or selected.
             if !shape.is_grouped() {
                 ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
             } else if hovered(row) || position == 0 {
-                // Inside its group's card, a member lights only while
-                // pointed at. A member whose header scrolled out of the
-                // window keeps a surface of its own.
+                // Inside its group's card, a member lights only while pointed at. A member whose
+                // header scrolled out of the window keeps a surface of its own.
                 ui::widget::paint_control_row(scene, transform, theme, row, hovered(row), false);
             }
-            // A warning or failure keeps a rail beside its text, scannable
-            // without taking another line; plain information carries no
-            // colour, so the rail means something wherever it appears. The
-            // accessibility description names the severity too, so colour
-            // is never the only signal.
+            // A warning or failure keeps a rail beside its text, scannable without taking another
+            // line; plain information carries no colour, so the rail means something wherever it
+            // appears. The accessibility description names the severity too, so colour is never the
+            // only signal.
             if let Some(tone) = severity_tone(notification.severity) {
-                // A warning or failure keeps its rail beside its text, from
-                // the shared painter; plain information carries none.
+                // A warning or failure keeps its rail beside its text, from the shared painter;
+                // plain information carries none.
                 ui::widget::paint_severity_rail(
                     scene,
                     transform,
@@ -2213,11 +2178,10 @@ impl NotificationCenter {
                     qs::CONTROL_PAD,
                 );
             }
-            // Who sent it, the source/time, title and body: measured lines on
-            // the control padding, the sender's mark a glyph in like every
-            // row glyph in the panel, its text after it. A grouped
-            // notification sits one mark column further in, under its
-            // header, and drops the source line: the header names the app.
+            // Who sent it, the source/time, title and body: measured lines on the control padding,
+            // the sender's mark a glyph in like every row glyph in the panel, its text after it. A
+            // grouped notification sits one mark column further in, under its header, and drops the
+            // source line: the header names the app.
             let mark = layout.row_mark(row, &shape);
             notification
                 .mark()
@@ -2231,9 +2195,8 @@ impl NotificationCenter {
                 None => first_y,
             };
             let body_y = title_y + layout.label_lh;
-            // The icon buttons stand where the time is; a line they reach
-            // into stops short of them, shown or not, so nothing reflows
-            // under the pointer.
+            // The icon buttons stand where the time is; a line they reach into stops short of them,
+            // shown or not, so nothing reflows under the pointer.
             let clear_of = |y: f64| {
                 if leading_control.y1 > y {
                     leading_control.x0 - qs::RELATED_GAP
@@ -2249,8 +2212,8 @@ impl NotificationCenter {
                 text_right - f64::from(time_width) - qs::RELATED_GAP
             };
             let caption_line_h = layout.caption_lh;
-            // The age takes the row's first line: the source line when
-            // the row has one, else the title line beside the title.
+            // The age takes the row's first line: the source line when the row has one, else the
+            // title line beside the title.
             let time_y = source_y.unwrap_or(title_y);
             let time_h = if shape.has_source() {
                 caption_line_h
@@ -2266,8 +2229,8 @@ impl NotificationCenter {
                     f32_of_f64(source_width),
                     &caption_style,
                 );
-                // The source line is one shared caption, starting at the
-                // row's mark and elided to the room beside the controls.
+                // The source line is one shared caption, starting at the row's mark and elided to
+                // the room beside the controls.
                 ui::widget::TextLineFace::styled(&source, &caption_style, TextRole::Caption)
                     .start()
                     .paint(
@@ -2326,8 +2289,8 @@ impl NotificationCenter {
                     colors.text_dim,
                 );
             }
-            // The notification's own choices, as on its banner: always
-            // shown, since they are what the notification asks.
+            // The notification's own choices, as on its banner: always shown, since they are what
+            // the notification asks.
             let actions = row_actions_of(host, notification);
             let last = actions.len().saturating_sub(1);
             for (at, ((_, label), rect)) in actions
@@ -2379,8 +2342,8 @@ impl NotificationCenter {
         }
     }
 
-    /// The toolkit's button face, with the same role, hover and focus
-    /// treatment as controls in retained widgets.
+    /// The toolkit's button face, with the same role, hover and focus treatment as controls in
+    /// retained widgets.
     fn chip(
         scene: &mut Scene,
         transform: Affine,
@@ -2435,9 +2398,8 @@ impl NotificationCenter {
         );
     }
 
-    /// One group header row: fold chevron, the sender's mark and name, the
-    /// count as a badge after the name, the newest member's age and (while
-    /// folded) its title.
+    /// One group header row: fold chevron, the sender's mark and name, the count as a badge after
+    /// the name, the newest member's age and (while folded) its title.
     fn draw_group_row(
         scene: &mut Scene,
         transform: Affine,
@@ -2476,9 +2438,8 @@ impl NotificationCenter {
         let title_style = label_style.with_weight(TextWeight::Semibold);
         let count = count.to_string();
         let badge_width = ui::widget::BadgeFace::intrinsic_width(&count, text_renderer, theme);
-        // The name stops short of the count badge and whatever holds the
-        // trailing corner: the dismiss-all button while it shows, else the
-        // newest member's age.
+        // The name stops short of the count badge and whatever holds the trailing corner: the
+        // dismiss-all button while it shows, else the newest member's age.
         let right = if reveal {
             dismiss.x0 - qs::RELATED_GAP
         } else {
@@ -2536,8 +2497,8 @@ impl NotificationCenter {
         }
     }
 
-    /// A row's trailing icon buttons as Controls, the hovered one on the
-    /// hover tier and the keyboard-focused one ringed.
+    /// A row's trailing icon buttons as Controls, the hovered one on the hover tier and the
+    /// keyboard-focused one ringed.
     fn draw_row_controls(
         scene: &mut Scene,
         transform: Affine,
@@ -2720,8 +2681,8 @@ mod tests {
         let mut center = NotificationCenter::new();
         assert!(center.focus_accessibility_path(&host, &layout, &[1]));
         assert_eq!(center.action_focus, Some(ActionFocus::Clear));
-        // Fold the group with the pointer after focusing Clear all. Enter
-        // must not invoke that old header focus and erase the history.
+        // Fold the group with the pointer after focusing Clear all. Enter must not invoke that old
+        // header focus and erase the history.
         let rows = center.rows(&host);
         let shapes = NotificationCenter::shapes(&host, &layout, &rows);
         center.click(&host, &layout, layout.row_in(0, &shapes).center());
@@ -2841,8 +2802,8 @@ mod tests {
             .count();
         assert!(grouped > 0, "the app's members sit under its header");
         for (row, shape) in rows.iter().zip(&shapes) {
-            // Only a standalone row names its sender above the title: a
-            // header names it once, and its members sit under that name.
+            // Only a standalone row names its sender above the title: a header names it once, and
+            // its members sit under that name.
             assert_eq!(
                 shape.has_source(),
                 !matches!(
@@ -3080,10 +3041,9 @@ mod tests {
         assert!(center.is_reading());
     }
 
-    /// Every row and group header leads with a mark for whoever sent it: an
-    /// app's own glyph or artwork, and the system's bell for a notification
-    /// from no app at all. The mark gets its own box inside the row and the
-    /// text starts after it, so no row has an empty gutter.
+    /// Every row and group header leads with a mark for whoever sent it: an app's own glyph or
+    /// artwork, and the system's bell for a notification from no app at all. The mark gets its own
+    /// box inside the row and the text starts after it, so no row has an empty gutter.
     #[test]
     fn every_row_and_group_header_leads_with_its_senders_mark() {
         let host = TestHost::default();
@@ -3194,15 +3154,14 @@ mod tests {
             ],
             "a tool posting for an app is drawn as that app"
         );
-        // The launcher-verified app keeps its own glyph whichever name the
-        // sender used.
+        // The launcher-verified app keeps its own glyph whichever name the sender used.
         let mut chat = from_app("chat", "hello");
         chat.app_name = Some("Something else".to_string());
         assert_eq!(chat.mark().icon, Some(ui::icons::Icon::MessageSquare));
     }
 
-    /// The mark is painted from the notification: two rows that differ only
-    /// in who sent them draw different glyphs.
+    /// The mark is painted from the notification: two rows that differ only in who sent them draw
+    /// different glyphs.
     #[test]
     fn a_rows_mark_is_painted_from_its_sender() {
         let paint = |notification: Notification| {

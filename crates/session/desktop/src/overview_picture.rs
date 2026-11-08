@@ -1,14 +1,11 @@
-//! The overview's picture of a workspace: every strip, top to bottom, with
-//! its windows left to right in the order the strip holds them, each at its
-//! share of the size it has on the display, under the strip's name.
-//!
-//! One picture for every desktop: the native shell flies its windows into
-//! these places on the overview's zoom, and the browser desktop's overview
-//! panel draws the same places, wells, titles and names, so both read the
-//! same way. The layout is plain geometry ([`layout_strips`]); painting a
-//! window's picture is [`crate::window_switcher::draw_preview_well`], its
-//! title [`draw_tile_title`], an empty strip [`draw_empty_strip`] and a
-//! strip's name [`draw_strip_name`].
+//! The overview's picture of a workspace: every strip, top to bottom, with its windows left to
+//! right in the order the strip holds them, each at its share of the size it has on the display,
+//! under the strip's name.
+//! One picture for every desktop: the native shell flies its windows into these places on the
+//! overview's zoom, and the browser desktop's overview panel draws the same places, wells, titles
+//! and names, so both read the same way. The layout is plain geometry ([`layout_strips`]); painting
+//! a window's picture is [`crate::window_switcher::draw_preview_well`], its title
+//! [`draw_tile_title`], an empty strip [`draw_empty_strip`] and a strip's name [`draw_strip_name`].
 
 use ui::TextRole;
 use ui::num::f64_of_usize;
@@ -21,8 +18,8 @@ use vello::peniko::{BlendMode, Color, Fill};
 use crate::i18n::t;
 use crate::window_switcher::SwitcherWindow;
 
-/// A window is pictured at most at this share of its size on the display:
-/// a workspace of one window still reads as a picture, not as the window.
+/// A window is pictured at most at this share of its size on the display: a workspace of one window
+/// still reads as a picture, not as the window.
 pub const MAX_SCALE: f64 = 0.5;
 
 /// Most faces drawn on one window before the picture says nothing more.
@@ -233,8 +230,8 @@ pub struct Tile<'a> {
     pub faces: &'a [(char, Color)],
 }
 
-/// A pictured window's title under its picture at `rect`, and the faces
-/// of the people in it at the title's end.
+/// A pictured window's title under its picture at `rect` , and the faces of the people in it at the
+/// title's end.
 pub fn draw_tile_title(
     ctx: &mut ui::paint::PaintCtx<'_>,
     tile: &Tile<'_>,
@@ -331,9 +328,8 @@ pub fn draw_empty_strip(ctx: &mut ui::paint::PaintCtx<'_>, slot: Rect, alpha: f3
     scene.pop_layer();
 }
 
-/// A strip's name on its name line `label`, elided before `end`: the
-/// strip with focus in the primary ink and a heavier weight, the others
-/// dim.
+/// A strip's name on its name line `label` , elided before `end` : the strip with focus in the
+/// primary ink and a heavier weight, the others dim.
 pub fn draw_strip_name(
     ctx: &mut ui::paint::PaintCtx<'_>,
     label: Rect,

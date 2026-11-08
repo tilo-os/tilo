@@ -1,14 +1,11 @@
-//! "Uninstall \<app\> and remove its data?", as a person on a headless desk
-//! meets it: asking about a program they downloaded puts the question on the
-//! desk, listing every copy that goes, and its answers reach the registry of
-//! their downloaded programs — the one place their apps are kept.
-//!
-//! Uninstalling takes every copy to the Trash and says so; keeping the app
-//! changes nothing; and asking about an app that is not there any more says
-//! so rather than leaving a question standing about it.
-//!
-//! Search's Uninstall row asks that same question, and an uninstall that
-//! cannot move the app's file says why instead of quietly doing nothing.
+//! "Uninstall \<app\> and remove its data?", as a person on a headless desk meets it: asking about
+//! a program they downloaded puts the question on the desk, listing every copy that goes, and its
+//! answers reach the registry of their downloaded programs — the one place their apps are kept.
+//! Uninstalling takes every copy to the Trash and says so; keeping the app changes nothing; and
+//! asking about an app that is not there any more says so rather than leaving a question standing
+//! about it.
+//! Search's Uninstall row asks that same question, and an uninstall that cannot move the app's file
+//! says why instead of quietly doing nothing.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -34,8 +31,7 @@ use tilo_session::{Options, Session};
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// A session on the headless backend, taking no part in the collaboration
-/// plane.
+/// A session on the headless backend, taking no part in the collaboration plane.
 fn session() -> Session {
     Session::headless(
         Options {
@@ -48,8 +44,8 @@ fn session() -> Session {
     .expect("session")
 }
 
-/// A program the person added to their apps, made of `copies` (the first is
-/// the one it starts). Returns the desktop id it was added as.
+/// A program the person added to their apps, made of `copies` (the first is the one it starts).
+/// Returns the desktop id it was added as.
 fn app(home: &tilo_test_env::TestHome, key: &str, name: &str, copies: &[&Path]) -> String {
     use std::os::unix::fs::PermissionsExt as _;
 
@@ -102,8 +98,8 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
-/// Whether the session publishes the app `desktop_id`, which it does while
-/// the person has that app.
+/// Whether the session publishes the app `desktop_id` , which it does while the person has that
+/// app.
 fn published(session: &Session, desktop_id: &str) -> bool {
     fn find(resources: &[ResourceSpec], id: &str) -> bool {
         resources
@@ -143,10 +139,9 @@ fn rows(session: &Session) -> Vec<ResourceSpec> {
         .unwrap_or_default()
 }
 
-/// Search for `query`, as the person does, and wait for its rows to be
-/// final: the open search says it is still searching until every source has
-/// answered and its rows are cut to the card, so a row read before that may
-/// be all a first source had to say.
+/// Search for `query` , as the person does, and wait for its rows to be final: the open search says
+/// it is still searching until every source has answered and its rows are cut to the card, so a row
+/// read before that may be all a first source had to say.
 fn search(session: &mut Session, query: &str) {
     let arguments = serde_json::json!({"query": query})
         .as_object()
@@ -178,7 +173,7 @@ fn searching(session: &Session) -> bool {
         .is_some_and(|detail| detail == still)
 }
 
-/// Press the search row titled `title`, as the person does.
+/// Press the search row titled `title` , as the person does.
 #[track_caller]
 fn choose_row(session: &mut Session, title: &str) {
     until(session, &format!("the row {title}"), |session| {
@@ -191,7 +186,7 @@ fn choose_row(session: &mut Session, title: &str) {
         .expect("the row is chosen");
 }
 
-/// The open search's row titled `title`.
+/// The open search's row titled `title` .
 fn row(session: &Session, title: &str) -> Option<ResourceSpec> {
     rows(session)
         .into_iter()
@@ -204,7 +199,7 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
-/// Press the question's `action`, as the person does.
+/// Press the question's `action` , as the person does.
 fn answer(session: &mut Session, action: &str) {
     let sheet = publisher(session, action).unwrap_or_else(|| panic!("no question offers {action}"));
     assert_eq!(
@@ -237,8 +232,7 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
         published(session, &desktop_id)
     });
 
-    // Asked to uninstall it, the question names the app and lists both
-    // copies that go.
+    // Asked to uninstall it, the question names the app and lists both copies that go.
     session.ask_uninstall(&desktop_id);
     until(&mut session, "the question", |session| {
         publisher(session, "confirm").is_some()
@@ -269,8 +263,8 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
     until(&mut session, "the app to leave their apps", |session| {
         !published(session, &desktop_id)
     });
-    // What it did is said once the registry reads the app as gone, which is
-    // a pass after the app leaves their apps.
+    // What it did is said once the registry reads the app as gone, which is a pass after the app
+    // leaves their apps.
     until(&mut session, "the notice saying where it went", |session| {
         !notices(session).is_empty()
     });
@@ -324,8 +318,8 @@ fn uninstalling_the_only_copy_says_its_file_is_in_the_trash() {
         !published(session, &desktop_id)
     });
     assert!(!file.exists(), "its file went");
-    // What it did is said once the registry reads the app as gone, which is
-    // a pass after the app leaves their apps.
+    // What it did is said once the registry reads the app as gone, which is a pass after the app
+    // leaves their apps.
     until(&mut session, "the notice saying where it went", |session| {
         !notices(session).is_empty()
     });
@@ -429,8 +423,8 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
         !published(session, &desktop_id)
     });
     assert!(!file.exists(), "its file went to the Trash");
-    // What it did is said once the registry reads the app as gone, which is
-    // a pass after the app leaves their apps.
+    // What it did is said once the registry reads the app as gone, which is a pass after the app
+    // leaves their apps.
     until(&mut session, "the notice saying where it went", |session| {
         !notices(session).is_empty()
     });
@@ -443,8 +437,8 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
     );
 }
 
-/// "Uninstall an app", the question's own row, asks about the app by the
-/// name the person types: the same question the app's row asks.
+/// "Uninstall an app", the question's own row, asks about the app by the name the person types: the
+/// same question the app's row asks.
 #[test]
 fn the_uninstall_question_takes_the_app_by_name() {
     use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
@@ -475,8 +469,8 @@ fn the_uninstall_question_takes_the_app_by_name() {
     assert!(file.is_file(), "nothing goes before the person answers");
 }
 
-/// An uninstall that cannot move the app's file says so, and leaves the app
-/// and its file where they were.
+/// An uninstall that cannot move the app's file says so, and leaves the app and its file where they
+/// were.
 #[test]
 fn an_uninstall_that_cannot_trash_the_file_says_so() {
     let _settled = ui::motion::testing::settled();
@@ -518,8 +512,8 @@ fn an_uninstall_that_cannot_trash_the_file_says_so() {
     );
 }
 
-/// A registry of the person's apps that publishes a reading this build does
-/// not read: what a registry a newer build wrote reads like here.
+/// A registry of the person's apps that publishes a reading this build does not read: what a
+/// registry a newer build wrote reads like here.
 struct NotReadBack;
 
 impl tilo_service::Service for NotReadBack {
@@ -549,8 +543,8 @@ impl tilo_service::Service for NotReadBack {
 fn a_registry_that_does_not_read_back_says_nothing_was_removed() {
     let _settled = ui::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home");
-    // A registry of theirs this build cannot read: their apps would simply
-    // be gone from the launcher, so they are told once instead.
+    // A registry of theirs this build cannot read: their apps would simply be gone from the
+    // launcher, so they are told once instead.
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,

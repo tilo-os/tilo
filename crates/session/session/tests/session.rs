@@ -1,7 +1,6 @@
-//! The native session on the headless backend with a real Wayland client:
-//! its window becomes a tab of the desk's strip, shown where the strip lays
-//! that tab out; the chrome above the windows draws the top bar; closing
-//! the tab asks the client to close.
+//! The native session on the headless backend with a real Wayland client: its window becomes a tab
+//! of the desk's strip, shown where the strip lays that tab out; the chrome above the windows draws
+//! the top bar; closing the tab asks the client to close.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -144,9 +143,8 @@ impl TestClient {
         }
     }
 
-    /// Type into a text field of this window, as a toolkit does when one
-    /// takes the focus: the field asks the compositor for typing, which only
-    /// a keyboard's input method can answer.
+    /// Type into a text field of this window, as a toolkit does when one takes the focus: the field
+    /// asks the compositor for typing, which only a keyboard's input method can answer.
     fn type_into_a_field(&mut self) {
         let qh = self.queue.handle();
         if self.seen.text_input.is_none() {
@@ -164,8 +162,7 @@ impl TestClient {
         self.connection.flush().expect("flush");
     }
 
-    /// Attach a buffer of one colour (RGBA) and commit it with a frame
-    /// callback.
+    /// Attach a buffer of one colour (RGBA) and commit it with a frame callback.
     fn show(&self, width: i32, height: i32, rgba: [u8; 4]) {
         let qh = self.queue.handle();
         let stride = width * 4;
@@ -194,10 +191,8 @@ impl TestClient {
 }
 
 /// Let the session and clients talk until `done` holds.
-///
-/// Counting steps would not do: what the session waits for is often a
-/// worker thread (a folder read, a bus call), and a busy machine can take
-/// many steps' worth of time to get to it.
+/// Counting steps would not do: what the session waits for is often a worker thread (a folder read,
+/// a bus call), and a busy machine can take many steps' worth of time to get to it.
 #[track_caller]
 fn pump(
     session: &mut Session,
@@ -240,7 +235,7 @@ fn until<T>(
     answer
 }
 
-/// The control assistive technology names `name` under `node`, by target.
+/// The control assistive technology names `name` under `node` , by target.
 fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
     if node.name.as_deref() == Some(name)
         && let Some(target) = &node.action_target
@@ -251,8 +246,7 @@ fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
 }
 
 fn session() -> Session {
-    // Headless tests take no part in the collaboration plane: no endpoint, no
-    // workspace.
+    // Headless tests take no part in the collaboration plane: no endpoint, no workspace.
     Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -264,7 +258,7 @@ fn session() -> Session {
     .expect("session")
 }
 
-/// A session whose app lists are `lists`: what the desk offers to open.
+/// A session whose app lists are `lists` : what the desk offers to open.
 fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     Session::headless(
         Options {
@@ -281,8 +275,7 @@ fn session_with_lists(lists: tilo_session::AppLists) -> Session {
     .expect("session")
 }
 
-/// A session that keeps this device's desk under `state`, the way one with
-/// a state directory does.
+/// A session that keeps this device's desk under `state` , the way one with a state directory does.
 fn session_keeping(state: &std::path::Path) -> Session {
     Session::headless(
         Options {
@@ -295,8 +288,8 @@ fn session_keeping(state: &std::path::Path) -> Session {
     .expect("session")
 }
 
-/// Connect a client and open a toplevel of `app_id`, drawn at the size it
-/// was configured to, and wait until it is mapped.
+/// Connect a client and open a toplevel of `app_id` , drawn at the size it was configured to, and
+/// wait until it is mapped.
 fn mapped(session: &mut Session, app_id: &str) -> TestClient {
     let mut client = TestClient::connect(session.compositor());
     pump(session, &mut [&mut client], |_, clients| {
@@ -319,7 +312,7 @@ fn mapped(session: &mut Session, app_id: &str) -> TestClient {
     client
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)`.
+/// The window of `app` and its rectangle `(x, y, w, h)` .
 fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
     compositor
         .windows()
@@ -328,9 +321,8 @@ fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i3
         .map(|(info, rect)| (info.id, rect))
 }
 
-/// The resource the desk publishes for the window of `app`, its tab. The
-/// client's window is titled by its own app id, so the desk names it as it
-/// names any window: its title and the app it shows.
+/// The resource the desk publishes for the window of `app` , its tab. The client's window is titled
+/// by its own app id, so the desk names it as it names any window: its title and the app it shows.
 fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
     fn find(resources: &[ResourceSpec], label: &str) -> Option<ResourceSpec> {
         resources.iter().find_map(|resource| {
@@ -345,8 +337,7 @@ fn window_resource(session: &Session, app: &str) -> Option<ResourceSpec> {
     find(&session.resources(), &label)
 }
 
-/// Invoke `action` of `resource` with `arguments`, then let the session run
-/// a frame.
+/// Invoke `action` of `resource` with `arguments` , then let the session run a frame.
 fn invoke_with(session: &mut Session, resource: &str, action: &str, arguments: &serde_json::Value) {
     let empty = serde_json::Map::new();
     let arguments = arguments.as_object().unwrap_or(&empty);
@@ -356,8 +347,7 @@ fn invoke_with(session: &mut Session, resource: &str, action: &str, arguments: &
     session.step(Duration::from_millis(1)).unwrap();
 }
 
-/// Invoke `action` of `resource` with no arguments, then let the session
-/// run a frame.
+/// Invoke `action` of `resource` with no arguments, then let the session run a frame.
 fn invoke(session: &mut Session, resource: &str, action: &str) {
     session
         .invoke(resource, action, &serde_json::Map::new())
@@ -474,9 +464,8 @@ fn band_colour(session: &mut Session) -> [u8; 4] {
         .unwrap()
 }
 
-/// Step the session and exchange with `client` until `done` holds: the bound
-/// is the suite's hang bound, so a busy machine slows the wait instead of
-/// failing it.
+/// Step the session and exchange with `client` until `done` holds: the bound is the suite's hang
+/// bound, so a busy machine slows the wait instead of failing it.
 #[track_caller]
 fn within(
     session: &mut Session,
@@ -486,8 +475,8 @@ fn within(
     pump(session, &mut [client], |session, _| done(session));
 }
 
-/// Wait for the size the desktop configures the window to, draw it at that
-/// size as its client does, and wait until the compositor shows it there.
+/// Wait for the size the desktop configures the window to, draw it at that size as its client does,
+/// and wait until the compositor shows it there.
 fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i32, i32)) {
     let until = tilo_test_env::hang_deadline();
     while std::time::Instant::now() < until && client.seen.size != Some(size) {
@@ -507,9 +496,8 @@ fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i
     });
 }
 
-/// A window taken across the display covers it, the bar's room included:
-/// the bar shows over it for a moment, then goes, and draws again once the
-/// window gives the display back.
+/// A window taken across the display covers it, the bar's room included: the bar shows over it for
+/// a moment, then goes, and draws again once the window gives the display back.
 #[test]
 fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     const APP: &str = "org.example.Cinema";
@@ -633,9 +621,9 @@ fn tap(session: &mut Session, keycode: u32) {
     key(session, keycode, false);
 }
 
-/// A session with the quick settings panel installed: the surface probe this
-/// package ships stands in for its app, staying up while the session keeps
-/// it. The environment it reads is held for the test's life.
+/// A session with the quick settings panel installed: the surface probe this package ships stands
+/// in for its app, staying up while the session keeps it. The environment it reads is held for the
+/// test's life.
 fn session_with_quick_settings() -> (Session, ScopedEnv) {
     let mut environment = ScopedEnv::new();
     environment.set("SURFACE_PROBE_STAY", "1");
@@ -708,8 +696,8 @@ fn a_desktop_chord_works_while_a_window_has_the_keyboard_and_the_window_never_se
     });
 }
 
-/// The machine's brightness controls as a test lights them: the display the
-/// test session shows, and any other monitor it names.
+/// The machine's brightness controls as a test lights them: the display the test session shows, and
+/// any other monitor it names.
 #[derive(Clone, Default)]
 struct Dials(Rc<RefCell<DialsInner>>);
 
@@ -734,7 +722,7 @@ impl Dials {
         dials
     }
 
-    /// What the service asked of the display at `connector`, in percent.
+    /// What the service asked of the display at `connector` , in percent.
     fn asked(&self, connector: &str) -> Vec<f32> {
         self.0
             .borrow()
@@ -773,8 +761,8 @@ impl tilo_session::displays::Backlights for Dials {
     }
 }
 
-/// The connectivity service as the session reaches it: a device with a Wi-Fi
-/// radio, and every change asked of it.
+/// The connectivity service as the session reaches it: a device with a Wi-Fi radio, and every
+/// change asked of it.
 struct Wire {
     network: RefCell<tilo_connectivity_service::model::Network>,
     asked: Rc<RefCell<Vec<String>>>,
@@ -834,8 +822,7 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
     let mut session = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
-            // No quick settings app: the keys reach the services the
-            // resources belong to.
+            // No quick settings app: the keys reach the services the resources belong to.
             services: vec![
                 Box::new(Audio::speakers(Rc::clone(&asked))),
                 Box::new(Wire::on(Rc::clone(&wireless))),
@@ -899,9 +886,9 @@ fn the_volume_and_brightness_keys_work_with_no_quick_settings_panel() {
             .filter(|call| *call == "volume-up")
             .count()
     };
-    // The repeat is one per turn the compositor dispatches, however long a turnaround takes
-    // on a busy machine: the test holds the key until the sound has been raised more than
-    // once, rather than for a span of the host's clock.
+    // The repeat is one per turn the compositor dispatches, however long a turnaround takes on a
+    // busy machine: the test holds the key until the sound has been raised more than once, rather
+    // than for a span of the host's clock.
     common::wait_for(&mut session, "a held volume key to ramp the sound", |_| {
         (repeats(&asked) > 3).then_some(())
     });
@@ -988,10 +975,10 @@ fn the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     assert!(session.input_config().touchpad_enabled);
-    // The readout that answers the key stays up for a moment of its own, and a
-    // machine running a whole suite at once can spend that moment on the turn
-    // that pressed the key: the press and the read of what it says happen at
-    // one reading of the clock, so what is read is the readout the key raised.
+    // The readout that answers the key stays up for a moment of its own, and a machine running a
+    // whole suite at once can spend that moment on the turn that pressed the key: the press and the
+    // read of what it says happen at one reading of the clock, so what is read is the readout the
+    // key raised.
     ui::time::testing::with_monotonic_time(ui::time::now(), || {
         tap(&mut session, keys::F21);
         assert!(
@@ -1030,8 +1017,8 @@ impl tilo_session::unlock::PasswordVerifier for Sesame {
     }
 }
 
-/// A session action runner that records what it was asked to do, so a test
-/// can say nothing reached the machine it runs on.
+/// A session action runner that records what it was asked to do, so a test can say nothing reached
+/// the machine it runs on.
 #[allow(
     clippy::unnecessary_wraps,
     reason = "the shape every session action runner has"
@@ -1049,8 +1036,8 @@ fn taken_actions() -> Vec<tilo_session::SessionAction> {
     ACTIONS.with_borrow_mut(std::mem::take)
 }
 
-/// A session in a window of another desktop runs no idle timers: that
-/// desktop owns idle, blanking, locking and suspend.
+/// A session in a window of another desktop runs no idle timers: that desktop owns idle, blanking,
+/// locking and suspend.
 #[test]
 fn a_session_in_a_window_runs_no_idle_timers() {
     let _settled = ui::motion::testing::settled();
@@ -1089,9 +1076,8 @@ fn a_session_in_a_window_runs_no_idle_timers() {
     );
 }
 
-/// Every power choice a session in a window takes stays in that session:
-/// nothing reaches the machine the window runs on, and shutting down ends
-/// the session rather than the host.
+/// Every power choice a session in a window takes stays in that session: nothing reaches the
+/// machine the window runs on, and shutting down ends the session rather than the host.
 #[test]
 fn a_session_in_a_window_takes_no_power_on_its_host() {
     use tilo_sheets::Seat as _;
@@ -1121,8 +1107,8 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
         .find(|resource| resource != tilo_session::SESSION_RESOURCE)
         .expect("the open menu publishes its choices");
 
-    // The machine's own power is not offered, and an action that asks for
-    // it anyway is refused here.
+    // The machine's own power is not offered, and an action that asks for it anyway is refused
+    // here.
     for action in [
         PowerEffect::SWITCH_USER.id,
         PowerEffect::SUSPEND.id,
@@ -1141,9 +1127,8 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
     assert!(!session.ended(), "and the session runs on");
 
-    // Shutting down ends this session and nothing else: the person's own
-    // press on the row is their decision, and here it ends the session
-    // rather than the machine it runs on.
+    // Shutting down ends this session and nothing else: the person's own press on the row is their
+    // decision, and here it ends the session rather than the machine it runs on.
     let row = session
         .power_menu()
         .expect("power menu")
@@ -1174,10 +1159,9 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
     );
 }
 
-/// A logout asked through the login wrapper's channel — what the power menu
-/// and the session's services ask of it — ends the session in order: the
-/// wrapper tears the login down once this process is gone, and the request it
-/// already holds is not written again.
+/// A logout asked through the login wrapper's channel — what the power menu and the session's
+/// services ask of it — ends the session in order: the wrapper tears the login down once this
+/// process is gone, and the request it already holds is not written again.
 #[test]
 fn a_logout_asked_through_the_login_wrapper_ends_the_session() {
     use std::os::unix::fs::PermissionsExt as _;
@@ -1202,9 +1186,9 @@ fn a_logout_asked_through_the_login_wrapper_ends_the_session() {
     );
 }
 
-/// Beside the development control socket, the session serves the liveness
-/// door: the loop answers a heartbeat asked from outside it, so a session
-/// whose loop has stopped can be told apart from a slow machine.
+/// Beside the development control socket, the session serves the liveness door: the loop answers a
+/// heartbeat asked from outside it, so a session whose loop has stopped can be told apart from a
+/// slow machine.
 #[test]
 fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
     let _settled = ui::motion::testing::settled();
@@ -1256,9 +1240,8 @@ fn the_liveness_door_beside_the_control_socket_answers_a_heartbeat() {
     );
 }
 
-/// A session that cannot check a password never locks: the lock screen
-/// could not be left again. Locking stays on offer where a password does
-/// unlock it.
+/// A session that cannot check a password never locks: the lock screen could not be left again.
+/// Locking stays on offer where a password does unlock it.
 #[test]
 fn a_session_that_cannot_check_a_password_never_locks() {
     use tilo_sheets::Seat as _;
@@ -1291,8 +1274,8 @@ fn a_session_that_cannot_check_a_password_never_locks() {
     );
 }
 
-/// The power menu opens from the session's published verb, so the panel's
-/// press and any other caller offered it put up the same menu.
+/// The power menu opens from the session's published verb, so the panel's press and any other
+/// caller offered it put up the same menu.
 #[test]
 fn the_power_menu_opens_by_its_published_verb() {
     use tilo_sheets::Seat as _;
@@ -1336,9 +1319,9 @@ fn the_power_menus_shortcut_opens_it() {
     assert!(!menu.rows().is_empty(), "with the person's choices");
 }
 
-/// The session publishes the actions only it can carry out, with what each
-/// is called, so every surface listing them — the Tilo menu, search — offers
-/// the same rows; what this machine cannot do is not offered.
+/// The session publishes the actions only it can carry out, with what each is called, so every
+/// surface listing them — the Tilo menu, search — offers the same rows; what this machine cannot do
+/// is not offered.
 #[test]
 fn the_session_publishes_the_actions_only_it_can_carry_out() {
     let _settled = ui::motion::testing::settled();
@@ -1378,8 +1361,8 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
         );
     }
 
-    // A session in a window of another desktop owns neither the machine's
-    // power nor its session switching, so it offers none of them.
+    // A session in a window of another desktop owns neither the machine's power nor its session
+    // switching, so it offers none of them.
     let mut windowed = Session::headless(
         Options {
             presentation: ui::headless::fixture_runner_inputs,
@@ -1547,8 +1530,7 @@ fn active_workspace(session: &Session) -> Option<u64> {
         .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
 }
 
-/// The resource publishing `action` among everything the session
-/// publishes.
+/// The resource publishing `action` among everything the session publishes.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -1562,7 +1544,7 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
-/// Every resource publishing `action`.
+/// Every resource publishing `action` .
 fn publishers(session: &Session, action: &str) -> Vec<String> {
     fn find(resources: &[ResourceSpec], action: &str, found: &mut Vec<String>) {
         for resource in resources {
@@ -1577,7 +1559,7 @@ fn publishers(session: &Session, action: &str) -> Vec<String> {
     found
 }
 
-/// The resource publishing `action`, once the action is available.
+/// The resource publishing `action` , once the action is available.
 fn offering(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -1602,16 +1584,15 @@ fn arguments(value: serde_json::Value) -> serde_json::Map<String, serde_json::Va
     }
 }
 
-/// The audio service as the session reaches it: it publishes the sound as
-/// the service does and records every change asked of it.
+/// The audio service as the session reaches it: it publishes the sound as the service does and
+/// records every change asked of it.
 struct Audio {
     sound: RefCell<tilo_audio_service::sound::Sound>,
     asked: Rc<RefCell<Vec<String>>>,
 }
 
 impl Audio {
-    /// Speakers playing quietly and muted, headphones to switch to, a
-    /// muted microphone.
+    /// Speakers playing quietly and muted, headphones to switch to, a muted microphone.
     fn speakers(asked: Rc<RefCell<Vec<String>>>) -> Self {
         use tilo_audio_service::sound::Device;
         let device = |node, label: &str, chosen| Device {
@@ -1667,8 +1648,8 @@ impl tilo_session::Service for Audio {
         Ok(tilo_service::Started::Accepted)
     }
 }
-/// The sound the session offers is the audio service's, and every change the
-/// person makes is the service's own action: the session writes none of it.
+/// The sound the session offers is the audio service's, and every change the person makes is the
+/// service's own action: the session writes none of it.
 #[test]
 fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
     let _settled = ui::motion::testing::settled();
@@ -1707,8 +1688,8 @@ fn the_sound_is_the_audio_services_and_its_changes_are_the_services_actions() {
         "each change is the service's, in the order made"
     );
 
-    // The microphone's key is the service's too, and its answer on screen is
-    // the state the service reads rather than a guess.
+    // The microphone's key is the service's too, and its answer on screen is the state the service
+    // reads rather than a guess.
     tap(&mut session, keys::MICROPHONE_MUTE);
     pump(&mut session, &mut [], |session, _| {
         session
@@ -1805,8 +1786,8 @@ fn workspace_settings_renames_the_workspace_through_its_action() {
             .map(|workspace| workspace.name.clone())
     });
     assert_eq!(name.as_deref(), Some("Garden"));
-    // The bar says the name the workspace has now: the person sees the
-    // rename where the next frame draws it.
+    // The bar says the name the workspace has now: the person sees the rename where the next frame
+    // draws it.
     session.step(Duration::from_millis(1)).unwrap();
     let bar = session.accessible_labels().join("\n");
     assert!(
@@ -1815,8 +1796,8 @@ fn workspace_settings_renames_the_workspace_through_its_action() {
     );
 }
 
-/// Workspace settings shows the tab the person picked, and moves the
-/// workspace among the ones this device has.
+/// Workspace settings shows the tab the person picked, and moves the workspace among the ones this
+/// device has.
 #[test]
 fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
     use tilo_sheets::Seat as _;
@@ -1929,8 +1910,8 @@ fn the_file_chooser_answers_the_file_chosen_through_its_actions() {
         roots: vec![home.path().to_path_buf()],
         ..FileRequest::default()
     }));
-    // The chooser reads the folder off the loop: choose once it has, so
-    // the step lands on the listing the person sees.
+    // The chooser reads the folder off the loop: choose once it has, so the step lands on the
+    // listing the person sees.
     pump(&mut session, &mut [], |_, _| {
         let listing = seat.listing();
         !listing.reading
@@ -2184,8 +2165,8 @@ delegate_noop!(Seen: ignore WlSurface);
 delegate_noop!(Seen: ignore ZwpTextInputManagerV3);
 delegate_noop!(Seen: ignore ZwpTextInputV3);
 
-/// The display key's action steps the displays from side by side to
-/// showing the same, to only the built-in one, to only the other.
+/// The display key's action steps the displays from side by side to showing the same, to only the
+/// built-in one, to only the other.
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
     let _settled = ui::motion::testing::settled();
@@ -2252,16 +2233,16 @@ fn the_display_action_steps_through_the_ways_of_using_two_displays() {
 // Frames are written to `$PIXEL_PARITY_OUT` (default
 // `~/.cache/pixel-parity/new`) and named after the old shell's scenes.
 
-/// Step `frames` frames of a millisecond each, so what a state's arrival
-/// animates has arrived (motion reads settled, the panels still lay out).
+/// Step `frames` frames of a millisecond each, so what a state's arrival animates has arrived
+/// (motion reads settled, the panels still lay out).
 fn settle(session: &mut Session, frames: u32) {
     for _ in 0..frames {
         session.step(Duration::from_millis(1)).expect("step");
     }
 }
 
-/// How long the session's loop waits with nothing of its own to do, as
-/// [`Session::run`] asks: whatever is due first, or for the person.
+/// How long the session's loop waits with nothing of its own to do, as [`Session::run`] asks:
+/// whatever is due first, or for the person.
 fn wait_for(session: &mut Session) -> Option<Duration> {
     let now = Instant::now();
     match (session.compositor().next_wait(), session.next_deadline()) {
@@ -2284,7 +2265,7 @@ mod now_playing;
 #[path = "session/readout.rs"]
 mod readout;
 
-/// The id of the tab the desk holds for `app`.
+/// The id of the tab the desk holds for `app` .
 fn tab_of(session: &Session, app: &str) -> u64 {
     let id = window_resource(session, app)
         .expect("the desk publishes the window's tab")
@@ -2295,8 +2276,7 @@ fn tab_of(session: &Session, app: &str) -> u64 {
         .expect("a tab's address names its id")
 }
 
-/// Make an empty strip called `name` after those the workspace in front
-/// has.
+/// Make an empty strip called `name` after those the workspace in front has.
 fn add_strip(session: &Session, name: &str) {
     let handle = session.handle();
     let mut tree = handle.read(Clone::clone);
@@ -2371,8 +2351,8 @@ fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
     })
 }
 
-/// Stepping past the first or the last workspace or strip says which end
-/// the person reached, rather than doing nothing.
+/// Stepping past the first or the last workspace or strip says which end the person reached, rather
+/// than doing nothing.
 #[test]
 fn stepping_past_an_end_says_which_end_it_is() {
     let _settled = ui::motion::testing::settled();
@@ -2413,8 +2393,7 @@ fn stepping_past_an_end_says_which_end_it_is() {
     );
 }
 
-/// Leaving a workspace the person is not in takes it away and leaves them
-/// where they are.
+/// Leaving a workspace the person is not in takes it away and leaves them where they are.
 #[test]
 fn leaving_another_workspace_keeps_the_person_where_they_are() {
     let _settled = ui::motion::testing::settled();
@@ -2489,9 +2468,8 @@ fn the_next_session_comes_up_where_this_one_was() {
     assert_eq!(index, Some(1), "the workspace that was in front is");
 }
 
-/// What the overview offers as a window's own doings — sending it
-/// elsewhere, closing it — changes the desk, reachable by address as an
-/// agent or the palette does.
+/// What the overview offers as a window's own doings — sending it elsewhere, closing it — changes
+/// the desk, reachable by address as an agent or the palette does.
 #[test]
 fn the_desktop_sends_a_window_where_the_overview_offers_to() {
     let _settled = ui::motion::testing::settled();
@@ -2605,8 +2583,7 @@ fn the_desktop_names_and_moves_the_strips_the_overview_offers() {
     assert_eq!(strips, ["Main", "Later"], "and to the bottom");
 }
 
-/// The picture the person chose is the desk's, kept beside the desk for
-/// this device.
+/// The picture the person chose is the desk's, kept beside the desk for this device.
 #[test]
 fn the_desk_starts_on_the_picture_the_person_chose() {
     let _settled = ui::motion::testing::settled();
@@ -2632,8 +2609,8 @@ fn the_desk_starts_on_the_picture_the_person_chose() {
         .expect("the choice is cleared");
 }
 
-/// The workspace menu offers joining, leaving and settings, and choosing
-/// join lists the workspaces this computer holds.
+/// The workspace menu offers joining, leaving and settings, and choosing join lists the workspaces
+/// this computer holds.
 #[test]
 fn the_workspace_menu_offers_joining_leaving_and_settings() {
     let _settled = ui::motion::testing::settled();
@@ -2705,7 +2682,7 @@ fn the_workspace_menu_offers_joining_leaving_and_settings() {
     );
 }
 
-/// Whether the clipboard's reading lists a copy of `text`.
+/// Whether the clipboard's reading lists a copy of `text` .
 fn copy_in_history(session: &Session, text: &str) -> bool {
     session
         .read(CLIPBOARD_RESOURCE)
@@ -2717,8 +2694,7 @@ fn copy_in_history(session: &Session, text: &str) -> bool {
         })
 }
 
-/// The key of the copy whose text is `text`, as the clipboard's reading
-/// lists it.
+/// The key of the copy whose text is `text` , as the clipboard's reading lists it.
 fn copy_key(session: &Session, text: &str) -> String {
     session
         .read(CLIPBOARD_RESOURCE)
@@ -2754,8 +2730,8 @@ fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
     let key = copy_key(&session, copy);
     drop(session);
 
-    // A new session — the person's next login — still has the copy: the
-    // history is in this device's settings, not in the session's memory.
+    // A new session — the person's next login — still has the copy: the history is in this device's
+    // settings, not in the session's memory.
     let mut session = crate::session();
     assert_eq!(copy_key(&session, copy), key);
     let mut client = mapped(&mut session, "org.example.Terminal");
@@ -2825,8 +2801,8 @@ fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
     );
     assert_ne!(session.accessible_labels(), before, "and it is new");
 
-    // Escape is the card's to answer, and the person's typing is not: the
-    // field they were in keeps seeing every other key.
+    // Escape is the card's to answer, and the person's typing is not: the field they were in keeps
+    // seeing every other key.
     tap(&mut session, keys::A);
     pump(&mut session, &mut [&mut client], |_, clients| {
         clients[0].seen.keys.contains(&(keys::A, true))

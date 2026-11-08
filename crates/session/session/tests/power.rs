@@ -1,9 +1,8 @@
-//! The machine's power on the headless backend: the policy a person set
-//! reaches the idle timers, the lid, the power key, a critical battery and a
-//! sleep do what it says, and what holds the machine awake keeps it up.
-//!
-//! logind and `UPower` are stand-ins served over a socket pair: a real D-Bus
-//! wire, no bus daemon, and never this host's own daemons.
+//! The machine's power on the headless backend: the policy a person set reaches the idle timers,
+//! the lid, the power key, a critical battery and a sleep do what it says, and what holds the
+//! machine awake keeps it up.
+//! logind and `UPower` are stand-ins served over a socket pair: a real D-Bus wire, no bus daemon,
+//! and never this host's own daemons.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -45,8 +44,8 @@ const HEIGHT: i32 = 800;
 /// What the stand-in daemons were asked.
 #[derive(Default)]
 struct Calls {
-    /// The daemon's end of every inhibitor fd handed out, in the order asked:
-    /// it reads EOF once the service drops the lock.
+    /// The daemon's end of every inhibitor fd handed out, in the order asked: it reads EOF once the
+    /// service drops the lock.
     held: Vec<(String, StdUnixStream)>,
     suspends: usize,
 }
@@ -172,7 +171,7 @@ struct Machine {
 }
 
 impl Machine {
-    /// The service over a stand-in bus, running `policy`.
+    /// The service over a stand-in bus, running `policy` .
     fn start(policy: PowerPolicy) -> (Self, Box<dyn Service>) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -219,7 +218,7 @@ impl Machine {
         calls(&self.calls).suspends
     }
 
-    /// Whether the service still holds a logind lock for `what`.
+    /// Whether the service still holds a logind lock for `what` .
     fn lock_held(&self, what: &str) -> bool {
         let mut calls = calls(&self.calls);
         calls
@@ -270,7 +269,7 @@ impl Machine {
         });
     }
 
-    /// The pack drops to `percentage`.
+    /// The pack drops to `percentage` .
     fn charge(&self, percentage: f64) {
         let server = self.server.clone();
         self.runtime.block_on(async {
@@ -318,7 +317,7 @@ impl PasswordVerifier for Sesame {
     }
 }
 
-/// A session answering its power through `machine`.
+/// A session answering its power through `machine` .
 fn session(machine: &Machine, service: Box<dyn Service>) -> Session {
     Session::headless(
         Options {
@@ -334,17 +333,16 @@ fn session(machine: &Machine, service: Box<dyn Service>) -> Session {
     .expect("session")
 }
 
-/// The lock screen the session starts when it locks: the app whose window
-/// asks the compositor for the session lock, which this run builds the first
-/// time a test locks into it.
+/// The lock screen the session starts when it locks: the app whose window asks the compositor for
+/// the session lock, which this run builds the first time a test locks into it.
 fn lock_screen() -> Surface {
     let binary = tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen");
     Surface::new("lock", binary).person("ada").lock()
 }
 
-/// A session answering its power through `machine`, whose lock screen the
-/// session starts when it locks. The directory is the plane's, and only this
-/// user reaches it: the broker refuses to serve one anybody else could open.
+/// A session answering its power through `machine` , whose lock screen the session starts when it
+/// locks. The directory is the plane's, and only this user reaches it: the broker refuses to serve
+/// one anybody else could open.
 fn lockable(machine: &Machine, service: Box<dyn Service>) -> (tempfile::TempDir, Session) {
     use std::os::unix::fs::PermissionsExt as _;
     let plane = tempfile::tempdir().expect("a directory to serve the plane in");
@@ -367,7 +365,7 @@ fn lockable(machine: &Machine, service: Box<dyn Service>) -> (tempfile::TempDir,
     (plane, session)
 }
 
-/// `XF86PowerOff`, as a laptop's power button sends it.
+/// `XF86PowerOff` , as a laptop's power button sends it.
 const POWER_KEY: u32 = 116;
 /// Press and release a key, as the keyboard does.
 fn press(session: &mut Session, keycode: u32) {
@@ -380,9 +378,9 @@ fn press(session: &mut Session, keycode: u32) {
     }
 }
 
-/// Step the session until `done` holds. The lock screen is a process of its
-/// own, so the wait is in real time: a screen that has to start and draw is
-/// given as long as any app gets on a busy machine.
+/// Step the session until `done` holds. The lock screen is a process of its own, so the wait is in
+/// real time: a screen that has to start and draw is given as long as any app gets on a busy
+/// machine.
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();
@@ -391,7 +389,7 @@ fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     });
 }
 
-/// Step the session for `time`, letting what it waits on arrive.
+/// Step the session for `time` , letting what it waits on arrive.
 fn step_for(session: &mut Session, time: Duration) {
     let started = Instant::now();
     while started.elapsed() < time {
@@ -399,8 +397,7 @@ fn step_for(session: &mut Session, time: Duration) {
     }
 }
 
-/// The policy the person set is the idle timer the session runs on, and the
-/// one it publishes.
+/// The policy the person set is the idle timer the session runs on, and the one it publishes.
 #[test]
 fn the_policy_is_the_idle_timer_the_session_runs_on() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -434,8 +431,8 @@ fn the_policy_is_the_idle_timer_the_session_runs_on() {
     );
 }
 
-/// An idle timeout sleeps the machine through logind once nothing holds it
-/// awake, and a hold keeps it up until it is let go.
+/// An idle timeout sleeps the machine through logind once nothing holds it awake, and a hold keeps
+/// it up until it is let go.
 #[test]
 fn an_idle_timeout_sleeps_the_machine_unless_something_holds_it_awake() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -456,9 +453,9 @@ fn an_idle_timeout_sleeps_the_machine_unless_something_holds_it_awake() {
     until(&mut session, |_| machine.suspends() == 1);
 }
 
-/// A change the person makes in their settings while the session runs
-/// retunes the idle timers it is already running and the policy the machine
-/// acts on: there is one loader, and its watch is what the session follows.
+/// A change the person makes in their settings while the session runs retunes the idle timers it is
+/// already running and the policy the machine acts on: there is one loader, and its watch is what
+/// the session follows.
 #[test]
 fn a_settings_change_retunes_the_policy_while_the_session_runs() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -502,8 +499,8 @@ fn a_settings_change_retunes_the_policy_while_the_session_runs() {
     );
 }
 
-/// An app's `Inhibit IDLE` hold from the session's registry keeps the
-/// machine awake as well, and letting go lets the next idle period sleep it.
+/// An app's `Inhibit IDLE` hold from the session's registry keeps the machine awake as well, and
+/// letting go lets the next idle period sleep it.
 #[test]
 fn an_apps_hold_keeps_the_machine_awake_too() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -523,8 +520,8 @@ fn an_apps_hold_keeps_the_machine_awake_too() {
     until(&mut session, |_| machine.suspends() == 1);
 }
 
-/// A hold taken through the session's own action host arrives like any
-/// other reading, and keeps the machine awake until its ticket is released.
+/// A hold taken through the session's own action host arrives like any other reading, and keeps the
+/// machine awake until its ticket is released.
 #[test]
 fn a_published_hold_keeps_the_machine_awake_until_it_is_released() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -608,8 +605,8 @@ fn the_power_key_follows_its_policy() {
     press(&mut session, POWER_KEY);
     assert!(session.compositor().locked(), "the policy locks");
 
-    // The lock screen withholds the surfaces' actions; the power key is one
-    // of the keys that still works there.
+    // The lock screen withholds the surfaces' actions; the power key is one of the keys that still
+    // works there.
     machine.link.set_policy(PowerPolicy {
         power_key_action: PowerAction::Suspend,
         ..quiet()
@@ -618,8 +615,8 @@ fn the_power_key_follows_its_policy() {
     until(&mut session, |_| machine.suspends() == 1);
 }
 
-/// A pack at the critical charge locks the session and tells the person, on
-/// every display, what the machine does about it.
+/// A pack at the critical charge locks the session and tells the person, on every display, what the
+/// machine does about it.
 #[test]
 fn a_critical_battery_locks_the_session_and_tells_the_person() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -644,8 +641,8 @@ fn a_critical_battery_locks_the_session_and_tells_the_person() {
     assert!(critical.machine_wide, "every display shows it");
 }
 
-/// logind's own sleep: the session locks and says the frame is drawn, the
-/// wake keeps the lock, and the delay lock is taken again for the next one.
+/// logind's own sleep: the session locks and says the frame is drawn, the wake keeps the lock, and
+/// the delay lock is taken again for the next one.
 #[test]
 fn a_sleep_locks_the_session_says_the_frame_is_drawn_and_keeps_it_on_the_wake() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -665,8 +662,7 @@ fn a_sleep_locks_the_session_says_the_frame_is_drawn_and_keeps_it_on_the_wake() 
     );
 }
 
-/// A suspend that failed after the lock was drawn leaves the session
-/// unlocked again.
+/// A suspend that failed after the lock was drawn leaves the session unlocked again.
 #[test]
 fn a_failed_sleep_lifts_the_lock_it_installed() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -686,9 +682,8 @@ fn a_failed_sleep_lifts_the_lock_it_installed() {
     until(&mut session, |session| !session.compositor().locked());
 }
 
-/// The battery notices the service posts reach the person as notifications:
-/// a heads-up at low charge, and one that stays and names what the machine
-/// does at critical charge.
+/// The battery notices the service posts reach the person as notifications: a heads-up at low
+/// charge, and one that stays and names what the machine does at critical charge.
 #[test]
 fn a_battery_notice_reaches_the_person_as_a_notification() {
     let _home = tilo_test_env::TestHome::new().unwrap();
@@ -771,8 +766,8 @@ fn a_battery_notice_reaches_the_sessions_reading() {
     );
 }
 
-/// A pack at the critical charge locks the session and publishes the notice
-/// a banner and the bar read, naming what the machine does about it.
+/// A pack at the critical charge locks the session and publishes the notice a banner and the bar
+/// read, naming what the machine does about it.
 #[test]
 fn a_critical_battery_locks_the_session_and_publishes_its_notice() {
     let _home = tilo_test_env::TestHome::new().unwrap();

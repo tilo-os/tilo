@@ -1,17 +1,15 @@
 //! The signals the session's loop wakes on: SIGTERM, SIGINT and SIGHUP end it, so the session
-//! returns and drops what it holds as it does when it ends on its own: the files people choose
-//! for apps are unmounted, its sockets removed, its apps ended. A process killed by the signal's
+//! returns and drops what it holds as it does when it ends on its own: the files people choose for
+//! apps are unmounted, its sockets removed, its apps ended. A process killed by the signal's
 //! default action unwinds nothing, and left all of that behind.
-//!
 //! A child exiting (SIGCHLD) wakes the same loop without ending it: the programs the session
 //! started are noticed as they go, rather than when another event happens to bring a pass.
-//!
-//! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe; a thread
-//! of its own reads the pipe and wakes the loop, which reads the flag ([`asked`]) on its pass.
-//! A second SIGINT while the session is ending ends the process at once, as that signal does.
-//! A second SIGTERM or SIGHUP is the same stop delivered twice — a stop of the session's whole
-//! process group signals every member, and a wrapper that was signalled with it passes it on to
-//! the session it runs — and does not cut that stop's cleanup short.
+//! The handler only stores a flag and writes a byte to a pipe, both async-signal-safe; a thread of
+//! its own reads the pipe and wakes the loop, which reads the flag ([`asked`]) on its pass. A
+//! second SIGINT while the session is ending ends the process at once, as that signal does. A
+//! second SIGTERM or SIGHUP is the same stop delivered twice — a stop of the session's whole
+//! process group signals every member, and a wrapper that was signalled with it passes it on to the
+//! session it runs — and does not cut that stop's cleanup short.
 
 use std::io;
 use std::os::fd::{AsRawFd as _, FromRawFd as _, OwnedFd};
@@ -27,14 +25,13 @@ static ASKED: AtomicBool = AtomicBool::new(false);
 /// The pipe's write end the handler wakes the reading thread through; `-1` until installed.
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
-/// A child exited (or stopped): the loop wakes to take in which one, and
-/// nothing else changes.
+/// A child exited (or stopped): the loop wakes to take in which one, and nothing else changes.
 extern "C" fn on_child(_signal: libc::c_int) {
     ring();
 }
 
-/// Write the byte the reading thread wakes the loop through, if it is
-/// installed: async-signal-safe, which is all a handler may do.
+/// Write the byte the reading thread wakes the loop through, if it is installed: async-signal-safe,
+/// which is all a handler may do.
 fn ring() {
     let fd = WAKE_FD.load(Ordering::SeqCst);
     if fd >= 0 {
@@ -50,9 +47,8 @@ fn ring() {
 extern "C" fn on_signal(signal: libc::c_int) {
     if ASKED.swap(true, Ordering::SeqCst) {
         if signal != libc::SIGINT {
-            // The same stop arriving twice: the session is already ending, and
-            // ending it at once would skip what the first signal asked it to
-            // put away.
+            // The same stop arriving twice: the session is already ending, and ending it at once
+            // would skip what the first signal asked it to put away.
             return;
         }
         // A second SIGINT: the person means it. The default action ends the process.
@@ -105,8 +101,8 @@ pub fn install(wake: Wake) -> io::Result<()> {
     // The write end lives for the process: the handler may run at any time from here on.
     WAKE_FD.store(write.as_raw_fd(), Ordering::SeqCst);
     std::mem::forget(write);
-    // Ending the session, and a child exiting, both wake the loop: only the
-    // handlers' own meaning differs.
+    // Ending the session, and a child exiting, both wake the loop: only the handlers' own meaning
+    // differs.
     let handlers: [(libc::c_int, extern "C" fn(libc::c_int)); ENDING.len() + 1] = [
         (ENDING[0], on_signal),
         (ENDING[1], on_signal),

@@ -1,17 +1,14 @@
-//! The emoji card's session half: the caret of the field the person types
-//! into, and the emoji they pick written into that field.
-//!
-//! The card itself is the toolkit's ([`ui::widget::EmojiPicker`]), the one
-//! every app opens; the chrome frames it and places it
-//! ([`tilo_desktop::emoji`]). It never writes into an application. The chrome
-//! hands what was picked to its [`EmojiLink`], and this module — beside
-//! dictation the one place the session writes text the person did not type —
-//! commits each pick through the compositor's text input, and says where the
-//! focused field's caret stands so the card opens against it.
-//!
-//! The recents are the toolkit's own, kept on the device
-//! ([`ui::emoji_catalogue`]): the card remembers a pick as it is made, and a
-//! field that keeps its content secret takes that memory back.
+//! The emoji card's session half: the caret of the field the person types into, and the emoji they
+//! pick written into that field.
+//! The card itself is the toolkit's ([`ui::widget::EmojiPicker`]), the one every app opens; the
+//! chrome frames it and places it ([`tilo_desktop::emoji`]). It never writes into an application.
+//! The chrome hands what was picked to its [`EmojiLink`], and this module — beside dictation the
+//! one place the session writes text the person did not type — commits each pick through the
+//! compositor's text input, and says where the focused field's caret stands so the card opens
+//! against it.
+//! The recents are the toolkit's own, kept on the device ([`ui::emoji_catalogue`]): the card
+//! remembers a pick as it is made, and a field that keeps its content secret takes that memory
+//! back.
 
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
@@ -20,9 +17,9 @@ use tilo_compositor::Compositor;
 use tilo_desktop::emoji::{EmojiLink, EmojiPlace};
 use ui::kurbo::Rect;
 
-/// How long a pick waits for the field it belongs to to take text again: the
-/// card takes the keyboard while it is open, so the field it was opened from
-/// gets it back only once the card has closed.
+/// How long a pick waits for the field it belongs to to take text again: the card takes the
+/// keyboard while it is open, so the field it was opened from gets it back only once the card has
+/// closed.
 const DELIVERY_WINDOW: Duration = Duration::from_secs(2);
 
 /// A pick waiting to reach a field.
@@ -32,8 +29,8 @@ struct Pending {
     deadline: Instant,
 }
 
-/// The emoji card as the session hosts it: the chrome's link, and the pick on
-/// its way into the field it was chosen from.
+/// The emoji card as the session hosts it: the chrome's link, and the pick on its way into the
+/// field it was chosen from.
 pub(crate) struct Emoji {
     link: EmojiLink,
     /// At most one: a newer pick replaces one that has not arrived yet.
@@ -71,10 +68,9 @@ impl Emoji {
         self.link.place_at(Self::place(compositor, origin));
     }
 
-    /// Write the pick in flight into the focused field, which reports back
-    /// whether it keeps its content secret — a secret field's emoji is never
-    /// remembered. A field that does not take text yet is asked again next
-    /// pass, until the pick's window has passed.
+    /// Write the pick in flight into the focused field, which reports back whether it keeps its
+    /// content secret — a secret field's emoji is never remembered. A field that does not take text
+    /// yet is asked again next pass, until the pick's window has passed.
     fn deliver(&self, compositor: &mut Compositor, now: Instant) {
         let Some(pending) = self.pending.borrow_mut().take() else {
             return;
@@ -90,10 +86,9 @@ impl Emoji {
         }
     }
 
-    /// Where the card opens: the caret of the field the person types into and
-    /// the display it stands on, in the chrome's coordinates. A field that
-    /// reports no caret, or whose caret stands on no known display, leaves
-    /// the display to the chrome, which centres the card on the one the
+    /// Where the card opens: the caret of the field the person types into and the display it stands
+    /// on, in the chrome's coordinates. A field that reports no caret, or whose caret stands on no
+    /// known display, leaves the display to the chrome, which centres the card on the one the
     /// person is working on.
     fn place(compositor: &Compositor, origin: (i32, i32)) -> EmojiPlace {
         let (ox, oy) = origin;

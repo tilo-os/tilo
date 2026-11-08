@@ -22,8 +22,8 @@ pub struct NowPlaying {
     pub subtitle: String,
     /// The app that plays it.
     pub player: String,
-    /// The app behind the player, by package id, when the launcher verified
-    /// it: what a surface opens to show the player itself.
+    /// The app behind the player, by package id, when the launcher verified it: what a surface
+    /// opens to show the player itself.
     pub app: Option<String>,
     /// Its cover, or the cover a surface draws for a song without one.
     pub art: TransportArt,
@@ -31,16 +31,16 @@ pub struct NowPlaying {
     pub can_toggle: bool,
     pub can_previous: bool,
     pub can_next: bool,
-    /// Where the song is, and how long it is; the length is zero when the
-    /// player does not say or cannot seek.
+    /// Where the song is, and how long it is; the length is zero when the player does not say or
+    /// cannot seek.
     pub position_ms: f64,
     pub duration_ms: f64,
     /// Every running player, the one in front marked.
     pub players: Vec<Player>,
     /// Where its sound can play, the current one marked.
     pub outputs: Vec<Output>,
-    /// The session another of the person's devices hands this one, which the
-    /// card offers to continue here.
+    /// The session another of the person's devices hands this one, which the card offers to
+    /// continue here.
     pub offer: Option<Offer>,
 }
 
@@ -58,8 +58,7 @@ impl NowPlaying {
         }
     }
 
-    /// How far into the song it is, from 0 to 1, while the player says how
-    /// long it is.
+    /// How far into the song it is, from 0 to 1, while the player says how long it is.
     #[must_use]
     pub fn progress(&self) -> Option<f64> {
         (self.duration_ms > 0.0).then(|| (self.position_ms / self.duration_ms).clamp(0.0, 1.0))
@@ -71,9 +70,8 @@ impl NowPlaying {
         self.duration_ms > 0.0
     }
 
-    /// Where the song stands and what is left of it, in whole seconds, as the
-    /// card's bar labels them: missing while the player does not say how long
-    /// it is.
+    /// Where the song stands and what is left of it, in whole seconds, as the card's bar labels
+    /// them: missing while the player does not say how long it is.
     #[must_use]
     pub fn times(&self) -> Option<(u64, u64)> {
         #[allow(
@@ -87,8 +85,8 @@ impl NowPlaying {
         Some((elapsed, length.saturating_sub(elapsed)))
     }
 
-    /// What another of the person's devices offers to continue here: a title
-    /// and no controls, because nothing here plays it yet.
+    /// What another of the person's devices offers to continue here: a title and no controls,
+    /// because nothing here plays it yet.
     #[must_use]
     pub fn offered(offer: &Offer) -> Self {
         Self {
@@ -166,15 +164,12 @@ pub struct Output {
 }
 
 /// A session another device hands this one, at the point it stopped.
-///
-/// The session that received it publishes it beside the person's devices, so
-/// the card offers exactly the hand-off a reading names and continuing it
-/// here names the same one back.
+/// The session that received it publishes it beside the person's devices, so the card offers
+/// exactly the hand-off a reading names and continuing it here names the same one back.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub struct Offer {
-    /// The handoff's request, 32 hex digits: the card names it when it asks
-    /// to continue it here.
+    /// The handoff's request, 32 hex digits: the card names it when it asks to continue it here.
     pub request_id: String,
     /// The app that plays it, by package id.
     pub package_id: String,
@@ -188,8 +183,7 @@ pub struct Offer {
     pub playing: bool,
 }
 
-/// The reading of the players, and where it stands, as the audio service
-/// published it.
+/// The reading of the players, and where it stands, as the audio service published it.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod playing {
     use std::time::Instant;
@@ -198,10 +192,9 @@ pub mod playing {
 
     use super::{NowPlaying, Offer, Output, Player};
 
-    /// What plays at `now`: the player `chosen` names while the service reads
-    /// it, else the one playing, else the one paused, else the first. `None`
-    /// while no player holds anything and none stands paused, and nothing is
-    /// handed over.
+    /// What plays at `now` : the player `chosen` names while the service reads it, else the one
+    /// playing, else the one paused, else the first. `None` while no player holds anything and none
+    /// stands paused, and nothing is handed over.
     #[must_use]
     pub fn now_playing(
         media: &audio::media::Media,
@@ -246,8 +239,8 @@ pub mod playing {
             .filter(|artist| !artist.trim().is_empty())
             .or_else(|| (title != name).then(|| name.clone()))
             .unwrap_or_default();
-        // A player that cannot be taken to a point does not say how long what
-        // it plays is, so no surface shows a progress bar for it.
+        // A player that cannot be taken to a point does not say how long what it plays is, so no
+        // surface shows a progress bar for it.
         #[allow(
             clippy::cast_precision_loss,
             reason = "a recording's length needs no more than f64's 52-bit mantissa"
@@ -292,10 +285,9 @@ pub mod playing {
         })
     }
 
-    /// `art` as the picture address a surface reads: a small `data:` picture
-    /// cut from the cover the player sent, so a surface in its own process (the
-    /// lock screen) shows the same cover without the playhead's pixels crossing
-    /// to it. Empty when the player sent no cover.
+    /// `art` as the picture address a surface reads: a small `data:` picture cut from the cover the
+    /// player sent, so a surface in its own process (the lock screen) shows the same cover without
+    /// the playhead's pixels crossing to it. Empty when the player sent no cover.
     #[must_use]
     pub fn artwork_address(art: &TransportArt) -> String {
         /// The most the cover is encoded to, on a side: a card shows it small,
@@ -339,13 +331,12 @@ pub mod playing {
         }
     }
 
-    /// `image` as the transport draws a cover, or the placeholder when it does
-    /// not decode.
+    /// `image` as the transport draws a cover, or the placeholder when it does not decode.
     pub fn cover(image: Option<audio::ArtworkImage>) -> TransportArt {
         thread_local! {
-            /// The cover made last, with the pixels it was made from: a cover
-            /// read again — a frame, a pass over the readings, the card the
-            /// panel builds again — is the picture already made.
+            /// The cover made last, with the pixels it was made from: a cover read again — a frame,
+            /// a pass over the readings, the card the panel builds again — is the picture already
+            /// made.
             static MADE: std::cell::RefCell<Option<(String, TransportArt)>> =
                 const { std::cell::RefCell::new(None) };
         }

@@ -29,9 +29,8 @@ use tilo_compositor::OutputConfig;
 use tilo_session::mount::apps::Apps;
 use tilo_session::{Options, Session};
 
-/// A session that starts the person's apps, on the display it binds, through
-/// a launcher that records what it was asked and runs as an app would until
-/// the test is over.
+/// A session that starts the person's apps, on the display it binds, through a launcher that
+/// records what it was asked and runs as an app would until the test is over.
 fn session(
     home: &tilo_test_env::TestHome,
     records: &Path,
@@ -62,8 +61,8 @@ fn session(
     (session, launch, launcher)
 }
 
-/// The installed folder importer on this login: its desktop entry starts the
-/// script at `program`, and it keeps its review where the login reads it.
+/// The installed folder importer on this login: its desktop entry starts the script at `program` ,
+/// and it keeps its review where the login reads it.
 fn importer(home: &tilo_test_env::TestHome, program: &str) -> PathBuf {
     let executable = home.home().join("tilo-import-folders");
     tilo_test_env::script(&executable, program).expect("the importer's program");
@@ -84,8 +83,7 @@ fn importer(home: &tilo_test_env::TestHome, program: &str) -> PathBuf {
     review
 }
 
-/// The review the person left: whether it asks to be opened when their first
-/// use is over.
+/// The review the person left: whether it asks to be opened when their first use is over.
 fn leave_review(review: &Path, asks_to_open: bool) {
     fs::write(
         review,
@@ -107,14 +105,14 @@ fn readiness_socket(runtime: &Path, display: &str) -> PathBuf {
     .expect("the session's readiness path")
 }
 
-/// Run the session until `done` holds: a launched app starts on a worker of
-/// its own, so the loop keeps drawing while it gets there.
+/// Run the session until `done` holds: a launched app starts on a worker of its own, so the loop
+/// keeps drawing while it gets there.
 fn until(session: &mut Session, what: &str, mut done: impl FnMut() -> bool) {
     common::wait_for(session, what, |_| done().then_some(()));
 }
 
-/// The installed folder importer reads the answer from this session and no
-/// other: ready once first use is over, and only this account may ask.
+/// The installed folder importer reads the answer from this session and no other: ready once first
+/// use is over, and only this account may ask.
 #[test]
 fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");
@@ -142,8 +140,7 @@ fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
         "only this account may ask"
     );
 
-    // The answer comes from this session's state: no setup runs here, so its
-    // first use is over.
+    // The answer comes from this session's state: no setup runs here, so its first use is over.
     assert!(!session.setup_up(), "this session runs no setup");
     let mut client = UnixStream::connect(&socket).expect("the session answers");
     client
@@ -162,9 +159,9 @@ fn the_session_answers_add_folders_on_the_socket_named_for_its_display() {
     );
 }
 
-/// The review the person left opens once, when the login it belongs to
-/// starts: the Add folders click they meant to come back to, without one they
-/// must remember and without a second window of it.
+/// The review the person left opens once, when the login it belongs to starts: the Add folders
+/// click they meant to come back to, without one they must remember and without a second window of
+/// it.
 #[test]
 fn the_review_a_person_left_opens_the_importer_once_after_login() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");
@@ -197,8 +194,8 @@ fn the_review_a_person_left_opens_the_importer_once_after_login() {
     );
 }
 
-/// A review the person already finished, or put aside, opens nothing: the
-/// login leaves Add folders to them.
+/// A review the person already finished, or put aside, opens nothing: the login leaves Add folders
+/// to them.
 #[test]
 fn a_review_that_asks_for_nothing_opens_nothing() {
     let home = tilo_test_env::TestHome::new().expect("this login's home");

@@ -46,8 +46,7 @@ fn session() -> Session {
     session_on(WIDTH, HEIGHT)
 }
 
-/// Keeping who the person is here: the offer a page makes from their own
-/// avatar.
+/// Keeping who the person is here: the offer a page makes from their own avatar.
 fn keep_identity() -> HostAction {
     HostAction {
         id: "keep-identity".to_owned(),
@@ -70,7 +69,7 @@ fn bar(session: &Session) -> (usize, TreeUpdate) {
         .expect("the session publishes the bar its screen draws")
 }
 
-/// The button `label` in `tree`, as a screen reader finds it.
+/// The button `label` in `tree` , as a screen reader finds it.
 fn button(tree: &TreeUpdate, label: &str) -> (NodeId, Node) {
     tree.nodes
         .iter()
@@ -113,8 +112,7 @@ fn press(session: &mut Session, (x, y): (f64, f64)) {
     }
 }
 
-/// The person's own avatar in the bar, as a screen reader finds it: its id
-/// and where it stands.
+/// The person's own avatar in the bar, as a screen reader finds it: its id and where it stands.
 fn avatar(tree: &TreeUpdate) -> (NodeId, (f64, f64, f64, f64)) {
     let (id, node) = button(tree, "(you)");
     let at = place(&node);
@@ -189,8 +187,7 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
         "an ask about the person is not a banner too"
     );
 
-    // The person answers it on their avatar: the bar's answer asks the desk
-    // exactly this.
+    // The person answers it on their avatar: the bar's answer asks the desk exactly this.
     session.handle().answer_personal_ask();
     session.step(SETTLE).expect("a frame");
     session.step(SETTLE).expect("a frame");
@@ -221,9 +218,8 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
     );
 }
 
-/// A bar too narrow for the ask's words beside the avatar opens it as a card
-/// under the bar: the question is read there and its answer is pressed
-/// there, where the person sees it.
+/// A bar too narrow for the ask's words beside the avatar opens it as a card under the bar: the
+/// question is read there and its answer is pressed there, where the person sees it.
 #[test]
 fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
     let _settled = ui::motion::testing::settled();
@@ -266,8 +262,8 @@ fn an_ask_that_does_not_fit_the_bar_opens_as_a_card_under_it() {
     keep(&mut session, "ask-narrow-420-answered");
 }
 
-/// Folded on a narrow bar, the ask waits as the avatar's dot, and the avatar
-/// opens it again: under the bar, where it can be answered.
+/// Folded on a narrow bar, the ask waits as the avatar's dot, and the avatar opens it again: under
+/// the bar, where it can be answered.
 #[test]
 fn a_folded_ask_on_a_narrow_bar_opens_from_its_avatar() {
     let _settled = ui::motion::testing::settled();

@@ -1,9 +1,8 @@
-//! The questions the services ask the person, shown on the session's
-//! sheets and answered through the sheet's published actions as the person
-//! presses them: an app's access, an administrator's password, a network's
-//! secrets, a network that could not be joined, and a device pairing. An
-//! allowance given for good is shown at once, and taken back through the
-//! portal's own published action.
+//! The questions the services ask the person, shown on the session's sheets and answered through
+//! the sheet's published actions as the person presses them: an app's access, an administrator's
+//! password, a network's secrets, a network that could not be joined, and a device pairing. An
+//! allowance given for good is shown at once, and taken back through the portal's own published
+//! action.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -64,7 +63,7 @@ fn asking(services: Vec<Box<dyn Service>>) -> (Session, Questions) {
     (session, questions)
 }
 
-/// Ask `kind` for the app `app`, listed as `label`.
+/// Ask `kind` for the app `app` , listed as `label` .
 fn ask(questions: &Questions, app: Option<&str>, label: &str, kind: &str, details: Value) -> Asked {
     questions.ask(Question {
         handle: format!("questions-test:/{kind}"),
@@ -103,8 +102,7 @@ fn prompt(session: &Session) -> Prompt {
     }
 }
 
-/// The resource publishing `action` among everything the session
-/// publishes.
+/// The resource publishing `action` among everything the session publishes.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -149,7 +147,7 @@ fn press(session: &mut Session, effect: &str, args: Value) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
-/// The answer to `asked`, once the sheets answered it.
+/// The answer to `asked` , once the sheets answered it.
 #[track_caller]
 fn answered(session: &mut Session, questions: &Questions, asked: Asked) -> Answer {
     pump(session, |_| questions.pending().is_empty());
@@ -558,8 +556,8 @@ fn the_sim_locked_by_wrong_pins_asks_for_its_puk_and_a_new_pin() {
     assert_eq!(shown.icon, Some(ui::icons::Icon::Lock));
     assert!(shown.resource.contains("Home"));
 
-    // The sheet asks for the new PIN twice; the question reads the PUK and
-    // the PIN out of what was typed.
+    // The sheet asks for the new PIN twice; the question reads the PUK and the PIN out of what was
+    // typed.
     for (field, value) in [(0, "12345678"), (1, "1234"), (2, "1234")] {
         press(
             &mut session,
@@ -754,8 +752,8 @@ fn a_code_to_type_on_the_other_device_offers_nothing_to_confirm() {
     );
     assert_eq!(shown.cancel_label, "Cancel");
 
-    // Enter on a code on show decides nothing: the pairing goes on until
-    // the other device has finished.
+    // Enter on a code on show decides nothing: the pairing goes on until the other device has
+    // finished.
     press(&mut session, PortalEffect::CONFIRM.id, json!({}));
     assert_eq!(questions.pending().len(), 1, "the question waits");
     assert_eq!(
@@ -870,9 +868,8 @@ impl Service for Allowances {
     }
 }
 
-/// An app allowed for good is shown its allowance at once, and the sheet's
-/// two answers either take it back through the portal's own action or leave
-/// it standing.
+/// An app allowed for good is shown its allowance at once, and the sheet's two answers either take
+/// it back through the portal's own action or leave it standing.
 #[test]
 fn the_allowance_given_for_good_is_revoked_or_left_standing() {
     for revoke in [true, false] {
@@ -1022,9 +1019,8 @@ fn desk_agents(session: &Session) -> Vec<(String, tilo_action_policy::KindSet)> 
     })
 }
 
-/// The Agents tab of the workspace in front, as the person opens it: whether
-/// it offers what it takes to admit and manage agents, and the agents it
-/// lists.
+/// The Agents tab of the workspace in front, as the person opens it: whether it offers what it
+/// takes to admit and manage agents, and the agents it lists.
 #[track_caller]
 fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
     use tilo_sheets::workspace_settings::{Tab, WorkspaceSettingsEffect};
@@ -1055,9 +1051,9 @@ fn agents_tab(session: &mut Session) -> (bool, Vec<String>) {
     )
 }
 
-/// A program of this login at the door: it says who it is, and asks what the
-/// session has for it. What it read comes back, however far it got; `hold`
-/// keeps its seat at the door until the test lets it go.
+/// A program of this login at the door: it says who it is, and asks what the session has for it.
+/// What it read comes back, however far it got; `hold` keeps its seat at the door until the test
+/// lets it go.
 fn door_client(
     socket: &std::path::Path,
     answers: &std::sync::mpsc::Sender<Vec<Value>>,
@@ -1106,8 +1102,7 @@ fn door_client(
     }
 }
 
-/// The answers the program at the door read, once the session let it
-/// through.
+/// The answers the program at the door read, once the session let it through.
 fn door_answers(
     session: &mut Session,
     questions: &Questions,
@@ -1119,8 +1114,8 @@ fn door_answers(
         .expect("the program at the door is served")
 }
 
-/// The agents the desk shows as seated at the person's door: the ones whose
-/// work the bar carries as a presence of its own.
+/// The agents the desk shows as seated at the person's door: the ones whose work the bar carries as
+/// a presence of its own.
 fn seated_agents(session: &Session) -> Vec<String> {
     session
         .read(tilo_surface_host::shell_part::DESK_RESOURCE)
@@ -1153,16 +1148,16 @@ fn a_program_asking_to_work_as_an_agent_is_admitted_from_the_sheet() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    // Nobody set this desk's owner up: the desk a device seeds is the person's
-    // own, and it is what lets the Agent door's question be answered at all.
+    // Nobody set this desk's owner up: the desk a device seeds is the person's own, and it is what
+    // lets the Agent door's question be answered at all.
     assert!(desk_agents(&session).is_empty(), "nobody works here yet");
 
     let (answers, received) = std::sync::mpsc::channel();
     let (release, hold) = std::sync::mpsc::channel();
     let client = std::thread::spawn(move || door_client(&socket, &answers, Some(hold)));
 
-    // Nothing the program sent past its introduction is read before the
-    // person says so: the question stands on the portal's sheet.
+    // Nothing the program sent past its introduction is read before the person says so: the
+    // question stands on the portal's sheet.
     pump(&mut session, |_| questions.pending().len() == 1);
     let shown = dialog(&session);
     assert_eq!(

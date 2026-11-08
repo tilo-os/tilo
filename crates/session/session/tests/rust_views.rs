@@ -1,11 +1,10 @@
-//! A Rust app's view on the canvas: a Tube channel placed as a place draws the app's own
-//! `page` — its name, its avatar, its subscribe action and its videos — in the shell, exactly
-//! as a tilolang app's view draws (one-app-model.md §2).
-//!
+//! A Rust app's view on the canvas: a Tube channel placed as a place draws the app's own `page` —
+//! its name, its avatar, its subscribe action and its videos — in the shell, exactly as a tilolang
+//! app's view draws (one-app-model.md §2).
 //! Tube declares `Channel` as a resource and `page` as its default view. The channel is placed
-//! through the arrangement's published `place`, as an agent or the person does; the shell's
-//! runtime draws the channel's reading through Tube's view, and what stands on screen is read
-//! from what the shell lays out for assistive technology, never from pixels.
+//! through the arrangement's published `place` , as an agent or the person does; the shell's
+//! runtime draws the channel's reading through Tube's view, and what stands on screen is read from
+//! what the shell lays out for assistive technology, never from pixels.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -46,7 +45,7 @@ impl Channels {
         }
     }
 
-    /// The sample channel `id`, as its page's reading.
+    /// The sample channel `id` , as its page's reading.
     fn channel(&self, id: &str) -> Option<tube::views::Channel> {
         tube::views::Channel::from_model(&self.model, id)
     }
@@ -62,8 +61,8 @@ impl Service for Channels {
             spec.app_id = Some("tube".to_owned());
             spec
         });
-        // Each video is a resource of the app too: what a channel's page opens is one, and a
-        // place takes the resource a press names.
+        // Each video is a resource of the app too: what a channel's page opens is one, and a place
+        // takes the resource a press names.
         let videos = self.model.videos.iter().map(|video| {
             let mut spec = ResourceSpec::new(
                 format!("tube.video:{}", video.id),
@@ -103,8 +102,8 @@ impl Service for Channels {
     }
 }
 
-/// A session with the shell as the whole screen and the Tube channels published, its test
-/// hooks at `root`, the framed canvas in front.
+/// A session with the shell as the whole screen and the Tube channels published, its test hooks at
+/// `root` , the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let program = std::env::current_exe().expect("this test's program");
     let apps = common::seeded_apps();
@@ -136,8 +135,8 @@ fn session(root: &std::path::Path) -> Session {
     session
 }
 
-/// Place `resource` on the canvas of the workspace in front, through the arrangement's
-/// published `place`, as an agent puts it there.
+/// Place `resource` on the canvas of the workspace in front, through the arrangement's published
+/// `place` , as an agent puts it there.
 fn place(session: &mut Session, resource: &str) -> u64 {
     let (workspace, row, strip, place) = {
         let tree = session.handle().read(Clone::clone);
@@ -169,7 +168,7 @@ fn place(session: &mut Session, resource: &str) -> u64 {
     place
 }
 
-/// Save a snapshot of what the session shows to `name` under `$TILO_RUST_VIEWS_SHOT`, when the
+/// Save a snapshot of what the session shows to `name` under `$TILO_RUST_VIEWS_SHOT` , when the
 /// variable names a directory: how a person sees the page, taken over the test-control socket
 /// `tilo-control snapshot` uses, never from a private path.
 fn shot(session: &mut Session, root: &std::path::Path, name: &str) {

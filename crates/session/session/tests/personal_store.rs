@@ -1,10 +1,9 @@
-//! The session keeps the person's own records in their store, and keeps that
-//! store open to their other devices: a contact an app adds in Settings' own
-//! record lands in the store this device serves, beside the session's state.
-//!
-//! The store's link itself is answered by the session's endpoint on the pass
-//! it binds, so a session that runs keeps one for as long as it does; this
-//! test starts a real session and drives the app that writes.
+//! The session keeps the person's own records in their store, and keeps that store open to their
+//! other devices: a contact an app adds in Settings' own record lands in the store this device
+//! serves, beside the session's state.
+//! The store's link itself is answered by the session's endpoint on the pass it binds, so a session
+//! that runs keeps one for as long as it does; this test starts a real session and drives the app
+//! that writes.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -16,8 +15,8 @@
               lives until the app it serves is done"
 )]
 
-// A host admits its members' records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// A host admits its members' records through an Automerge worker: this binary is that worker, as it
+// is the session's own.
 tilo_automerge_isolate::test_worker!();
 
 mod common;
@@ -36,8 +35,8 @@ use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-/// Contacts, and the record kind of the person's it keeps: an identity they
-/// added, which is theirs alone until their other devices hear of it.
+/// Contacts, and the record kind of the person's it keeps: an identity they added, which is theirs
+/// alone until their other devices hear of it.
 const CONTACTS: &str = "so.tilo.contacts";
 const KIND: &str = "tilo.contacts.identities";
 const WIDTH: i32 = 1280;
@@ -50,8 +49,8 @@ const SURFACE: &[u8] = b"[[resources]]\nkind = \"tilo.contacts.identities\"\nlab
 struct Person {
     device: ed25519_dalek::SigningKey,
     cert: DeviceCert,
-    // The environment the identity was provisioned in, restored before the
-    // directories it names are removed.
+    // The environment the identity was provisioned in, restored before the directories it names are
+    // removed.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
     _home: tempfile::TempDir,
@@ -87,9 +86,9 @@ fn person() -> Person {
     }
 }
 
-/// The person's own workspace, held in `state` with this device the one
-/// governing it: what the session opens when it starts, so the person's
-/// records reach their store as any workspace's records do.
+/// The person's own workspace, held in `state` with this device the one governing it: what the
+/// session opens when it starts, so the person's records reach their store as any workspace's
+/// records do.
 fn hold_workspace(
     state: &Path,
     device: &ed25519_dalek::SigningKey,
@@ -108,8 +107,8 @@ fn hold_workspace(
     let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
     let governor = testing::enroll_interactive_governor_in(&owner, device, cert, cluster)
         .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as
-    // the publication a host's own workspace makes.
+    // The governor's checkpoint now names this device: the host admits it as the publication a
+    // host's own workspace makes.
     let host = governor.workspace_host().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
@@ -126,9 +125,8 @@ fn hold_workspace(
             )
             .expect("the host admits the workspace's people");
     }
-    // The record the app writes, created empty as this device's own, before
-    // any app joins it: what the host of a workspace does when one of its
-    // records' apps first opens it.
+    // The record the app writes, created empty as this device's own, before any app joins it: what
+    // the host of a workspace does when one of its records' apps first opens it.
     let route = owner::ApplicationRecord::declared(CONTACTS, &record(), KIND, &[KIND.to_owned()])
         .expect("Contacts declares this record of the person's");
     owner
@@ -162,8 +160,7 @@ fn principal(root: &[u8; 32]) -> String {
     }
 }
 
-/// A desk showing the person's own workspace, known by its id and owned by
-/// them.
+/// A desk showing the person's own workspace, known by its id and owned by them.
 fn desk(person: &Person, cluster: &str) -> DesktopTree {
     let workspace = WorkspaceId::parse(cluster).expect("a workspace id");
     let slot = WorkspaceSlot::of_workspace(workspace);
@@ -176,8 +173,8 @@ fn desk(person: &Person, cluster: &str) -> DesktopTree {
     }
 }
 
-/// What an app presents to join `cluster`'s channel: the certificate, and the
-/// device's proof that it is the certificate's.
+/// What an app presents to join `cluster` 's channel: the certificate, and the device's proof that
+/// it is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert, cluster: &str) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: cluster.to_owned(),
@@ -191,8 +188,8 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert, cluster: 
     .expect("a presentation encodes")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
+/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// anybody else could open.
 fn private_socket() -> (tempfile::TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the plane in");
@@ -202,12 +199,11 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
     (root, socket)
 }
 
-/// A session serving Contacts on `socket`, on this computer's certified
-/// device, with the person's own workspace on its desk and its state at
-/// `state`.
+/// A session serving Contacts on `socket` , on this computer's certified device, with the person's
+/// own workspace on its desk and its state at `state` .
 fn session(socket: &Path, person: &Person, cluster: &str, state: &Path) -> Session {
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     launches.started(std::process::id(), CONTACTS, cluster, true);
     let mut session = Session::headless(
@@ -238,8 +234,7 @@ fn channel(cluster: &str) -> String {
     tilo_action_broker::route::CrdtRoute::record(CONTACTS, cluster, record()).channel_key()
 }
 
-/// A signed change of the record, authored by `device`, at the sequence a
-/// document signer takes.
+/// A signed change of the record, authored by `device` , at the sequence a document signer takes.
 fn op(device: &ed25519_dalek::SigningKey, cluster: &str, key: &str, value: &str) -> Vec<u8> {
     let mut document = automerge::AutoCommit::new();
     document
@@ -249,8 +244,7 @@ fn op(device: &ed25519_dalek::SigningKey, cluster: &str, key: &str, value: &str)
         automerge::transaction::CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Native.change_message()),
     );
-    // An app's first write of a record it created is the record whole, as
-    // every participant's is.
+    // An app's first write of a record it created is the record whole, as every participant's is.
     let mutation = collab_types::DocumentMutation::Snapshot(document.save())
         .encode()
         .expect("a mutation encodes");
@@ -269,8 +263,8 @@ fn op(device: &ed25519_dalek::SigningKey, cluster: &str, key: &str, value: &str)
     postcard::to_stdvec(&op).expect("an op encodes for the wire")
 }
 
-/// An app connected to the session's plane as Contacts in the person's own
-/// workspace, as the launcher hands it the connection.
+/// An app connected to the session's plane as Contacts in the person's own workspace, as the
+/// launcher hands it the connection.
 fn connect(socket: &Path, cluster: &str) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, CONTACTS, cluster)
@@ -316,8 +310,8 @@ fn store_path(state: &Path) -> PathBuf {
 fn a_contact_added_here_is_kept_in_the_persons_own_store() {
     let person = person();
     let cluster = cluster(&person);
-    // Contacts declares the kind of the record the app writes, as its
-    // package ships it: what the session admits the join against.
+    // Contacts declares the kind of the record the app writes, as its package ships it: what the
+    // session admits the join against.
     tilo_action_broker::register_package_surface(CONTACTS, SURFACE);
     let (_socket_root, socket) = private_socket();
     let state = tempfile::tempdir().expect("a state for this session");
@@ -326,8 +320,8 @@ fn a_contact_added_here_is_kept_in_the_persons_own_store() {
 
     add_contact(&socket, &person, &cluster);
 
-    // The record reaches the person's own store, written beside the session's
-    // state as it changes: what this device serves their other devices.
+    // The record reaches the person's own store, written beside the session's state as it changes:
+    // what this device serves their other devices.
     let path = store_path(state.path());
     let bytes = common::wait_for(&mut session, "the person's store", |session| {
         session.settle_services();

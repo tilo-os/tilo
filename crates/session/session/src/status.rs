@@ -32,52 +32,48 @@ use tilo_session_power::{BATTERY, Battery};
 use crate::i18n::{t, t_args};
 use crate::keys::{MEDIA, NETWORK, SOUND};
 
-/// A charge at or below this percentage is low while the pack drains: the
-/// power policy's own default threshold, which the bar draws as a warning.
+/// A charge at or below this percentage is low while the pack drains: the power policy's own
+/// default threshold, which the bar draws as a warning.
 const LOW_PERCENT: u8 = 20;
 
 /// A charge at or below this percentage is critical while the pack drains.
 const CRITICAL_PERCENT: u8 = 5;
 
-/// The machine as the services last published it, kept between passes so a
-/// frame reads no resource.
+/// The machine as the services last published it, kept between passes so a frame reads no resource.
 #[derive(Clone, Default)]
 pub(crate) struct Readings {
-    /// The services' revision these were read at; `None` before the first
-    /// pass that read them.
+    /// The services' revision these were read at; `None` before the first pass that read them.
     revision: Option<u64>,
     network: Option<Network>,
     sound: Option<Sound>,
     battery: Option<Battery>,
     media: Option<Media>,
-    /// When what plays was read: the service publishes the playhead as it
-    /// stood at its last event, so a hand-over advances it from here.
+    /// When what plays was read: the service publishes the playhead as it stood at its last event,
+    /// so a hand-over advances it from here.
     media_at: Option<Instant>,
 }
 
-/// The machine as the bar, the lock screen and the desk read it, shared
-/// between the loop that reads it and the surfaces that show it.
+/// The machine as the bar, the lock screen and the desk read it, shared between the loop that reads
+/// it and the surfaces that show it.
 pub(crate) type Shared = Rc<RefCell<Readings>>;
 
 impl crate::Shared {
-    /// Read the machine off the services again when they published something
-    /// since the last pass: the loop passes every reading the surfaces show
-    /// on, so no frame of theirs reads a service.
+    /// Read the machine off the services again when they published something since the last pass:
+    /// the loop passes every reading the surfaces show on, so no frame of theirs reads a service.
     pub(crate) fn follow_status(&self) {
         let services = self.services.borrow();
         self.readings.borrow_mut().follow(&services);
         drop(services);
-        // What plays reaches the desk from the same reading every other
-        // surface shows, so the widget and the panel never disagree and
-        // neither reads the players again.
+        // What plays reaches the desk from the same reading every other surface shows, so the
+        // widget and the panel never disagree and neither reads the players again.
         let playing = self.readings.borrow().playing();
         self.music.set(playing);
     }
 }
 
 impl Readings {
-    /// Read every part again when the services published something since
-    /// the last pass; a pass where nothing moved reads nothing.
+    /// Read every part again when the services published something since the last pass; a pass
+    /// where nothing moved reads nothing.
     pub(crate) fn follow(&mut self, services: &Services) {
         let revision = services.revision();
         if self.revision == Some(revision) {
@@ -91,8 +87,8 @@ impl Readings {
         self.media_at = self.media.as_ref().map(|_| Instant::now());
     }
 
-    /// What plays now, as every surface shows it; `None` while no player
-    /// holds anything and none stands paused.
+    /// What plays now, as every surface shows it; `None` while no player holds anything and none
+    /// stands paused.
     pub(crate) fn playing(&self) -> Option<NowPlaying> {
         tilo_desktop_surface::now_playing::now_playing(
             self.media.as_ref()?,
@@ -103,8 +99,8 @@ impl Readings {
         )
     }
 
-    /// What the front player names of itself, when another of the person's
-    /// devices may continue it: the session and the source it plays.
+    /// What the front player names of itself, when another of the person's devices may continue it:
+    /// the session and the source it plays.
     pub(crate) fn handover(&self) -> Option<Handover> {
         let front = self.media.as_ref()?.front()?;
         Some(Handover {
@@ -121,15 +117,13 @@ impl Readings {
         })
     }
 
-    /// The connection this machine's traffic leaves on, in the bar's terms:
-    /// `None` while the service did not read it, which draws no glyph at
-    /// all, as offline is its own glyph.
+    /// The connection this machine's traffic leaves on, in the bar's terms: `None` while the
+    /// service did not read it, which draws no glyph at all, as offline is its own glyph.
     pub(crate) fn link(&self) -> Option<LinkStatus> {
         Some(bar_link(self.network.as_ref()?.link.as_ref()?))
     }
 
-    /// Whether this machine is on a network now: what a join that waited for
-    /// one is asked again on.
+    /// Whether this machine is on a network now: what a join that waited for one is asked again on.
     pub(crate) fn online(&self) -> bool {
         self.network
             .as_ref()
@@ -137,8 +131,8 @@ impl Readings {
             .is_some_and(|link| link.kind != LinkKind::Offline)
     }
 
-    /// How full the pack is, and whether it fills, when this machine has a
-    /// battery and a service read it.
+    /// How full the pack is, and whether it fills, when this machine has a battery and a service
+    /// read it.
     pub(crate) fn charge(&self) -> Option<(u8, bool)> {
         let battery = self.battery.as_ref()?;
         battery
@@ -180,8 +174,8 @@ impl Readings {
         })
     }
 
-    /// The status in a line, for a reader that hears it rather than sees a
-    /// glyph: the link, the level and the charge, as far as they were read.
+    /// The status in a line, for a reader that hears it rather than sees a glyph: the link, the
+    /// level and the charge, as far as they were read.
     fn summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if let Some(link) = self.link() {
@@ -208,8 +202,7 @@ impl Readings {
     }
 }
 
-/// What the front player names, when another of the person's devices may
-/// continue what plays here.
+/// What the front player names, when another of the person's devices may continue what plays here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Handover {
     pub session_id: String,
@@ -223,8 +216,7 @@ pub(crate) struct Handover {
     pub playing: bool,
 }
 
-/// The connection in the words a reader hears it: what kind it is, and its
-/// name when it has one.
+/// The connection in the words a reader hears it: what kind it is, and its name when it has one.
 fn link_reading(link: &LinkStatus) -> String {
     match link.kind {
         BarLinkKind::Wired => link.name.as_deref().map_or_else(
@@ -264,8 +256,8 @@ fn active_use(published: &tilo_audio_service::sound::Use) -> ActiveMediaUse {
     }
 }
 
-/// `level` is nominally `0.0..=1.0`, but the service reads it from the sound
-/// graph and does not validate it against that range: clamp defensively.
+/// `level` is nominally `0.0..=1.0` , but the service reads it from the sound graph and does not
+/// validate it against that range: clamp defensively.
 fn volume_percent(level: f32) -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -276,7 +268,7 @@ fn volume_percent(level: f32) -> u32 {
     percent
 }
 
-/// The reading of `resource`, parsed into what its service publishes.
+/// The reading of `resource` , parsed into what its service publishes.
 fn read<T: serde::de::DeserializeOwned>(services: &Services, resource: &str) -> Option<T> {
     let published = services.read(resource)?;
     match serde_json::from_value(published) {
@@ -336,8 +328,8 @@ mod tests {
         serde_json::from_value(serde_json::json!({ "players": players })).expect("a media reading")
     }
 
-    /// The bar's glyphs: the battery's charge, the network's name and
-    /// strength, the volume's level, and the stream being captured.
+    /// The bar's glyphs: the battery's charge, the network's name and strength, the volume's level,
+    /// and the stream being captured.
     #[test]
     fn the_bar_reads_the_machines_battery_network_and_volume() {
         let readings = Readings {
@@ -368,8 +360,8 @@ mod tests {
         );
     }
 
-    /// A machine no service has read yet draws no glyph: absence, never a
-    /// zero battery or a full network.
+    /// A machine no service has read yet draws no glyph: absence, never a zero battery or a full
+    /// network.
     #[test]
     fn a_machine_with_no_readings_shows_no_glyph() {
         let status = Readings::default().status();
@@ -384,8 +376,8 @@ mod tests {
         assert_eq!(status.summary(), "System status");
     }
 
-    /// A charge only warns while the pack drains, and a machine with no
-    /// battery draws no gauge at all.
+    /// A charge only warns while the pack drains, and a machine with no battery draws no gauge at
+    /// all.
     #[test]
     fn a_charge_warns_only_while_the_pack_drains() {
         let draining = |percentage| Readings {
@@ -426,9 +418,8 @@ mod tests {
         assert_eq!(desktop.charge(), None);
     }
 
-    /// The connection the traffic leaves on is the one the connectivity
-    /// service read, and a reading published before it said so draws no
-    /// network glyph rather than claiming offline.
+    /// The connection the traffic leaves on is the one the connectivity service read, and a reading
+    /// published before it said so draws no network glyph rather than claiming offline.
     #[test]
     fn the_network_glyph_is_the_connection_the_traffic_leaves_on() {
         let offline = Readings {
@@ -452,8 +443,8 @@ mod tests {
         assert!(older.link().is_none());
     }
 
-    /// The lock screen names the network the person is on and the charge of
-    /// a pack this machine has.
+    /// The lock screen names the network the person is on and the charge of a pack this machine
+    /// has.
     #[test]
     fn the_lock_screen_reads_the_network_and_the_charge() {
         let readings = Readings {
@@ -468,9 +459,8 @@ mod tests {
         assert_eq!(readings.charge(), Some((42, true)));
     }
 
-    /// What plays is the player the panel's own controls reach: the one
-    /// playing, else the one paused, else the first — and only while one of
-    /// them holds something.
+    /// What plays is the player the panel's own controls reach: the one playing, else the one
+    /// paused, else the first — and only while one of them holds something.
     #[test]
     fn what_plays_is_the_player_the_panels_controls_reach() {
         let stopped = Readings {
@@ -509,8 +499,8 @@ mod tests {
         assert!(now.can_toggle, "the middle control pauses what plays");
         assert!(now.can_next);
         assert!(!now.can_previous);
-        // The desk's widget holds the same reading, so the song, who plays it
-        // and where it stands are the panel's, not a copy of them.
+        // The desk's widget holds the same reading, so the song, who plays it and where it stands
+        // are the panel's, not a copy of them.
         let widget = tilo_desktop::desk_widgets::music::DeskMusic::default();
         widget.set(playing.playing());
         assert_eq!(widget.get(), Some(now));
@@ -519,9 +509,9 @@ mod tests {
         assert_eq!(handover.app_id, "so.tilo.music");
     }
 
-    /// A hand-over carries the playhead to where it stands now, not where the
-    /// service last published it: the other device resumes the song where the
-    /// person left it. A paused playhead stands still.
+    /// A hand-over carries the playhead to where it stands now, not where the service last
+    /// published it: the other device resumes the song where the person left it. A paused playhead
+    /// stands still.
     #[test]
     #[expect(
         clippy::cast_precision_loss,

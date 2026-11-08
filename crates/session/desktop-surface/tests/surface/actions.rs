@@ -1,6 +1,5 @@
-//! A window that asks the desktop's session: opening another app, opening a
-//! resource on its record, asking another app for an action, and opening
-//! content in one.
+//! A window that asks the desktop's session: opening another app, opening a resource on its record,
+//! asking another app for an action, and opening content in one.
 
 use super::*;
 
@@ -60,8 +59,8 @@ impl ui::resources::PublishesResources for OpensWriter {
     }
 }
 
-/// A desk whose Camera window offers to open Writer; any `so.tilo.` app
-/// launches as a window of its own.
+/// A desk whose Camera window offers to open Writer; any `so.tilo.` app launches as a window of its
+/// own.
 struct OpeningApps;
 
 impl TileSource for OpeningApps {
@@ -82,8 +81,8 @@ impl TileSource for OpeningApps {
     }
 }
 
-/// The page desktop: one frame hosting its windows in process, serving them
-/// its own session for the workspace `workspace`.
+/// The page desktop: one frame hosting its windows in process, serving them its own session for the
+/// workspace `workspace` .
 fn serving_desk(
     workspace: &str,
 ) -> (
@@ -118,10 +117,9 @@ fn serving_desk(
     (driver, handle, openings)
 }
 
-/// Camera's "Open Photos" in the browser desktop: a window asks the page's
-/// session to open another app, and the desktop opens it as a window of its
-/// own beside the one that asked. What the desktop refuses to open is said
-/// over the window that asked, never dropped.
+/// Camera's "Open Photos" in the browser desktop: a window asks the page's session to open another
+/// app, and the desktop opens it as a window of its own beside the one that asked. What the desktop
+/// refuses to open is said over the window that asked, never dropped.
 #[test]
 fn a_window_opens_another_app_through_the_desktop_s_session() {
     let (mut driver, handle, openings) = serving_desk("workspace");
@@ -161,8 +159,8 @@ fn a_window_opens_another_app_through_the_desktop_s_session() {
     );
 }
 
-/// An app whose page fills its window and scrolls a document that can be
-/// long or empty, as Speed Test's and every writing surface's does.
+/// An app whose page fills its window and scrolls a document that can be long or empty, as Speed
+/// Test's and every writing surface's does.
 struct FillingPage(ui::widget::Scrollable);
 
 impl ui::widget::Decorator for FillingPage {
@@ -189,7 +187,7 @@ impl ui::widget::AppWidget for FillingPage {
     }
 }
 
-/// Every window but the one named `Filling`, which shows `text`.
+/// Every window but the one named `Filling` , which shows `text` .
 struct FillingTiles(ui::LocalState<String>);
 
 impl TileSource for FillingTiles {
@@ -338,10 +336,9 @@ impl TileSource for RecordWindows {
     }
 }
 
-/// A shared window's message opens the resource it shares: the page's
-/// session opens the resource's app on its record, and asked again shows
-/// that window instead of a second one. A resource in another workspace
-/// is not this desktop's to open.
+/// A shared window's message opens the resource it shares: the page's session opens the resource's
+/// app on its record, and asked again shows that window instead of a second one. A resource in
+/// another workspace is not this desktop's to open.
 #[test]
 fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
@@ -397,11 +394,10 @@ fn a_window_opens_a_resource_on_its_record_through_the_desktop_s_session() {
     assert_eq!(snapshot.active.as_ref(), Some(&snapshot.entries[1].route));
 }
 
-/// Another action than opening, asked of an app's resource (a launchpad
-/// card's "show tasks", an app launching another with an action): the
-/// page's session opens the app on the record and hands the action to the
-/// host, which invokes it in that window once it is up, as the workspace
-/// broker delivers an action to an app it launched.
+/// Another action than opening, asked of an app's resource (a launchpad card's "show tasks", an app
+/// launching another with an action): the page's session opens the app on the record and hands the
+/// action to the host, which invokes it in that window once it is up, as the workspace broker
+/// delivers an action to an app it launched.
 #[test]
 fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     use ui::tilo_actions::remote::{
@@ -457,8 +453,7 @@ fn a_window_asks_another_app_for_an_action_through_the_desktop_s_session() {
     );
 }
 
-/// Windows opened with content: each content launch opens its app on what
-/// it was handed.
+/// Windows opened with content: each content launch opens its app on what it was handed.
 struct ContentWindows {
     opened: Rc<std::cell::RefCell<Vec<(String, String)>>>,
 }

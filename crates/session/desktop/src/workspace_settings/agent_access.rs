@@ -1,11 +1,9 @@
-//! What one agent may do in the workspace, app by app: Allow, Ask first or
-//! Deny for reading, changes and outside effects.
-//!
-//! Each answer is an ordinary workspace grant ([`agent_answers`]); without one the
-//! agent's admission decides, and the view says so. Actions whose contract
-//! asks for confirmation (sending, publishing, deleting for good) still ask
-//! first under an app-wide Allow; only "Always allow this" on the action
-//! itself lifts that, and those exceptions are listed here to take back.
+//! What one agent may do in the workspace, app by app: Allow, Ask first or Deny for reading,
+//! changes and outside effects.
+//! Each answer is an ordinary workspace grant ([`agent_answers`]); without one the agent's
+//! admission decides, and the view says so. Actions whose contract asks for confirmation (sending,
+//! publishing, deleting for good) still ask first under an app-wide Allow; only "Always allow this"
+//! on the action itself lifts that, and those exceptions are listed here to take back.
 
 use tilo_action_policy::agent_answers::{self, AnswerScope};
 use tilo_action_policy::{ActionKind, Answer, Subject, decide};
@@ -52,8 +50,7 @@ pub fn kind_label(kind: ActionKind) -> String {
 pub struct AnswerCell {
     pub kind: ActionKind,
     pub answer: Answer,
-    /// The person set it here; otherwise it follows the agent's admission
-    /// or a broader answer.
+    /// The person set it here; otherwise it follows the agent's admission or a broader answer.
     pub explicit: bool,
 }
 
@@ -83,10 +80,9 @@ pub struct AgentException {
     pub label: String,
 }
 
-/// The answer `agent` holds for `kind` at `scope`: the turn's own grants
-/// (`admission`, [`tilo_action_policy::roles::agent_turn`]) and the workspace's
-/// grants naming it alone, so a narrower answer the person set here wins over
-/// what the admission says.
+/// The answer `agent` holds for `kind` at `scope` : the turn's own grants (`admission`,
+/// [`tilo_action_policy::roles::agent_turn`]) and the workspace's grants naming it alone, so a
+/// narrower answer the person set here wins over what the admission says.
 #[must_use]
 pub fn answer_at(
     ws: &Workspace,
@@ -112,9 +108,8 @@ pub fn answer_at(
     }
 }
 
-/// The apps an agent's answers are offered for: every app the workspace
-/// shows, holds capabilities for, or that the agent already has answers
-/// for, by display name.
+/// The apps an agent's answers are offered for: every app the workspace shows, holds capabilities
+/// for, or that the agent already has answers for, by display name.
 #[must_use]
 pub fn agent_access_rows(
     ws: &Workspace,
@@ -157,7 +152,7 @@ pub fn agent_access_rows(
     rows
 }
 
-/// The actions the person always allows `agent`.
+/// The actions the person always allows `agent` .
 #[must_use]
 pub fn agent_exceptions(
     ws: &Workspace,
@@ -194,9 +189,8 @@ pub fn agent_exceptions(
     out
 }
 
-/// Set `agent`'s answers, each for a kind at a scope (`None` returns it to
-/// what the admission and broader answers say), as `actor`, in one
-/// governed edit.
+/// Set `agent` 's answers, each for a kind at a scope (`None` returns it to what the admission and
+/// broader answers say), as `actor` , in one governed edit.
 pub fn set_agent_answers(
     ws: &mut Workspace,
     actor: &UserId,
@@ -224,7 +218,7 @@ pub fn set_agent_answers(
         .unwrap_or_default()
 }
 
-/// `send_message` as `Send message`.
+/// `send_message` as `Send message` .
 fn humanize(id: &str) -> String {
     let spaced = id.replace(['_', '-', '.'], " ");
     let mut chars = spaced.trim().chars();
@@ -243,8 +237,7 @@ pub struct AgentModelOption {
 }
 
 impl AgentModelOption {
-    /// What the model is chosen by: its profile and its model's id, which
-    /// read back to this option.
+    /// What the model is chosen by: its profile and its model's id, which read back to this option.
     #[must_use]
     pub fn key(&self) -> String {
         format!("{}/{}", self.profile, self.model)
@@ -263,8 +256,8 @@ pub struct AgentModels {
     pub offered: Vec<AgentModelOption>,
 }
 
-/// The models of `config` the person may choose for `agent`, and the one it
-/// plans with; `None` while they have no switched-on model at all.
+/// The models of `config` the person may choose for `agent` , and the one it plans with; `None`
+/// while they have no switched-on model at all.
 #[must_use]
 pub fn agent_models(
     config: &agent_provider_config::ProviderConfig,
@@ -354,16 +347,14 @@ mod tests {
     const AGENT: &str = "scribe";
     const MAIL: &str = "so.tilo.mail";
 
-    /// A workspace where the agent may change it all and asks before
-    /// reaching outside.
+    /// A workspace where the agent may change it all and asks before reaching outside.
     fn ws() -> Workspace {
         let mut ws = Workspace::new(WorkspaceSlot::from(31), "access");
         ws.set_owner(OWNER);
         ws
     }
 
-    /// The grants the agent's admission gives it: the editor cap, unbounded
-    /// by its record.
+    /// The grants the agent's admission gives it: the editor cap, unbounded by its record.
     fn admission(ws: &Workspace) -> Vec<tilo_action_policy::Grant> {
         tilo_action_policy::roles::agent_turn(&ws.policy.workspace, AGENT, OWNER, &[]).grants
     }

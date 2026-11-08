@@ -1,7 +1,6 @@
-//! The lock screen when the process that draws it goes away: the session is
-//! still locked and starts its screen again, unlocking still works, and one
-//! that will not stay up is drawn by the session itself rather than lift the
-//! lock, which only the right password lifts.
+//! The lock screen when the process that draws it goes away: the session is still locked and starts
+//! its screen again, unlocking still works, and one that will not stay up is drawn by the session
+//! itself rather than lift the lock, which only the right password lifts.
 
 use super::lock::{
     apart, lock_screen, lockable_session, pictures, private_home, type_and_enter, until_back,
@@ -18,14 +17,13 @@ struct LockedSession {
     session: Session,
     /// The window the desk showed, kept open for the whole test.
     _client: TestClient,
-    /// The session serves its services in this directory: the lock screen
-    /// reaches them by it.
+    /// The session serves its services in this directory: the lock screen reaches them by it.
     _home: tempfile::TempDir,
     desk: Vec<Vec<f64>>,
 }
 
-/// A session on two displays, its desk drawn and then locked behind the lock
-/// screen on both of them.
+/// A session on two displays, its desk drawn and then locked behind the lock screen on both of
+/// them.
 fn locked_session() -> LockedSession {
     let _settled = ui::motion::testing::settled();
     let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
@@ -59,16 +57,15 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
         desk,
     } = locked_session();
 
-    // The process drawing the lock screen goes away, as it does when it
-    // crashes.
+    // The process drawing the lock screen goes away, as it does when it crashes.
     session.stop_surface("lock");
     assert!(
         !session.surfaces().running("lock"),
         "the lock screen's process is gone"
     );
 
-    // The session is still locked, and starts its screen again: the person is
-    // not left looking at their desk, and not let into it either.
+    // The session is still locked, and starts its screen again: the person is not left looking at
+    // their desk, and not let into it either.
     pump(&mut session, &mut [], |session, _| {
         session.surfaces().running("lock")
     });
@@ -78,9 +75,8 @@ fn a_lock_screen_whose_process_goes_comes_back_and_still_unlocks() {
     );
     let again = until_drawn(&mut session, &DISPLAYS, &desk);
     for (index, display) in DISPLAYS.iter().enumerate() {
-        // The screen says the time, so it is no copy of the one before: what
-        // the person gets is a lock screen over their desk, drawing what it
-        // shows.
+        // The screen says the time, so it is no copy of the one before: what the person gets is a
+        // lock screen over their desk, drawing what it shows.
         let over_desk = apart(&again[index], &desk[index]);
         assert!(
             over_desk > 24.0,
@@ -122,9 +118,8 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
         ..
     } = locked_session();
 
-    // The process goes away as soon as it is up, every time: a screen that
-    // cannot stay on the screen. The session keeps starting it, and then
-    // draws the lock itself: the lock never lifts.
+    // The process goes away as soon as it is up, every time: a screen that cannot stay on the
+    // screen. The session keeps starting it, and then draws the lock itself: the lock never lifts.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         session.stop_surface("lock");
@@ -151,8 +146,8 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
         "the locked session withholds the desktop's actions"
     );
 
-    // What the session draws is the lock screen: a wrong password keeps it
-    // locked and says so, and the right one lifts it.
+    // What the session draws is the lock screen: a wrong password keeps it locked and says so, and
+    // the right one lifts it.
     type_and_enter(&mut session, "wrong");
     pump(&mut session, &mut [], |session, _| {
         let reading = session
@@ -172,17 +167,15 @@ fn a_lock_screen_that_will_not_stay_up_is_drawn_by_the_session() {
     until_back(&mut session, &DISPLAYS, &desk);
 }
 
-/// The login's record says the session before this one was left locked: the
-/// one that starts comes back locked, and only an ordered end publishes a
-/// state the next start recovers.
+/// The login's record says the session before this one was left locked: the one that starts comes
+/// back locked, and only an ordered end publishes a state the next start recovers.
 #[test]
 fn a_session_left_locked_comes_back_locked() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
     let home = private_home();
     let request = home.path().join("logout-request");
-    // What a session that was killed leaves behind: the armed record, never
-    // published.
+    // What a session that was killed leaves behind: the armed record, never published.
     let killed = tilo_session::recovery::Recovery::begin(&request).expect("a record");
     drop(killed);
 
@@ -221,8 +214,7 @@ fn a_session_left_locked_comes_back_locked() {
     pump(&mut session, &mut [], |session, _| {
         session.surfaces().running("lock")
     });
-    // The person sees the lock screen, and nothing of the desk, until they
-    // unlock it.
+    // The person sees the lock screen, and nothing of the desk, until they unlock it.
     assert!(
         publisher(&session, "overview").is_none(),
         "the recovered lock withholds the desktop's actions"
@@ -238,8 +230,8 @@ fn a_session_left_locked_comes_back_locked() {
     );
     drop(again);
 
-    // The next one unlocks with the right password, and its ordered end is
-    // what the one after it recovers.
+    // The next one unlocks with the right password, and its ordered end is what the one after it
+    // recovers.
     let mut session = recovered(&home);
     let before = pictures(&mut session, &[DISPLAY]);
     pump(&mut session, &mut [], |session, _| {

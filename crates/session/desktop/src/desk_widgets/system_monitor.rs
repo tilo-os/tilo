@@ -17,8 +17,8 @@ use tilo_system_stats::hub::{Hub, Spec, Subscription};
 use tilo_system_stats::protocol::SystemStats;
 use ui::time::Duration;
 
-/// How often a showing widget is sent a reading: often enough to follow a
-/// build or a stuck process, rarely enough to cost nothing.
+/// How often a showing widget is sent a reading: often enough to follow a build or a stuck process,
+/// rarely enough to cost nothing.
 pub const SAMPLE_EVERY: Duration = Duration::from_secs(2);
 
 /// What the widget shows.
@@ -83,8 +83,7 @@ fn whole_degrees(celsius: f32) -> i16 {
 
 /// Where the readings come from: the session's own source, or a fixture.
 pub trait Source {
-    /// The widget appeared: start sending readings. Starting again while
-    /// started changes nothing.
+    /// The widget appeared: start sending readings. Starting again while started changes nothing.
     fn start(&mut self);
     /// The widget went away: stop.
     fn stop(&mut self);
@@ -143,8 +142,8 @@ impl Monitor {
         self.reading
     }
 
-    /// The widget shows: make sure readings come, and take the newest one.
-    /// Returns whether the reading changed.
+    /// The widget shows: make sure readings come, and take the newest one. Returns whether the
+    /// reading changed.
     pub fn show(&mut self, source: &mut dyn Source) -> bool {
         if !self.showing {
             source.start();
@@ -159,9 +158,8 @@ impl Monitor {
         changed
     }
 
-    /// The widget went away: stop the readings, so the next appearance
-    /// starts a new interval and never reports load across the time it was
-    /// hidden.
+    /// The widget went away: stop the readings, so the next appearance starts a new interval and
+    /// never reports load across the time it was hidden.
     pub fn pause(&mut self, source: &mut dyn Source) {
         if self.showing {
             source.stop();

@@ -24,19 +24,18 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use tilo_capture_studio::{Frame, Recorder, Settings, Unfinished, WriteCause};
 use tilo_service::Wake;
 
-/// Frames the encoder may hold before the loop keeps one back. One frame is
-/// being encoded and one waits behind it; a third lets a writer that lags a
-/// little catch up without a visible gap in the recording.
+/// Frames the encoder may hold before the loop keeps one back. One frame is being encoded and one
+/// waits behind it; a third lets a writer that lags a little catch up without a visible gap in the
+/// recording.
 pub(crate) const DEPTH: usize = 3;
 
-/// One track's sound, as the recorder numbers it, and the samples taken
-/// since the last drain: interleaved stereo S16LE at 48 kHz.
+/// One track's sound, as the recorder numbers it, and the samples taken since the last drain:
+/// interleaved stereo S16LE at 48 kHz.
 pub(crate) type Sound = Vec<(usize, Vec<u8>)>;
 
 /// What became of the recorder's work, taken up on the loop's next pass.
-///
-/// One that carries a `run` is about the recording started as number `run`:
-/// a note about one that ended says nothing about the one running now.
+/// One that carries a `run` is about the recording started as number `run` : a note about one that
+/// ended says nothing about the one running now.
 pub(crate) enum Note {
     /// The recording or the replay buffer took its first frame, or why not.
     Opened {
@@ -45,36 +44,34 @@ pub(crate) enum Note {
     },
     /// A frame was not encoded, and why: the recorder can take no more.
     Frame { run: u64, error: String },
-    /// A track's sound ended or could not be written, by its recorder
-    /// number.
+    /// A track's sound ended or could not be written, by its recorder number.
     SoundLost { run: u64, track: usize },
-    /// The recording's file was finished, or why it was not and what it
-    /// left behind, and how many frames the encoder was too far behind to
-    /// take.
+    /// The recording's file was finished, or why it was not and what it left behind, and how many
+    /// frames the encoder was too far behind to take.
     Stopped {
         run: u64,
-        /// The file it finished, or why it could not be finished and the
-        /// file it left. `Ok(None)`: only the replay buffer ran.
+        /// The file it finished, or why it could not be finished and the file it left. `Ok(None)` :
+        /// only the replay buffer ran.
         ended: Result<Option<PathBuf>, Unfinished>,
         dropped: u64,
     },
 }
 
-/// Why a screenshot's file was not written: the folder it was to go in, the
-/// reason a person reads, and what the system said for the log.
+/// Why a screenshot's file was not written: the folder it was to go in, the reason a person reads,
+/// and what the system said for the log.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct WriteFailed {
     /// The folder the file was to be written in.
     pub folder: PathBuf,
     /// What stopped it, as the person reads it.
     pub cause: WriteCause,
-    /// What the system said, in its own words: for the log and an app's own
-    /// error, never for the person.
+    /// What the system said, in its own words: for the log and an app's own error, never for the
+    /// person.
     pub reason: String,
 }
 
 impl WriteFailed {
-    /// A write that failed for `error` in `folder`.
+    /// A write that failed for `error` in `folder` .
     fn new(folder: &Path, cause: WriteCause, reason: impl Into<String>) -> Self {
         Self {
             folder: folder.to_path_buf(),
@@ -100,14 +97,12 @@ pub(crate) struct Written {
 
 /// One piece of capture work.
 enum Job {
-    /// Start run number `run`, which every note about it carries: its file
-    /// goes to `file` when there is one — a recording, or only the replay
-    /// buffer — and its sound is `audio`, the recorder's track names.
-    ///
-    /// The encoder is not built here: it waits for the first frame, which
-    /// arrives on the recording's own cadence, so starting a recording
-    /// stalls neither the loop that asked for it nor the work queued before
-    /// it.
+    /// Start run number `run` , which every note about it carries: its file goes to `file` when
+    /// there is one — a recording, or only the replay buffer — and its sound is `audio` , the
+    /// recorder's track names.
+    /// The encoder is not built here: it waits for the first frame, which arrives on the
+    /// recording's own cadence, so starting a recording stalls neither the loop that asked for it
+    /// nor the work queued before it.
     Open {
         run: u64,
         file: Option<PathBuf>,
@@ -131,34 +126,32 @@ enum Job {
         path: PathBuf,
         done: Sender<Result<usize, String>>,
     },
-    /// Write `picture` as a PNG under `directory`.
+    /// Write `picture` as a PNG under `directory` .
     Write {
         picture: Arc<image::RgbaImage>,
         directory: PathBuf,
         copy: bool,
         done: Sender<Result<Written, WriteFailed>>,
     },
-    /// Encode `picture` as a PNG, for a clipboard that takes it instead of a
-    /// file.
+    /// Encode `picture` as a PNG, for a clipboard that takes it instead of a file.
     Encode {
         picture: Arc<image::RgbaImage>,
         done: Sender<Result<Vec<u8>, String>>,
     },
-    /// The bytes of the file at `path`.
+    /// The bytes of the file at `path` .
     Read {
         path: PathBuf,
         done: Sender<Result<Vec<u8>, String>>,
     },
 }
 
-/// The session's one capture worker: the encoder, the muxer and every file a
-/// capture makes.
+/// The session's one capture worker: the encoder, the muxer and every file a capture makes.
 pub(crate) struct CaptureIo {
-    /// The worker's queue, made the first time work is handed over: a
-    /// session that never captures opens no thread.
+    /// The worker's queue, made the first time work is handed over: a session that never captures
+    /// opens no thread.
     jobs: RefCell<Option<Sender<Job>>>,
-    /// Whether the worker was asked to start, so one that could not is not
-    /// asked again for every job.
+    /// Whether the worker was asked to start, so one that could not is not asked again for every
+    /// job.
     started: Cell<bool>,
     /// Where what became of the recorder is said.
     notes: Sender<Note>,
@@ -168,16 +161,14 @@ pub(crate) struct CaptureIo {
     buffered: Arc<AtomicUsize>,
     /// Frames this recording dropped because the encoder was behind.
     dropped: Cell<u64>,
-    /// The number of the recorder the worker was last told to start: a stop
-    /// is about that one, so a recording started after it is not confused
-    /// with the file it left.
+    /// The number of the recorder the worker was last told to start: a stop is about that one, so a
+    /// recording started after it is not confused with the file it left.
     run: Cell<u64>,
     wake: Wake,
 }
 
 impl CaptureIo {
-    /// The session's capture worker, and where what it makes of the
-    /// recorder's work is said.
+    /// The session's capture worker, and where what it makes of the recorder's work is said.
     pub(crate) fn new(wake: Wake) -> (std::rc::Rc<Self>, Receiver<Note>) {
         let (notes, said) = channel();
         (
@@ -195,10 +186,9 @@ impl CaptureIo {
         )
     }
 
-    /// Start the recording numbered `run`, writing its file to `file` when
-    /// there is one, with its sound named by `audio`: a recording, or only
-    /// the replay buffer. The encoder is built from the first frame the
-    /// worker takes, and whether it started is said as [`Note::Opened`].
+    /// Start the recording numbered `run` , writing its file to `file` when there is one, with its
+    /// sound named by `audio` : a recording, or only the replay buffer. The encoder is built from
+    /// the first frame the worker takes, and whether it started is said as [`Note::Opened`].
     pub(crate) fn open(&self, run: u64, file: Option<PathBuf>, audio: Vec<String>) {
         self.dropped.set(0);
         self.run.set(run);
@@ -210,10 +200,9 @@ impl CaptureIo {
         }
     }
 
-    /// Hand one frame and the sound that came with it to the encoder.
-    /// Returns whether it took it: a frame handed over while the encoder
-    /// already holds [`DEPTH`] is dropped with its sound, so what the
-    /// recording keeps stays whole, and counted for [`Self::dropped`].
+    /// Hand one frame and the sound that came with it to the encoder. Returns whether it took it: a
+    /// frame handed over while the encoder already holds [`DEPTH`] is dropped with its sound, so
+    /// what the recording keeps stays whole, and counted for [`Self::dropped`].
     pub(crate) fn feed(&self, frame: Frame, sound: Sound) -> bool {
         let held = self.depth.load(Ordering::Acquire);
         if held >= DEPTH {
@@ -231,8 +220,7 @@ impl CaptureIo {
         true
     }
 
-    /// Hand the encoder the sound of a pass that took no frame: what was
-    /// heard just before a stop.
+    /// Hand the encoder the sound of a pass that took no frame: what was heard just before a stop.
     pub(crate) fn sound(&self, sound: Sound) {
         if sound.is_empty() {
             return;
@@ -240,14 +228,13 @@ impl CaptureIo {
         self.submit(Job::Feed { frame: None, sound });
     }
 
-    /// Stop writing the file into it, keeping the recorder open, or write
-    /// frames into it again.
+    /// Stop writing the file into it, keeping the recorder open, or write frames into it again.
     pub(crate) fn paused(&self, paused: bool) {
         self.submit(if paused { Job::Pause } else { Job::Resume });
     }
 
-    /// Finish the file and end the recorder: [`Note::Stopped`] says where it
-    /// is, and how many frames were dropped on the way.
+    /// Finish the file and end the recorder: [`Note::Stopped`] says where it is, and how many
+    /// frames were dropped on the way.
     pub(crate) fn stop(&self) {
         let dropped = self.dropped.get();
         if !self.submit(Job::Stop { dropped }) {
@@ -262,8 +249,7 @@ impl CaptureIo {
         }
     }
 
-    /// End the recorder without finishing a file: the replay buffer goes
-    /// with it.
+    /// End the recorder without finishing a file: the replay buffer goes with it.
     pub(crate) fn close(&self) {
         self.submit(Job::Close);
     }
@@ -280,8 +266,8 @@ impl CaptureIo {
         answer
     }
 
-    /// Write `picture` as a PNG under `directory`, named fresh; `copy` also
-    /// hands the file's bytes back for the clipboard.
+    /// Write `picture` as a PNG under `directory` , named fresh; `copy` also hands the file's bytes
+    /// back for the clipboard.
     pub(crate) fn write(
         &self,
         picture: Arc<image::RgbaImage>,
@@ -301,8 +287,8 @@ impl CaptureIo {
         answer
     }
 
-    /// Encode `picture` as a PNG for the clipboard, without a file of its own:
-    /// a shot that could not be saved can still be copied.
+    /// Encode `picture` as a PNG for the clipboard, without a file of its own: a shot that could
+    /// not be saved can still be copied.
     pub(crate) fn encode(
         &self,
         picture: Arc<image::RgbaImage>,
@@ -317,7 +303,7 @@ impl CaptureIo {
         answer
     }
 
-    /// The bytes of the file at `path`, for the clipboard.
+    /// The bytes of the file at `path` , for the clipboard.
     pub(crate) fn read(&self, path: PathBuf) -> Receiver<Result<Vec<u8>, String>> {
         let (done, answer) = channel();
         if !self.submit(Job::Read {
@@ -334,8 +320,7 @@ impl CaptureIo {
         self.buffered.load(Ordering::Acquire)
     }
 
-    /// Frames dropped since this recording began because the encoder was
-    /// behind.
+    /// Frames dropped since this recording began because the encoder was behind.
     pub(crate) fn dropped(&self) -> u64 {
         self.dropped.get()
     }
@@ -344,8 +329,8 @@ impl CaptureIo {
         self.worker().is_some_and(|jobs| jobs.send(job).is_ok())
     }
 
-    /// The worker's queue, started the first time it is asked for; `None`
-    /// when no thread can run it.
+    /// The worker's queue, started the first time it is asked for; `None` when no thread can run
+    /// it.
     fn worker(&self) -> Option<Sender<Job>> {
         let mut jobs = self.jobs.borrow_mut();
         if jobs.is_none() && !self.started.get() {
@@ -382,8 +367,8 @@ impl CaptureIo {
 /// What a capture is refused with when no thread runs it.
 pub(crate) const NO_WORKER: &str = "no thread encodes or writes a capture";
 
-/// The worker: one recorder for as long as it runs, and every file a capture
-/// makes, in the order the loop handed them over.
+/// The worker: one recorder for as long as it runs, and every file a capture makes, in the order
+/// the loop handed them over.
 struct Worker {
     /// The loop's queue.
     jobs: Receiver<Job>,
@@ -403,9 +388,8 @@ struct Worker {
     run: u64,
 }
 
-/// A recording that was started but whose encoder is not built yet: it takes
-/// its size from the first frame, so nothing expensive runs before there is
-/// one.
+/// A recording that was started but whose encoder is not built yet: it takes its size from the
+/// first frame, so nothing expensive runs before there is one.
 struct Opening {
     run: u64,
     file: Option<PathBuf>,
@@ -422,8 +406,7 @@ impl Worker {
         }
     }
 
-    /// Ask the loop for a pass, so what the worker made of its work is taken
-    /// up on the next one.
+    /// Ask the loop for a pass, so what the worker made of its work is taken up on the next one.
     fn wake(&self) {
         (self.wake)();
     }
@@ -456,8 +439,8 @@ impl Worker {
                 self.buffered.store(0, Ordering::Release);
             }
             Job::SaveReplay { path, done } => {
-                // The media stack says what went wrong; the caller names the
-                // file it was writing, which the stack no longer does.
+                // The media stack says what went wrong; the caller names the file it was writing,
+                // which the stack no longer does.
                 let answer = match self.recorder.as_mut() {
                     Some(open) => open
                         .save_replay(path.clone())
@@ -487,12 +470,12 @@ impl Worker {
         }
     }
 
-    /// Start run `run`: its file goes to `file` when there is one, and its
-    /// sound is `audio`. Nothing is built until its first frame is here, so
-    /// the folder it writes into is checked then too.
+    /// Start run `run` : its file goes to `file` when there is one, and its sound is `audio` .
+    /// Nothing is built until its first frame is here, so the folder it writes into is checked then
+    /// too.
     fn open(&mut self, run: u64, file: Option<PathBuf>, audio: Vec<String>) {
-        // The frames the recorder before this one left in flight are counted
-        // out as they are taken; what it held is not this recording's to show.
+        // The frames the recorder before this one left in flight are counted out as they are taken;
+        // what it held is not this recording's to show.
         self.buffered.store(0, Ordering::Release);
         self.opening = Some(Opening {
             run,
@@ -502,8 +485,8 @@ impl Worker {
         });
     }
 
-    /// Build the encoder of the opening recording at the size of its first
-    /// frame, then take that frame into it.
+    /// Build the encoder of the opening recording at the size of its first frame, then take that
+    /// frame into it.
     fn begin(&mut self, opening: Opening, first: &Frame) {
         let Opening {
             run,
@@ -579,8 +562,7 @@ impl Worker {
 
     /// Finish the file of the recorder that runs, and end it.
     fn stop(&mut self, dropped: u64) {
-        // A recording whose encoder was never built wrote nothing: its first
-        // frame never came.
+        // A recording whose encoder was never built wrote nothing: its first frame never came.
         self.opening = None;
         let ended = match self.recorder.take() {
             Some(mut open) => open.stop(),
@@ -596,8 +578,7 @@ impl Worker {
     }
 }
 
-/// Make the folder `path` goes in, so a capture is not lost to a folder that
-/// was never made.
+/// Make the folder `path` goes in, so a capture is not lost to a folder that was never made.
 fn in_folder(path: &Path) -> Result<(), String> {
     match path.parent() {
         Some(directory) => std::fs::create_dir_all(directory).map_err(|error| error.to_string()),
@@ -605,12 +586,11 @@ fn in_folder(path: &Path) -> Result<(), String> {
     }
 }
 
-/// Write `picture` as a PNG under `directory`, named fresh, and read it back
-/// when the clipboard takes it too.
-///
-/// The file is written beside its name and moved onto it once it is whole: a
-/// screenshot folder watched by anything — a person's file manager, a test —
-/// never shows a picture that is still being written.
+/// Write `picture` as a PNG under `directory` , named fresh, and read it back when the clipboard
+/// takes it too.
+/// The file is written beside its name and moved onto it once it is whole: a screenshot folder
+/// watched by anything — a person's file manager, a test — never shows a picture that is still
+/// being written.
 fn write_png(
     picture: &image::RgbaImage,
     directory: &Path,
@@ -641,7 +621,7 @@ fn write_png(
     Ok(Written { path, png })
 }
 
-/// A write refused by `error` in `folder`.
+/// A write refused by `error` in `folder` .
 fn refused(folder: &Path, error: &std::io::Error) -> WriteFailed {
     WriteFailed::new(folder, WriteCause::of(error), error.to_string())
 }
@@ -689,16 +669,14 @@ mod tests {
         path
     }
 
-    /// The worker, inside a read of a pipe nothing could finish without a
-    /// writer: every job handed over after it waits for that writer, and the
-    /// answer of the blocked read comes back with it.
+    /// The worker, inside a read of a pipe nothing could finish without a writer: every job handed
+    /// over after it waits for that writer, and the answer of the blocked read comes back with it.
     fn hold_the_worker(
         folder: &Path,
         io: &CaptureIo,
     ) -> (Receiver<Result<Vec<u8>, String>>, std::fs::File) {
-        // The worker runs, and takes what it was handed in order: what was
-        // handed over before the pipe is taken before it, and the pipe's read
-        // is where it waits.
+        // The worker runs, and takes what it was handed in order: what was handed over before the
+        // pipe is taken before it, and the pipe's read is where it waits.
         let ahead = io.read(folder.join("nothing.txt"));
         assert!(
             ahead.recv_timeout(Duration::from_secs(10)).is_ok(),
@@ -723,8 +701,8 @@ mod tests {
         (waiting, writer)
     }
 
-    /// A writer that waits holds neither a frame nor the loop that hands it
-    /// over: frames are dropped, and counted, rather than waited on.
+    /// A writer that waits holds neither a frame nor the loop that hands it over: frames are
+    /// dropped, and counted, rather than waited on.
     #[test]
     fn a_slow_writer_never_delays_a_frame() {
         let folder = tempfile::tempdir().expect("a folder");
@@ -749,8 +727,8 @@ mod tests {
             started.elapsed()
         );
 
-        // What the worker waited for finishes, and what it was handed after
-        // it follows: the hand-over never lost one to the drop.
+        // What the worker waited for finishes, and what it was handed after it follows: the
+        // hand-over never lost one to the drop.
         writer.write_all(b"a picture").expect("the pipe is written");
         drop(writer);
         assert_eq!(
@@ -763,15 +741,13 @@ mod tests {
             "nothing of the recorder was said: no recording ran"
         );
 
-        // The next recording counts its own frames: what this one dropped is
-        // its own.
+        // The next recording counts its own frames: what this one dropped is its own.
         io.open(2, None, Vec::new());
         assert_eq!(io.dropped(), 0, "a new recording counts from zero");
     }
 
-    /// Starting a recording hands the work over: the encoder is built on the
-    /// worker, from the first frame, so the loop that started it never waits
-    /// for it.
+    /// Starting a recording hands the work over: the encoder is built on the worker, from the first
+    /// frame, so the loop that started it never waits for it.
     #[test]
     fn starting_a_recording_builds_its_encoder_off_the_loop() {
         let folder = tempfile::tempdir().expect("a folder");
@@ -795,8 +771,8 @@ mod tests {
             "the encoder is built on the worker, not on the loop that started it"
         );
 
-        // The worker gets to it: the encoder is built there, at the first
-        // frame's size, and the recording's file is finished there.
+        // The worker gets to it: the encoder is built there, at the first frame's size, and the
+        // recording's file is finished there.
         writer.write_all(b"a picture").expect("the pipe is written");
         drop(writer);
         assert_eq!(
@@ -812,8 +788,8 @@ mod tests {
         };
         assert_eq!(run, 1, "the note is about the recording that was started");
         if let Err(error) = result {
-            // No encoder on this machine takes the frame: that is said, and
-            // there is no file to check.
+            // No encoder on this machine takes the frame: that is said, and there is no file to
+            // check.
             assert!(!error.is_empty(), "a failure says why");
             return;
         }
@@ -844,16 +820,16 @@ mod tests {
         assert!(!bytes.is_empty(), "the file is written");
     }
 
-    /// A recording the encoder could not finish says what went wrong, and
-    /// whether a file was left: a file it never wrote is not one to keep.
+    /// A recording the encoder could not finish says what went wrong, and whether a file was left:
+    /// a file it never wrote is not one to keep.
     #[test]
     fn a_recording_that_could_not_be_finished_says_so_and_what_it_left() {
         let folder = tempfile::tempdir().expect("a folder");
         let (io, notes) = CaptureIo::new(Arc::new(|| {}));
         let path = folder.path().join("recording.mp4");
         io.open(1, Some(path.clone()), Vec::new());
-        // Held before its first frame and stopped: the encoder is built for a
-        // file that never takes a frame, so finishing it fails.
+        // Held before its first frame and stopped: the encoder is built for a file that never takes
+        // a frame, so finishing it fails.
         io.paused(true);
         assert!(
             io.feed(frame(1280, 800), Vec::new()),

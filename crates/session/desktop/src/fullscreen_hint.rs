@@ -25,9 +25,8 @@ use vello::kurbo::{Affine, Rect};
 
 use crate::i18n::t_args;
 
-/// How long the way out is said over a window that just filled the display:
-/// long enough to read once, short enough to be gone before the person has
-/// settled into what they opened.
+/// How long the way out is said over a window that just filled the display: long enough to read
+/// once, short enough to be gone before the person has settled into what they opened.
 pub const HOLD: Duration = Duration::from_secs(3);
 
 /// The key that leaves full screen, as the desktop's shortcuts name it.
@@ -41,8 +40,7 @@ fn words() -> String {
     )
 }
 
-/// A window that took a display full screen: where it did, when, and when the
-/// words go.
+/// A window that took a display full screen: where it did, when, and when the words go.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Said {
     display: Rect,
@@ -50,8 +48,8 @@ struct Said {
     gone: Instant,
 }
 
-/// The way out as the chrome holds it: which display a window filled, and the
-/// pill once it is painted.
+/// The way out as the chrome holds it: which display a window filled, and the pill once it is
+/// painted.
 #[derive(Debug, Default)]
 pub struct FullscreenHint {
     said: Option<Said>,
@@ -78,12 +76,12 @@ impl FullscreenHint {
         }
     }
 
-    /// The window that filled a display, while its words are up at `now`.
+    /// The window that filled a display, while its words are up at `now` .
     fn up(&self, now: Instant) -> Option<Said> {
         self.said.filter(|said| now < said.gone)
     }
 
-    /// Whether the words are up at `now`.
+    /// Whether the words are up at `now` .
     #[must_use]
     pub fn is_up(&self, now: Instant) -> bool {
         self.up(now).is_some()
@@ -95,14 +93,14 @@ impl FullscreenHint {
         self.pill
     }
 
-    /// Whether a frame is owed at `now`: the words are up, or the last ones
-    /// still stand in the scene and must be taken away.
+    /// Whether a frame is owed at `now` : the words are up, or the last ones still stand in the
+    /// scene and must be taken away.
     #[must_use]
     pub fn needs_redraw(&self, now: Instant) -> bool {
         self.is_up(now) || !self.pill.is_zero_area()
     }
 
-    /// Whether the words fade at `now`, so the frame clock owes frames.
+    /// Whether the words fade at `now` , so the frame clock owes frames.
     #[must_use]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.up(now).is_some_and(|said| {
@@ -121,7 +119,7 @@ impl FullscreenHint {
         })
     }
 
-    /// What it says to assistive technology, while it is up at `now`.
+    /// What it says to assistive technology, while it is up at `now` .
     #[must_use]
     pub fn accessibility(&self, now: Instant) -> Option<AccessNode> {
         self.up(now)?;
@@ -134,8 +132,7 @@ impl FullscreenHint {
         )
     }
 
-    /// Paint the words over the display a window filled, if they are still
-    /// up.
+    /// Paint the words over the display a window filled, if they are still up.
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -210,8 +207,8 @@ fn text_width(pill: Rect, pad_x: f64) -> f32 {
     }
 }
 
-/// Where the pill goes over `display`, for a `text` run and the theme's
-/// spacing: centred across it, clear of its top edge on a narrow one.
+/// Where the pill goes over `display` , for a `text` run and the theme's spacing: centred across
+/// it, clear of its top edge on a narrow one.
 fn pill_rect(display: Rect, (text_width, text_height): (f32, f32), theme: &Theme) -> Rect {
     let pad_x = f64::from(theme.tokens.spacing.s4);
     let pad_y = f64::from(theme.tokens.spacing.s2);

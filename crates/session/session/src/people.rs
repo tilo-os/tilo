@@ -1,11 +1,9 @@
-//! Who is here: the roster the bar's faces open, and every other person's
-//! pointer where they are working.
-//!
-//! The roster reads the desk's collaborators, which the collaboration plane
-//! writes each frame ([`crate::sync`]): the one feed the bar's faces and the
-//! launcher's Happening now list read too. Everyone's pointer is the plane's
-//! tile pointer, drawn over the tile of the tab they are on, in their own
-//! colour.
+//! Who is here: the roster the bar's faces open, and every other person's pointer where they are
+//! working.
+//! The roster reads the desk's collaborators, which the collaboration plane writes each frame
+//! ([`crate::sync`]): the one feed the bar's faces and the launcher's Happening now list read too.
+//! Everyone's pointer is the plane's tile pointer, drawn over the tile of the tab they are on, in
+//! their own colour.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -37,8 +35,8 @@ use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
 
-/// How long after the person pressed elsewhere a press on the faces does not
-/// reopen the roster: their press closed it.
+/// How long after the person pressed elsewhere a press on the faces does not reopen the roster:
+/// their press closed it.
 const DISMISS_GRACE: Duration = Duration::from_millis(250);
 
 /// How long a wave this person sent shows on the row it went to.
@@ -58,14 +56,13 @@ pub(crate) enum PeopleAsk {
     Availability(ui::Availability),
     /// The presence colour they chose, by its id.
     Colour(String),
-    /// Open the Settings page a card action names, such as their identities
-    /// or an identity backup.
+    /// Open the Settings page a card action names, such as their identities or an identity backup.
     Settings(String),
 }
 
-/// The colour this person wears here: the one they chose in their own
-/// settings, else the one their identity derives, so their face is the same
-/// on every surface and on every device that paints them.
+/// The colour this person wears here: the one they chose in their own settings, else the one their
+/// identity derives, so their face is the same on every surface and on every device that paints
+/// them.
 pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
     let chosen = settings_store::identity::COLOUR
         .get()
@@ -75,11 +72,10 @@ pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
     ui::presence::identity_rgb(hue)
 }
 
-/// This person as their own surfaces show them: the name they go by here, and
-/// the identity their face's letters and colour come from — the root key they
-/// are here by, else the id this device sits as. The bar's own avatar and
-/// their own card both read it here, so one person wears one initial and one
-/// colour wherever they see themselves.
+/// This person as their own surfaces show them: the name they go by here, and the identity their
+/// face's letters and colour come from — the root key they are here by, else the id this device
+/// sits as. The bar's own avatar and their own card both read it here, so one person wears one
+/// initial and one colour wherever they see themselves.
 pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String, String) {
     let identity = own
         .user
@@ -95,8 +91,8 @@ pub(crate) fn own_face(own: &crate::sync::OwnPresence, seated: &str) -> (String,
     (name, identity)
 }
 
-/// The card of this person themselves, where the roster lists someone else's:
-/// marked in [`Shown::card_open`] while it stands there.
+/// The card of this person themselves, where the roster lists someone else's: marked in
+/// [`Shown::card_open`] while it stands there.
 const SELF_CARD: &str = "";
 
 /// What the panel shows and where it stands, kept at rest between frames.
@@ -106,34 +102,34 @@ struct Shown {
     rows: Vec<RosterRow>,
     workspace: String,
     expanded: Option<String>,
-    /// Whose card the next frame opens, as the bar's face or the session
-    /// asked: read once the roster has drawn the row it opens under.
+    /// Whose card the next frame opens, as the bar's face or the session asked: read once the
+    /// roster has drawn the row it opens under.
     card_of: Option<String>,
-    /// This person's own card is asked for: the next frame opens it in the
-    /// roster's place, from the model the session builds of them.
+    /// This person's own card is asked for: the next frame opens it in the roster's place, from the
+    /// model the session builds of them.
     own_card: bool,
-    /// The card that stood there goes, as the person asked for the roster
-    /// instead: the next frame closes it.
+    /// The card that stood there goes, as the person asked for the roster instead: the next frame
+    /// closes it.
     close_card: bool,
-    /// Whose card stands in the roster's place, as the panel last drew it:
-    /// while one does, there are no rows to read.
+    /// Whose card stands in the roster's place, as the panel last drew it: while one does, there
+    /// are no rows to read.
     card_open: Option<String>,
     /// Whom the wave they sent goes to, and since when.
     waved: Option<(String, std::time::Instant)>,
     /// Where the pointer was over the desk: the panel opens under it.
     cursor: Option<Point>,
-    /// Who else's pointer is over which tab, as the last frame drew them:
-    /// their name and where they are.
+    /// Who else's pointer is over which tab, as the last frame drew them: their name and where they
+    /// are.
     pointers: Vec<(String, String)>,
-    /// Where each other person's pointer was drawn on this desk, as the last
-    /// frame drew it: their name and the point, in the surface's coordinates.
+    /// Where each other person's pointer was drawn on this desk, as the last frame drew it: their
+    /// name and the point, in the surface's coordinates.
     cursors: Vec<(String, (f64, f64))>,
     /// Where the desk is drawn, as the surface last laid out.
     area: Rect,
 }
 
-/// The People panel and the other people's pointers: one surface above the
-/// chrome, so the desk keeps its own drawing and the panel floats over it.
+/// The People panel and the other people's pointers: one surface above the chrome, so the desk
+/// keeps its own drawing and the panel floats over it.
 pub(crate) struct People {
     host: RefCell<WidgetHost>,
     shown: Rc<RefCell<Shown>>,
@@ -171,8 +167,8 @@ impl People {
         self.redraw();
     }
 
-    /// Open this person's own card, or close it again: the bar's own avatar
-    /// opens who they are here, in the same card as anyone else's.
+    /// Open this person's own card, or close it again: the bar's own avatar opens who they are
+    /// here, in the same card as anyone else's.
     pub(crate) fn show_self(&self) {
         if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(SELF_CARD) {
             self.dismiss();
@@ -188,12 +184,11 @@ impl People {
         self.redraw();
     }
 
-    /// Open the roster at the person `person`, their card in the roster's
-    /// place: a press on them elsewhere (a face in the bar, a wave, the
-    /// launcher) lands here.
+    /// Open the roster at the person `person` , their card in the roster's place: a press on them
+    /// elsewhere (a face in the bar, a wave, the launcher) lands here.
     pub(crate) fn show_person(&self, person: &str) {
-        // A row this roster has not read yet still opens: the next frame
-        // reads it and the card comes up under it.
+        // A row this roster has not read yet still opens: the next frame reads it and the card
+        // comes up under it.
         {
             let mut shown = self.shown.borrow_mut();
             shown.own_card = false;
@@ -218,8 +213,8 @@ impl People {
     pub(crate) fn dismiss(&self) {
         let was_open = self.open.replace(false);
         if was_open {
-            // What the roster shows is cleared before it draws again: the draw holds what it
-            // shows while it draws it.
+            // What the roster shows is cleared before it draws again: the draw holds what it shows
+            // while it draws it.
             {
                 let mut shown = self.shown.borrow_mut();
                 shown.expanded = None;
@@ -232,8 +227,7 @@ impl People {
         }
     }
 
-    /// Draw again, though no input reached the panel: it was opened or closed
-    /// by the session.
+    /// Draw again, though no input reached the panel: it was opened or closed by the session.
     fn redraw(&self) {
         self.host.borrow_mut().relayout();
     }
@@ -243,8 +237,8 @@ impl People {
         self.host.borrow_mut().set_theme(theme);
     }
 
-    /// The other people's pointers as the last frame drew them: their name
-    /// and the point, in the surface's coordinates.
+    /// The other people's pointers as the last frame drew them: their name and the point, in the
+    /// surface's coordinates.
     pub(crate) fn drawn_pointers(&self) -> Vec<(String, (f64, f64))> {
         self.shown.borrow().cursors.clone()
     }
@@ -328,8 +322,8 @@ impl Published for People {
     }
 
     fn revision(&self) -> Option<u64> {
-        // The roster is up or down, and its rows are the frame the host drew:
-        // read it again only when one of those moved.
+        // The roster is up or down, and its rows are the frame the host drew: read it again only
+        // when one of those moved.
         Some(self.host.borrow().revision() | (u64::from(self.open.get()) << 63))
     }
 
@@ -353,10 +347,9 @@ impl Published for People {
         self.open.get()
     }
 
-    /// Who is here, as the open roster lists them: each person's name, what
-    /// they are doing, and where they are. While a person's card stands in
-    /// the roster's place, there are no rows to read: the card is what is
-    /// read, and what is read is what the host drew of it.
+    /// Who is here, as the open roster lists them: each person's name, what they are doing, and
+    /// where they are. While a person's card stands in the roster's place, there are no rows to
+    /// read: the card is what is read, and what is read is what the host drew of it.
     fn accessible_labels(&mut self) -> Vec<String> {
         if !self.open.get() {
             return Vec::new();
@@ -371,15 +364,13 @@ impl Published for People {
         while let Some(node) = pending.pop() {
             labels.extend(node.name.clone());
             labels.extend(node.value.clone());
-            // What the row says of the person: where they are and how they
-            // said they are.
+            // What the row says of the person: where they are and how they said they are.
             labels.extend(node.description.clone());
             pending.extend(node.children);
         }
-        // Where everyone else is working: their pointer over a window of
-        // this desk says so, beside their name. A pointer the roster cannot
-        // put a name to is drawn all the same, but says nothing here: "is in
-        // Notes" names nobody.
+        // Where everyone else is working: their pointer over a window of this desk says so, beside
+        // their name. A pointer the roster cannot put a name to is drawn all the same, but says
+        // nothing here: "is in Notes" names nobody.
         for (who, title) in &shown.pointers {
             if who.trim().is_empty() {
                 continue;
@@ -530,9 +521,9 @@ impl Published for Door {
         self.0.borrow_mut().accessible_labels()
     }
 
-    /// The controls the open roster and its card show, where they stand: the
-    /// same tree assistive technology reads, so a person's card and its
-    /// Message are pressed by name and at the place the person sees.
+    /// The controls the open roster and its card show, where they stand: the same tree assistive
+    /// technology reads, so a person's card and its Message are pressed by name and at the place
+    /// the person sees.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         let people = self.0.borrow();
         if !people.open.get() {
@@ -570,25 +561,24 @@ impl Published for Door {
     }
 }
 
-/// The widget: the roster floating under the bar, and every other person's
-/// pointer over the tile they are on.
+/// The widget: the roster floating under the bar, and every other person's pointer over the tile
+/// they are on.
 struct Panel {
     shown: Rc<RefCell<Shown>>,
     open: Rc<Cell<bool>>,
     handle: DesktopHandle,
-    /// The presence revision this panel last drew: another person's pointer
-    /// moving, arriving or leaving moves it, and a desk where nothing moved
-    /// asks for no frame.
+    /// The presence revision this panel last drew: another person's pointer moving, arriving or
+    /// leaving moves it, and a desk where nothing moved asks for no frame.
     drawn: Cell<u64>,
-    /// The id this device sits as, which the person's own face falls back to
-    /// before their presence names the root key they are here by.
+    /// The id this device sits as, which the person's own face falls back to before their presence
+    /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
-    /// Where the bar's intents go: inviting from the roster's footer is the
-    /// bar's own invite, raised here.
+    /// Where the bar's intents go: inviting from the roster's footer is the bar's own invite,
+    /// raised here.
     intents: Rc<RefCell<Vec<ChromeIntent>>>,
-    /// Whether the person may invite someone into the workspace in front, as
-    /// the session's loop last answered it.
+    /// Whether the person may invite someone into the workspace in front, as the session's loop
+    /// last answered it.
     invitable: Rc<Cell<bool>>,
     /// What the card asked of the session.
     asks: Rc<RefCell<Vec<PeopleAsk>>>,
@@ -599,8 +589,8 @@ struct Panel {
 }
 
 impl Panel {
-    /// Leave the panel: what a press away from it does, whether the roster
-    /// or a person's card stood there.
+    /// Leave the panel: what a press away from it does, whether the roster or a person's card stood
+    /// there.
     fn dismiss(&mut self) {
         {
             let mut shown = self.shown.borrow_mut();
@@ -613,11 +603,10 @@ impl Panel {
         self.open.set(false);
     }
 
-    /// Open the card a face, a wave or the launcher asked for where the
-    /// roster stands, and draw it: the person's card, as the web desk shows
-    /// it, from the same model. The card is the roster's detail — the
-    /// person, with their devices — not a second panel beside it. Answers
-    /// whether the card now stands there.
+    /// Open the card a face, a wave or the launcher asked for where the roster stands, and draw it:
+    /// the person's card, as the web desk shows it, from the same model. The card is the roster's
+    /// detail — the person, with their devices — not a second panel beside it. Answers whether the
+    /// card now stands there.
     fn draw_card(
         &mut self,
         scene: &mut ui::vello::Scene,
@@ -668,17 +657,16 @@ impl Panel {
         let row = rows.iter().find(|row| row.id == who)?;
         let here = sync.here();
         let here = here.borrow();
-        // Chat holds the conversation each pair of people shares, on the
-        // record that person's root key names; someone whose key is not
-        // known here (a guest, before the host's own line arrives) has none.
+        // Chat holds the conversation each pair of people shares, on the record that person's root
+        // key names; someone whose key is not known here (a guest, before the host's own line
+        // arrives) has none.
         let key = here.user_of(&row.id).map(str::to_owned);
         let linked = key
             .as_deref()
             .map(|key| here.linked_of(key).to_vec())
             .unwrap_or_default();
-        // A conversation is Chat's, on the root key both people know: a
-        // guest this desk knows no key for, and a device without Chat, have
-        // none to open.
+        // A conversation is Chat's, on the root key both people know: a guest this desk knows no
+        // key for, and a device without Chat, have none to open.
         let can_message = !row.is_agent && key.is_some() && Self::chat_installed();
         // Their devices are the person's, whichever of them the roster lists.
         let devices = if row.is_agent {
@@ -688,8 +676,8 @@ impl Panel {
         };
         Some(ProfileModel {
             name: row.label.clone(),
-            // The face's letters and colour are the person's: the same on
-            // every device they are here on.
+            // The face's letters and colour are the person's: the same on every device they are
+            // here on.
             identity: key.clone().unwrap_or_else(|| row.id.clone()),
             colour: Some(row.color),
             key,
@@ -708,10 +696,9 @@ impl Panel {
         })
     }
 
-    /// This person's own card: who they are here, as the bar names them, what
-    /// they say of themselves, the devices they are here on, and what they
-    /// can do about their identity. The same card as anyone else's, with the
-    /// rows only their own host offers.
+    /// This person's own card: who they are here, as the bar names them, what they say of
+    /// themselves, the devices they are here on, and what they can do about their identity. The
+    /// same card as anyone else's, with the rows only their own host offers.
     fn own_model(&self) -> ProfileModel {
         let own = self
             .sync
@@ -723,8 +710,8 @@ impl Panel {
             let here = here.borrow();
             here.devices_of(&sync.publisher().to_string())
         });
-        // The identity's key is the person's on every device: the card shows
-        // it short, with Copy, and the roster looks every face up by it.
+        // The identity's key is the person's on every device: the card shows it short, with Copy,
+        // and the roster looks every face up by it.
         let key = own.user.clone();
         let (red, green, blue) = own_rgb(&identity);
         ProfileModel {
@@ -744,9 +731,8 @@ impl Panel {
         }
     }
 
-    /// What the session offers this person about who they are: the pages
-    /// where their identities are kept and backed up, and where another of
-    /// their devices is paired.
+    /// What the session offers this person about who they are: the pages where their identities are
+    /// kept and backed up, and where another of their devices is paired.
     fn own_actions() -> Vec<ProfileAction> {
         vec![
             ProfileAction {
@@ -801,10 +787,9 @@ impl Panel {
                 ProfileChoice::Message(key) => {
                     self.asks.borrow_mut().push(PeopleAsk::Message { key });
                 }
-                // The rows of this person's own card: the session keeps
-                // their name, what they say of themselves and how available
-                // they are, and opens the pages their actions name. Nothing
-                // here reaches anyone else's card.
+                // The rows of this person's own card: the session keeps their name, what they say
+                // of themselves and how available they are, and opens the pages their actions name.
+                // Nothing here reaches anyone else's card.
                 ProfileChoice::Rename(name) => {
                     self.asks.borrow_mut().push(PeopleAsk::Rename(name));
                 }
@@ -824,9 +809,9 @@ impl Panel {
                             .push(PeopleAsk::Settings(link.to_owned()));
                     }
                 }
-                // Nobody else's card asks these of this session, and this
-                // person's own keeps none of them yet: what people here see
-                // is the workspace's own, and the desktop's hints its own.
+                // Nobody else's card asks these of this session, and this person's own keeps none
+                // of them yet: what people here see is the workspace's own, and the desktop's hints
+                // its own.
                 ProfileChoice::Link(_)
                 | ProfileChoice::Unlink(_)
                 | ProfileChoice::Accept(_)
@@ -838,8 +823,8 @@ impl Panel {
         }
     }
 
-    /// Read who is here, as the plane wrote them into the desk's
-    /// collaborators this frame: the roster, and the workspace it is of.
+    /// Read who is here, as the plane wrote them into the desk's collaborators this frame: the
+    /// roster, and the workspace it is of.
     fn read_roster(&self) -> (Vec<RosterRow>, String) {
         let own = self
             .sync
@@ -903,9 +888,8 @@ impl Panel {
                 };
                 self.open_activity(&author);
             }
-            // Inviting from here is the bar's own invite: the roster offers
-            // its footer only while the person may hand out a link into this
-            // workspace.
+            // Inviting from here is the bar's own invite: the roster offers its footer only while
+            // the person may hand out a link into this workspace.
             CollaboratorsHit::Invite => {
                 self.intents.borrow_mut().push(ChromeIntent::Invite);
             }
@@ -926,8 +910,8 @@ impl Panel {
         presence: &ui::presence::PresenceCtx,
         shown: &mut Shown,
     ) {
-        // The card is the roster's detail: opened on one of its rows, it
-        // stands where the roster would, and the rows wait behind it.
+        // The card is the roster's detail: opened on one of its rows, it stands where the roster
+        // would, and the rows wait behind it.
         let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
             self.draw_card(scene, transform, text, theme, presence, shown)
         } else {
@@ -971,9 +955,9 @@ impl Panel {
             rows: &rows,
             unavailable: None,
             exposure: None,
-            // Inviting is the invite sheet's own surface here, offered from
-            // the footer while the person may hand out a link into this
-            // workspace; keeping the list on screen is not offered yet.
+            // Inviting is the invite sheet's own surface here, offered from the footer while the
+            // person may hand out a link into this workspace; keeping the list on screen is not
+            // offered yet.
             may_invite: self.invitable.get(),
             may_pin: false,
             followed_id: followed.as_deref(),
@@ -1024,8 +1008,8 @@ impl Widget for Panel {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt;
-        // The card belongs to the roster: a roster that closed took it with
-        // it, and the card's place among these children with that.
+        // The card belongs to the roster: a roster that closed took it with it, and the card's
+        // place among these children with that.
         if !self.open.get() {
             self.profile.close();
         }
@@ -1098,9 +1082,8 @@ impl Widget for Panel {
         false
     }
 
-    /// The card opening or closing changes this panel's tree: the row it
-    /// stands under is laid out again, and a card that went away leaves no
-    /// node behind.
+    /// The card opening or closing changes this panel's tree: the row it stands under is laid out
+    /// again, and a card that went away leaves no node behind.
     fn take_structure_dirty(&mut self) -> bool {
         let open = self.profile.is_open();
         let card = self.profile.take_structure_dirty();
@@ -1116,19 +1099,17 @@ impl Widget for Panel {
         presence: &ui::presence::PresenceCtx,
     ) {
         let revision = self.presence_revision();
-        // The card is this panel's own, in the roster's place: what it shows
-        // is read here, while the roster's state is borrowed.
+        // The card is this panel's own, in the roster's place: what it shows is read here, while
+        // the roster's state is borrowed.
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let open = self.open.get();
         if !open {
-            // The card stood in the panel: closed with it, never left for the
-            // next opening to find.
+            // The card stood in the panel: closed with it, never left for the next opening to find.
             self.profile.close();
         }
-        // Where everyone else's pointer is now, from the plane, each placed
-        // where the tile of the tab it is over stands on the desk, and what
-        // each tab is called.
+        // Where everyone else's pointer is now, from the plane, each placed where the tile of the
+        // tab it is over stands on the desk, and what each tab is called.
         let mut over: Vec<(u64, String, f64, f64)> = Vec::new();
         let mut titles: HashMap<u64, String> = HashMap::new();
         if let Some(sync) = &self.sync
@@ -1151,8 +1132,8 @@ impl Widget for Panel {
                 .map(|(publisher, tab, x, y)| (tab, publisher, x, y))
                 .collect();
         }
-        // Who is here is read once, for the rows, the card opened on one of
-        // them and their pointers.
+        // Who is here is read once, for the rows, the card opened on one of them and their
+        // pointers.
         if open || !over.is_empty() {
             let (rows, workspace) = self.read_roster();
             shown.rows = rows;
@@ -1192,18 +1173,16 @@ impl Widget for Panel {
         if !self.open.get() {
             return;
         }
-        // The card stands where the roster would, so there are no rows under
-        // it to press: it takes the keyboard and the presses itself, and a
-        // press away from it leaves the panel as a press away from the roster
-        // does.
+        // The card stands where the roster would, so there are no rows under it to press: it takes
+        // the keyboard and the presses itself, and a press away from it leaves the panel as a press
+        // away from the roster does.
         if self.profile.is_open()
             && let Some(node) = self.card_node
         {
             self.profile
                 .handle_event(event, &mut ctx.reborrow(ctx.path, node));
-            // A press on one of the card's controls is the control's own
-            // verb, answered where the widget hosts it: the same drain a
-            // window's host runs for what its tree publishes.
+            // A press on one of the card's controls is the control's own verb, answered where the
+            // widget hosts it: the same drain a window's host runs for what its tree publishes.
             let path = ctx.path;
             ui::widget::controls::start_pending_control_invocations(
                 &mut self.profile,
@@ -1224,8 +1203,8 @@ impl Widget for Panel {
                 return;
             }
         }
-        // The roster's state is its own handle, so what a press does may
-        // change the card this panel hosts in its place.
+        // The roster's state is its own handle, so what a press does may change the card this panel
+        // hosts in its place.
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
@@ -1239,10 +1218,9 @@ impl Widget for Panel {
         self.follow(hit, &mut shown);
     }
 
-    /// Whether the panel owes a frame: while it is open, because its rows
-    /// move with the people on the desk; closed, only once somebody else's
-    /// pointer has moved or left since the last frame. A desk where a remote
-    /// pointer rests where it was drawn asks for no frame.
+    /// Whether the panel owes a frame: while it is open, because its rows move with the people on
+    /// the desk; closed, only once somebody else's pointer has moved or left since the last frame.
+    /// A desk where a remote pointer rests where it was drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
         self.open.get() || self.presence_revision() != self.drawn.get()
     }
@@ -1256,8 +1234,8 @@ impl Widget for Panel {
     }
 }
 
-/// Where the roster stands on the desk: under the bar, at the desk's right
-/// edge. A card opened for one of its rows stands exactly there, in its place.
+/// Where the roster stands on the desk: under the bar, at the desk's right edge. A card opened for
+/// one of its rows stands exactly there, in its place.
 fn roster_place(area: Rect, theme: &Theme) -> Rect {
     let metrics = &theme.tokens.metrics;
     let spacing = &theme.tokens.spacing;
@@ -1269,10 +1247,9 @@ fn roster_place(area: Rect, theme: &Theme) -> Rect {
     Rect::new(right - width, top, right, top)
 }
 
-/// Every other person's pointer over the desk now, in their own colour, where
-/// the plane placed it: `over` names their tab, who they are and where on the
-/// desk they are, and `who` is what everyone here is called and wears, by the
-/// device their presence comes from.
+/// Every other person's pointer over the desk now, in their own colour, where the plane placed it:
+/// `over` names their tab, who they are and where on the desk they are, and `who` is what everyone
+/// here is called and wears, by the device their presence comes from.
 fn peer_cursors(
     who: &HashMap<String, (String, (u8, u8, u8))>,
     over: &[(u64, String, f64, f64)],

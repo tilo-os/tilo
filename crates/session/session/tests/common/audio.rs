@@ -1,6 +1,5 @@
-//! A sound card in memory, for the tests that host the audio service: the
-//! service reads and controls the graph the test hands it, and the actions a
-//! test invokes reach that graph.
+//! A sound card in memory, for the tests that host the audio service: the service reads and
+//! controls the graph the test hands it, and the actions a test invokes reach that graph.
 
 use std::sync::Mutex;
 

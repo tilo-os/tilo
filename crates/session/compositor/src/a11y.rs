@@ -1,11 +1,9 @@
-//! What the person chose to make the desktop easier to use, as the
-//! compositor applies it: typing and pointing assists, the pointer's size and
-//! crosshair, the colour filter, the magnifier and the visual alert.
-//!
-//! The compositor reads no settings store; the session fills an [`A11y`] from
-//! the person's accessibility settings and hands it over
-//! ([`crate::Compositor::set_a11y`]). Everything here applies live, and to
-//! the outputs and devices that appear later.
+//! What the person chose to make the desktop easier to use, as the compositor applies it: typing
+//! and pointing assists, the pointer's size and crosshair, the colour filter, the magnifier and the
+//! visual alert.
+//! The compositor reads no settings store; the session fills an [`A11y`] from the person's
+//! accessibility settings and hands it over ([`crate::Compositor::set_a11y`]). Everything here
+//! applies live, and to the outputs and devices that appear later.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -30,9 +28,8 @@ pub const MAX_CURSOR_SIZE: u32 = 128;
 pub const LENS_MAX: (i32, i32) = (420, 280);
 /// The largest share of an output the lens covers.
 pub const LENS_SHARE: f64 = 0.7;
-/// How long a visual alert stays on screen: lit at first, then fading. Short
-/// enough not to get in the way, long enough to be noticed from across a
-/// desk.
+/// How long a visual alert stays on screen: lit at first, then fading. Short enough not to get in
+/// the way, long enough to be noticed from across a desk.
 pub const FLASH: Duration = Duration::from_millis(450);
 
 /// The step between frames while the alert fades.
@@ -41,8 +38,7 @@ pub(crate) const FLASH_STEP: Duration = Duration::from_millis(16);
 /// How the magnified image is shown.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MagnifierView {
-    /// A lens around what has the focus; the rest of the screen stays as it
-    /// is.
+    /// A lens around what has the focus; the rest of the screen stays as it is.
     #[default]
     Lens,
     /// The whole screen magnified, moving with what has the focus.
@@ -86,8 +82,7 @@ pub struct CursorA11y {
     pub theme: String,
     /// The pointer's size in logical pixels.
     pub size: u32,
-    /// Draw full-height and full-width guides through the pointer, so it is
-    /// easy to find on screen.
+    /// Draw full-height and full-width guides through the pointer, so it is easy to find on screen.
     pub crosshair: bool,
 }
 
@@ -113,10 +108,10 @@ pub struct A11y {
     pub visual_alerts: bool,
 }
 
-/// What the magnifier looks at, in output-local logical coordinates: the
-/// pointer and the focused window, each with when it last moved. Whichever
-/// moved last leads, so tabbing through a form without touching the mouse
-/// shows the control reached, and moving the pointer hands the view back.
+/// What the magnifier looks at, in output-local logical coordinates: the pointer and the focused
+/// window, each with when it last moved. Whichever moved last leads, so tabbing through a form
+/// without touching the mouse shows the control reached, and moving the pointer hands the view
+/// back.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub(crate) struct Focus {
     pointer: Option<(Point<f64, Logical>, Instant)>,
@@ -124,8 +119,8 @@ pub(crate) struct Focus {
 }
 
 impl Focus {
-    /// Note where the pointer and the focused window are, `None` when they
-    /// are elsewhere. Only a change counts as movement.
+    /// Note where the pointer and the focused window are, `None` when they are elsewhere. Only a
+    /// change counts as movement.
     pub(crate) fn observe(
         &mut self,
         pointer: Option<Point<f64, Logical>>,
@@ -173,14 +168,13 @@ pub(crate) struct Visual {
     pub(crate) focus: Focus,
     /// When the visual alert started, and how long it takes to fade out.
     pub(crate) flash: Option<(Instant, Duration)>,
-    /// Whether an alert was asked for since the last frame drew one: the
-    /// frame after it starts the alert, so no time between the two takes it.
+    /// Whether an alert was asked for since the last frame drew one: the frame after it starts the
+    /// alert, so no time between the two takes it.
     pub(crate) flash_pending: bool,
 }
 
 impl Visual {
-    /// How strong the visual alert is at `now`: `0.0` when it is not
-    /// running.
+    /// How strong the visual alert is at `now` : `0.0` when it is not running.
     pub(crate) fn flash_alpha(&self, now: Instant) -> f32 {
         let Some((started, length)) = self.flash else {
             return 0.0;
@@ -197,8 +191,8 @@ impl Visual {
         (left * 2.0).min(1.0)
     }
 
-    /// Whether the alert is still on screen at `now`, or was a step ago: the
-    /// frame that draws it gone is still due.
+    /// Whether the alert is still on screen at `now` , or was a step ago: the frame that draws it
+    /// gone is still due.
     pub(crate) fn flashing(&self, now: Instant) -> bool {
         self.flash.is_some_and(|(started, length)| {
             now.saturating_duration_since(started) < length.saturating_add(FLASH_STEP)
@@ -227,8 +221,8 @@ pub(crate) fn change(output: &Output, change: impl FnOnce(&mut Visual)) {
     }
 }
 
-/// Put `a11y` on `output`: the filter, the magnifier's view and the
-/// crosshair, for an output found now or later.
+/// Put `a11y` on `output` : the filter, the magnifier's view and the crosshair, for an output found
+/// now or later.
 pub(crate) fn seed(output: &Output, a11y: &A11y) {
     change(output, |visual| {
         visual.color_filter = a11y.color_filter;
@@ -237,9 +231,8 @@ pub(crate) fn seed(output: &Output, a11y: &A11y) {
     });
 }
 
-/// Where the magnifier looks on `output` at `now`, in its physical pixels:
-/// the pointer or the focused window, whichever moved last. `None` when
-/// neither is on this output.
+/// Where the magnifier looks on `output` at `now` , in its physical pixels: the pointer or the
+/// focused window, whichever moved last. `None` when neither is on this output.
 pub(crate) fn follow(
     output: &Output,
     state: &State,
@@ -259,7 +252,7 @@ pub(crate) fn follow(
     Some(centre.to_physical_precise_round(scale))
 }
 
-/// The middle of `rect`, as fractions of a logical pixel.
+/// The middle of `rect` , as fractions of a logical pixel.
 fn centre_of(rect: Rectangle<i32, Logical>) -> Point<f64, Logical> {
     Point::from((
         f64::from(rect.loc.x) + f64::from(rect.size.w) / 2.0,
@@ -278,8 +271,8 @@ fn focused_rect(state: &State) -> Option<Rectangle<i32, Logical>> {
     Some(Rectangle::new(location, window.geometry().size))
 }
 
-/// Start the visual alert on every output at `now`: what a person who cannot
-/// hear an alert sound would otherwise miss.
+/// Start the visual alert on every output at `now` : what a person who cannot hear an alert sound
+/// would otherwise miss.
 pub(crate) fn flash_all(state: &State, now: Instant) {
     for output in state.space.outputs() {
         change(output, |visual| {
@@ -289,11 +282,10 @@ pub(crate) fn flash_all(state: &State, now: Instant) {
     }
 }
 
-/// Start the alert on every output that was asked for one and has not drawn it
-/// yet, at `now`: it runs from the frame that first shows it, so a frame that
-/// took longer than the alert's run to draw cannot put it away unseen — a
-/// machine busy enough to draw one frame in half a second still tells the
-/// person what happened.
+/// Start the alert on every output that was asked for one and has not drawn it yet, at `now` : it
+/// runs from the frame that first shows it, so a frame that took longer than the alert's run to
+/// draw cannot put it away unseen — a machine busy enough to draw one frame in half a second still
+/// tells the person what happened.
 pub(crate) fn start_flash(state: &State, now: Instant) {
     for output in state.space.outputs() {
         change(output, |visual| {
@@ -306,9 +298,9 @@ pub(crate) fn start_flash(state: &State, now: Instant) {
     }
 }
 
-/// Put the visual alert away on every output whose run is over, and draw the
-/// frame that shows the scene without it: an alert whose last frame came late
-/// is put away by the next one, rather than left on screen.
+/// Put the visual alert away on every output whose run is over, and draw the frame that shows the
+/// scene without it: an alert whose last frame came late is put away by the next one, rather than
+/// left on screen.
 pub(crate) fn finish_flash(state: &mut State, now: Instant) {
     let ended: Vec<Output> = state
         .space
@@ -329,17 +321,16 @@ pub(crate) fn finish_flash(state: &mut State, now: Instant) {
     state.mark_redraw_all();
 }
 
-/// Prepare every output's visual alert for the frame about to be drawn at
-/// `now`: an alert asked for since the last frame starts now, and one whose
-/// run is over is put away. Every frame goes through here — the session's own
-/// frames and the ones a display's vertical blank draws — so an alert runs
-/// from a frame that shows it whichever frame that is.
+/// Prepare every output's visual alert for the frame about to be drawn at `now` : an alert asked
+/// for since the last frame starts now, and one whose run is over is put away. Every frame goes
+/// through here — the session's own frames and the ones a display's vertical blank draws — so an
+/// alert runs from a frame that shows it whichever frame that is.
 pub(crate) fn begin_frame(state: &mut State, now: Instant) {
     start_flash(state, now);
     finish_flash(state, now);
 }
 
-/// Whether any output is showing the visual alert at `now`.
+/// Whether any output is showing the visual alert at `now` .
 pub(crate) fn flashing(state: &State, now: Instant) -> bool {
     state
         .space
@@ -397,9 +388,8 @@ mod tests {
         assert!(!a11y.assists.mouse_keys);
     }
 
-    /// A theme applied while the session runs is the pointer's from the same
-    /// update: no restart, and no theme has to be installed here for it to
-    /// name one.
+    /// A theme applied while the session runs is the pointer's from the same update: no restart,
+    /// and no theme has to be installed here for it to name one.
     #[test]
     fn a_new_theme_redraws_the_pointer_at_once() {
         let mut compositor = crate::Compositor::headless(Box::new(crate::StackPolicy))
@@ -541,8 +531,8 @@ mod tests {
             .add_output(&crate::OutputConfig::new("HEADLESS-1", 640, 480))
             .expect("an output");
         compositor.draw_frame().expect("a frame");
-        // Asked for well before the frame that draws it: the frame the machine
-        // was busy with ran the alert's whole length.
+        // Asked for well before the frame that draws it: the frame the machine was busy with ran
+        // the alert's whole length.
         let asked_at = Instant::now()
             .checked_sub(Duration::from_secs(2))
             .expect("two seconds before now");

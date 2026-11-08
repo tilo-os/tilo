@@ -1,17 +1,14 @@
-//! A workspace's history, served to the Activity app: the activity model
-//! (What's new, History and Replay) reading a host's retained history, as
-//! a native session serves its own ([`crate::session::ActivityRequests`]).
-//!
-//! The model only reads the history: it works on an [`ActivitySnapshot`]
-//! the host built from its admitted workspace document, and on detached copies
-//! of the records the workspace's windows show. What it keeps of its own is
-//! what this device has seen, through the host ([`HistorySource::host`]).
-//!
-//! The surface reaches the model only through [`open_activity`], which a
-//! host names in [`HistorySource::activity_pane`]. A host that would rather
-//! not carry the model's code from the start (the browser desktop, which
-//! fetches it as its own module the first time someone opens Activity)
-//! answers [`ActivityPaneCode::Loading`] until it has it.
+//! A workspace's history, served to the Activity app: the activity model (What's new, History and
+//! Replay) reading a host's retained history, as a native session serves its own
+//! ([`crate::session::ActivityRequests`]).
+//! The model only reads the history: it works on an [`ActivitySnapshot`] the host built from its
+//! admitted workspace document, and on detached copies of the records the workspace's windows show.
+//! What it keeps of its own is what this device has seen, through the host
+//! ([`HistorySource::host`]).
+//! The surface reaches the model only through [`open_activity`], which a host names in
+//! [`HistorySource::activity_pane`]. A host that would rather not carry the model's code from the
+//! start (the browser desktop, which fetches it as its own module the first time someone opens
+//! Activity) answers [`ActivityPaneCode::Loading`] until it has it.
 use std::rc::Rc;
 
 use serde_json::{Map, Value};
@@ -27,17 +24,16 @@ use crate::session::ActivityReads;
 /// Where a surface's workspace history comes from. Without one, Catch up,
 /// Explore and Replay stay unavailable.
 pub trait HistorySource {
-    /// `workspace`'s admitted history: the desktop together with the workspace
-    /// document whose changes are its history. `None` when the host retains
-    /// none for it.
+    /// `workspace` 's admitted history: the desktop together with the workspace document whose
+    /// changes are its history. `None` when the host retains none for it.
     fn workspace_history(
         &mut self,
         tree: &DesktopTree,
         workspace: WorkspaceSlot,
     ) -> Option<ActivitySnapshot>;
 
-    /// Detached copies of the records `workspace`'s windows show, each with
-    /// its whole change history.
+    /// Detached copies of the records `workspace` 's windows show, each with its whole change
+    /// history.
     fn record_histories(
         &mut self,
         tree: &DesktopTree,
@@ -49,15 +45,14 @@ pub trait HistorySource {
         false
     }
 
-    /// What the model may ask of the host: identity, the device's private
-    /// seen frontiers, application names.
+    /// What the model may ask of the host: identity, the device's private seen frontiers,
+    /// application names.
     fn host(&self) -> Rc<dyn ActivityHost>;
 
     /// Name the authors the host knows before the model reads changes.
     fn register_authors(&self, _authors: &mut ui::AuthorDirectory) {}
 
-    /// The window showing `target`, focused when the person opens it from
-    /// the history.
+    /// The window showing `target` , focused when the person opens it from the history.
     fn resource_tab(
         &self,
         _tree: &DesktopTree,
@@ -66,16 +61,14 @@ pub trait HistorySource {
         None
     }
 
-    /// Changes whenever a record the history reads changed, so an open
-    /// model reads again.
+    /// Changes whenever a record the history reads changed, so an open model reads again.
     fn revision(&self) -> u64 {
         0
     }
 
-    /// The code that opens the model: linked in, unless the host overrides
-    /// this. Asked each time the model is to open, so a host still loading
-    /// it answers [`ActivityPaneCode::Loading`] and wakes the surface once
-    /// it can answer [`ActivityPaneCode::Ready`].
+    /// The code that opens the model: linked in, unless the host overrides this. Asked each time
+    /// the model is to open, so a host still loading it answers [`ActivityPaneCode::Loading`] and
+    /// wakes the surface once it can answer [`ActivityPaneCode::Ready`].
     fn activity_pane(&self) -> ActivityPaneCode {
         ActivityPaneCode::Ready(open_activity)
     }
@@ -99,9 +92,8 @@ pub type OpenActivity =
 /// An open activity model, as [`open_activity`] hands it to the surface.
 pub struct ActivityModel(pub(super) Box<dyn Served>);
 
-/// Open the activity model of `workspace`, on the history `source` keeps
-/// for the desktop `tree` at `revision`. `None` when `source` retains no
-/// history for that workspace.
+/// Open the activity model of `workspace` , on the history `source` keeps for the desktop `tree` at
+/// `revision` . `None` when `source` retains no history for that workspace.
 pub fn open_activity(
     source: &mut dyn HistorySource,
     tree: &DesktopTree,
@@ -112,15 +104,14 @@ pub fn open_activity(
         .map(|model| ActivityModel(Box::new(model)))
 }
 
-/// What the surface asks of an open model. The surface calls it only
-/// through the model's vtable, so none of the model's code is reachable
-/// from the surface itself.
+/// What the surface asks of an open model. The surface calls it only through the model's vtable, so
+/// none of the model's code is reachable from the surface itself.
 pub(super) trait Served: ActivityReads {
     /// The workspace whose history the model holds.
     fn workspace(&self) -> WorkspaceSlot;
     /// Read the history again when the desktop or a record changed since.
     fn follow(&mut self, source: &mut dyn HistorySource, tree: &DesktopTree, revision: u64);
-    /// Run write `action` with `arguments`; the record it opens, if any.
+    /// Run write `action` with `arguments` ; the record it opens, if any.
     fn act(
         &mut self,
         action: &str,

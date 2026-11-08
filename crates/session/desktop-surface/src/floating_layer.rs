@@ -1,11 +1,9 @@
-//! The floating layer as the person meets it: an activity's card drawn in the
-//! toolkit's floating frame, the presses on its controls, dragging it loose
-//! and snapping it to an edge, and the group assistive technology reads.
-//!
-//! The layer decides nothing about the activities themselves. It shows the
-//! cards it is handed ([`ui::floating_layer::Card`] from the session), places
-//! them with the toolkit's pure layout ([`ui::floating_layer`]) and puts what
-//! the person does as [`Ask`]s, the session's to carry out.
+//! The floating layer as the person meets it: an activity's card drawn in the toolkit's floating
+//! frame, the presses on its controls, dragging it loose and snapping it to an edge, and the group
+//! assistive technology reads.
+//! The layer decides nothing about the activities themselves. It shows the cards it is handed
+//! ([`ui::floating_layer::Card`] from the session), places them with the toolkit's pure layout
+//! ([`ui::floating_layer`]) and puts what the person does as [`Ask`]s, the session's to carry out.
 
 use ui::a11y::{AccessNode, AccessState, Role};
 use ui::floating_layer::{
@@ -47,9 +45,8 @@ pub enum Ask {
     },
 }
 
-/// Whether `card` stands on screen exactly as something in `cards` does. An
-/// app's card is its window's to draw, so whatever happens to it, the layer
-/// has nothing of its own to repaint.
+/// Whether `card` stands on screen exactly as something in `cards` does. An app's card is its
+/// window's to draw, so whatever happens to it, the layer has nothing of its own to repaint.
 fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
     card.rich
         || cards.iter().any(|other| {
@@ -60,8 +57,8 @@ fn drawn_like(cards: &[Placed], card: &Placed) -> bool {
         })
 }
 
-/// How far a press lands from a card's progress bar and still scrubs it: the
-/// pointer target the bar's own height makes too thin to hit.
+/// How far a press lands from a card's progress bar and still scrubs it: the pointer target the
+/// bar's own height makes too thin to hit.
 const SCRUB_REACH: f64 = 8.0;
 /// The least the pointer moves before a press counts as a drag.
 const DRAG_SLOP: f64 = 4.0;
@@ -92,8 +89,8 @@ pub struct FloatingLayer {
     focus: Option<(String, String)>,
     /// A drag along a card's progress bar, until the pointer lifts.
     scrub: Option<Scrub>,
-    /// The cards that arrived, left, moved, changed or were pressed since the
-    /// last frame: the next frame damages their ground and nothing else.
+    /// The cards that arrived, left, moved, changed or were pressed since the last frame: the next
+    /// frame damages their ground and nothing else.
     changed: Vec<Rect>,
     /// What the last frame changed, shadows and all.
     damage: Rect,
@@ -113,7 +110,7 @@ struct Scrub {
 }
 
 impl FloatingLayer {
-    /// Show the cards `cards` on `placement`, docking them in `corner`.
+    /// Show the cards `cards` on `placement` , docking them in `corner` .
     pub fn set(&mut self, placement: Placement, corner: Corner, cards: Vec<Card>) -> bool {
         let changed = self.placement != placement || self.corner != corner || self.cards != cards;
         if changed {
@@ -125,8 +122,7 @@ impl FloatingLayer {
         changed
     }
 
-    /// Expand the phone-width card the person pulled out of the bar, or
-    /// collapse it back.
+    /// Expand the phone-width card the person pulled out of the bar, or collapse it back.
     pub fn set_expanded(&mut self, expanded: bool) {
         if self.expanded != expanded {
             self.expanded = expanded;
@@ -145,8 +141,8 @@ impl FloatingLayer {
         {
             self.drag = None;
         }
-        // A card that arrived, went, moved or changed repaints where it was
-        // and where it is; the others stay as the screen has them.
+        // A card that arrived, went, moved or changed repaints where it was and where it is; the
+        // others stay as the screen has them.
         for card in &self.layout.cards {
             if !drawn_like(&layout.cards, card) {
                 self.changed.push(self.dragged(card));
@@ -167,8 +163,7 @@ impl FloatingLayer {
         &self.layout
     }
 
-    /// What the layer shows, for the host's hit testing and assistive
-    /// technology.
+    /// What the layer shows, for the host's hit testing and assistive technology.
     #[must_use]
     pub fn shown(&self) -> Shown {
         Shown {
@@ -187,8 +182,8 @@ impl FloatingLayer {
         }
     }
 
-    /// Whether the layer takes a point: the cards' shapes, never their
-    /// shadows, so a press beside a card reaches the window under it.
+    /// Whether the layer takes a point: the cards' shapes, never their shadows, so a press beside a
+    /// card reaches the window under it.
     #[must_use]
     pub fn accepts(&self, point: Point) -> bool {
         self.drawn().any(|card| card.rect.contains(point))
@@ -216,8 +211,8 @@ impl FloatingLayer {
             self.paint_card(scene, transform, text_renderer, theme, rect, card);
             paint_card_edge(scene, transform, rect, theme);
         }
-        // The frame changes the ground of what changed, shadows and all, and
-        // nothing else: a card that only ticks damages its own card.
+        // The frame changes the ground of what changed, shadows and all, and nothing else: a card
+        // that only ticks damages its own card.
         let mut damage: Option<Rect> = None;
         for rect in std::mem::take(&mut self.changed) {
             let bounds = painted_bounds(rect, theme);
@@ -227,7 +222,7 @@ impl FloatingLayer {
         self.owed = false;
     }
 
-    /// Keyboard focus left or reached the cards at `indices`: each repaints.
+    /// Keyboard focus left or reached the cards at `indices` : each repaints.
     fn refocused(&mut self, indices: &[usize]) {
         for index in indices {
             if let Some(card) = self.layout.cards.get(*index) {
@@ -243,9 +238,8 @@ impl FloatingLayer {
             .map_or(card.rect, |drag| drag.rect)
     }
 
-    /// The progress bar the card `app`/`activity` shows, when the song says
-    /// how long it is (the only thing a seek means), and where the card
-    /// stands.
+    /// The progress bar the card `app` /`activity` shows, when the song says how long it is (the
+    /// only thing a seek means), and where the card stands.
     fn seek_bar(layer: &Layer, app: &str, activity: &str) -> Option<(Rect, Rect)> {
         let card = layer
             .cards
@@ -302,7 +296,7 @@ impl FloatingLayer {
         self.owed
     }
 
-    /// The pointer moved to `point`.
+    /// The pointer moved to `point` .
     pub fn pointer_motion(&mut self, point: Point) -> bool {
         if let Some(scrub) = &mut self.scrub {
             let Some((bar, card)) = Self::seek_bar(&self.layout, &scrub.app, &scrub.activity)
@@ -336,7 +330,7 @@ impl FloatingLayer {
         true
     }
 
-    /// A pointer button went down (`true`) or up at `point`.
+    /// A pointer button went down (`true`) or up at `point` .
     pub fn pointer_button(&mut self, point: Point, pressed: bool) -> Vec<Ask> {
         if pressed {
             return self.press_at(point);
@@ -384,8 +378,8 @@ impl FloatingLayer {
                 activity: card.summary.id,
             }];
         }
-        // Anywhere else on the card takes hold of it: the card follows the
-        // pointer until it is let go.
+        // Anywhere else on the card takes hold of it: the card follows the pointer until it is let
+        // go.
         let at = card.rect;
         self.drag = Some(Drag {
             app: card.app,
@@ -421,8 +415,8 @@ impl FloatingLayer {
             {
                 self.changed.push(card.rect);
             }
-            // A press that lifts off its control runs nothing, as a button
-            // everywhere else on the desktop does not.
+            // A press that lifts off its control runs nothing, as a button everywhere else on the
+            // desktop does not.
             let runs = self
                 .layout
                 .cards
@@ -453,8 +447,8 @@ impl FloatingLayer {
             self.owed = true;
             return Vec::new();
         }
-        // Let go, the card settles onto the edge it was thrown near, kept
-        // inside the work area with a strip the person can grab again.
+        // Let go, the card settles onto the edge it was thrown near, kept inside the work area with
+        // a strip the person can grab again.
         let work = self.placement.work;
         let settled = ui::floating_surface::snap_to_edges(drag.rect, work, EDGE_INSET);
         let settled = keep_inside(settled.size(), settled, work, EDGE_INSET, EDGE_INSET);
@@ -514,8 +508,8 @@ impl FloatingLayer {
         }
     }
 
-    /// The layer as assistive technology reads it: one group per card, named
-    /// by the activity's title, with its reading and its controls.
+    /// The layer as assistive technology reads it: one group per card, named by the activity's
+    /// title, with its reading and its controls.
     #[must_use]
     pub fn accessibility(&self) -> Option<AccessNode> {
         self.drawn().next()?;
@@ -563,7 +557,7 @@ impl FloatingLayer {
         )
     }
 
-    /// Press the control assistive technology names by `target`.
+    /// Press the control assistive technology names by `target` .
     pub fn activate(&self, target: &str) -> Option<Ask> {
         let mut parts = target.strip_prefix("activity:")?.split(':');
         let app = parts.next()?.to_owned();
@@ -589,20 +583,18 @@ impl FloatingLayer {
     }
 }
 
-/// What the layer shows, for the host's hit testing, focus and assistive
-/// technology.
+/// What the layer shows, for the host's hit testing, focus and assistive technology.
 #[derive(Clone, Debug, Default)]
 pub struct Shown {
     /// Each card on screen: its app, its activity and where it stands.
     pub cards: Vec<(String, String, Rect)>,
     /// A card is being dragged.
     pub dragging: bool,
-    /// What the last frame changed, shadows and all: the part of the surface
-    /// a host presents.
+    /// What the last frame changed, shadows and all: the part of the surface a host presents.
     pub damage: Rect,
 }
 
-/// The accessibility target naming `control` on `card`.
+/// The accessibility target naming `control` on `card` .
 fn target(card: &Placed, control: &str) -> String {
     format!("activity:{}:{}:{control}", card.app, card.summary.id)
 }
@@ -611,13 +603,13 @@ fn origin_of(rect: Rect) -> Point {
     rect.origin()
 }
 
-/// The room a press on a card's progress bar may land in and still scrub it:
-/// the bar's own line, reachable from either side.
+/// The room a press on a card's progress bar may land in and still scrub it: the bar's own line,
+/// reachable from either side.
 fn scrubbable(bar: Rect) -> Rect {
     Rect::new(bar.x0, bar.y0 - SCRUB_REACH, bar.x1, bar.y1 + SCRUB_REACH)
 }
 
-/// How far into the song `point` is, from 0 to 1 along `bar`.
+/// How far into the song `point` is, from 0 to 1 along `bar` .
 fn fraction_at(bar: Rect, point: Point) -> f64 {
     ((point.x - bar.x0) / bar.width().max(1.0)).clamp(0.0, 1.0)
 }
@@ -671,8 +663,8 @@ mod tests {
         )
     }
 
-    /// A card that only ticks repaints its own ground: the cards that did not
-    /// change stay as the screen has them.
+    /// A card that only ticks repaints its own ground: the cards that did not change stay as the
+    /// screen has them.
     #[test]
     fn a_ticking_card_repaints_only_itself() {
         let theme = Theme::default();
@@ -700,8 +692,7 @@ mod tests {
         );
     }
 
-    /// Dragging a card repaints where it left and where it is, and no other
-    /// card.
+    /// Dragging a card repaints where it left and where it is, and no other card.
     #[test]
     fn a_dragged_card_repaints_where_it_was_and_where_it_is() {
         let theme = Theme::default();
@@ -743,8 +734,8 @@ mod tests {
         );
     }
 
-    /// A press on a control runs it when it lifts on that control, and runs
-    /// nothing when the pointer moves off it.
+    /// A press on a control runs it when it lifts on that control, and runs nothing when the
+    /// pointer moves off it.
     #[test]
     fn a_control_runs_when_the_press_lifts_on_it() {
         let mut layer = layer();
@@ -771,8 +762,7 @@ mod tests {
         );
     }
 
-    /// The header's close and collapse ask the session, which owns what they
-    /// mean.
+    /// The header's close and collapse ask the session, which owns what they mean.
     #[test]
     fn the_header_asks_to_close_or_collapse() {
         let mut layer = layer();
@@ -794,10 +784,10 @@ mod tests {
         );
     }
 
-    /// A card its app draws is a window of its own: the layer keeps the place
-    /// it reserved for it and paints, presses and names nothing there, so the
-    /// app's first frame never lands over the layer's own drawing of the same
-    /// card and the layer's leftover never shows through after it goes.
+    /// A card its app draws is a window of its own: the layer keeps the place it reserved for it
+    /// and paints, presses and names nothing there, so the app's first frame never lands over the
+    /// layer's own drawing of the same card and the layer's leftover never shows through after it
+    /// goes.
     #[test]
     fn a_card_its_app_draws_is_left_to_its_window() {
         let theme = Theme::default();
@@ -831,8 +821,7 @@ mod tests {
             "the layer names only the cards it draws"
         );
 
-        // The app's card updates: the layer paints nothing of it, so there is
-        // nothing to repaint.
+        // The app's card updates: the layer paints nothing of it, so there is nothing to repaint.
         let mut grown = Card::new(
             "so.tilo.chat",
             Summary::new(Kind::Timer, "Tea", "4:31")
@@ -887,8 +876,8 @@ mod tests {
         );
     }
 
-    /// Dragging a card loose and letting it go snaps it to the edge it was
-    /// thrown near and tells the session where it is.
+    /// Dragging a card loose and letting it go snaps it to the edge it was thrown near and tells
+    /// the session where it is.
     #[test]
     fn a_dragged_card_settles_on_the_edge_and_reports_where() {
         let mut layer = layer();
@@ -915,9 +904,8 @@ mod tests {
         assert!(at.width() > 0.0 && at.height() > 0.0);
     }
 
-    /// Dragging a song's progress bar asks for the point the pointer left
-    /// it at, from 0 to 1 along the bar, and the bar reads that point while
-    /// the person drags.
+    /// Dragging a song's progress bar asks for the point the pointer left it at, from 0 to 1 along
+    /// the bar, and the bar reads that point while the person drags.
     #[test]
     fn a_dragged_progress_bar_asks_for_the_point_it_is_left_at() {
         let mut layer = FloatingLayer::default();
@@ -950,8 +938,7 @@ mod tests {
         assert!((fraction - 0.75).abs() < 0.01, "{fraction}");
     }
 
-    /// Space runs the first control of the card the keyboard is on, and
-    /// Escape leaves the layer.
+    /// Space runs the first control of the card the keyboard is on, and Escape leaves the layer.
     #[test]
     fn the_keyboard_walks_the_cards_and_runs_their_first_control() {
         use ui::winit::keyboard::{Key, NamedKey};
@@ -1006,8 +993,7 @@ mod tests {
         );
     }
 
-    /// Only the cards' shapes take the pointer: a press beside one reaches
-    /// what is under it.
+    /// Only the cards' shapes take the pointer: a press beside one reaches what is under it.
     #[test]
     fn the_shadow_lets_the_pointer_through() {
         let layer = layer();

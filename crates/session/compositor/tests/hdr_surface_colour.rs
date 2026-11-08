@@ -1,7 +1,6 @@
-//! A window whose client describes its content as HDR shows its own colour
-//! on an SDR output, beside an ordinary window that keeps its own: the
-//! described surface is drawn from its image description, not from the bytes
-//! its buffer happens to hold.
+//! A window whose client describes its content as HDR shows its own colour on an SDR output, beside
+//! an ordinary window that keeps its own: the described surface is drawn from its image
+//! description, not from the bytes its buffer happens to hold.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -75,8 +74,8 @@ fn window_client(compositor: &mut Compositor, app_id: &str) -> TestClient {
     client
 }
 
-/// Attach a parametric image description to `client`'s surface, as a player
-/// does with what it is about to show.
+/// Attach a parametric image description to `client` 's surface, as a player does with what it is
+/// about to show.
 fn attach_description(
     compositor: &mut Compositor,
     client: &mut TestClient,
@@ -99,8 +98,8 @@ fn attach_description(
     color_surface
 }
 
-/// Attach a parametric description to `client`'s surface that also says the
-/// volume the content was mastered in: `min_lum` to `max_lum` cd/m².
+/// Attach a parametric description to `client` 's surface that also says the volume the content was
+/// mastered in: `min_lum` to `max_lum` cd/m².
 fn attach_mastered(
     compositor: &mut Compositor,
     client: &mut TestClient,
@@ -124,7 +123,7 @@ fn attach_mastered(
     color_surface
 }
 
-/// Let `client`'s window show its first buffer, and wait until it maps.
+/// Let `client` 's window show its first buffer, and wait until it maps.
 fn map(compositor: &mut Compositor, client: &mut TestClient, app_id: &str) {
     pump(compositor, &mut [client], |compositor, _| {
         compositor
@@ -144,8 +143,7 @@ fn window_of(compositor: &Compositor, app_id: &str) -> (u64, (i32, i32, i32, i32
     (info.id, rect)
 }
 
-/// A 10-bit `Xrgb2101010` word of linear-light samples: red in the high
-/// bits, blue in the low ones.
+/// A 10-bit `Xrgb2101010` word of linear-light samples: red in the high bits, blue in the low ones.
 fn word(red: u32, green: u32, blue: u32) -> u32 {
     (red << 20) | (green << 10) | blue
 }
@@ -193,8 +191,7 @@ fn an_hdr_window_keeps_its_own_colour_beside_an_sdr_one() {
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
 
-    // Linear light 0.5, 0.25, 0.75 is drawn as that light, not as the bytes
-    // that carry it.
+    // Linear light 0.5, 0.25, 0.75 is drawn as that light, not as the bytes that carry it.
     let signal = [512.0 / 1023.0, 256.0 / 1023.0, 768.0 / 1023.0];
     let expected = tonemap_rgb_signal_to_srgb8(signal, colour, HdrTonemapConfig::default());
     let shown = frame.pixel(100, 150).expect("inside the player");
@@ -210,8 +207,7 @@ fn an_hdr_window_keeps_its_own_colour_beside_an_sdr_one() {
         "the buffer's bytes would show as something else, so the description was used"
     );
 
-    // The ordinary window keeps its own colour, and the desktop is still the
-    // desktop.
+    // The ordinary window keeps its own colour, and the desktop is still the desktop.
     assert_eq!(
         frame.pixel(420, 150),
         Some([255, 0, 0, 255]),
@@ -246,8 +242,8 @@ fn a_ten_bit_window_that_says_nothing_shows_the_bytes_it_holds() {
 #[test]
 fn a_film_is_tone_mapped_with_the_volume_it_was_mastered_for() {
     let mut compositor = headless(Box::new(SideBySide::default()));
-    // The same PQ light, mastered two ways: a bright cinema master and the
-    // HDR10 baseline. Each player says which one its content is.
+    // The same PQ light, mastered two ways: a bright cinema master and the HDR10 baseline. Each
+    // player says which one its content is.
     let mut cinema = window_client(&mut compositor, "cinema");
     let _cinema_colour = attach_mastered(&mut compositor, &mut cinema, 500, 4000);
     cinema.show_words(200, 100, wl_shm::Format::Xrgb2101010, word(768, 768, 768));

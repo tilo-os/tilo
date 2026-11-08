@@ -1,15 +1,13 @@
 //! An agent's task programs: the tilolang an agent writes as one step of its task, run here.
-//!
 //! An agent working an issue writes programs; this session runs them, in the same door an MCP
 //! client reaches for its `tilo` tool (`docs/designs/app-language/agents.md`). The Tasks agent
 //! reaches it through the broker as a host step under
-//! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the
-//! run the step is a step of, and gets back what the program answered.
-//!
-//! One task has one session of the door: its own tilolang host, the `let`s and references its
+//! [`task_programs::PROVIDER`](tilo_actions::remote::task_programs::PROVIDER), admitted by the run
+//! the step is a step of, and gets back what the program answered.
+//! One task has one session of the door: its own tilolang host, the `let` s and references its
 //! programs made, and the steps `undo` takes back. Every call the program makes is done as the
-//! agent working the task, for the person who started it, attributed to the run, and decided by
-//! the workspace's policy like the agent's own calls. A later run of the issue starts another.
+//! agent working the task, for the person who started it, attributed to the run, and decided by the
+//! workspace's policy like the agent's own calls. A later run of the issue starts another.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -29,14 +27,14 @@ type TaskKey = (String, String, String);
 
 /// The tasks' sessions of the door, with the run each is of.
 pub(crate) struct TaskPrograms {
-    /// What a task's host asks the session's own doors before it starts: the records the
-    /// packages the session runs itself keep.
+    /// What a task's host asks the session's own doors before it starts: the records the packages
+    /// the session runs itself keep.
     doors: Arc<crate::agent_door::SessionDoors>,
     sessions: std::sync::Mutex<HashMap<TaskKey, (String, Arc<Door>)>>,
 }
 
 impl TaskPrograms {
-    /// The tasks' programs, whose hosts read the session's own records through `doors`.
+    /// The tasks' programs, whose hosts read the session's own records through `doors` .
     pub(crate) fn new(doors: Arc<crate::agent_door::SessionDoors>) -> Self {
         Self {
             doors,
@@ -44,9 +42,9 @@ impl TaskPrograms {
         }
     }
 
-    /// The task's session of the door, started for its run `group` when it has none or its
-    /// last run's: over `host`, the run's own host, so everything its programs do is a step
-    /// the run admits.
+    /// The task's session of the door, started for its run `group` when it has none or its last
+    /// run's: over `host` , the run's own host, so everything its programs do is a step the run
+    /// admits.
     fn session_of(
         &self,
         host: &TaskRunHost,
@@ -135,7 +133,7 @@ fn descriptor() -> tilo_actions::ActionDescriptor {
     }
 }
 
-/// `argument`, in its slot form, bound to `PARAMS`.
+/// `argument` , in its slot form, bound to `PARAMS` .
 fn bind(argument: Option<&str>) -> Result<ActionArgs, String> {
     let supplied = match argument {
         None | Some("") => serde_json::Map::new(),
@@ -232,8 +230,8 @@ impl HostStepServices for TaskPrograms {
             },
         );
         let (complete, answered) = pending();
-        // The program waits on the task's host and on every call it makes: never on the
-        // broker's thread.
+        // The program waits on the task's host and on every call it makes: never on the broker's
+        // thread.
         std::thread::Builder::new()
             .name("task-program".into())
             .spawn(move || {
@@ -286,8 +284,8 @@ mod tests {
         }
     }
 
-    /// The step is the agent's, offered to a task agent's catalogue and nowhere else: a
-    /// program is a step of a run, and only a task agent has one.
+    /// The step is the agent's, offered to a task agent's catalogue and nowhere else: a program is
+    /// a step of a run, and only a task agent has one.
     #[test]
     fn a_task_step_is_the_agents_and_is_offered_for_tasks() {
         let programs = programs();
@@ -310,8 +308,8 @@ mod tests {
         );
     }
 
-    /// A program is a step of a task its agent works on: anyone else, and a program outside a
-    /// run of the issue, is refused before anything starts.
+    /// A program is a step of a task its agent works on: anyone else, and a program outside a run
+    /// of the issue, is refused before anything starts.
     #[test]
     fn only_an_agents_program_of_its_own_run_is_taken() {
         let programs = programs();

@@ -1,11 +1,9 @@
-//! When a bar shows over the window that covers its display: entering full
-//! screen shows it for its idle time, the top edge brings it back, a press in
-//! the band while it hides is the window's, and leaving full screen docks it
-//! again. The person's own "hide the top bar" setting is the same machinery
-//! without a fullscreen window.
-//!
-//! Every rule is reasoned about at an instant, so these drive a synthetic
-//! timeline rather than a clock.
+//! When a bar shows over the window that covers its display: entering full screen shows it for its
+//! idle time, the top edge brings it back, a press in the band while it hides is the window's, and
+//! leaving full screen docks it again. The person's own "hide the top bar" setting is the same
+//! machinery without a fullscreen window.
+//! Every rule is reasoned about at an instant, so these drive a synthetic timeline rather than a
+//! clock.
 
 #![allow(
     clippy::unwrap_used,
@@ -39,8 +37,7 @@ fn desk() -> (Reveals, Instant) {
     (reveals, t0)
 }
 
-/// A desk whose bar shows only when reached for, as the person's "hide the
-/// top bar" asks.
+/// A desk whose bar shows only when reached for, as the person's "hide the top bar" asks.
 fn hidden_desk() -> (Reveals, Instant) {
     let (mut reveals, t0) = desk();
     reveals.set_hide(true);
@@ -54,8 +51,8 @@ fn fullscreen_desk() -> (Reveals, Instant) {
     (reveals, t0)
 }
 
-/// A straight pointer path from `from` to `to` in `steps` samples over
-/// `total` milliseconds from `t`; returns the last sample's instant.
+/// A straight pointer path from `from` to `to` in `steps` samples over `total` milliseconds from
+/// `t` ; returns the last sample's instant.
 fn path(
     reveals: &mut Reveals,
     from: Point,
@@ -118,8 +115,8 @@ fn a_push_to_the_top_edge_shows_it_and_leaving_hides_it() {
         120,
         t0,
     );
-    // Stopped against the edge, it shows after the rest it takes; a click
-    // there before then would have been the window's.
+    // Stopped against the edge, it shows after the rest it takes; a click there before then would
+    // have been the window's.
     assert_eq!(reveals.deadline(), Some(t + DWELL));
     reveals.settle(t + DWELL, idle);
     assert_eq!(
@@ -150,8 +147,8 @@ fn a_push_to_the_top_edge_shows_it_and_leaving_hides_it() {
     assert_eq!(reveals.presence(None, false), TopBarPresence::Hidden);
 }
 
-/// Crossing the top edge on the way somewhere else is not reaching for the
-/// bar, however fast it goes.
+/// Crossing the top edge on the way somewhere else is not reaching for the bar, however fast it
+/// goes.
 #[test]
 fn crossing_the_edge_in_transit_does_not_show_it() {
     let (mut reveals, t0) = hidden_desk();
@@ -263,8 +260,8 @@ fn a_key_or_a_swipe_brings_it_back_for_the_idle_time() {
     reveals.settle(again + FULLSCREEN_BAR_IDLE, idle);
     assert_eq!(reveals.presence(None, false), TopBarPresence::Hidden);
 
-    // A finger coming down from the top edge shows it too, and the desk takes
-    // the contact so nothing under it sees it.
+    // A finger coming down from the top edge shows it too, and the desk takes the contact so
+    // nothing under it sees it.
     let edge = Point::new(600.0, 1.0);
     assert!(
         reveals.touch(Finger::Down, edge, ms(t0, 9000)),

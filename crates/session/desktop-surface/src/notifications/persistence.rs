@@ -1,14 +1,14 @@
-//! Bounded retained-notification bytes, using the native desktop's format.
-//! Hosts provide storage; restart restores provenance and age while
-//! sender actions and remote routes remain scoped to their original session.
-//! Host-scheduled occurrence targets are durable and retain their exact workspace.
+//! Bounded retained-notification bytes, using the native desktop's format. Hosts provide storage;
+//! restart restores provenance and age while sender actions and remote routes remain scoped to
+//! their original session. Host-scheduled occurrence targets are durable and retain their exact
+//! workspace.
 use super::{MAX_HISTORY, Notification, NotificationSeverity};
 use serde::{Deserialize, Serialize};
 use ui::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// Longest title/body/app label kept on disk. The live toast never shows
-/// more than a few lines; a hostile sender must not be able to grow the
-/// private store without bound through one enormous notification.
+/// Longest title/body/app label kept on disk. The live toast never shows more than a few lines; a
+/// hostile sender must not be able to grow the private store without bound through one enormous
+/// notification.
 const MAX_PERSISTED_TEXT: usize = 2048;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -39,10 +39,9 @@ impl From<PersistedSeverity> for NotificationSeverity {
     }
 }
 
-/// The durable shape of one retained notification. Process-scoped routes
-/// (the D-Bus id, a mirrored notification's restart-scoped id) and action
-/// keys are deliberately absent: after a restart nothing they address still
-/// exists. A host-scheduled target names a durable occurrence instead.
+/// The durable shape of one retained notification. Process-scoped routes (the D-Bus id, a mirrored
+/// notification's restart-scoped id) and action keys are deliberately absent: after a restart
+/// nothing they address still exists. A host-scheduled target names a durable occurrence instead.
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct PersistedNotification {
     title: String,

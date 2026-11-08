@@ -1,12 +1,10 @@
-//! The login screens follow the comforts a person turns on in their session:
-//! the screen reader, text size, contrast, language and keyboard layout.
-//! `tilo-authd` keeps the device's copy and mirrors it into the volume header
-//! for the boot.
-//!
-//! Only a change is carried over, and only the fields that changed: signing
-//! in leaves the login screens as they are, and a person who makes their text
-//! larger does not turn off the screen reader someone turned on at the login
-//! screen. Their `apply_to_sign_in` switch keeps the two apart.
+//! The login screens follow the comforts a person turns on in their session: the screen reader,
+//! text size, contrast, language and keyboard layout. `tilo-authd` keeps the device's copy and
+//! mirrors it into the volume header for the boot.
+//! Only a change is carried over, and only the fields that changed: signing in leaves the login
+//! screens as they are, and a person who makes their text larger does not turn off the screen
+//! reader someone turned on at the login screen. Their `apply_to_sign_in` switch keeps the two
+//! apart.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -16,16 +14,15 @@ use settings_store::watch::SettingsWatch;
 
 use crate::SessionConfig;
 
-/// The session's side of that: what the login screens were last told, and
-/// the worker that tells them the next thing off the frame.
+/// The session's side of that: what the login screens were last told, and the worker that tells
+/// them the next thing off the frame.
 pub struct Mirror {
     /// The comforts the session's settings loader read, newest last.
     updates: mpsc::Receiver<(SignInComforts, bool)>,
-    /// Keeps the loader's notifications coming; dropping it stops them, as
-    /// it does for every other reader of the loader.
+    /// Keeps the loader's notifications coming; dropping it stops them, as it does for every other
+    /// reader of the loader.
     _following: Option<SettingsWatch>,
-    /// What the login screens were last told, or what they already hold when
-    /// the session started.
+    /// What the login screens were last told, or what they already hold when the session started.
     seen: Option<SignInComforts>,
     /// Sends each change to `tilo-authd` in order, off the frame.
     worker: Option<mpsc::Sender<serde_json::Map<String, serde_json::Value>>>,
@@ -34,13 +31,12 @@ pub struct Mirror {
 }
 
 impl Mirror {
-    /// Follow this session's settings and tell the daemon at `socket` about
-    /// the comforts that change; `wake` brings the session's loop back to
-    /// look.
+    /// Follow this session's settings and tell the daemon at `socket` about the comforts that
+    /// change; `wake` brings the session's loop back to look.
     pub fn mount(socket: PathBuf, wake: impl Fn() + Send + Sync + 'static) -> Self {
         let (sender, updates) = mpsc::channel();
-        // The loader's notifications come from whichever thread writes the
-        // settings; the sender is shared through a lock so it can.
+        // The loader's notifications come from whichever thread writes the settings; the sender is
+        // shared through a lock so it can.
         let sender = std::sync::Mutex::new(sender);
         let following = SessionConfig::follow(move |config| {
             let comfort = (config.comforts, config.apply_comforts_to_sign_in);
@@ -63,8 +59,8 @@ impl Mirror {
         }
     }
 
-    /// Look at the person's comforts when their settings changed, and once
-    /// at the start, which is where the session begins from.
+    /// Look at the person's comforts when their settings changed, and once at the start, which is
+    /// where the session begins from.
     pub fn observe(&mut self) {
         let mut latest = None;
         while let Ok(next) = self.updates.try_recv() {
@@ -72,8 +68,8 @@ impl Mirror {
         }
         let (now, apply) = match latest {
             Some(next) => next,
-            // The first look is where the session begins from: the settings
-            // the session started with, which the login screens already hold.
+            // The first look is where the session begins from: the settings the session started
+            // with, which the login screens already hold.
             None if self.seen.is_none() => {
                 let config = SessionConfig::load();
                 (config.comforts, config.apply_comforts_to_sign_in)
@@ -107,9 +103,8 @@ impl Mirror {
     }
 }
 
-/// The fields to change at the login screens, if `now` changed what they
-/// take and the person lets them follow. The first look is where the session
-/// starts from, not a change.
+/// The fields to change at the login screens, if `now` changed what they take and the person lets
+/// them follow. The first look is where the session starts from, not a change.
 fn change(
     seen: &mut Option<SignInComforts>,
     now: SignInComforts,
@@ -120,7 +115,7 @@ fn change(
     (apply && !changes.is_empty()).then_some(changes)
 }
 
-/// Tell `socket`'s daemon the fields `changes` names, and keep the rest.
+/// Tell `socket` 's daemon the fields `changes` names, and keep the rest.
 fn mirror(socket: &Path, changes: serde_json::Map<String, serde_json::Value>) {
     use tilo_auth::protocol::Request;
     let reply = tilo_auth::client::Client::connect(socket)

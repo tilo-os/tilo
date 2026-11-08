@@ -1,9 +1,7 @@
-//! The shortcut guide: F1 and the desktop's help chord put it up over the
-//! display the person is working on, filled with the chords the session
-//! answers now, and the same key, Escape or its Done take it down again.
-//! A navigation shortcut is changed from the guide: picked with Tab and
-//! Enter, the next chord becomes its keys, and the session answers it at
-//! once and in every session after.
+//! The shortcut guide: F1 and the desktop's help chord put it up over the display the person is
+//! working on, filled with the chords the session answers now, and the same key, Escape or its Done
+//! take it down again. A navigation shortcut is changed from the guide: picked with Tab and Enter,
+//! the next chord becomes its keys, and the session answers it at once and in every session after.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -49,8 +47,8 @@ const KEY_UP: u32 = 103;
 const KEY_PAGEUP: u32 = 104;
 const KEY_LEFT_META: u32 = 125;
 
-/// The shortcut table is the person's settings, and the tests that change it
-/// save there: they take turns rather than overwrite each other's table.
+/// The shortcut table is the person's settings, and the tests that change it save there: they take
+/// turns rather than overwrite each other's table.
 static SHORTCUTS: Mutex<()> = Mutex::new(());
 
 /// The lock, with the settings holding the defaults a fresh device has.
@@ -163,8 +161,8 @@ fn displays(session: &Session) -> Vec<ResourceSpec> {
     })
 }
 
-/// Work on the display `index` of the desk, counting from the left, and wait
-/// until the sheets follow it there.
+/// Work on the display `index` of the desk, counting from the left, and wait until the sheets
+/// follow it there.
 fn focus(session: &mut Session, index: usize) {
     let display = displays(session)[index].id.clone();
     session
@@ -185,7 +183,7 @@ fn focus(session: &mut Session, index: usize) {
     });
 }
 
-/// A frame of `output`, once the session has drawn what it has.
+/// A frame of `output` , once the session has drawn what it has.
 fn shot(session: &mut Session, output: &str) -> Screenshot {
     session
         .compositor()
@@ -199,7 +197,7 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// The keyboard binding a chord spells: `(["Super"], "left")`.
+/// The keyboard binding a chord spells: `(["Super"], "left")` .
 fn binding(modifiers: &[KeyboardModifier], key: &str) -> KeyboardBinding {
     KeyboardBinding::new(modifiers.to_vec(), KeyLegend::from_name(key))
 }
@@ -214,7 +212,7 @@ fn essential_chords(guide: &Guide) -> Vec<KeyboardBinding> {
         .collect()
 }
 
-/// The guide's row whose first shortcut is `action`.
+/// The guide's row whose first shortcut is `action` .
 #[track_caller]
 fn pair(guide: &Guide, action: &str) -> Pair {
     guide
@@ -232,8 +230,8 @@ fn workspace(session: &Session) -> Option<u64> {
         .read(|tree| tree.active_workspace().map(|workspace| workspace.slot.0))
 }
 
-/// A second workspace, opened the way the bar opens one: the person is then
-/// in it, with the one before it to go back to.
+/// A second workspace, opened the way the bar opens one: the person is then in it, with the one
+/// before it to go back to.
 fn open_a_workspace(session: &mut Session) -> Option<u64> {
     let before = workspace(session);
     session
@@ -254,9 +252,9 @@ fn published(session: &Session, id: &str) -> bool {
     find(&session.resources(), id)
 }
 
-/// Ask the guide for the new keys of the shortcut `action`, as a person does:
-/// the first keycap holds the keyboard when the guide opens and every row
-/// stands two, so Tab walks to the keycap and Enter takes it.
+/// Ask the guide for the new keys of the shortcut `action` , as a person does: the first keycap
+/// holds the keyboard when the guide opens and every row stands two, so Tab walks to the keycap and
+/// Enter takes it.
 #[track_caller]
 fn listen_for(session: &mut Session, action: &str) {
     let guide_now = guide(session);
@@ -275,8 +273,8 @@ fn listen_for(session: &mut Session, action: &str) {
     });
 }
 
-/// Press the Reset a changed row offers, as a person does: Tab past that
-/// row's own keycaps (and the Resets of the rows above) and take it.
+/// Press the Reset a changed row offers, as a person does: Tab past that row's own keycaps (and the
+/// Resets of the rows above) and take it.
 #[track_caller]
 fn reset_pair(session: &mut Session, action: &str) {
     // The guide keeps the keyboard on the row the person rebound: its first
@@ -288,7 +286,7 @@ fn reset_pair(session: &mut Session, action: &str) {
     until(session, |session| !pair(&guide(session), action).changed);
 }
 
-/// Change the shortcut `action` to `chord`, pressed as a person presses it.
+/// Change the shortcut `action` to `chord` , pressed as a person presses it.
 fn rebind(session: &mut Session, action: &str, keys: &[u32]) {
     tap(session, KEY_F1);
     until(session, up);
@@ -364,8 +362,7 @@ fn f1_shows_the_guide_filled_with_the_chords_the_session_answers() {
     until(&mut session, |session| !up(session));
 }
 
-/// The guide's Done, pressed as a person or a script presses it: the
-/// dialog's primary control.
+/// The guide's Done, pressed as a person or a script presses it: the dialog's primary control.
 fn done(session: &mut Session) {
     session
         .invoke(
@@ -613,8 +610,7 @@ fn a_changed_pair_goes_back_to_its_defaults_from_the_guide() {
     rebind(&mut session, "previous-workspace", MINE);
     assert!(pair(&guide(&session), "previous-workspace").changed);
 
-    // The row offers Reset once it differs, and pressing it puts the pair
-    // back the way it was.
+    // The row offers Reset once it differs, and pressing it puts the pair back the way it was.
     reset_pair(&mut session, "previous-workspace");
     assert!(up(&session), "the guide stays up over the reset");
     let guide_now = guide(&session);

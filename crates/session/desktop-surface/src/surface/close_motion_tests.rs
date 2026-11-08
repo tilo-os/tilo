@@ -1,7 +1,6 @@
-//! How the strip moves when a window goes away: the windows left close the
-//! gap in one short motion, what the person was looking at stays where it
-//! is, and the strip pans only when its range shrinks below where it is.
-//! Five windows of the default width on a 1280 px desktop.
+//! How the strip moves when a window goes away: the windows left close the gap in one short motion,
+//! what the person was looking at stays where it is, and the strip pans only when its range shrinks
+//! below where it is. Five windows of the default width on a 1280 px desktop.
 
 use super::*;
 use ui::widget::TileContent;
@@ -43,7 +42,7 @@ struct Desk {
 }
 
 impl Desk {
-    /// Five windows, the strip panned to show window `focus`.
+    /// Five windows, the strip panned to show window `focus` .
     fn focused_on(focus: usize) -> Self {
         let mut minter = IdMinter::new(7);
         let tabs = (0..5)
@@ -102,8 +101,8 @@ impl Desk {
         })
     }
 
-    /// `n` frames of a 60 Hz display on a held clock, the one the close and
-    /// the strip animate by, sampled after each.
+    /// `n` frames of a 60 Hz display on a held clock, the one the close and the strip animate by,
+    /// sampled after each.
     fn frames(&mut self, n: usize) -> Vec<Frame> {
         (0..n)
             .map(|_| {
@@ -140,9 +139,9 @@ fn slot(frame: &Frame) -> f64 {
     frame.windows[1].1 - frame.windows[0].1
 }
 
-/// Every window left, and the pan, moves one way only and by at most the
-/// closed window's slot in all, and no window in view jumps; the windows in
-/// `still` do not move at all. Returns the last frame.
+/// Every window left, and the pan, moves one way only and by at most the closed window's slot in
+/// all, and no window in view jumps; the windows in `still` do not move at all. Returns the last
+/// frame.
 fn assert_calm(case: &str, before: &Frame, trace: &[Frame], still: &[GroupId]) -> Frame {
     let last = trace.last().unwrap().clone();
     let slot = slot(before);
@@ -187,8 +186,8 @@ fn assert_calm(case: &str, before: &Frame, trace: &[Frame], still: &[GroupId]) -
                 "{case}: {what} turns back by {d:.1} px\n{}",
                 dump()
             );
-            // The pan, and windows out of view, may move at once where
-            // nothing shown moves with them.
+            // The pan, and windows out of view, may move at once where nothing shown moves with
+            // them.
             let seen = |x: f64| x > -slot && x < 1280.0;
             assert!(
                 what == "the pan" || !(seen(step[0]) || seen(step[1])) || d.abs() <= slot / 2.0,
@@ -296,10 +295,9 @@ fn closing_the_last_window_pans_only_as_far_as_the_strip_shrinks() {
     );
 }
 
-/// The workspace hands a tree back while the windows move, or a peer's tree
-/// without a window arrives: the strip carries on as when the person closed
-/// it here, rather than being rebuilt at home with every window cut to its
-/// place.
+/// The workspace hands a tree back while the windows move, or a peer's tree without a window
+/// arrives: the strip carries on as when the person closed it here, rather than being rebuilt at
+/// home with every window cut to its place.
 #[test]
 fn a_tree_replaced_from_the_workspace_moves_the_strip_as_a_close_here_does() {
     // The workspace echoes the person's own close mid-motion.

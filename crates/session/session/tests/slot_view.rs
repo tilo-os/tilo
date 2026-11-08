@@ -1,16 +1,12 @@
-//! Which view draws a part of the shell is the person's to choose: binding
-//! the window-menu slot to another app's view shows that view where the shell
-//! shipped its own, while the menu itself stays the reading it was, and
-//! binding it again while the menu is up swaps the view under it.
-//!
-//! The probe is an ordinary app the session starts for the slot
-//! (`.tests/bin/surface_probe.rs`): it reads `desktop:window-menu` through the
-//! connection the session's broker admits it for, and reports what it saw.
-//!
-//! A view written in tilolang is not a program the session starts: the
-//! session runs it itself, over the same reading, and its presses reach the
-//! menu's own verbs through the session's door. The view here is compiled
-//! against the surface the session publishes for the slot, as a person
+//! Which view draws a part of the shell is the person's to choose: binding the window-menu slot to
+//! another app's view shows that view where the shell shipped its own, while the menu itself stays
+//! the reading it was, and binding it again while the menu is up swaps the view under it.
+//! The probe is an ordinary app the session starts for the slot (`.tests/bin/surface_probe.rs`): it
+//! reads `desktop:window-menu` through the connection the session's broker admits it for, and
+//! reports what it saw.
+//! A view written in tilolang is not a program the session starts: the session runs it itself, over
+//! the same reading, and its presses reach the menu's own verbs through the session's door. The
+//! view here is compiled against the surface the session publishes for the slot, as a person
 //! writing one does.
 
 #![cfg(target_os = "linux")]
@@ -42,18 +38,16 @@ use tilo_session::{ActionPlane, Options, Session};
 use tilo_settings_service::SettingsService;
 use tilo_test_env::{ScopedEnv, TestHome};
 
-/// How long the probe may take to report what it read.
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// How long the probe may take to report what it read. One display's refresh: how often the session
+/// asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// The pointer's primary button, as the compositor names it.
 const BTN_LEFT: u32 = 0x110;
 
-/// A view of the window menu written in tilolang, over the surface the
-/// session publishes for the slot: it says whether the menu is up, which it
-/// reads from the menu, and its buttons invoke the menu's own verbs — one
-/// that moves the menu and leaves it up, one that closes it.
+/// A view of the window menu written in tilolang, over the surface the session publishes for the
+/// slot: it says whether the menu is up, which it reads from the menu, and its buttons invoke the
+/// menu's own verbs — one that moves the menu and leaves it up, one that closes it.
 const MENU_VIEW: &str = r#"app so.tilo.slotprobe "Window menu probe"
 
 use desktop as desktop
@@ -67,11 +61,10 @@ view menu(m: desktop.WindowMenu) {
 }
 "#;
 
-/// A view of the window menu written in tilolang that shows the rows the menu
-/// offers, each a button invoking the menu's `choose`, over the surface the
-/// session publishes for the slot. A rule between groups is a line, not a
-/// choice, so it draws no button; the rows of a row that opens a submenu are
-/// drawn beside it, as the menu itself offers them.
+/// A view of the window menu written in tilolang that shows the rows the menu offers, each a button
+/// invoking the menu's `choose` , over the surface the session publishes for the slot. A rule
+/// between groups is a line, not a choice, so it draws no button; the rows of a row that opens a
+/// submenu are drawn beside it, as the menu itself offers them.
 const ROWS_VIEW: &str = r#"app so.tilo.slotrows "Window menu rows"
 
 use desktop as desktop
@@ -137,8 +130,8 @@ fn probe_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
 
-/// The session the probe talks to: headless, its plane on `socket`, showing
-/// one window, keeping the person's settings as the session does.
+/// The session the probe talks to: headless, its plane on `socket` , showing one window, keeping
+/// the person's settings as the session does.
 fn session_with(socket: &Path, tree: DesktopTree) -> Session {
     let mut session = Session::headless(
         Options {
@@ -173,7 +166,7 @@ fn until_reported(session: &mut Session, report: &Path) -> String {
     }
 }
 
-/// The reading named on the line that starts with `prefix`.
+/// The reading named on the line that starts with `prefix` .
 fn reading(report: &str, prefix: &str) -> Value {
     let line = report
         .lines()
@@ -190,9 +183,8 @@ fn rows(session: &Session) -> Value {
         .expect("the menu is up and offers its rows")
 }
 
-/// Whether the view draws a control for every row `rows` offers, the rows of
-/// a submenu with them: a row that opens one is a row too, and the rule
-/// between two groups is no choice to draw.
+/// Whether the view draws a control for every row `rows` offers, the rows of a submenu with them: a
+/// row that opens one is a row too, and the rule between two groups is no choice to draw.
 fn draws_every_row(session: &Session, rows: &Value) -> bool {
     rows.as_array().into_iter().flatten().all(|row| {
         let drawn = row["separator"].as_bool() == Some(true)
@@ -220,8 +212,8 @@ fn row_label(offered: &Value, id: &str) -> String {
         .to_owned()
 }
 
-/// Bind the window-menu slot to the view `view` of `app`, as a person or an
-/// agent does through the settings door.
+/// Bind the window-menu slot to the view `view` of `app` , as a person or an agent does through the
+/// settings door.
 fn bind(session: &mut Session, app: &str, view: &str) {
     let mut arguments = Map::new();
     arguments.insert("slot".into(), json!("window-menu"));
@@ -232,8 +224,8 @@ fn bind(session: &mut Session, app: &str, view: &str) {
         .expect("the slot takes a binding");
 }
 
-/// The program the probe is pointed at, under the name the app `app`'s view
-/// runs as: `so.tilo.window-menu` runs as `tilo-window-menu`
+/// The program the probe is pointed at, under the name the app `app` 's view runs as:
+/// `so.tilo.window-menu` runs as `tilo-window-menu`
 /// ([`Binding::program`](tilo_session::mount::slots::Binding::program)).
 fn installed(environment: &mut ScopedEnv, app: &str, probe: &Path) {
     let program = format!(
@@ -266,8 +258,7 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     }
 }
 
-/// Press the control the slot's view shows as `name` with the pointer, as a
-/// person does.
+/// Press the control the slot's view shows as `name` with the pointer, as a person does.
 #[track_caller]
 fn press(session: &mut Session, name: &str) {
     let (x, y, w, h) = session
@@ -296,9 +287,9 @@ fn press(session: &mut Session, name: &str) {
     }
 }
 
-/// The package `source` compiles to, against the surface the session
-/// publishes for `slot` and written where the session finds a package of this
-/// machine: a payload directory holding `app.wasm`, as an installed app's has.
+/// The package `source` compiles to, against the surface the session publishes for `slot` and
+/// written where the session finds a package of this machine: a payload directory holding
+/// `app.wasm` , as an installed app's has.
 #[track_caller]
 fn package(dir: &Path, slot: &str, source: &str) -> PathBuf {
     let surface =
@@ -326,14 +317,14 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let report = root.path().join("report");
     let mut environment = ScopedEnv::new();
     let probe = probe_binary();
-    // The same probe under two names: what the session starts for the slot
-    // when the person binds one app's view, and another.
+    // The same probe under two names: what the session starts for the slot when the person binds
+    // one app's view, and another.
     installed(&mut environment, "so.tilo.probe-one", &probe);
     installed(&mut environment, "so.tilo.probe-two", &probe);
     environment.set("SURFACE_PROBE_REPORT", &report);
     environment.set("SURFACE_PROBE_RESOURCE", WINDOW_MENU);
-    // The probe is the view that draws the slot here: it stays up while the
-    // menu is, as a view does, so the session keeps it as the slot's.
+    // The probe is the view that draws the slot here: it stays up while the menu is, as a view
+    // does, so the session keeps it as the slot's.
     environment.set("SURFACE_PROBE_STAY", "1");
     let mut session = session_with(&socket, desk_tree());
     session
@@ -349,8 +340,8 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
     let offered = rows(&session);
     let before = session.read(WINDOW_MENU).expect("the menu is up");
 
-    // The person binds the slot while the menu is up: the view they chose
-    // draws it, and it reads the menu the shell published.
+    // The person binds the slot while the menu is up: the view they chose draws it, and it reads
+    // the menu the shell published.
     bind(&mut session, "so.tilo.probe-one", "menu");
     let first = until_reported(&mut session, &report);
     let seen = reading(&first, "read: ");
@@ -368,8 +359,8 @@ fn a_bound_view_draws_the_menu_and_binding_another_swaps_it_while_it_is_up() {
         "the view the person bound is what draws the slot"
     );
 
-    // Another binding, while the menu is still up: the view that drew it goes
-    // and the one bound now starts, over the same reading.
+    // Another binding, while the menu is still up: the view that drew it goes and the one bound now
+    // starts, over the same reading.
     std::fs::remove_file(&report).expect("the report is the first view's");
     bind(&mut session, "so.tilo.probe-two", "menu");
     let second = until_reported(&mut session, &report);
@@ -420,8 +411,7 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
     let report = root.path().join("report");
     let payload = package(&root.path().join("slot-probe"), "window-menu", MENU_VIEW);
     let mut environment = ScopedEnv::new();
-    // The view the person binds, and the one the session ships with while
-    // they have bound none.
+    // The view the person binds, and the one the session ships with while they have bound none.
     installed(&mut environment, "so.tilo.slotprobe", &payload);
     installed(&mut environment, "so.tilo.window-menu", &probe_binary());
     environment.set("SURFACE_PROBE_REPORT", &report);
@@ -441,9 +431,8 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
         session.surfaces().running("window-menu")
     });
 
-    // The person binds a view written in tilolang: the session runs it
-    // itself, over the reading it publishes for the slot, and the program
-    // that drew the menu goes.
+    // The person binds a view written in tilolang: the session runs it itself, over the reading it
+    // publishes for the slot, and the program that drew the menu goes.
     bind(&mut session, "so.tilo.slotprobe", "menu");
     until(&mut session, "draws the view the person bound", |session| {
         session
@@ -467,9 +456,9 @@ fn a_package_bound_to_the_slot_reads_the_menu_and_closes_it_through_its_own_verb
         "and reading it changed nothing"
     );
 
-    // The person presses what the view drew: the menu moves where the view's
-    // own argument says, which no press of the session's own could do, so
-    // what ran is the verb the view asked for, through the session's door.
+    // The person presses what the view drew: the menu moves where the view's own argument says,
+    // which no press of the session's own could do, so what ran is the verb the view asked for,
+    // through the session's door.
     press(&mut session, "Move the menu");
     until(
         &mut session,
@@ -539,9 +528,8 @@ fn a_package_that_is_no_view_of_the_slot_leaves_it_to_the_one_the_session_ships_
         .expect("the menu opens");
     until_reported(&mut session, &report);
 
-    // The package the person bound declares no view by that name: it is no
-    // view for the slot, and the session puts its own back rather than
-    // leaving the menu undrawn.
+    // The package the person bound declares no view by that name: it is no view for the slot, and
+    // the session puts its own back rather than leaving the menu undrawn.
     std::fs::remove_file(&report).expect("the shipped view's report");
     bind(&mut session, "so.tilo.slotprobe", "no-such-view");
     let again = until_reported(&mut session, &report);
@@ -592,10 +580,9 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
         session.surfaces().running("window-menu")
     });
 
-    // The view the person bound shows every row the menu offers, each labelled
-    // as the menu labels it, the rows of its submenus with them: the rows of
-    // another app's reading read as the records the desk declares, and a
-    // submenu is a row of it rather than a second reading to walk.
+    // The view the person bound shows every row the menu offers, each labelled as the menu labels
+    // it, the rows of its submenus with them: the rows of another app's reading read as the records
+    // the desk declares, and a submenu is a row of it rather than a second reading to walk.
     let offered = rows(&session);
     bind(&mut session, "so.tilo.slotrows", "menu");
     until(&mut session, "shows the rows the menu offers", |session| {
@@ -610,9 +597,8 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
         session.slot_labels("window-menu")
     );
 
-    // The person presses the row that maximizes the window: the view's own
-    // `choose`, through the session's door, runs the command the row means and
-    // the menu closes.
+    // The person presses the row that maximizes the window: the view's own `choose` , through the
+    // session's door, runs the command the row means and the menu closes.
     press(&mut session, &row_label(&offered, "window-maximize"));
     until(
         &mut session,
@@ -624,8 +610,8 @@ fn a_package_bound_to_the_slot_shows_the_menu_rows_and_choosing_one_runs_it() {
         },
     );
 
-    // The window is maximized now, which only the row's command does: the menu
-    // opened again offers its opposite, and the view draws that.
+    // The window is maximized now, which only the row's command does: the menu opened again offers
+    // its opposite, and the view draws that.
     session
         .invoke(
             WINDOW_MENU,

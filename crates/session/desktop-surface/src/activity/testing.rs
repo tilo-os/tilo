@@ -1,9 +1,8 @@
 //! A causal workspace and a host for the activity pane's own tests.
-//!
-//! [`TestTree`] pairs a desktop projection with its workspace document and writes
-//! through the same `desktop_doc` mutations a native host uses, so the pane
-//! reads real Automerge history. [`TestHost`] answers for a device with a
-//! fixed local user and keeps its private read state in memory.
+//! [`TestTree`] pairs a desktop projection with its workspace document and writes through the same
+//! `desktop_doc` mutations a native host uses, so the pane reads real Automerge history.
+//! [`TestHost`] answers for a device with a fixed local user and keeps its private read state in
+//! memory.
 use super::{ActivityHost, ActivityTree, WorkspaceDeparture, WorkspaceSeenFrontier};
 use automerge::{AutoCommit, ChangeHash};
 use collab_types::caps::CapOverride;
@@ -19,8 +18,8 @@ use tilo_desktop_model::{
 /// The local user every [`TestHost`] answers for.
 pub(crate) const LOCAL_USER: &str = "local";
 
-/// A verb named after `label` (`Rewrite opening` → `rewrite-opening`), as a
-/// test's entry records it.
+/// A verb named after `label` (`Rewrite opening` → `rewrite-opening` ), as a test's entry records
+/// it.
 pub(crate) fn verb(label: &str) -> tilo_actions::Described {
     tilo_actions::Described::new(tilo_actions::Did::verb(
         tilo_actions::ActionKey::new(
@@ -207,8 +206,8 @@ impl TestTree {
         }
     }
 
-    /// Let an app reach a sandboxed resource, as `grantor`, who must be
-    /// allowed to grant in the workspace.
+    /// Let an app reach a sandboxed resource, as `grantor` , who must be allowed to grant in the
+    /// workspace.
     pub fn grant_in_workspace(
         &mut self,
         slot: WorkspaceSlot,
@@ -362,8 +361,8 @@ impl ActivityTree for TestTree {
     }
 }
 
-/// A device that may mutate the workspace, answers for [`LOCAL_USER`] and keeps
-/// its private read state in memory.
+/// A device that may mutate the workspace, answers for [`LOCAL_USER`] and keeps its private read
+/// state in memory.
 #[derive(Default)]
 pub(crate) struct TestHost {
     frontiers: RefCell<HashMap<u64, WorkspaceSeenFrontier>>,
@@ -403,9 +402,8 @@ impl ActivityHost for TestHost {
 /// The app the fixture records belong to, as a host admits them.
 pub(crate) const RECORD_APP: &str = "so.tilo.tasks";
 
-/// Every record the active workspace holds in `records`, as a host admits it
-/// to the pane: the checkout its index names and the document as its app last
-/// wrote it.
+/// Every record the active workspace holds in `records` , as a host admits it to the pane: the
+/// checkout its index names and the document as its app last wrote it.
 pub(crate) fn detached_records(
     tree: &impl ActivityTree,
     records: &ui::RecordStore,

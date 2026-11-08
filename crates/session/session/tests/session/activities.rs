@@ -1,7 +1,6 @@
-//! The floating layer on the desk: the bar's pill names the activity an app
-//! publishes, the card opens from the pill, and a narrow desk keeps its cards
-//! in the pill. Each state is a test with its own session, and every state is
-//! written as a picture beside the desk's own captures.
+//! The floating layer on the desk: the bar's pill names the activity an app publishes, the card
+//! opens from the pill, and a narrow desk keeps its cards in the pill. Each state is a test with
+//! its own session, and every state is written as a picture beside the desk's own captures.
 
 use super::*;
 use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
@@ -9,8 +8,8 @@ use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 /// The app whose timer runs.
 const CLOCKS: &str = "so.tilo.clocks";
 
-/// The bar's height, whole logical pixels: everything above stands in the
-/// bar, everything below is the desk the cards float over.
+/// The bar's height, whole logical pixels: everything above stands in the bar, everything below is
+/// the desk the cards float over.
 const BAR: u32 = 32;
 
 /// The first row under the desk.
@@ -18,8 +17,8 @@ fn desk_bottom() -> u32 {
     u32::try_from(HEIGHT).expect("a display with rows")
 }
 
-/// Where the captures are written: under the build's `target`, so a build
-/// that runs the suite elsewhere hands them back with its artifacts.
+/// Where the captures are written: under the build's `target` , so a build that runs the suite
+/// elsewhere hands them back with its artifacts.
 fn shots_dir() -> std::path::PathBuf {
     std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
         || {
@@ -45,8 +44,8 @@ fn tea() -> Summary {
         .with_control(Control::new("close", "End", ControlKind::Close))
 }
 
-/// Show `summary` on the session's board as `app` publishes it: a card over
-/// the windows when `overlay`, a reading in the bar otherwise.
+/// Show `summary` on the session's board as `app` publishes it: a card over the windows when
+/// `overlay` , a reading in the bar otherwise.
 fn show(session: &Session, app: &str, summary: Summary, overlay: bool) {
     let mut published = Published::of(summary);
     published.overlay = overlay;
@@ -65,7 +64,7 @@ fn shot(session: &mut Session) -> (Vec<u8>, u32) {
     (shot.rgba, shot.width)
 }
 
-/// How many pixels differ between two frames, in the rows `from..to`.
+/// How many pixels differ between two frames, in the rows `from..to` .
 fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize {
     let width = usize::try_from(width).expect("a display with columns");
     let stride = width * 4;
@@ -117,8 +116,7 @@ fn session_wide(width: i32) -> Session {
     .expect("session")
 }
 
-/// A running timer is the bar's pill, and the pill opens as its card over
-/// the desk.
+/// A running timer is the bar's pill, and the pill opens as its card over the desk.
 #[test]
 fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     let _settled = ui::motion::testing::settled();
@@ -128,8 +126,8 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     settle(&mut session, 8);
     let (empty, width) = shot(&mut session);
 
-    // A timer that keeps to the bar: its reading stands in the pill, and
-    // nothing stands over the desk.
+    // A timer that keeps to the bar: its reading stands in the pill, and nothing stands over the
+    // desk.
     show(&session, CLOCKS, tea(), false);
     settle(&mut session, 8);
     let (named, _) = shot(&mut session);
@@ -156,8 +154,8 @@ fn the_bar_names_the_running_timer_and_its_card_opens_from_the_pill() {
     super::desk::capture_to(&mut session, &dir, "card");
 }
 
-/// A phone's desk has no room beside a window for a card: every activity
-/// waits in the pill, and none stands on the desk.
+/// A phone's desk has no room beside a window for a card: every activity waits in the pill, and
+/// none stands on the desk.
 #[test]
 fn a_narrow_desk_keeps_its_cards_in_the_pill() {
     let _settled = ui::motion::testing::settled();

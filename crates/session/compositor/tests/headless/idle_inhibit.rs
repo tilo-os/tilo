@@ -1,13 +1,12 @@
-//! A window that asks the screen to stay on holds the machine only while the
-//! person can see it: a video left in a hidden tab or on a workspace nobody
-//! is on holds nothing.
+//! A window that asks the screen to stay on holds the machine only while the person can see it: a
+//! video left in a hidden tab or on a workspace nobody is on holds nothing.
 
 use std::cell::Cell;
 
 use super::*;
 
-/// Where a parked window goes: far off every output, as the desktop puts a
-/// hidden tab or a workspace nobody is on.
+/// Where a parked window goes: far off every output, as the desktop puts a hidden tab or a
+/// workspace nobody is on.
 const PARKED: i32 = 100_000;
 
 /// Places one window where `parked` says: on the output, or off it.
@@ -70,8 +69,8 @@ fn an_idle_inhibitor_holds_only_while_its_window_is_on_screen() {
     assert_eq!(holding.len(), 1, "the window the person watches holds it");
     assert_eq!(holding[0].app_id.as_deref(), Some("video"));
 
-    // The same window parked off every output, as a hidden tab is: nobody
-    // is watching, so nothing holds.
+    // The same window parked off every output, as a hidden tab is: nobody is watching, so nothing
+    // holds.
     parked.set(true);
     compositor.draw_frame().expect("a frame");
     assert!(!compositor.idle_inhibited());

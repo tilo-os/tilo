@@ -1,6 +1,5 @@
-//! What the person copied is the session's own reading: the device panel
-//! reads it over the wire, and an app the workspace does not grant is refused it
-//! as it is refused an action.
+//! What the person copied is the session's own reading: the device panel reads it over the wire,
+//! and an app the workspace does not grant is refused it as it is refused an action.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -24,13 +23,13 @@ use tilo_compositor::{OutputConfig, Selection};
 use tilo_service::LoopWake;
 use tilo_session::{ActionPlane, CLIPBOARD_RESOURCE, Launches, Options, Session};
 
-/// The app the person's device shows the session's own state in, and an app
-/// of its own: what the workspace grants apart.
+/// The app the person's device shows the session's own state in, and an app of its own: what the
+/// workspace grants apart.
 const PANEL: &str = "so.tilo.quick-settings";
 const APP: &str = "so.tilo.settings";
 
-/// A session serving the plane on `socket`, having started `app` in its one
-/// workspace, which this test's own process runs.
+/// A session serving the plane on `socket` , having started `app` in its one workspace, which this
+/// test's own process runs.
 fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
     let wake = LoopWake::default();
     let launches = Arc::new(Launches::default());
@@ -46,30 +45,29 @@ fn session(socket: &std::path::Path, app: &str) -> (Session, String) {
         &[OutputConfig::new("HEADLESS-1", 1280, 720)],
     )
     .expect("session");
-    // The app runs in the workspace the session opened its desk on, which is
-    // the workspace it reads the session's resources in.
+    // The app runs in the workspace the session opened its desk on, which is the workspace it reads
+    // the session's resources in.
     let workspace = session.handle().read(|tree| {
         tree.active_workspace()
             .map(|workspace| workspace.id().to_string())
             .expect("a workspace")
     });
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process: what the broker admits
-    // the connection by.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process: what the broker admits the connection by.
     launches.started(std::process::id(), app, &workspace, true);
     (session, workspace)
 }
 
-/// What the app read of the clipboard: its reading now, and the one its
-/// watch began at, each the refusal when the session refused it.
+/// What the app read of the clipboard: its reading now, and the one its watch began at, each the
+/// refusal when the session refused it.
 #[derive(Debug)]
 struct Seen {
     snapshot: Result<Option<String>, String>,
     watched: Result<Option<String>, String>,
 }
 
-/// The app's side of the wire: the launcher's handoff on a connection to
-/// `socket`, then a read and a watch of the clipboard.
+/// The app's side of the wire: the launcher's handoff on a connection to `socket` , then a read and
+/// a watch of the clipboard.
 fn app(socket: &std::path::Path, id: &str, workspace: &str, seen: &std::sync::mpsc::Sender<Seen>) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -126,8 +124,8 @@ fn copy(session: &mut Session, text: &str) {
     }
 }
 
-/// What the person copied reaches the panel's launch, and an app the workspace
-/// grants nothing reads nothing.
+/// What the person copied reaches the panel's launch, and an app the workspace grants nothing reads
+/// nothing.
 #[test]
 fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     let root = common::private_home();
@@ -144,9 +142,9 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     let panel_seen = until_the_app_is_done(&mut panel_session, &panel_received);
     panel.join().expect("the panel's thread");
 
-    // The app that was granted nothing is refused as it asks: its connection
-    // arrives as the session starts, and the workspace's grants decide it before
-    // the session's loop turns to serve anything of its own.
+    // The app that was granted nothing is refused as it asks: its connection arrives as the session
+    // starts, and the workspace's grants decide it before the session's loop turns to serve
+    // anything of its own.
     let (sent, received) = std::sync::mpsc::channel();
     let ordinary = std::thread::spawn(move || app(&app_socket, APP, &app_room, &sent));
     let app_seen = received
@@ -188,8 +186,7 @@ fn the_panel_reads_what_the_person_copied_and_an_app_is_refused_it() {
     }
 }
 
-/// A session with nobody attached: what the verbs of the clipboard can be
-/// invoked on directly.
+/// A session with nobody attached: what the verbs of the clipboard can be invoked on directly.
 fn plain_session() -> Session {
     Session::headless(
         Options::default(),
@@ -198,8 +195,8 @@ fn plain_session() -> Session {
     .expect("session")
 }
 
-/// The history as its reading lists it: each copy's key, its text and
-/// whether the person keeps it, newest first.
+/// The history as its reading lists it: each copy's key, its text and whether the person keeps it,
+/// newest first.
 fn listed(session: &Session) -> Vec<(String, Option<String>, bool)> {
     session
         .read(CLIPBOARD_RESOURCE)
@@ -217,7 +214,7 @@ fn listed(session: &Session) -> Vec<(String, Option<String>, bool)> {
         .collect()
 }
 
-/// The key of the copy whose text is `text`.
+/// The key of the copy whose text is `text` .
 fn key_of(session: &Session, text: &str) -> String {
     listed(session)
         .into_iter()
@@ -235,13 +232,13 @@ fn invoke(session: &mut Session, action: &str, arguments: serde_json::Value) {
         .unwrap_or_else(|error| panic!("{action}: {error}"));
 }
 
-/// What the person does with the history is what the clipboard resource
-/// offers: keeping a copy, dropping one, and clearing the rest.
+/// What the person does with the history is what the clipboard resource offers: keeping a copy,
+/// dropping one, and clearing the rest.
 #[test]
 fn the_history_is_pinned_removed_and_cleared_through_its_published_verbs() {
     let mut session = plain_session();
-    // The history is the device's, kept across sessions: what this test
-    // copied is named so a run never reads another's copies.
+    // The history is the device's, kept across sessions: what this test copied is named so a run
+    // never reads another's copies.
     let kept_text = format!("keep me {}", std::process::id());
     let dropped_text = format!("let me go {}", std::process::id());
     copy(&mut session, &kept_text);

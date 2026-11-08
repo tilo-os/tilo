@@ -40,10 +40,9 @@ impl Destination {
         crate::directory::feedback()
     }
 
-    /// The chip a report's box opens with: where the report goes, named so
-    /// the person reads it before they write. The search never finds it and
-    /// the box keeps it ([`RecipientKind::Feedback`]), so a report cannot be
-    /// addressed elsewhere.
+    /// The chip a report's box opens with: where the report goes, named so the person reads it
+    /// before they write. The search never finds it and the box keeps it
+    /// ([`RecipientKind::Feedback`]), so a report cannot be addressed elsewhere.
     #[must_use]
     pub(crate) fn recipient(&self) -> Recipient {
         Recipient::found(
@@ -53,8 +52,7 @@ impl Destination {
         )
     }
 
-    /// The channel's own item in the workspace's Chat, where its reports are
-    /// filed.
+    /// The channel's own item in the workspace's Chat, where its reports are filed.
     #[must_use]
     pub(crate) fn item(&self) -> String {
         destination::item(destination::CHANNELS, &self.channel)
@@ -73,8 +71,8 @@ impl Destination {
         text: &str,
     ) -> Result<Submission, String> {
         let submission = Submission {
-            // One send is one report: the id is minted once, and a report sent
-            // again is another report, never a second copy of this one.
+            // One send is one report: the id is minted once, and a report sent again is another
+            // report, never a second copy of this one.
             id: uuid::Uuid::new_v4().simple().to_string(),
             destination: FiledIn {
                 room: self.workspace.clone(),
@@ -96,9 +94,8 @@ impl Destination {
     }
 }
 
-/// What one thing a window carried is, as the destination reads what a report
-/// is about: the app and record it came from, and the words as they read when
-/// it was sent.
+/// What one thing a window carried is, as the destination reads what a report is about: the app and
+/// record it came from, and the words as they read when it was sent.
 fn picked(app: &str, carried: &Attached) -> ReviewedSelection {
     let (origin, label, words): (Option<&ResourceAt>, Option<&str>, Option<&str>) = match carried {
         Attached::Text { text, from } => (from.as_ref(), None, Some(text)),
@@ -127,8 +124,7 @@ fn picked(app: &str, carried: &Attached) -> ReviewedSelection {
     }
 }
 
-/// `text` as it leaves the device: one run, nothing of it hidden, no longer
-/// than the pick it was.
+/// `text` as it leaves the device: one run, nothing of it hidden, no longer than the pick it was.
 fn quoted(kind: TextKind, text: &str) -> ReviewedText {
     ReviewedText {
         kind,

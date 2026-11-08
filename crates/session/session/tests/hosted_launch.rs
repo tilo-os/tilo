@@ -1,10 +1,9 @@
-//! An app whose model the session serves launches hosted
-//! (`docs/architecture/apps.md` §8 step 2, `docs/designs/app-language/one-app-model.md` §4).
-//!
-//! Whether an app is hosted follows from the session having its model module: a service that
-//! runs the app's model publishes its record, and a launch the session makes for that app names
-//! the resource it publishes, so the app's process opens no document of its own. No per-app code
-//! says so, and the launcher hands the name from the session into the app's sandbox.
+//! An app whose model the session serves launches hosted (`docs/architecture/apps.md` §8 step 2,
+//! `docs/designs/app-language/one-app-model.md` §4).
+//! Whether an app is hosted follows from the session having its model module: a service that runs
+//! the app's model publishes its record, and a launch the session makes for that app names the
+//! resource it publishes, so the app's process opens no document of its own. No per-app code says
+//! so, and the launcher hands the name from the session into the app's sandbox.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -39,15 +38,15 @@ const APP: &str = "so.tilo.tasks";
 const TRACKER: &str = "tasks.tracker";
 const ADDRESS: &str = "tasks.tracker";
 
-/// The tracker's model module: `tasks-model` built for wasm32 by `tilo-model-host`'s build
-/// script, the same code the app ships.
+/// The tracker's model module: `tasks-model` built for wasm32 by `tilo-model-host` 's build script,
+/// the same code the app ships.
 fn wasm() -> Vec<u8> {
     tilo_model_host::fixture_module("tasks-model")
         .expect("tilo-model-host's build script built the module")
 }
 
-/// The session's document host for the tracker: the app's model running in its module, its
-/// record published at [`ADDRESS`].
+/// The session's document host for the tracker: the app's model running in its module, its record
+/// published at [`ADDRESS`].
 fn tracker() -> ModelService {
     let mut service = ModelService::new(PERSON).expect("a model host");
     service
@@ -56,7 +55,7 @@ fn tracker() -> ModelService {
     service
 }
 
-/// Install [`APP`] in `home`'s own app store, its entrypoint the launcher's to start.
+/// Install [`APP`] in `home` 's own app store, its entrypoint the launcher's to start.
 fn installed_tasks(home: &mut tilo_test_env::TestHome) {
     let store = home.data().join("tilo-apps");
     let payload = store.join("payload").join(APP);
@@ -106,8 +105,8 @@ fn installed_tasks(home: &mut tilo_test_env::TestHome) {
     home.env().set("TILO_APPS_DATA_DIR", &store);
 }
 
-/// What the last launch the launcher was handed named as its hosted resource, if it named one:
-/// each start is recorded as its pid and then the resource, one field of it.
+/// What the last launch the launcher was handed named as its hosted resource, if it named one: each
+/// start is recorded as its pid and then the resource, one field of it.
 fn hosted_at(handed: &Path) -> Option<String> {
     let said = fs::read_to_string(handed).unwrap_or_default();
     let line = said.lines().next_back()?;
@@ -133,7 +132,7 @@ fn launcher_recording(home: &tilo_test_env::TestHome, handed: &Path) -> tilo_tes
     .unwrap()
 }
 
-/// The apps this session starts, on its own display, through `launcher`.
+/// The apps this session starts, on its own display, through `launcher` .
 fn apps_at(home: &tilo_test_env::TestHome, launcher: PathBuf) -> Rc<Apps> {
     let mut environment = tilo_app_launch::SessionEnvironment::from_process();
     environment.wayland_socket = Some(home.runtime().join("wayland-7"));
@@ -180,8 +179,8 @@ fn desk_file(state: &Path) -> PathBuf {
     state.join("tilo").join("desk.json")
 }
 
-/// A session whose desk has one window of [`APP`] in it, with the tracker's records
-/// published and the apps it starts through `launcher`.
+/// A session whose desk has one window of [`APP`] in it, with the tracker's records published and
+/// the apps it starts through `launcher` .
 fn session(state: &Path, apps: Rc<Apps>, served: bool) -> Session {
     let services: Vec<Box<dyn tilo_service::Service>> = if served {
         vec![Box::new(tracker())]
@@ -232,8 +231,8 @@ fn an_app_the_session_serves_is_launched_hosted() {
 
 #[test]
 fn an_app_the_session_does_not_serve_opens_its_own_record() {
-    // No service runs this app's model: nothing is hosted, so the launch names no resource and
-    // the app keeps its record itself, as every app did before the session served one.
+    // No service runs this app's model: nothing is hosted, so the launch names no resource and the
+    // app keeps its record itself, as every app did before the session served one.
     let mut home = tilo_test_env::TestHome::new().unwrap();
     installed_tasks(&mut home);
     let handed = home.home().join("handed");

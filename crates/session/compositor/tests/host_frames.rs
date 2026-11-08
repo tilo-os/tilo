@@ -1,5 +1,5 @@
-//! Hosted frames: a surface the session draws itself, filled the way a
-//! toolkit app fills one, shows on the output the same way up.
+//! Hosted frames: a surface the session draws itself, filled the way a toolkit app fills one, shows
+//! on the output the same way up.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -18,8 +18,8 @@ use tilo_compositor::{
     Compositor, HostFrame, HostLayer, OutputConfig, Region, StackPolicy, SurfaceHost,
 };
 
-/// A hosted surface whose host fills its frame row by row, the way a
-/// toolkit app draws into one: red above the middle, blue below.
+/// A hosted surface whose host fills its frame row by row, the way a toolkit app draws into one:
+/// red above the middle, blue below.
 struct Rows {
     frame: HostFrame,
     size: (i32, i32),
@@ -96,15 +96,14 @@ struct Bar {
 }
 
 impl Bar {
-    /// A `frame` of the drawn pixels, covering `layer` on the output, with
-    /// the bar painted `scale` times up: what a surface drawn at the output's
-    /// scale hands over.
+    /// A `frame` of the drawn pixels, covering `layer` on the output, with the bar painted `scale`
+    /// times up: what a surface drawn at the output's scale hands over.
     fn new(frame: (u32, u32), layer: (i32, i32), scale: u32) -> Self {
         Self::at((0, 0), frame, layer, scale)
     }
 
-    /// [`Bar::new`], for a layer whose top left corner is `location` on the
-    /// output rather than the output's own.
+    /// [`Bar::new`], for a layer whose top left corner is `location` on the output rather than the
+    /// output's own.
     fn at(location: (i32, i32), frame: (u32, u32), layer: (i32, i32), scale: u32) -> Self {
         let (width, height) = frame;
         let bar = (40 * scale, 20 * scale, 200 * scale, 60 * scale);
@@ -196,8 +195,8 @@ fn a_layer_the_size_of_the_output_drawn_at_half_of_it_lands_where_it_was_drawn()
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    // The frame is drawn at twice the pixels of the rectangle it covers: the
-    // bar it draws at (80, 40) of the frame covers (40, 20) on the output.
+    // The frame is drawn at twice the pixels of the rectangle it covers: the bar it draws at (80,
+    // 40) of the frame covers (40, 20) on the output.
     compositor.add_host(Box::new(Bar::new((640, 480), (320, 240), 2)));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
@@ -294,8 +293,8 @@ fn what_a_layer_stopped_drawing_is_painted_over() {
         painted[1] > 128 && painted[0] < 128,
         "the bar it drew shows: {painted:?}"
     );
-    // A display shows one frame per refresh, and the frame that paints the
-    // erase over is built when its turn comes: drawing on brings it.
+    // A display shows one frame per refresh, and the frame that paints the erase over is built when
+    // its turn comes: drawing on brings it.
     let mut erased = None;
     for _ in 0..8 {
         compositor.draw_frame().expect("a frame");
@@ -321,9 +320,8 @@ fn a_layer_that_is_not_at_the_outputs_corner_draws_where_it_says() {
     compositor
         .add_output(&OutputConfig::new("HEADLESS-1", 640, 480))
         .expect("output");
-    // A panel a third of the way down the output, drawn at twice the pixels
-    // of the rectangle it covers: its bar at (80, 40) of the frame lands at
-    // (40, 320) of the output.
+    // A panel a third of the way down the output, drawn at twice the pixels of the rectangle it
+    // covers: its bar at (80, 40) of the frame lands at (40, 320) of the output.
     compositor.add_host(Box::new(Bar::at((0, 300), (640, 480), (320, 240), 2)));
     compositor.draw_frame().expect("a frame");
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
@@ -362,8 +360,8 @@ fn a_layer_that_drew_nothing_is_not_drawn() {
     );
 }
 
-/// A surface that says it needs a frame now wakes the loop for it: what a
-/// host animates is drawn at the pace it asks, not at the loop's idle wait.
+/// A surface that says it needs a frame now wakes the loop for it: what a host animates is drawn at
+/// the pace it asks, not at the loop's idle wait.
 #[test]
 fn a_host_that_needs_a_frame_now_shortens_the_loops_wait() {
     use std::time::{Duration, Instant};

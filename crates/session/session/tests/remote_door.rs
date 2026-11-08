@@ -43,7 +43,7 @@ use tilo_user_identity::{
 
 use common::{HEIGHT, WIDTH, private_home};
 
-/// A device key `n` certified by `root`, called `label`.
+/// A device key `n` certified by `root` , called `label` .
 fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[n; 32]);
     let mut cert = DeviceCert {
@@ -59,7 +59,7 @@ fn device(root: &SigningKey, n: u8, label: &str) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// A localhost endpoint with no relay whose identity is the device `key`.
+/// A localhost endpoint with no relay whose identity is the device `key` .
 async fn endpoint(key: &SigningKey) -> Endpoint {
     Endpoint::builder(presets::Minimal)
         .relay_mode(RelayMode::Disabled)
@@ -78,8 +78,8 @@ fn addr(endpoint: &Endpoint) -> EndpointAddr {
     )))
 }
 
-/// The person, this box (B) and their laptop (A), where the agent runs; and a
-/// phone of theirs they removed.
+/// The person, this box (B) and their laptop (A), where the agent runs; and a phone of theirs they
+/// removed.
 struct Person {
     root: SigningKey,
     laptop: (SigningKey, DeviceCert),
@@ -98,8 +98,7 @@ impl Person {
         }
     }
 
-    /// The person's own store as this box keeps it: the laptop admitted, the
-    /// phone revoked.
+    /// The person's own store as this box keeps it: the laptop admitted, the phone revoked.
     fn store(&self) -> PersonalSync {
         let store = PersonalStore::open(
             self.root.verifying_key().to_bytes(),
@@ -125,9 +124,8 @@ impl Person {
     }
 }
 
-/// This box: its headless session with the agent door open, the questions it
-/// asks the person, and its endpoint answering the door toward the person's
-/// other devices.
+/// This box: its headless session with the agent door open, the questions it asks the person, and
+/// its endpoint answering the door toward the person's other devices.
 struct ThisBox {
     session: Session,
     questions: Questions,
@@ -154,8 +152,8 @@ impl ThisBox {
                 action_plane: ActionPlane::At(root.path().join("plane.sock")),
                 agent_door: Some(socket.clone()),
                 state: Some(home.state().to_path_buf()),
-                // The person's settings, as the session serves them: what
-                // the person sets this box's agent door with.
+                // The person's settings, as the session serves them: what the person sets this
+                // box's agent door with.
                 services: vec![std::boxed::Box::new(
                     tilo_settings_service::SettingsService::new(),
                 )],
@@ -269,8 +267,8 @@ impl ThisBox {
     }
 }
 
-/// An agent's MCP client: what it sends goes out on its own thread, and each
-/// answer it reads comes back — `None` once its connection ended.
+/// An agent's MCP client: what it sends goes out on its own thread, and each answer it reads comes
+/// back — `None` once its connection ended.
 struct Agent {
     asks: mpsc::Sender<Value>,
     answers: mpsc::Receiver<Option<Value>>,
@@ -337,8 +335,8 @@ fn an_agent_from_another_device_waits_for_the_person_and_leaving_withdraws_it() 
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
     let mut b = ThisBox::start(&person);
-    // It asks for a workspace this box does not hold: the person is asked
-    // about the one in front, as for any other client.
+    // It asks for a workspace this box does not hold: the person is asked about the one in front,
+    // as for any other client.
     let agent = b
         .dial(&person.laptop, Some("dddddddd-dddd-4ddd-8ddd-dddddddddddd"))
         .expect("this box's door opens for the person's laptop");
@@ -431,8 +429,8 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     let _settled = ui::motion::testing::settled();
     let person = Person::new();
     let mut b = ThisBox::start(&person);
-    // The person lets agents from their other devices in on this box, as
-    // Settings, the palette or an agent of theirs does: the setting's own verb.
+    // The person lets agents from their other devices in on this box, as Settings, the palette or
+    // an agent of theirs does: the setting's own verb.
     b.session
         .invoke(
             "settings:settings.agent-door",
@@ -453,8 +451,8 @@ fn with_agents_from_other_devices_accepted_one_works_here_without_a_question() {
     let named = agent_id("claude-code", &person.laptop.1);
     b.pump(|b| b.seated() == [named.clone()]);
 
-    // The setting lets in the person's own devices and nothing else: a
-    // device of another person, and one the person removed, are refused.
+    // The setting lets in the person's own devices and nothing else: a device of another person,
+    // and one the person removed, are refused.
     let stranger = SigningKey::from_bytes(&[0x22; 32]);
     let theirs = device(&stranger, 4, "Their laptop");
     let refused = b.dial(&theirs, None).map(|_| ()).unwrap_err();

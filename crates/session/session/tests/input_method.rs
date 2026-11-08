@@ -1,12 +1,10 @@
-//! An input-method source in the person's keyboard list: switching to it and
-//! back is a source switch like any other, and the seat keeps typing in the
-//! layout under it — an engine is not a layout, so it never reaches the keymap
-//! the compositor compiles.
-//!
-//! The engine itself (Fcitx5 with Rime, Anthy or Hangul) is started by the
-//! session on a display of its own when the image has it; what it composes is
-//! proven against real clients speaking `input-method-v2`, `text-input-v3` and
-//! `virtual-keyboard-v1` in the compositor's headless tests.
+//! An input-method source in the person's keyboard list: switching to it and back is a source
+//! switch like any other, and the seat keeps typing in the layout under it — an engine is not a
+//! layout, so it never reaches the keymap the compositor compiles.
+//! The engine itself (Fcitx5 with Rime, Anthy or Hangul) is started by the session on a display of
+//! its own when the image has it; what it composes is proven against real clients speaking
+//! `input-method-v2` , `text-input-v3` and `virtual-keyboard-v1` in the compositor's headless
+//! tests.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -41,7 +39,7 @@ fn session() -> Session {
     .expect("a session")
 }
 
-/// Step the session until `done`.
+/// Step the session until `done` .
 #[track_caller]
 fn until(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool) {
     let at = std::panic::Location::caller();

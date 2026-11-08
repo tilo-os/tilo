@@ -1,7 +1,6 @@
 //! The pane's history as the session serves it to apps
-//! ([`tilo_actions::remote::workspace_activity`]): the reads an app follows
-//! and the writes it asks for, each addressed by history id rather than by
-//! a row on a screen.
+//! ([`tilo_actions::remote::workspace_activity`]): the reads an app follows and the writes it asks
+//! for, each addressed by history id rather than by a row on a screen.
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
@@ -148,7 +147,7 @@ fn hex(id: &HistoryEntryId) -> String {
     wire::entry_hex(id.as_bytes())
 }
 
-/// The arguments an action carries, read as `T`.
+/// The arguments an action carries, read as `T` .
 fn read<T: serde::de::DeserializeOwned>(
     arguments: &serde_json::Map<String, serde_json::Value>,
 ) -> Result<T, String> {
@@ -156,8 +155,8 @@ fn read<T: serde::de::DeserializeOwned>(
         .map_err(|error| format!("the action's arguments were not understood: {error}"))
 }
 
-/// The desktop a served read or write is about, as its host holds it: read
-/// through, or written to only by what writes.
+/// The desktop a served read or write is about, as its host holds it: read through, or written to
+/// only by what writes.
 pub trait ServedTree {
     type Tree: ActivityTree;
     fn read<R>(&mut self, read: impl FnOnce(&Self::Tree) -> R) -> R;
@@ -175,8 +174,8 @@ impl<T: ActivityTree> ServedTree for &mut T {
     }
 }
 
-/// Whether `action` is one only the person at the device asks for: what
-/// they saw, which sources they hear about each morning.
+/// Whether `action` is one only the person at the device asks for: what they saw, which sources
+/// they hear about each morning.
 #[must_use]
 pub fn is_personal(action: &str) -> bool {
     [
@@ -218,10 +217,9 @@ pub fn is_document_write(action: &str) -> bool {
     .contains(&action)
 }
 
-/// Why an agent may not ask for `action` with `arguments`, if it may not:
-/// what this device has seen and the sources it hears about are the
-/// person's own, and so is every workspace's history but the one the agent
-/// works in.
+/// Why an agent may not ask for `action` with `arguments` , if it may not: what this device has
+/// seen and the sources it hears about are the person's own, and so is every workspace's history
+/// but the one the agent works in.
 #[must_use]
 pub fn refused_to_agent(
     action: &str,
@@ -234,9 +232,8 @@ pub fn refused_to_agent(
 }
 
 impl WorkspaceActivityPane {
-    /// A fingerprint of everything the served reads show: it moves when
-    /// one of them would read differently, and an app following them is
-    /// read again only then.
+    /// A fingerprint of everything the served reads show: it moves when one of them would read
+    /// differently, and an app following them is read again only then.
     pub fn served_revision(&self) -> u64 {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         for entry in self.timeline.entries() {
@@ -379,9 +376,8 @@ impl WorkspaceActivityPane {
         groups
     }
 
-    /// What each change's writes were refused, by the change's history id: a
-    /// verdict names the changes one write would have brought, and this
-    /// device's own writes are its own history.
+    /// What each change's writes were refused, by the change's history id: a verdict names the
+    /// changes one write would have brought, and this device's own writes are its own history.
     fn refusals_by_change(&self) -> HashMap<String, Vec<wire::Refusal>> {
         let mut by_change: HashMap<String, Vec<wire::Refusal>> = HashMap::new();
         for refusal in self.host.refusals(&self.workspace) {
@@ -496,9 +492,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The workspace's layout at each recent change, from the first the
-    /// workspace stood in: the changes that made the workspace before it show
-    /// nothing to replay.
+    /// The workspace's layout at each recent change, from the first the workspace stood in: the
+    /// changes that made the workspace before it show nothing to replay.
     pub fn serve_replay(&self) -> wire::Replay {
         wire::Replay {
             frames: self
@@ -613,8 +608,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// The agent task the selection is, as its detail shows it: what was
-    /// asked, by whom, each record it changed and what Undo can reach.
+    /// The agent task the selection is, as its detail shows it: what was asked, by whom, each
+    /// record it changed and what Undo can reach.
     fn detail_run(&self) -> Option<wire::Run> {
         self.selected_agent_run().map(|indexed| {
             let run = &indexed.run;
@@ -726,9 +721,9 @@ impl WorkspaceActivityPane {
         .collect()
     }
 
-    /// Start showing what changed since this device last looked, from the
-    /// frontier it holds now. What it marks seen moves the frontier only
-    /// when the showing ends ([`Self::end_summary`]) or it says so.
+    /// Start showing what changed since this device last looked, from the frontier it holds now.
+    /// What it marks seen moves the frontier only when the showing ends ([`Self::end_summary`]) or
+    /// it says so.
     pub fn begin_summary(&mut self, workspace: u64) {
         self.begin_view(workspace);
         self.view = ActivityView::CatchUp;
@@ -739,8 +734,8 @@ impl WorkspaceActivityPane {
         self.finish_view(workspace);
     }
 
-    /// Count the changes `viewed` names as shown to the person in
-    /// `workspace`; with `now`, as seen at once.
+    /// Count the changes `viewed` names as shown to the person in `workspace` ; with `now` , as
+    /// seen at once.
     pub fn mark_viewed(&mut self, workspace: u64, viewed: &wire::Viewed) {
         if self.scope != WorkspaceScope::ThisWorkspace || self.last_active != Some(workspace) {
             return;
@@ -762,8 +757,8 @@ impl WorkspaceActivityPane {
         }
     }
 
-    /// What the person last asked to be shown from outside the app, until
-    /// an app says it showed it ([`Self::take_focus`]).
+    /// What the person last asked to be shown from outside the app, until an app says it showed it
+    /// ([`Self::take_focus`]).
     pub fn serve_focus(&self) -> Option<wire::Focus> {
         self.focus.clone()
     }
@@ -794,8 +789,8 @@ impl WorkspaceActivityPane {
         });
     }
 
-    /// Offer the change, person, work group or resource `link` names to
-    /// the app that shows the history.
+    /// Offer the change, person, work group or resource `link` names to the app that shows the
+    /// history.
     pub fn focus_deep_link(&mut self, link: &ActivityDeepLink) {
         let entry = link
             .entry_id
@@ -856,8 +851,8 @@ impl WorkspaceActivityPane {
             }
             Ok(pane.apply_detail_action(action, tree, records))
         };
-        // The host decides what its history may take: a desktop that only
-        // shows one refuses every change of it here, where it knows.
+        // The host decides what its history may take: a desktop that only shows one refuses every
+        // change of it here, where it knows.
         if is_document_write(action) && !self.host.mutations_available() {
             return Err(t("activity-served-read-only"));
         }
@@ -901,8 +896,8 @@ impl WorkspaceActivityPane {
                 if !self.select_range(&range) {
                     return Err(t("activity-history-gone"));
                 }
-                // A record the host holds no writer for reads, and does not
-                // go back: refuse rather than answer a change that never was.
+                // A record the host holds no writer for reads, and does not go back: refuse rather
+                // than answer a change that never was.
                 if !self
                     .selection_detail()
                     .is_some_and(|detail| self.selection_is_writable(&detail))
@@ -933,9 +928,8 @@ impl WorkspaceActivityPane {
                 let Some(task) = task else {
                     return Err(t("activity-undo-task-unavailable"));
                 };
-                // Asked of the task, so undo names the run's group in the
-                // document: the same step a task-wide undo would take
-                // back, one record at a time.
+                // Asked of the task, so undo names the run's group in the document: the same step a
+                // task-wide undo would take back, one record at a time.
                 Ok(if self.undo_task_record(&task, &query.app_id, &query.id) {
                     handled_outcome()
                 } else {

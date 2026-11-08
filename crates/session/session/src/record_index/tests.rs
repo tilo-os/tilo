@@ -1,6 +1,5 @@
-//! The indexer over records the session holds: what search finds of an app
-//! that never opened here, and what it stops finding once a record no longer
-//! holds it.
+//! The indexer over records the session holds: what search finds of an app that never opened here,
+//! and what it stops finding once a record no longer holds it.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};

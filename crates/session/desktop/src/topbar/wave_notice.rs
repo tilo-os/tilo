@@ -1,7 +1,6 @@
-//! Someone waved at this person: the bar says who, beside the faces, for a
-//! moment ([`crate::chrome::WaveNotice`]), while the waver's face bounces.
-//! Ambient, like the faces themselves: it takes no click and goes on its
-//! own.
+//! Someone waved at this person: the bar says who, beside the faces, for a moment
+//! ([`crate::chrome::WaveNotice`]), while the waver's face bounces. Ambient, like the faces
+//! themselves: it takes no click and goes on its own.
 use super::{Affine, Scene, TextRenderer, Theme, TopBarChrome, t_args};
 use ui::time::{Duration, Instant};
 use ui::widget::{ChipFace, ChipLead};
@@ -20,10 +19,9 @@ impl TopBarChrome {
             .then(|| t_args("topbar-waved-at-you", &[("name", notice.from.into())]))
     }
 
-    /// The notice up at `now`, worded to fit `workspace` px of chip: the
-    /// waver's name gives way first, cut short with an ellipsis, so the
-    /// words saying what happened always stand whole. `None` when not
-    /// even the name's first letter fits beside them.
+    /// The notice up at `now` , worded to fit `workspace` px of chip: the waver's name gives way
+    /// first, cut short with an ellipsis, so the words saying what happened always stand whole.
+    /// `None` when not even the name's first letter fits beside them.
     pub(super) fn wave_notice_fitted(
         &self,
         now: Instant,
@@ -72,10 +70,9 @@ impl TopBarChrome {
     ) -> f64 {
         let height = 24.0;
         let right = right_x - f64::from(theme.tokens.spacing.s2);
-        // It yields to what the centre draws (the clock, or the activity
-        // pill across the whole lane), not to the lane kept for an
-        // activity: at a laptop's width that lane alone left the notice
-        // no room for its words.
+        // It yields to what the centre draws (the clock, or the activity pill across the whole
+        // lane), not to the lane kept for an activity: at a laptop's width that lane alone left the
+        // notice no room for its words.
         let left_limit = self.center_rect.x1 + f64::from(theme.tokens.spacing.s4);
         // No room for the words: the bouncing face says it alone.
         let Some(text) =
@@ -123,8 +120,7 @@ mod tests {
         TopBarChrome::from_tree(&tree).with_chrome(chrome)
     }
 
-    /// The bar says who waved for a moment, then lets it go and wakes to
-    /// take it away.
+    /// The bar says who waved for a moment, then lets it go and wakes to take it away.
     #[test]
     fn the_bar_says_who_waved_for_a_moment() {
         ui::i18n::I18nManager::init("en-US");
@@ -152,8 +148,7 @@ mod tests {
         assert_eq!(bar.wave_notice_ends(later), None);
     }
 
-    /// Where the bar is narrow, the waver's name gives way, never the
-    /// words saying they waved.
+    /// Where the bar is narrow, the waver's name gives way, never the words saying they waved.
     #[test]
     fn a_narrow_bar_shortens_the_name_never_the_words() {
         let now = ui::time::now();

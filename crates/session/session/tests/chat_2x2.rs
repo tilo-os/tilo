@@ -1,14 +1,11 @@
-//! Chat's direct conversations between two people in one workspace, each on
-//! two real devices: the app's acceptance
-//! (`crates/sdk/tilo-app/src/direct/acceptance.rs`) driven through the
-//! sessions' doors.
-//!
-//! Each device is a `tilo-session` of its own on one workspace a site hosts
-//! ([`common::people`]), with the Chat package this run built installed in its
-//! store: opening Chat starts the app, and every step below reads what the app
-//! shows through the actions it publishes to its session — the conversation's
-//! messages, its unread count, a send's answer — never the records or the
-//! broker's state behind them.
+//! Chat's direct conversations between two people in one workspace, each on two real devices: the
+//! app's acceptance (`crates/sdk/tilo-app/src/direct/acceptance.rs`) driven through the sessions'
+//! doors.
+//! Each device is a `tilo-session` of its own on one workspace a site hosts ([`common::people`]),
+//! with the Chat package this run built installed in its store: opening Chat starts the app, and
+//! every step below reads what the app shows through the actions it publishes to its session — the
+//! conversation's messages, its unread count, a send's answer — never the records or the broker's
+//! state behind them.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -23,16 +20,16 @@
 
 mod common;
 
-// A site admits its members' records through an Automerge worker: this binary
-// is that worker, as the session's own is.
+// A site admits its members' records through an Automerge worker: this binary is that worker, as
+// the session's own is.
 tilo_automerge_isolate::test_worker!();
 
 use common::people::{Device, Person, Site};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
-/// A studio and the two people in it, each on a laptop and a phone: Ada's site
-/// hosts the workspace and lets Chat author its records, Ada and Bob join as
-/// editors, and Chat is installed and open on all four.
+/// A studio and the two people in it, each on a laptop and a phone: Ada's site hosts the workspace
+/// and lets Chat author its records, Ada and Bob join as editors, and Chat is installed and open on
+/// all four.
 struct Studio {
     site: Site,
     ada: Person,
@@ -49,10 +46,9 @@ impl Studio {
         let bob = Person::new("Bob");
         let site = Site::start(&ada, "Studio");
         site.publish(WorkspaceRole::Editor);
-        // The workspace's host lets Chat author its records, as the host of a
-        // workspace does before its people open apps there: Chat writes the
-        // people who introduced themselves into its own record, and a member's
-        // device cannot grant that for itself.
+        // The workspace's host lets Chat author its records, as the host of a workspace does before
+        // its people open apps there: Chat writes the people who introduced themselves into its own
+        // record, and a member's device cannot grant that for itself.
         site.author_apps(&["so.tilo.chat"]);
         let mut ada_laptop = ada.device("Ada's laptop");
         let mut ada_phone = ada.device("Ada's phone");
@@ -78,13 +74,11 @@ impl Studio {
         }
         ada_phone.open("so.tilo.chat");
         ada_phone.wait_for_window("so.tilo.chat");
-        // What a window writes reaches the workspace's host: the record Chat
-        // keeps its workspace in is one the site holds, and the people it
-        // introduces are read from there on every device.
+        // What a window writes reaches the workspace's host: the record Chat keeps its workspace in
+        // is one the site holds, and the people it introduces are read from there on every device.
         site.wait_for_record_of("so.tilo.chat", &ada_laptop);
-        // Each person's Chat shows the other once their windows have said who
-        // they are in the workspace's shared record: what a conversation needs
-        // before it can open.
+        // Each person's Chat shows the other once their windows have said who they are in the
+        // workspace's shared record: what a conversation needs before it can open.
         let ada_key = hex::encode(ada.public);
         let bob_key = hex::encode(bob.public);
         for device in [&bob_laptop, &bob_phone] {
@@ -112,8 +106,7 @@ impl Studio {
         hex::encode(self.bob.public)
     }
 
-    /// Run one step that reads several devices, and say what every device did
-    /// when they disagree.
+    /// Run one step that reads several devices, and say what every device did when they disagree.
     fn together<T>(&self, step: impl FnOnce() -> T) -> T {
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
             Ok(value) => value,
@@ -147,8 +140,8 @@ impl Studio {
 fn a_message_reaches_both_people_on_both_of_their_devices_live() {
     let studio = Studio::start();
     let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
-    // Bob's laptop has the conversation open while Ada writes: what he sees is
-    // the message arriving in the conversation, not a page reloaded.
+    // Bob's laptop has the conversation open while Ada writes: what he sees is the message arriving
+    // in the conversation, not a page reloaded.
     studio.bob_laptop.chat().open(&ada_key);
     studio.ada_laptop.chat().send(&bob_key, "hello Bob");
     for (device, peer) in [
@@ -178,8 +171,8 @@ fn a_message_reaches_both_people_on_both_of_their_devices_live() {
     }
 }
 
-/// Two desktops talk to each other: what one writes arrives in the other's
-/// open conversation, and its answer comes back the same way.
+/// Two desktops talk to each other: what one writes arrives in the other's open conversation, and
+/// its answer comes back the same way.
 #[test]
 fn two_desktops_message_each_other() {
     let studio = Studio::start();
@@ -203,8 +196,7 @@ fn two_desktops_message_each_other() {
     );
 }
 
-/// The ids of the messages the conversation with `peer` shows, in the app's
-/// order.
+/// The ids of the messages the conversation with `peer` shows, in the app's order.
 fn message_ids(device: &Device, peer: &str) -> Vec<String> {
     device
         .chat()
@@ -219,8 +211,8 @@ fn message_ids(device: &Device, peer: &str) -> Vec<String> {
 fn messages_the_host_kept_reach_a_device_that_was_away() {
     let mut studio = Studio::start();
     let (ada_key, bob_key) = (studio.ada_key(), studio.bob_key());
-    // Bob's devices are off while Ada writes: nothing of hers reaches them
-    // yet, and the site keeps what she wrote.
+    // Bob's devices are off while Ada writes: nothing of hers reaches them yet, and the site keeps
+    // what she wrote.
     studio.bob_laptop.stop();
     studio.bob_phone.stop();
     for text in ["one", "two", "three"] {
@@ -244,8 +236,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
         .bob_phone
         .chat()
         .wait_for_texts(&ada_key, &["one", "two", "three"]);
-    // Bob answers, and Ada's laptop—which stayed on—shows it with her own
-    // three.
+    // Bob answers, and Ada's laptop—which stayed on—shows it with her own three.
     studio.bob_phone.chat().send(&ada_key, "answered");
     studio.together(|| {
         studio
@@ -253,8 +244,7 @@ fn messages_the_host_kept_reach_a_device_that_was_away() {
             .chat()
             .wait_for_texts(&bob_key, &["one", "two", "three", "answered"]);
     });
-    // Ada's phone was away too: it reads the whole conversation at once, under
-    // the same ids.
+    // Ada's phone was away too: it reads the whole conversation at once, under the same ids.
     studio.together(|| {
         studio
             .ada_phone
@@ -277,8 +267,8 @@ fn both_people_writing_offline_converge_without_duplicates() {
         .bob_laptop
         .chat()
         .wait_for_texts(&ada_key, &["Ada one"]);
-    // Each person writes while the other's other device is away: neither
-    // pair of devices has heard the other's message yet.
+    // Each person writes while the other's other device is away: neither pair of devices has heard
+    // the other's message yet.
     studio.ada_phone.stop();
     studio.bob_phone.stop();
     studio.ada_laptop.chat().send(&bob_key, "Ada two");
@@ -290,9 +280,9 @@ fn both_people_writing_offline_converge_without_duplicates() {
         device.open("so.tilo.chat");
         device.wait_for_window("so.tilo.chat");
     }
-    // Every message reaches every device. The two written offline at the
-    // same time have no order of their own until the records give them one:
-    // each device waits for all of them, whichever order it reads them in.
+    // Every message reaches every device. The two written offline at the same time have no order of
+    // their own until the records give them one: each device waits for all of them, whichever order
+    // it reads them in.
     let wanted = ["Ada one", "Ada two", "Bob one", "Bob two"];
     studio.together(|| {
         studio
@@ -312,8 +302,8 @@ fn both_people_writing_offline_converge_without_duplicates() {
             device.chat().wait_for_texts_in_any_order(peer, &wanted);
         }
     });
-    // Each message once, under one id, on every device, in one order: the
-    // same one every device reads.
+    // Each message once, under one id, on every device, in one order: the same one every device
+    // reads.
     let ids = message_ids(&studio.ada_laptop, &bob_key);
     assert_eq!(ids.len(), 4, "each message once: {ids:?}");
     let unique: std::collections::BTreeSet<&String> = ids.iter().collect();
@@ -355,8 +345,8 @@ fn one_read_mark_advances_once_and_both_of_a_persons_devices_agree() {
             .chat()
             .wait_for_texts(&ada_key, &["one", "two", "three"]);
     }
-    // Ada's own messages are hers: nothing of Bob's is unread for her, and
-    // nothing of hers is unread for herself.
+    // Ada's own messages are hers: nothing of Bob's is unread for her, and nothing of hers is
+    // unread for herself.
     assert_eq!(studio.ada_laptop.chat().unread(&bob_key), 0);
     assert_eq!(studio.ada_phone.chat().unread(&bob_key), 0);
 }
@@ -370,9 +360,8 @@ fn another_pair_is_another_conversation() {
         .bob_laptop
         .chat()
         .wait_for_texts(&ada_key, &["just us"]);
-    // Carol joins the same studio, and Chat offers her Bob as someone to talk
-    // to: what she reads there is her own conversation with him, not his with
-    // Ada.
+    // Carol joins the same studio, and Chat offers her Bob as someone to talk to: what she reads
+    // there is her own conversation with him, not his with Ada.
     let carol = Person::new("Carol");
     let mut carol_laptop = carol.device("Carol's laptop");
     let member = studio.site.admit(carol.public);
@@ -387,9 +376,9 @@ fn another_pair_is_another_conversation() {
         carol_laptop.chat().texts(&bob_key).is_empty(),
         "Carol reads nothing of the conversation between Ada and Bob"
     );
-    // And a person the workspace never admitted is someone Chat refuses to
-    // open a conversation with: what Carol reads with Bob is the pair's own
-    // record, and a stranger is in no pair with her.
+    // And a person the workspace never admitted is someone Chat refuses to open a conversation
+    // with: what Carol reads with Bob is the pair's own record, and a stranger is in no pair with
+    // her.
     let stranger = hex::encode(Person::new("Stranger").public);
     assert!(
         carol_laptop.chat().refusal(&stranger).is_some(),

@@ -1,6 +1,5 @@
-//! The screenshots and colour picks the portal asks for: the session's own
-//! frames, whole displays or the window with focus, and the pixel under the
-//! pointer.
+//! The screenshots and colour picks the portal asks for: the session's own frames, whole displays
+//! or the window with focus, and the pixel under the pointer.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -10,9 +9,8 @@ use tilo_session::capture::ScreenCapture;
 
 use super::*;
 
-/// A session answering what the portal asks for, with `outputs` on: its
-/// pictures and picks are taken here, its screenshots kept under
-/// `directory`.
+/// A session answering what the portal asks for, with `outputs` on: its pictures and picks are
+/// taken here, its screenshots kept under `directory` .
 fn serving(directory: &std::path::Path, outputs: &[OutputConfig]) -> (Session, Arc<ScreenCapture>) {
     let wake = tilo_service::LoopWake::default();
     let (capture, captures) =
@@ -31,8 +29,7 @@ fn serving(directory: &std::path::Path, outputs: &[OutputConfig]) -> (Session, A
     (session, Arc::new(capture))
 }
 
-/// Step `session` until what it is asked from another thread answers; the
-/// answer.
+/// Step `session` until what it is asked from another thread answers; the answer.
 #[track_caller]
 fn answered<T: Send + 'static>(session: &mut Session, asking: std::thread::JoinHandle<T>) -> T {
     let started = std::time::Instant::now();
@@ -63,8 +60,7 @@ fn pick(
     )
 }
 
-/// A picture of `target`, asked from another runtime as an app does; the
-/// file it is in.
+/// A picture of `target` , asked from another runtime as an app does; the file it is in.
 fn shown_picture(
     capture: &Arc<ScreenCapture>,
     session: &mut Session,
@@ -84,7 +80,7 @@ fn shown_picture(
     image::open(&path).expect("a PNG").to_rgba8()
 }
 
-/// Move the pointer to `at`, as the person does.
+/// Move the pointer to `at` , as the person does.
 fn point_at(session: &mut Session, at: (f64, f64)) {
     session
         .compositor()
@@ -93,15 +89,14 @@ fn point_at(session: &mut Session, at: (f64, f64)) {
     session.step(Duration::from_millis(1)).expect("step");
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)`.
+/// The window of `app` and its rectangle `(x, y, w, h)` .
 fn window_rect(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
     window(session.compositor(), app)
         .expect("the window is mapped")
         .1
 }
 
-/// The middle of the window of `app`, where the person points to take its
-/// colour.
+/// The middle of the window of `app` , where the person points to take its colour.
 fn middle_of(rect: (i32, i32, i32, i32)) -> (i32, i32) {
     let (x, y, width, height) = rect;
     (x + width / 2, y + height / 2)
@@ -117,9 +112,8 @@ fn channels(pixel: [u8; 4]) -> (f64, f64, f64) {
     )
 }
 
-/// Make the display at `index`, in reading order, the one the person works
-/// on, through the desk's own action for it: a window opened then opens
-/// there.
+/// Make the display at `index` , in reading order, the one the person works on, through the desk's
+/// own action for it: a window opened then opens there.
 fn focus_display(session: &mut Session, index: usize) {
     fn collect(resources: &[tilo_actions::ResourceSpec], displays: &mut Vec<String>) {
         for resource in resources {
@@ -137,8 +131,8 @@ fn focus_display(session: &mut Session, index: usize) {
 /// What the client of `mapped` draws.
 const DRAWN: [u8; 4] = [200, 40, 40, 255];
 
-/// A screenshot the portal asks for is the session's frames: the loop is
-/// woken and answers with a PNG of every display, side by side.
+/// A screenshot the portal asks for is the session's frames: the loop is woken and answers with a
+/// PNG of every display, side by side.
 #[test]
 fn the_portals_screenshot_is_a_picture_of_every_display() {
     let _settled = ui::motion::testing::settled();
@@ -159,8 +153,8 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
     );
 }
 
-/// A screenshot of the window with focus is that window's own frame: what
-/// its client drew, not the desk around it.
+/// A screenshot of the window with focus is that window's own frame: what its client drew, not the
+/// desk around it.
 #[test]
 fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
     let _settled = ui::motion::testing::settled();
@@ -170,9 +164,9 @@ fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     );
     let _client = mapped(&mut session, "org.example.Terminal");
-    // The session serves the studio's selector, so what an app may ask for
-    // is every target the desktop can take, the window and the area among
-    // them. Neither of those two needs the selector here.
+    // The session serves the studio's selector, so what an app may ask for is every target the
+    // desktop can take, the window and the area among them. Neither of those two needs the selector
+    // here.
     assert_eq!(
         capture.targets(),
         CaptureTarget::Screen.bit()
@@ -220,8 +214,8 @@ fn the_portals_colour_pick_is_the_pixel_under_the_pointer() {
         "the colour under the pointer, at once and with no sheet"
     );
 
-    // A private window is picked as a screenshot of the screen shows it:
-    // the placeholder, not what the window draws.
+    // A private window is picked as a screenshot of the screen shows it: the placeholder, not what
+    // the window draws.
     session.compositor().protect_app("org.example.Notes", true);
     let private = pick(&capture, &mut session).expect("a colour");
     assert_ne!(private, channels(DRAWN), "a private window keeps its own");
@@ -233,9 +227,8 @@ fn the_portals_colour_pick_is_the_pixel_under_the_pointer() {
     );
 }
 
-/// The pixel comes from the display the pointer is over: with two displays
-/// side by side, a pick on the second is the second one's colour, not what
-/// the first shows at the same place on it.
+/// The pixel comes from the display the pointer is over: with two displays side by side, a pick on
+/// the second is the second one's colour, not what the first shows at the same place on it.
 #[test]
 fn the_portals_colour_pick_is_the_display_under_the_pointer() {
     let _settled = ui::motion::testing::settled();
@@ -270,8 +263,8 @@ fn the_portals_colour_pick_is_the_display_under_the_pointer() {
     );
 }
 
-/// With no pointer over a display there is nothing to pick, and the app is
-/// told to move it there rather than that the person cancelled.
+/// With no pointer over a display there is nothing to pick, and the app is told to move it there
+/// rather than that the person cancelled.
 #[test]
 fn the_portals_colour_pick_with_no_display_under_the_pointer_says_where_to_move_it() {
     let _settled = ui::motion::testing::settled();

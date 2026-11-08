@@ -1,18 +1,12 @@
-//! The Emoji tab: the workspace's own emoji, which every app of the
-//! workspace draws for `:name:`.
-//!
-//! They are one record of the workspace, kept by Chat
-//! ([`tilo_app::tilo_workspace_emoji::OWNER`]) and opened here the way every
-//! app of the workspace opens it ([`WorkspaceRecord`]): in the store this
-//! device's apps keep, as the person sitting here. Adding and removing are
-//! the record's own actions, decided by the workspace's grants on Chat's
-//! node — the decision the app windows and the action broker take — so the
-//! tab, the apps and the person's other devices hold the one record, and the
-//! tab decides nothing of its own.
-//!
-//! The picture is chosen in the session's own file chooser
-//! ([`FilePickerSeat`]) and added from what it answers, as a window's emoji
-//! picker adds one.
+//! The Emoji tab: the workspace's own emoji, which every app of the workspace draws for `:name:` .
+//! They are one record of the workspace, kept by Chat ([`tilo_app::tilo_workspace_emoji::OWNER`])
+//! and opened here the way every app of the workspace opens it ([`WorkspaceRecord`]): in the store
+//! this device's apps keep, as the person sitting here. Adding and removing are the record's own
+//! actions, decided by the workspace's grants on Chat's node — the decision the app windows and the
+//! action broker take — so the tab, the apps and the person's other devices hold the one record,
+//! and the tab decides nothing of its own.
+//! The picture is chosen in the session's own file chooser ([`FilePickerSeat`]) and added from what
+//! it answers, as a window's emoji picker adds one.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -45,8 +39,8 @@ const REMOVE_OWN: &str = emoji_pane::REMOVE_OWN;
 /// The record's action removing anyone's emoji, as moderation.
 const REMOVE_ANY: &str = emoji_pane::REMOVE_ANY;
 
-/// The most a chosen file may be before it is made small: a file past this
-/// is not a picture an emoji keeps.
+/// The most a chosen file may be before it is made small: a file past this is not a picture an
+/// emoji keeps.
 const MAX_CHOSEN_BYTES: u64 = 8 * 1024 * 1024;
 
 /// The pictures an emoji keeps, as the chooser lists them.
@@ -54,17 +48,17 @@ const PICTURES: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 /// The workspace's emoji as the Emoji tab holds them.
 pub(crate) struct Emoji {
-    /// Where this device keeps its apps' records: the one store Chat keeps
-    /// the record in too, which every app of the workspace opens.
+    /// Where this device keeps its apps' records: the one store Chat keeps the record in too, which
+    /// every app of the workspace opens.
     owners: RecordOwners,
-    /// Wakes the session's loop when another replica's change arrives, and
-    /// when the image tools a chosen picture waits for are in.
+    /// Wakes the session's loop when another replica's change arrives, and when the image tools a
+    /// chosen picture waits for are in.
     wake: ui::WakeScope,
-    /// The record, once the tab showed it: the workspace, the person and the
-    /// grants it was opened for.
+    /// The record, once the tab showed it: the workspace, the person and the grants it was opened
+    /// for.
     open: RefCell<Option<Open>>,
-    /// What the tab last drew: the record's revision and what this said of
-    /// it. The tab is shown again at each change.
+    /// What the tab last drew: the record's revision and what this said of it. The tab is shown
+    /// again at each change.
     shown: RefCell<Option<Seen>>,
     /// Why the last emoji was not added or removed.
     notice: RefCell<Option<emoji_pane::EmojiNotice>>,
@@ -72,8 +66,8 @@ pub(crate) struct Emoji {
     waiting: RefCell<Vec<Waiting>>,
     /// The chooser's request while the person picks a picture.
     choosing: RefCell<Option<String>>,
-    /// Counts what this changed itself: the notice, the chooser opening or
-    /// closing, a picture waiting for the image tools.
+    /// Counts what this changed itself: the notice, the chooser opening or closing, a picture
+    /// waiting for the image tools.
     version: Cell<u64>,
     /// Counts the chooser's requests, so each one names itself.
     requests: Cell<u64>,
@@ -83,8 +77,8 @@ pub(crate) struct Emoji {
 struct Open {
     workspace: String,
     person: ui::permissions::UserId,
-    /// The grants it was opened with: they decide its actions, so a
-    /// workspace whose grants changed opens the record again.
+    /// The grants it was opened with: they decide its actions, so a workspace whose grants changed
+    /// opens the record again.
     policy: tilo_action_policy::WorkspacePolicy,
     /// `None` where the record could not be opened here.
     record: Option<WorkspaceRecord<Record>>,
@@ -105,8 +99,8 @@ struct Waiting {
 }
 
 impl Emoji {
-    /// The workspace's emoji in the store rooted at `root`, waking the
-    /// session's loop through `wake` when a change or the image tools land.
+    /// The workspace's emoji in the store rooted at `root` , waking the session's loop through
+    /// `wake` when a change or the image tools land.
     pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
@@ -194,8 +188,8 @@ impl Emoji {
         }
     }
 
-    /// The tab with nothing to show here: no workspace in front, or its
-    /// emoji could not be opened on this device.
+    /// The tab with nothing to show here: no workspace in front, or its emoji could not be opened
+    /// on this device.
     fn not_available(&self) -> sheet::EmojiPane {
         *self.shown.borrow_mut() = Some(Seen {
             revision: 0,
@@ -236,9 +230,8 @@ impl Emoji {
         self.shown.borrow().as_ref() != Some(&now)
     }
 
-    /// The record of `workspace` as `person`, opened here when it is not
-    /// yet, and opened again when the workspace's grants changed, so its
-    /// decisions follow them.
+    /// The record of `workspace` as `person` , opened here when it is not yet, and opened again
+    /// when the workspace's grants changed, so its decisions follow them.
     fn record(
         &self,
         workspace: Option<&Workspace>,
@@ -283,8 +276,8 @@ impl Emoji {
         record
     }
 
-    /// How `person` may remove an emoji `added_by` added: their own by the
-    /// plain removal, anyone's as a moderator, when the grants let them.
+    /// How `person` may remove an emoji `added_by` added: their own by the plain removal, anyone's
+    /// as a moderator, when the grants let them.
     fn would_remove(
         record: &WorkspaceRecord<Record>,
         added_by: &str,
@@ -317,9 +310,8 @@ impl Emoji {
         }
     }
 
-    /// Open the chooser for a picture to add, when the workspace's grants let
-    /// the
-    /// person add one and no other sheet is asking for a file.
+    /// Open the chooser for a picture to add, when the workspace's grants let the person add one
+    /// and no other sheet is asking for a file.
     fn choose(
         &self,
         workspace: Option<&Workspace>,
@@ -364,8 +356,8 @@ impl Emoji {
         self.bump();
     }
 
-    /// Remove the emoji `name` as the workspace's grants let the person: their
-    /// own by the plain removal, anyone's as a moderator.
+    /// Remove the emoji `name` as the workspace's grants let the person: their own by the plain
+    /// removal, anyone's as a moderator.
     fn remove(&self, workspace: Option<&Workspace>, person: &UserId, name: &str) {
         let Some(record) = self.record(workspace, person) else {
             return;
@@ -389,8 +381,8 @@ impl Emoji {
         self.say(refusal);
     }
 
-    /// Take up what came of the chooser, and the pictures that waited for
-    /// the image tools: each one added, or the tab saying why not.
+    /// Take up what came of the chooser, and the pictures that waited for the image tools: each one
+    /// added, or the tab saying why not.
     pub(crate) fn settle(
         &self,
         tree: &DesktopTree,
@@ -415,8 +407,8 @@ impl Emoji {
         let Some(picker) = picker else {
             return;
         };
-        // Another sheet asked the chooser since: this choice is over, and
-        // what it answered is not ours to take.
+        // Another sheet asked the chooser since: this choice is over, and what it answered is not
+        // ours to take.
         if picker
             .request()
             .is_none_or(|request| request.handle != handle)
@@ -483,8 +475,8 @@ impl Emoji {
         }
     }
 
-    /// Make small again the pictures that waited for the image tools, and
-    /// add the ones that are pictures now.
+    /// Make small again the pictures that waited for the image tools, and add the ones that are
+    /// pictures now.
     fn retry(&self, workspace: Option<&Workspace>, person: &UserId) {
         let Some(workspace) = workspace else {
             return;
@@ -514,7 +506,7 @@ impl Emoji {
         }
     }
 
-    /// Add `small`, the picture of `file`, as one of the workspace's emoji.
+    /// Add `small` , the picture of `file` , as one of the workspace's emoji.
     fn add_small(
         &self,
         workspace: &Workspace,

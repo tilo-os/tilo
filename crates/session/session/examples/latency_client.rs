@@ -1,15 +1,13 @@
-//! A minimal client that answers every key press with one commit.
-//! It is the app side of `scripts/perf/headless_key_latency.py`: each key types one
-//! cell of a text grid. Its buffers are `wl_shm` or LINEAR `XRGB8888` dma-bufs
-//! (`--buffers`), which the compositor draws without a CPU copy; `--damage full`
-//! damages the whole surface and `--damage line` only the cell's text line. It
-//! draws at once, without waiting for a frame callback, so the compositor's own
-//! scheduling is what the harness measures, and `--scale N` draws N buffer pixels
-//! per surface pixel.
-//! Two lines per key say how long it took on this client's own clock:
-//! `CLIENT-KEY n=<key> key_to_commit_us=<us> at_us=<us>` and `CLIENT-FRAME
-//! n=<key> key_to_frame_us=<us> at_us=<us>`. Nothing in it depends on the
-//! session's instrumentation.
+//! A minimal client that answers every key press with one commit. It is the app side of
+//! `scripts/perf/headless_key_latency.py` : each key types one cell of a text grid. Its buffers are
+//! `wl_shm` or LINEAR `XRGB8888` dma-bufs (`--buffers`), which the compositor draws without a CPU
+//! copy; `--damage full` damages the whole surface and `--damage line` only the cell's text line.
+//! It draws at once, without waiting for a frame callback, so the compositor's own scheduling is
+//! what the harness measures, and `--scale N` draws N buffer pixels per surface pixel. Two lines
+//! per key say how long it took on this client's own clock:
+//! `CLIENT-KEY n=<key> key_to_commit_us=<us> at_us=<us>` and
+//! `CLIENT-FRAME n=<key> key_to_frame_us=<us> at_us=<us>` . Nothing in it depends on the session's
+//! instrumentation.
 
 #![allow(
     clippy::unwrap_used,
@@ -81,13 +79,13 @@ struct Client {
     scale: u32,
     /// The key being drawn: its number and when its press was dispatched.
     pressing: Option<(u32, Instant)>,
-    /// Frame callbacks asked for, in the order the compositor answers them:
-    /// the key each commit was answering, when it was answering one.
+    /// Frame callbacks asked for, in the order the compositor answers them: the key each commit was
+    /// answering, when it was answering one.
     showing: VecDeque<Option<(u32, Instant)>>,
     /// Keys typed so far, the number on its line.
     keys: u32,
-    /// When this process started: the clock both lines also stamp, so
-    /// every key's commit and frame can be placed on one timeline.
+    /// When this process started: the clock both lines also stamp, so every key's commit and frame
+    /// can be placed on one timeline.
     started: Instant,
 }
 
@@ -104,7 +102,7 @@ struct DmabufBuffer {
     size: (u32, u32),
     /// The compositor holds it until it releases it.
     busy: bool,
-    /// Cells it shows, in the grid cycle it shows them; `None`: nothing yet.
+    /// Cells it shows, in the grid cycle it shows them; `None` : nothing yet.
     shows: Option<u32>,
 }
 
@@ -122,8 +120,8 @@ const BACKGROUND: [u8; 4] = [0x20, 0x20, 0x20, 0xFF];
 const INK: [u8; 4] = [0xE0, 0xE0, 0xE0, 0xFF];
 /// Bounds the frame callbacks waited on if a session never answers one.
 const MAX_SHOWING: usize = 64;
-/// The window it asks for: one size on every session, so what a session
-/// composites for a key is the same amount of pixels on each.
+/// The window it asks for: one size on every session, so what a session composites for a key is the
+/// same amount of pixels on each.
 const WINDOW_W: u32 = 640;
 const WINDOW_H: u32 = 480;
 
@@ -167,10 +165,9 @@ fn main() {
     let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
     window.set_title("latency client");
     window.set_app_id(app_id);
-    // Only the largest size, never a smallest: a desk reads a client that
-    // pins both to one value as a dialog and floats it over its parent
-    // instead of giving it a tab, and a benchmark needs the same tab on
-    // every session.
+    // Only the largest size, never a smallest: a desk reads a client that pins both to one value as
+    // a dialog and floats it over its parent instead of giving it a tab, and a benchmark needs the
+    // same tab on every session.
     window.set_max_size(Some((WINDOW_W, WINDOW_H)));
     window.commit();
     let pool = SlotPool::new(
@@ -279,7 +276,7 @@ impl Client {
         (WINDOW_W * self.scale, WINDOW_H * self.scale)
     }
 
-    /// The grid cell the `index`th typed key fills, as `(column, line)`.
+    /// The grid cell the `index` th typed key fills, as `(column, line)` .
     fn cell(&self, index: u32) -> (u32, u32) {
         let (width, height) = self.buffer_size();
         let columns = (width / CELL_W).max(1);
@@ -339,8 +336,8 @@ impl Client {
         }
         surface.frame(qh, surface.clone());
         let commit_at = Instant::now();
-        // Every commit asks for one frame callback, so every callback answers
-        // the commit before it: a key's, or a redraw's the key did not cause.
+        // Every commit asks for one frame callback, so every callback answers the commit before it:
+        // a key's, or a redraw's the key did not cause.
         let answer = self.pressing.take().map(|(number, press_at)| {
             eprintln!(
                 "CLIENT-KEY n={number} key_to_commit_us={} at_us={}",
@@ -358,9 +355,9 @@ impl Client {
 }
 
 impl Dmabufs {
-    /// Bring a buffer the compositor does not hold up to `shown` cells and
-    /// attach it: only the cells it lacks are drawn, the whole grid when it
-    /// is new, of another size, or from an earlier grid cycle.
+    /// Bring a buffer the compositor does not hold up to `shown` cells and attach it: only the
+    /// cells it lacks are drawn, the whole grid when it is new, of another size, or from an earlier
+    /// grid cycle.
     fn attach(
         &mut self,
         surface: &wl_surface::WlSurface,
@@ -483,8 +480,8 @@ impl CompositorHandler for Client {
         _: wl_output::Transform,
     ) {
     }
-    /// The compositor showed the frame the key's commit carries: the last
-    /// leg of the key's journey, on this client's own clock.
+    /// The compositor showed the frame the key's commit carries: the last leg of the key's journey,
+    /// on this client's own clock.
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {
         let Some(answer) = self.showing.pop_front() else {
             return;
@@ -540,9 +537,8 @@ impl WindowHandler for Client {
         _: u32,
     ) {
         self.buffer = None;
-        // The size the session asks for is not taken: the surface keeps one
-        // size on every session, so what a session composites for a key is
-        // the same number of pixels on each.
+        // The size the session asks for is not taken: the surface keeps one size on every session,
+        // so what a session composites for a key is the same number of pixels on each.
         self.draw(qh, false);
         if !self.configured {
             self.configured = true;

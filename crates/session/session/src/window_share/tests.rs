@@ -1,8 +1,7 @@
-//! Two sessions in one workspace: one shares a window of its desk, the other
-//! shows it and reaches into it, and the bar on the sharing device says so.
-//! The two planes have no transport between them, so the test carries what
-//! one plane would have said to the other, to the members each message was
-//! for.
+//! Two sessions in one workspace: one shares a window of its desk, the other shows it and reaches
+//! into it, and the bar on the sharing device says so. The two planes have no transport between
+//! them, so the test carries what one plane would have said to the other, to the members each
+//! message was for.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -80,8 +79,8 @@ fn workspace_id() -> WorkspaceId {
     WorkspaceId::parse(WORKSPACE).expect("a workspace id")
 }
 
-/// A desk with one workspace, its one tab showing `tile`: what a session
-/// shares a window of, or shows another member's window in.
+/// A desk with one workspace, its one tab showing `tile` : what a session shares a window of, or
+/// shows another member's window in.
 fn desk(tile: TileContent, tab: u64) -> DesktopTree {
     let workspace_id = workspace_id();
     let slot = WorkspaceSlot::of_workspace(workspace_id);
@@ -122,8 +121,8 @@ fn own_desk() -> DesktopTree {
     )
 }
 
-/// A desk showing another device's window of `app_id` in `tab`: the tab the
-/// host shows that window in, as the workspace's shared layout names it.
+/// A desk showing another device's window of `app_id` in `tab` : the tab the host shows that window
+/// in, as the workspace's shared layout names it.
 fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
     desk(
         TileContent::HostedWindow {
@@ -136,8 +135,8 @@ fn showing(host: EndpointId, app_id: &str, tab: u64) -> DesktopTree {
     )
 }
 
-/// A desk showing another device's windows of `apps`, one per group, in
-/// `tabs`: what a member viewing two shared windows holds.
+/// A desk showing another device's windows of `apps` , one per group, in `tabs` : what a member
+/// viewing two shared windows holds.
 fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> DesktopTree {
     let mut tree = showing(host, first.0, first.1);
     let strip = &mut tree.workspaces[0].strips[0];
@@ -165,9 +164,8 @@ fn showing_both(host: EndpointId, first: (&str, u64), second: (&str, u64)) -> De
     tree
 }
 
-/// `desk` under the governance the workspace's devices agree on: `owner` owns
-/// its workspace, and each of `members` holds their role there — the policy
-/// every member's messages are admitted by.
+/// `desk` under the governance the workspace's devices agree on: `owner` owns its workspace, and
+/// each of `members` holds their role there — the policy every member's messages are admitted by.
 fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> DesktopTree {
     for workspace in &mut desk.workspaces {
         workspace.policy.owner = Some(owner.to_owned());
@@ -178,8 +176,7 @@ fn governed(mut desk: DesktopTree, owner: &str, members: &[(String, Role)]) -> D
     desk
 }
 
-/// One device of the workspace: its session, its plane, and the messages its
-/// plane would have sent.
+/// One device of the workspace: its session, its plane, and the messages its plane would have sent.
 struct Member {
     session: Session,
     sync: Rc<Client>,
@@ -190,21 +187,20 @@ fn member(seed: u8, desk: DesktopTree) -> Member {
     member_as(seed, desk, Options::default().salt, None)
 }
 
-/// One device of the workspace whose plane takes part as the person its
-/// certificate names: a member whose messages the workspace's policy is
-/// asked about.
+/// One device of the workspace whose plane takes part as the person its certificate names: a member
+/// whose messages the workspace's policy is asked about.
 fn member_of(seed: u8, desk: DesktopTree) -> Member {
     member_as(seed, desk, Options::default().salt, Some(person(seed)))
 }
 
-/// One device of the workspace whose ids are minted under `salt`: a session with
-/// an identity mints under the salt its own key derives.
+/// One device of the workspace whose ids are minted under `salt` : a session with an identity mints
+/// under the salt its own key derives.
 fn member_minting_under(seed: u8, desk: DesktopTree, salt: u16) -> Member {
     member_as(seed, desk, salt, None)
 }
 
-/// One device of the workspace, taking part as `person` (their root key, hex)
-/// when it says one: what a session with a device identity is on this plane.
+/// One device of the workspace, taking part as `person` (their root key, hex) when it says one:
+/// what a session with a device identity is on this plane.
 fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> Member {
     member_on(
         seed,
@@ -215,7 +211,7 @@ fn member_as(seed: u8, desk: DesktopTree, salt: u16, person: Option<String>) -> 
     )
 }
 
-/// One device of the workspace whose desk spreads over `outputs`.
+/// One device of the workspace whose desk spreads over `outputs` .
 fn member_on(
     seed: u8,
     desk: DesktopTree,
@@ -257,8 +253,8 @@ fn member_on(
     }
 }
 
-/// `from` said `msg` on `to`'s plane in the workspace: what the plane carries
-/// between the two devices.
+/// `from` said `msg` on `to` 's plane in the workspace: what the plane carries between the two
+/// devices.
 fn tell(to: &Member, from: &Member, msg: NeighbourMsg) {
     let ws = to
         .sync
@@ -297,8 +293,8 @@ fn carry(from: &mut Member, to: &Member) {
     }
 }
 
-/// Step both sessions, and the client whose window `a` shares, until `done`
-/// holds of the two members and the client, carrying what the planes said.
+/// Step both sessions, and the client whose window `a` shares, until `done` holds of the two
+/// members and the client, carrying what the planes said.
 #[track_caller]
 fn until(
     a: &mut Member,
@@ -306,8 +302,8 @@ fn until(
     b: &mut Member,
     mut done: impl FnMut(&Member, &Member, &Option<TestClient>) -> bool,
 ) {
-    // A window is captured, encoded and decoded here: on a machine busy with
-    // the rest of the suite that takes far longer than it does alone.
+    // A window is captured, encoded and decoded here: on a machine busy with the rest of the suite
+    // that takes far longer than it does alone.
     let deadline = Instant::now() + Duration::from_secs(300);
     loop {
         if let Some(client) = client.as_mut() {
@@ -352,7 +348,7 @@ fn arguments(value: Value) -> Arguments {
     }
 }
 
-/// What the shares resource says on `session`.
+/// What the shares resource says on `session` .
 fn shares(session: &Session) -> Value {
     session
         .read(SHARES_RESOURCE)
@@ -387,7 +383,7 @@ fn tab_of(session: &Session, app: &str) -> u64 {
     find(&session.resources(), &label).unwrap_or_else(|| panic!("no window of {app} on the desk"))
 }
 
-/// The compositor's identifier of the window of `app`, as a share names it.
+/// The compositor's identifier of the window of `app` , as a share names it.
 fn identifier_of(compositor: &Compositor, app: &str) -> String {
     compositor
         .shareable_windows()
@@ -439,14 +435,12 @@ fn allow_input(member: &mut Member, tab: u64, on: bool) {
         .expect("the members viewing it are told");
 }
 
-/// Move the pointer over the window of `surface` on `host`, as a member
-/// viewing it does.
+/// Move the pointer over the window of `surface` on `host` , as a member viewing it does.
 fn move_pointer(viewer: &Member, host: &Member, surface: u64, x: f64, y: f64) {
     send_input(viewer, host, surface, &SharedInput::PointerMotion { x, y });
 }
 
-/// Send one input event for the window of `surface` on `host`, as a member
-/// viewing it does.
+/// Send one input event for the window of `surface` on `host` , as a member viewing it does.
 fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput) {
     let event = postcard::to_stdvec(event).expect("input");
     let ws = host
@@ -466,8 +460,7 @@ fn send_input(viewer: &Member, host: &Member, surface: u64, event: &SharedInput)
     });
 }
 
-/// The start of a stream `from` shares: its own window, of `app`, shown as
-/// `tab` of the workspace.
+/// The start of a stream `from` shares: its own window, of `app` , shown as `tab` of the workspace.
 fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
     NeighbourMsg::SurfaceStreamStart {
         surface,
@@ -485,7 +478,7 @@ fn stream_start(from: &Member, surface: u64, tab: u64) -> NeighbourMsg {
     }
 }
 
-/// One encoded unit of `from`'s stream of `surface`.
+/// One encoded unit of `from` 's stream of `surface` .
 fn stream_frame(from: &Member, surface: u64, seq: u64) -> NeighbourMsg {
     NeighbourMsg::SurfaceFrame {
         surface,
@@ -496,8 +489,7 @@ fn stream_frame(from: &Member, surface: u64, seq: u64) -> NeighbourMsg {
     }
 }
 
-/// A client with one toplevel of a solid colour: a person's window on a
-/// session's compositor.
+/// A client with one toplevel of a solid colour: a person's window on a session's compositor.
 struct TestClient {
     connection: Connection,
     queue: EventQueue<Seen>,
@@ -517,17 +509,16 @@ struct Seen {
     configured: bool,
     size: Option<(i32, i32)>,
     pointer_inside: bool,
-    /// How often the pointer came in: a seat's event leaves it as it found
-    /// it.
+    /// How often the pointer came in: a seat's event leaves it as it found it.
     enters: usize,
     motions: Vec<(f64, f64)>,
     keyboard: Option<WlKeyboard>,
-    /// The keys the window's keyboard heard, as `(keycode, pressed)`.
+    /// The keys the window's keyboard heard, as `(keycode, pressed)` .
     keys: Vec<(u32, bool)>,
     text_input_manager: Option<ZwpTextInputManagerV3>,
     text_input: Option<ZwpTextInputV3>,
-    /// The input method this client runs for the seat: a text field only
-    /// takes its text through one.
+    /// The input method this client runs for the seat: a text field only takes its text through
+    /// one.
     input_method_manager: Option<ZwpInputMethodManagerV2>,
     #[allow(dead_code, reason = "held so the seat keeps its input method")]
     input_method: Option<ZwpInputMethodV2>,
@@ -538,8 +529,8 @@ struct Seen {
 
 impl TestClient {
     fn connect(compositor: &mut Compositor) -> Self {
-        // The session starts the apps it shows and trusts them, as it starts
-        // the input method a text field is typed into.
+        // The session starts the apps it shows and trusts them, as it starts the input method a
+        // text field is typed into.
         let socket = compositor.connect_trusted_client().expect("client socket");
         let connection = Connection::from_socket(socket).expect("connection");
         let queue = connection.new_event_queue();
@@ -604,8 +595,8 @@ impl TestClient {
             .as_ref()
             .expect("zwp_text_input_manager_v3");
         let seat = self.seen.seat.as_ref().expect("wl_seat");
-        // The seat composes for a text field only while an input method
-        // serves it, as the person's on-screen keyboard does.
+        // The seat composes for a text field only while an input method serves it, as the person's
+        // on-screen keyboard does.
         let input_method = self
             .seen
             .input_method_manager
@@ -878,12 +869,10 @@ fn until_window(
     }
 }
 
-/// A window this session does not run — the person's own program on the
-/// compositor — is read and pictured through the two actions the desk
-/// publishes for it: `look` answers a picture kept in the workspace's
-/// content, `read` what the window calls itself. Neither acts on the
-/// window: a window is reached by the address its own app publishes, never
-/// by pixels.
+/// A window this session does not run — the person's own program on the compositor — is read and
+/// pictured through the two actions the desk publishes for it: `look` answers a picture kept in the
+/// workspace's content, `read` what the window calls itself. Neither acts on the window: a window
+/// is reached by the address its own app publishes, never by pixels.
 #[test]
 fn a_window_the_session_does_not_run_is_read_and_pictured() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -914,8 +903,7 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
         "the title the desk shows: {answered}"
     );
 
-    // The picture of the window, kept where any caller of the action
-    // protocol reads content by.
+    // The picture of the window, kept where any caller of the action protocol reads content by.
     let look = completed(
         host.session
             .invoke(&tab_resource_id(tab), "look", &Arguments::new())
@@ -940,9 +928,8 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
         );
     }
 
-    // The window's row offers nothing that reaches into the window itself:
-    // the two reads, and the desk's own focus and close of the tab it
-    // stands in.
+    // The window's row offers nothing that reaches into the window itself: the two reads, and the
+    // desk's own focus and close of the tab it stands in.
     let row = host
         .session
         .resources()
@@ -963,8 +950,8 @@ fn a_window_the_session_does_not_run_is_read_and_pictured() {
     }
 }
 
-/// The tab of the one window the compositor runs but this session did not
-/// start, as the desk's tree names it.
+/// The tab of the one window the compositor runs but this session did not start, as the desk's tree
+/// names it.
 #[track_caller]
 fn foreign_tab(session: &Session) -> u64 {
     session
@@ -985,7 +972,7 @@ fn foreign_tab(session: &Session) -> u64 {
         .expect("a window the session does not run")
 }
 
-/// `started`, or the completed answer it is.
+/// `started` , or the completed answer it is.
 #[track_caller]
 fn completed(started: ui::host_operation::ResourceOperationStart) -> tilo_actions::ActionOutput {
     match started {
@@ -1005,9 +992,8 @@ fn descendants(resource: ResourceSpec) -> Vec<ResourceSpec> {
     all
 }
 
-/// One session shares a window of its desk and the other shows it: the
-/// viewing member's tab holds the picture its sender streams, and the sharing
-/// device's bar names the member watching it.
+/// One session shares a window of its desk and the other shows it: the viewing member's tab holds
+/// the picture its sender streams, and the sharing device's bar names the member watching it.
 #[test]
 fn a_shared_window_reaches_the_member_showing_it() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1109,9 +1095,8 @@ fn a_shared_window_reaches_the_member_showing_it() {
     );
 }
 
-/// A window one device shares is decoded into the tab showing it on another
-/// device, and the person's pointer over that picture reaches the window
-/// while its owner lets it in.
+/// A window one device shares is decoded into the tab showing it on another device, and the
+/// person's pointer over that picture reaches the window while its owner lets it in.
 #[test]
 fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1122,8 +1107,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
     let mut viewer = member(0x42, showing(host.sync.publisher(), APP, tab));
     watch(&mut viewer, tab);
 
-    // The tile of the tab the window stands in decodes what its sender
-    // streams, so the window shows there as a picture.
+    // The tile of the tab the window stands in decodes what its sender streams, so the window shows
+    // there as a picture.
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
         viewer
             .session
@@ -1160,8 +1145,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
         "the picture is RGBA at that size"
     );
 
-    // The person's pointer over the picture is this device's input for the
-    // window: it leaves the tile and goes back to the device hosting it.
+    // The person's pointer over the picture is this device's input for the window: it leaves the
+    // tile and goes back to the device hosting it.
     let (x, y) = (f64::from(WIDTH) / 2.0, f64::from(HEIGHT) / 2.0);
     viewer
         .session
@@ -1204,8 +1189,8 @@ fn a_shared_window_is_pictured_where_it_is_shown_and_the_pointer_reaches_it() {
     );
 }
 
-/// A shared window's pictures are prepared for the colour of the display
-/// its tile stands on, and follow the window when it moves to another.
+/// A shared window's pictures are prepared for the colour of the display its tile stands on, and
+/// follow the window when it moves to another.
 #[test]
 fn a_shared_window_is_prepared_for_the_display_it_stands_on() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1217,8 +1202,8 @@ fn a_shared_window_is_prepared_for_the_display_it_stands_on() {
     share(&mut host, APP, first);
     share(&mut host, PHOTOS, second);
 
-    // The viewer's left display shows SDR and its right one HDR, as a panel
-    // that takes PQ and is driven with it says.
+    // The viewer's left display shows SDR and its right one HDR, as a panel that takes PQ and is
+    // driven with it says.
     let outputs = [
         OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT).at(0, 0),
         OutputConfig::new("HEADLESS-2", WIDTH, HEIGHT)
@@ -1275,8 +1260,8 @@ fn a_shared_window_is_prepared_for_the_display_it_stands_on() {
         "both windows open on the display with focus, which shows SDR"
     );
 
-    // The person brings the second window forward, then moves the window
-    // they work in to the display on the right.
+    // The person brings the second window forward, then moves the window they work in to the
+    // display on the right.
     viewer
         .session
         .invoke(
@@ -1360,8 +1345,8 @@ fn closing_the_shared_window_ends_its_stream() {
     );
 }
 
-/// The member showing a shared window reaches into it only while the person
-/// lets it, and the cut chord takes that away at once.
+/// The member showing a shared window reaches into it only while the person lets it, and the cut
+/// chord takes that away at once.
 #[test]
 fn remote_input_reaches_the_window_until_the_cut_chord() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1389,8 +1374,7 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
         !rows(&shares(&viewer.session), "received").is_empty()
     });
-    // The member's pointer is in the stream's own pixels: the middle of the
-    // picture the host sends.
+    // The member's pointer is in the stream's own pixels: the middle of the picture the host sends.
     let centre = {
         let reading = shares(&viewer.session);
         let stream = rows(&reading, "received")
@@ -1459,9 +1443,9 @@ fn remote_input_reaches_the_window_until_the_cut_chord() {
     );
 }
 
-/// A member controlling a shared window types, pastes and closes through its
-/// own seat: its text reaches the window's field, its clipboard becomes this
-/// desktop's, and its close closes the window.
+/// A member controlling a shared window types, pastes and closes through its own seat: its text
+/// reaches the window's field, its clipboard becomes this desktop's, and its close closes the
+/// window.
 #[test]
 fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1484,13 +1468,12 @@ fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
             })
     });
 
-    // The window has a field, enabled at the compositor before the member
-    // writes into it.
+    // The window has a field, enabled at the compositor before the member writes into it.
     if let Some(window) = window.as_mut() {
         window.own_text_field();
     }
-    // The field is enabled at the compositor before the member writes into
-    // it: a seat's text goes to the field the person types into.
+    // The field is enabled at the compositor before the member writes into it: a seat's text goes
+    // to the field the person types into.
     let deadline = Instant::now() + Duration::from_secs(60);
     while host.session.compositor().dictation_field().is_err() {
         assert!(
@@ -1586,8 +1569,8 @@ fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
         "the member's clipboard became this desktop's"
     );
 
-    // The member closed its view: the window is asked to close, as a
-    // person's close of its tab does.
+    // The member closed its view: the window is asked to close, as a person's close of its tab
+    // does.
     send_input(&viewer, &host, tab, &SharedInput::Close);
     until(&mut host, &mut window, &mut viewer, |_, _, client| {
         client.as_ref().is_some_and(|client| client.seen.closed)
@@ -1598,8 +1581,8 @@ fn a_viewers_keys_text_clipboard_and_close_reach_the_shared_window() {
     );
 }
 
-/// The width and height of the stream `viewer` received, in its own pixels:
-/// the middle of the picture the host sends.
+/// The width and height of the stream `viewer` received, in its own pixels: the middle of the
+/// picture the host sends.
 #[track_caller]
 fn received_centre(viewer: &Member) -> (f64, f64) {
     let reading = shares(&viewer.session);
@@ -1611,8 +1594,8 @@ fn received_centre(viewer: &Member) -> (f64, f64) {
     (side("width") / 2.0, side("height") / 2.0)
 }
 
-/// The host streams `viewer` the window of `tab`, and `viewer`'s desk shows
-/// it: one member of the workspace viewing another's window.
+/// The host streams `viewer` the window of `tab` , and `viewer` 's desk shows it: one member of the
+/// workspace viewing another's window.
 #[track_caller]
 fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Member, tab: u64) {
     until(host, window, viewer, |host, viewer, _| {
@@ -1633,9 +1616,9 @@ fn viewing(host: &mut Member, window: &mut Option<TestClient>, viewer: &mut Memb
     });
 }
 
-/// A member the workspace's policy narrowed to reading is streamed the window
-/// it asks to view, and carries nothing that would change the workspace: the
-/// stream it starts and the input it sends are refused at the plane.
+/// A member the workspace's policy narrowed to reading is streamed the window it asks to view, and
+/// carries nothing that would change the workspace: the stream it starts and the input it sends are
+/// refused at the plane.
 #[test]
 fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1668,8 +1651,8 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     watch(&mut viewer, tab);
     viewing(&mut host, &mut window, &mut viewer, tab);
 
-    // What it sends to change anything is refused, however well formed: a
-    // stream of its own never reaches the host's desk.
+    // What it sends to change anything is refused, however well formed: a stream of its own never
+    // reaches the host's desk.
     tell(&host, &viewer, stream_start(&viewer, 991, 4));
     tell(&host, &viewer, stream_frame(&viewer, 991, 1));
     settle(&mut host, &mut window, &mut viewer);
@@ -1679,8 +1662,7 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
         shares(&host.session)
     );
 
-    // Nor does its input, even once the person lets the members viewing the
-    // window control it.
+    // Nor does its input, even once the person lets the members viewing the window control it.
     allow_input(&mut host, tab, true);
     until(&mut host, &mut window, &mut viewer, |host, _, _| {
         rows(&shares(&host.session), "sharing")
@@ -1703,8 +1685,8 @@ fn a_member_narrowed_to_reading_sends_no_frames_and_no_input() {
     );
 }
 
-/// A member the workspace's policy lets edit is carried: the window it shares
-/// reaches the host's desk, and its input reaches the host's window.
+/// A member the workspace's policy lets edit is carried: the window it shares reaches the host's
+/// desk, and its input reaches the host's window.
 #[test]
 fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1735,9 +1717,8 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     watch(&mut member, tab);
     viewing(&mut host, &mut window, &mut member, tab);
 
-    // Its own stream reaches the host's desk: the window it shares is
-    // recorded there, waiting for the tab the sender names. The host's desk
-    // shows no tab 4, so nothing decodes it here.
+    // Its own stream reaches the host's desk: the window it shares is recorded there, waiting for
+    // the tab the sender names. The host's desk shows no tab 4, so nothing decodes it here.
     tell(&host, &member, stream_start(&member, 991, 4));
     tell(&host, &member, stream_frame(&member, 991, 1));
     until(&mut host, &mut window, &mut member, |host, _, _| {
@@ -1762,8 +1743,8 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
         shares(&host.session)
     );
 
-    // And its input reaches the host's window once the person lets the
-    // members viewing it control it.
+    // And its input reaches the host's window once the person lets the members viewing it control
+    // it.
     allow_input(&mut host, tab, true);
     until(&mut host, &mut window, &mut member, |host, _, _| {
         rows(&shares(&host.session), "sharing")
@@ -1786,9 +1767,8 @@ fn a_member_the_workspace_lets_edit_shares_and_reaches_input() {
     );
 }
 
-/// A window one device shares shows on another device's desk because the
-/// workspace's governance says it is shared there: nobody names the tab on the
-/// other device.
+/// A window one device shares shows on another device's desk because the workspace's governance
+/// says it is shared there: nobody names the tab on the other device.
 #[test]
 fn a_share_shows_on_another_device_from_the_workspace_governance() {
     tilo_window_share::flatpak_share::read_encoders();
@@ -1819,8 +1799,8 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
         !rows(&shares(&host.session), "sharing").is_empty()
     });
 
-    // The workspace's governance says the window is shared, hosted on this
-    // device: what the workspace's document carries to its other devices.
+    // The workspace's governance says the window is shared, hosted on this device: what the
+    // workspace's document carries to its other devices.
     let grants = host
         .session
         .handle()
@@ -1842,8 +1822,8 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
     carry_governance(&host.session, &viewer.session);
     heard(&viewer, 0x21, "Framework");
 
-    // The other device shows the host's window in the tab the governance
-    // names, and its stream comes there without being asked for.
+    // The other device shows the host's window in the tab the governance names, and its stream
+    // comes there without being asked for.
     let host_key = hex::encode(device(0x21).as_bytes());
     until(&mut host, &mut window, &mut viewer, |_, viewer, _| {
         hosted(&viewer.session, tab).as_deref() == Some(host_key.as_str())
@@ -1875,8 +1855,8 @@ fn a_share_shows_on_another_device_from_the_workspace_governance() {
     });
 }
 
-/// The window of another device shown on `session`'s desk as `tab`, with the
-/// key of the device that hosts it: what a person sees there.
+/// The window of another device shown on `session` 's desk as `tab` , with the key of the device
+/// that hosts it: what a person sees there.
 fn hosted(session: &Session, tab: u64) -> Option<String> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -1892,8 +1872,8 @@ fn hosted(session: &Session, tab: u64) -> Option<String> {
     })
 }
 
-/// Carry `from`'s governance to `to`'s desk, as the workspace's document
-/// carries it between the workspace's devices.
+/// Carry `from` 's governance to `to` 's desk, as the workspace's document carries it between the
+/// workspace's devices.
 fn carry_governance(from: &Session, to: &Session) {
     let grants = from.handle().read(|tree| {
         tree.workspaces
@@ -1908,8 +1888,8 @@ fn carry_governance(from: &Session, to: &Session) {
     to.handle().replace_tree(desk);
 }
 
-/// The person the device `seed` is a device of, in the hex everyone here
-/// knows them by: the root key its certificate is signed with.
+/// The person the device `seed` is a device of, in the hex everyone here knows them by: the root
+/// key its certificate is signed with.
 fn person(seed: u8) -> String {
     hex::encode(
         ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
@@ -1918,8 +1898,8 @@ fn person(seed: u8) -> String {
     )
 }
 
-/// The device `seed` said who it is on `viewer`'s plane: the certificate a
-/// session says when it starts, which names the device it runs on.
+/// The device `seed` said who it is on `viewer` 's plane: the certificate a session says when it
+/// starts, which names the device it runs on.
 fn heard(viewer: &Member, seed: u8, label: &str) {
     let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let mut cert = tilo_user_identity::DeviceCert {

@@ -1,6 +1,6 @@
-//! The control protocol a program speaks for the session's pointer, keys and frames is served
-//! to a program inside an app this session started, and to nothing else: an agent the person
-//! admitted is no exception, so no tool acts through pixels or synthetic input.
+//! The control protocol a program speaks for the session's pointer, keys and frames is served to a
+//! program inside an app this session started, and to nothing else: an agent the person admitted is
+//! no exception, so no tool acts through pixels or synthetic input.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -28,8 +28,7 @@ use tilo_sheets::portal::PortalEffect;
 
 use common::{HEIGHT, WIDTH, control, private_home};
 
-/// A headless session with the agent door open, and its questions asked on the session's
-/// sheets.
+/// A headless session with the agent door open, and its questions asked on the session's sheets.
 fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questions) {
     let questions = Questions::new();
     let session = Session::headless(
@@ -47,8 +46,8 @@ fn session(root: &std::path::Path, socket: &std::path::Path) -> (Session, Questi
     (session, questions)
 }
 
-/// An agent's own program at the door: it introduces itself, reads its answer, and stays
-/// connected — its presence is what an agent's seat is served for.
+/// An agent's own program at the door: it introduces itself, reads its answer, and stays connected
+/// — its presence is what an agent's seat is served for.
 struct Program {
     served: mpsc::Receiver<Value>,
     leave: mpsc::Sender<()>,
@@ -144,8 +143,8 @@ fn pump(session: &mut Session, mut done: impl FnMut(&Session) -> bool) {
     });
 }
 
-/// Ask to work here and allow it for this session: the program is served as
-/// the agent the person admitted.
+/// Ask to work here and allow it for this session: the program is served as the agent the person
+/// admitted.
 fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Value {
     pump(session, |_| questions.pending().len() == 1);
     press(session, PortalEffect::SELECT.id, json!({"index": 1}));
@@ -156,8 +155,8 @@ fn admit(session: &mut Session, questions: &Questions, program: &Program) -> Val
 }
 
 /// A program that speaks the control protocol is served nothing here, whether or not the person
-/// admitted it: an agent reads and acts through the actions a resource publishes, never through
-/// the session's pointer, keys or a picture of its screen.
+/// admitted it: an agent reads and acts through the actions a resource publishes, never through the
+/// session's pointer, keys or a picture of its screen.
 #[test]
 fn a_control_connection_is_refused_even_from_an_admitted_agent() {
     let _settled = ui::motion::testing::settled();
@@ -179,8 +178,8 @@ fn a_control_connection_is_refused_even_from_an_admitted_agent() {
     program.end();
 }
 
-/// Ask for a seat on the control protocol and read the refusal: it names the protocol as served
-/// to a program inside an app this session started, and to nothing else.
+/// Ask for a seat on the control protocol and read the refusal: it names the protocol as served to
+/// a program inside an app this session started, and to nothing else.
 #[track_caller]
 fn refused_control(session: &mut Session, socket: &std::path::Path, when: &str) {
     for request in [
@@ -221,15 +220,14 @@ fn said(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// An answer this build cannot read costs the agent that answer — it is asked
-/// about again — and the person is told once, naming it, instead of the agent
-/// silently losing what it was allowed.
+/// An answer this build cannot read costs the agent that answer — it is asked about again — and the
+/// person is told once, naming it, instead of the agent silently losing what it was allowed.
 #[test]
 fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    // What an older build kept: the client and the agent it asked, in a row
-    // this one does not read (no program of theirs named).
+    // What an older build kept: the client and the agent it asked, in a row this one does not read
+    // (no program of theirs named).
     std::fs::write(
         root.path().join("agent-door-bindings.json"),
         br#"{"bindings": [{"agent": "claude-code", "client": "Claude Code"}]}"#,

@@ -24,18 +24,16 @@ const LOCK: &str = "lock";
 /// One display's refresh, while waiting for the lock screen to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The key that wakes the lock screen and types nothing into it: shift on its
-/// own changes no letter and moves no control.
+/// The key that wakes the lock screen and types nothing into it: shift on its own changes no letter
+/// and moves no control.
 const WAKING_KEY: u32 = 42;
 
-/// How long a wait may leave the lock screen alone: it goes quiet twenty
-/// seconds after the last input, and what it draws then is faded from the
-/// screen.
+/// How long a wait may leave the lock screen alone: it goes quiet twenty seconds after the last
+/// input, and what it draws then is faded from the screen.
 const WAKING_EVERY: Duration = Duration::from_secs(5);
 
-/// Keeps the lock screen awake while a test waits on it: a wait of its own
-/// must see what the screen draws, not the quiet it keeps for a person who
-/// went away.
+/// Keeps the lock screen awake while a test waits on it: a wait of its own must see what the screen
+/// draws, not the quiet it keeps for a person who went away.
 struct Waking {
     at: Instant,
 }
@@ -76,29 +74,28 @@ fn spelled(word: &str) -> Vec<u32> {
         .collect()
 }
 
-/// Type `word` into the lock screen's field, as the person in front of it
-/// does, without pressing Enter: what the field holds stays the screen's.
+/// Type `word` into the lock screen's field, as the person in front of it does, without pressing
+/// Enter: what the field holds stays the screen's.
 pub(super) fn type_word(session: &mut Session, word: &str) {
     for keycode in spelled(word) {
         tap(session, keycode);
     }
 }
 
-/// Type `word` into the lock screen's field and press Enter, as the person in
-/// front of it does.
+/// Type `word` into the lock screen's field and press Enter, as the person in front of it does.
 pub(super) fn type_and_enter(session: &mut Session, word: &str) {
     type_word(session, word);
     tap(session, ENTER);
 }
 
-/// The lock screen the session starts: the app whose window asks the
-/// compositor for the session lock.
+/// The lock screen the session starts: the app whose window asks the compositor for the session
+/// lock.
 pub(super) fn lock_screen() -> Surface {
     Surface::new("lock", screen_binary()).person("ada").lock()
 }
 
-/// A directory for the plane's socket that only this user reaches: the broker
-/// refuses to serve one anybody else could open.
+/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// anybody else could open.
 pub(super) fn private_home() -> tempfile::TempDir {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the plane in");
@@ -107,14 +104,14 @@ pub(super) fn private_home() -> tempfile::TempDir {
     root
 }
 
-/// The lock screen's binary: the app of its own package, which this run builds
-/// the first time a test locks into it.
+/// The lock screen's binary: the app of its own package, which this run builds the first time a
+/// test locks into it.
 fn screen_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen")
 }
 
-/// A verifier the test answers, so the screen is seen saying it is checking
-/// a password while the answer is still on its way.
+/// A verifier the test answers, so the screen is seen saying it is checking a password while the
+/// answer is still on its way.
 struct Held {
     answer: std::sync::Mutex<Option<tilo_session::unlock::Verdict>>,
     given: std::sync::Condvar,
@@ -128,7 +125,7 @@ impl Held {
         }
     }
 
-    /// Let the check that is waiting answer `verdict`.
+    /// Let the check that is waiting answer `verdict` .
     fn answer(&self, verdict: tilo_session::unlock::Verdict) {
         *self.answer.lock().expect("the verifier's answer") = Some(verdict);
         self.given.notify_all();
@@ -145,8 +142,8 @@ impl tilo_session::unlock::PasswordVerifier for Held {
     }
 }
 
-/// The options a session that starts its lock screen locks with, `verifier`
-/// answering the password it is given.
+/// The options a session that starts its lock screen locks with, `verifier` answering the password
+/// it is given.
 fn locking_options(
     verifier: std::sync::Arc<dyn tilo_session::unlock::PasswordVerifier>,
 ) -> Options {
@@ -160,8 +157,8 @@ fn locking_options(
     }
 }
 
-/// A session that starts its lock screen when it locks, serving its services
-/// on `socket` and showing on `outputs`.
+/// A session that starts its lock screen when it locks, serving its services on `socket` and
+/// showing on `outputs` .
 pub(super) fn lockable_session(
     socket: &Path,
     outputs: &[OutputConfig],
@@ -177,8 +174,7 @@ pub(super) fn lockable_session(
     .expect("session")
 }
 
-/// What the displays show, as a grid each: what the person in front of them
-/// sees.
+/// What the displays show, as a grid each: what the person in front of them sees.
 pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>> {
     displays
         .iter()
@@ -193,15 +189,13 @@ pub(super) fn pictures(session: &mut Session, displays: &[&str]) -> Vec<Vec<f64>
         .collect()
 }
 
-/// Step the session until the lock screen's own frame is on `displays` and is
-/// not changing any more: the screen itself, not the blank or dim a locked
-/// output shows before the client's first frame arrives.
-///
-/// The lock screen is an app of its own, drawing on its own clock: the frame
-/// it covers the desk with is not yet what it drew, and how many turns of the
-/// session pass before it rests is the app's to decide. What settles it is the
-/// rule [`until_still`] reads — a screen that stopped changing — never a count
-/// of turns of the session.
+/// Step the session until the lock screen's own frame is on `displays` and is not changing any
+/// more: the screen itself, not the blank or dim a locked output shows before the client's first
+/// frame arrives.
+/// The lock screen is an app of its own, drawing on its own clock: the frame it covers the desk
+/// with is not yet what it drew, and how many turns of the session pass before it rests is the
+/// app's to decide. What settles it is the rule [`until_still`] reads — a screen that stopped
+/// changing — never a count of turns of the session.
 #[track_caller]
 pub(super) fn until_drawn(
     session: &mut Session,
@@ -242,8 +236,7 @@ pub(super) fn until_drawn(
     }
 }
 
-/// Step the session until `displays` show what `was` showed again, settled:
-/// the desk, back.
+/// Step the session until `displays` show what `was` showed again, settled: the desk, back.
 #[track_caller]
 pub(super) fn until_back(
     session: &mut Session,
@@ -307,8 +300,8 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         publisher(&session, "overview").is_none(),
         "the locked session withholds the desktop's actions"
     );
-    // What the screen shows is the session's own resource: the same reading
-    // any app of the session reads.
+    // What the screen shows is the session's own resource: the same reading any app of the session
+    // reads.
     let reading = session.read(LOCK).expect("the session publishes the lock");
     assert_eq!(reading["person"], "ada", "it says whose session this is");
     assert_eq!(reading["unlocking"], false);
@@ -320,8 +313,8 @@ fn a_password_typed_into_the_lock_screen_unlocks_the_session() {
         "it shows the time: {reading}"
     );
 
-    // A wrong password is refused, and the screen goes on showing it. The
-    // screen says it is checking while the answer is on its way.
+    // A wrong password is refused, and the screen goes on showing it. The screen says it is
+    // checking while the answer is on its way.
     for keycode in spelled("wrong") {
         tap(&mut session, keycode);
     }
@@ -378,8 +371,8 @@ fn colours(frame: &image::RgbaImage) -> std::collections::BTreeSet<[u8; 4]> {
     frame.pixels().map(|pixel| pixel.0).collect()
 }
 
-/// The displays as the door's snapshot draws them: the PNG the session writes
-/// under `home` for `name`, read back.
+/// The displays as the door's snapshot draws them: the PNG the session writes under `home` for
+/// `name` , read back.
 #[track_caller]
 fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> image::RgbaImage {
     let path = home.join(format!("{name}.png"));
@@ -391,8 +384,8 @@ fn door_picture(session: &mut Session, door: &Path, home: &Path, name: &str) -> 
             "path": path.to_str().expect("a path the socket carries"),
         }),
     );
-    // The answer also says whether the picture is of the lock screen, which is
-    // what the lock's own tests read of it.
+    // The answer also says whether the picture is of the lock screen, which is what the lock's own
+    // tests read of it.
     assert_eq!(asked["ok"]["frame"], 0, "the door draws {name}: {asked}");
     image::open(&path)
         .unwrap_or_else(|error| panic!("{name}: {error}"))
@@ -428,8 +421,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
     pump(&mut session, &mut [], |session, _| {
         session.compositor().lock_drawn()
     });
-    // The screen arrives on its own motion: what a person sees is the frame
-    // it settles at, not the first one the app drew on its way in.
+    // The screen arrives on its own motion: what a person sees is the frame it settles at, not the
+    // first one the app drew on its way in.
     until_still(&mut session, DISPLAY);
     assert!(
         session.surfaces().running("lock"),
@@ -437,8 +430,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
         session.surfaces().names()
     );
 
-    // The lock screen is on the display, drawn by the app: more than a
-    // placeholder's one colour, and not the placeholder a copy gets.
+    // The lock screen is on the display, drawn by the app: more than a placeholder's one colour,
+    // and not the placeholder a copy gets.
     let locked = door_picture(&mut session, &door, home.path(), "lock-screen");
     assert!(
         colours(&locked).len() > 8,
@@ -465,8 +458,8 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
         "the door draws the display, not the copy's placeholder"
     );
 
-    // The right password unlocks it, and the desk comes back to the door and
-    // to a copy of the display alike.
+    // The right password unlocks it, and the desk comes back to the door and to a copy of the
+    // display alike.
     type_and_enter(&mut session, "sesame");
     pump(&mut session, &mut [], |session, _| {
         !session.compositor().locked()
@@ -487,10 +480,9 @@ fn a_check_reads_the_lock_screen_the_displays_show_and_unlocking_puts_the_desk_b
     assert!(copy.len() > 8, "a copy is the desk again");
 }
 
-/// A session whose lock screen's app is not installed still locks, and its
-/// own view of the lock is what shows it: locking without one would leave the
-/// person with a desktop they cannot come back to, so the session draws the
-/// lock itself, and only the right password lifts it.
+/// A session whose lock screen's app is not installed still locks, and its own view of the lock is
+/// what shows it: locking without one would leave the person with a desktop they cannot come back
+/// to, so the session draws the lock itself, and only the right password lifts it.
 #[test]
 fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     const DISPLAY: &str = "HEADLESS-1";
@@ -560,16 +552,15 @@ fn a_session_with_no_lock_screen_locks_and_its_own_view_unlocks_it() {
     );
 }
 
-/// A session on two displays, the second smaller than the first: the lock
-/// screen covers every one of them while the session is locked — the same
-/// screen on both, of whatever size they are — and a press on either of them
-/// reaches it. A password unlocks both.
+/// A session on two displays, the second smaller than the first: the lock screen covers every one
+/// of them while the session is locked — the same screen on both, of whatever size they are — and a
+/// press on either of them reaches it. A password unlocks both.
 #[test]
 fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     const DISPLAYS: [&str; 2] = ["HEADLESS-1", "HEADLESS-2"];
     let _settled = ui::motion::testing::settled();
-    // What the desk shows before the lock and after it is the same desk: the
-    // bar's own minute turning over in between is not a difference.
+    // What the desk shows before the lock and after it is the same desk: the bar's own minute
+    // turning over in between is not a difference.
     let _clock = tilo_test_env::held_wall_clock();
     let external = OutputConfig::new("HEADLESS-2", 1024, 768).at(WIDTH, 0);
     let home = private_home();
@@ -586,17 +577,16 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
         session.compositor().locked()
     });
     let locked = until_drawn(&mut session, &DISPLAYS, &desk);
-    // Every display shows the same screen, each scaled to the display it is
-    // on: the picture is the same on both, of whatever size they are.
+    // Every display shows the same screen, each scaled to the display it is on: the picture is the
+    // same on both, of whatever size they are.
     let shown = apart(&locked[0], &locked[1]);
     assert!(
         shown < CLOSE,
         "every display shows the lock screen, but their pictures differ by {shown:.0} of 255"
     );
 
-    // A press on the display the lock screen has no surface of its own on
-    // brings up the screen's own keyboard: the screen is what the person
-    // touches, on whichever display they touch.
+    // A press on the display the lock screen has no surface of its own on brings up the screen's
+    // own keyboard: the screen is what the person touches, on whichever display they touch.
     session
         .compositor()
         .input(InputEvent::PointerMotion {
@@ -634,8 +624,8 @@ fn every_display_shows_the_lock_screen_while_the_session_is_locked() {
     until_back(&mut session, &DISPLAYS, &desk);
 }
 
-/// The lock the power menu offers is the session's own: choosing it starts the
-/// lock screen, as the session's own action does.
+/// The lock the power menu offers is the session's own: choosing it starts the lock screen, as the
+/// session's own action does.
 #[test]
 fn the_power_menus_lock_starts_the_lock_screen() {
     use tilo_sheets::Seat as _;
@@ -708,8 +698,8 @@ fn the_lock_screens_transport_steers_whatever_plays() {
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
     )
     .expect("session");
-    // The services publish what plays and what the pack holds; the session
-    // reads both, and the screen shows what it read.
+    // The services publish what plays and what the pack holds; the session reads both, and the
+    // screen shows what it read.
     published.set_playing(Some(song("Clair de lune", "Claude Debussy", true, true)));
     published.set_battery(62, true);
     invoke(&mut session, tilo_session::SESSION_RESOURCE, "lock");
@@ -751,15 +741,13 @@ fn the_lock_screens_transport_steers_whatever_plays() {
     );
 }
 
-/// What the services publish, as the test changes it: the players' state and
-/// the pack's charge.
+/// What the services publish, as the test changes it: the players' state and the pack's charge.
 #[derive(Clone, Default)]
 pub(super) struct Publishing {
-    /// What plays, as the audio service reports it: the players, and nothing
-    /// while nothing plays.
+    /// What plays, as the audio service reports it: the players, and nothing while nothing plays.
     playing: Rc<RefCell<Option<serde_json::Value>>>,
-    /// The charge of the pack this machine runs on, as the power service
-    /// reports it; `None` while it has not read one.
+    /// The charge of the pack this machine runs on, as the power service reports it; `None` while
+    /// it has not read one.
     battery: Rc<RefCell<Option<serde_json::Value>>>,
     /// Whether what it publishes moved since the session last read it.
     moved: Rc<Cell<bool>>,
@@ -784,8 +772,8 @@ impl Publishing {
     }
 }
 
-/// The player, as a system service the session hosts: it publishes what
-/// plays and what the pack holds, and records what it was asked.
+/// The player, as a system service the session hosts: it publishes what plays and what the pack
+/// holds, and records what it was asked.
 pub(super) struct PlayerService {
     asked: Rc<RefCell<Vec<String>>>,
     published: Publishing,
@@ -849,8 +837,8 @@ impl tilo_session::Service for PlayerService {
     }
 }
 
-/// A song the player plays, as the audio service publishes it: what the lock
-/// screen app names on its card, and what it offers to do with it.
+/// A song the player plays, as the audio service publishes it: what the lock screen app names on
+/// its card, and what it offers to do with it.
 fn song(title: &str, subtitle: &str, playing: bool, controls: bool) -> serde_json::Value {
     serde_json::json!({
         "players": [{
@@ -867,22 +855,20 @@ fn song(title: &str, subtitle: &str, playing: bool, controls: bool) -> serde_jso
     })
 }
 
-/// How far a pixel's colour has to move for the screen to have drawn
-/// something there, rather than the same shape edge antialiased again.
+/// How far a pixel's colour has to move for the screen to have drawn something there, rather than
+/// the same shape edge antialiased again.
 const DIFFERS: u8 = 24;
 
-/// How long a screen draws the same frame before what it drew is what it
-/// settled at: an appearance, a layout and a fade take frames to finish, and a
-/// busy machine may draw none of them for a while.
+/// How long a screen draws the same frame before what it drew is what it settled at: an appearance,
+/// a layout and a fade take frames to finish, and a busy machine may draw none of them for a while.
 const STILL_FOR: Duration = Duration::from_secs(1);
 
-/// The width the lock screen draws its card at, in logical pixels: the box it
-/// lays out what it shows of the session in.
+/// The width the lock screen draws its card at, in logical pixels: the box it lays out what it
+/// shows of the session in.
 const CARD: u32 = 400;
 
-/// The pixels of `now` that differ from `was` by more than [`DIFFERS`]: their
-/// bounding box and how many there are, `None` when the two frames show the
-/// same screen.
+/// The pixels of `now` that differ from `was` by more than [`DIFFERS`]: their bounding box and how
+/// many there are, `None` when the two frames show the same screen.
 fn redrawn(
     now: &tilo_compositor::Screenshot,
     was: &tilo_compositor::Screenshot,
@@ -913,12 +899,11 @@ fn redrawn(
     bounds.map(|bounds| (bounds, count))
 }
 
-/// Step the session until `display` has drawn the same frame for a while, and
-/// return it: what the screen settled at.
-///
-/// A screen paints in stages, and a locked output shows the frame it has until
-/// the next arrives: what a screen drew of a reading is the frame it stops
-/// changing at, not the first one that differs.
+/// Step the session until `display` has drawn the same frame for a while, and return it: what the
+/// screen settled at.
+/// A screen paints in stages, and a locked output shows the frame it has until the next arrives:
+/// what a screen drew of a reading is the frame it stops changing at, not the first one that
+/// differs.
 #[track_caller]
 fn until_still(session: &mut Session, display: &str) -> tilo_compositor::Screenshot {
     let deadline = tilo_test_env::hang_deadline();
@@ -948,11 +933,10 @@ fn until_still(session: &mut Session, display: &str) -> tilo_compositor::Screens
     }
 }
 
-/// Step the session until `display` draws something other than `was` and
-/// returns the frame it settles at: the lock screen's answer to a reading.
-///
-/// The screen lays out and paints a reading over the frames that follow it, so
-/// a frame that differs from `was` is not yet what it drew of it.
+/// Step the session until `display` draws something other than `was` and returns the frame it
+/// settles at: the lock screen's answer to a reading.
+/// The screen lays out and paints a reading over the frames that follow it, so a frame that differs
+/// from `was` is not yet what it drew of it.
 #[track_caller]
 fn until_redrawn(
     session: &mut Session,
@@ -987,8 +971,8 @@ fn until_redrawn(
     }
 }
 
-/// Step the session until the lock's reading says `media`, which is what the
-/// session publishes for the screen: the reading any app of it reads.
+/// Step the session until the lock's reading says `media` , which is what the session publishes for
+/// the screen: the reading any app of it reads.
 #[track_caller]
 fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool) {
     let deadline = tilo_test_env::hang_deadline();
@@ -1012,11 +996,11 @@ fn until_media(session: &mut Session, media: impl Fn(&serde_json::Value) -> bool
 /// The display the lock screen shows on.
 const DISPLAY: &str = "HEADLESS-1";
 
-/// A locked session whose lock screen is the app, with a player the session
-/// hosts: what it publishes of what plays, and what the player was asked.
+/// A locked session whose lock screen is the app, with a player the session hosts: what it
+/// publishes of what plays, and what the player was asked.
 pub(super) struct Locked {
-    /// The window on the desk the lock came over, which keeps the session's
-    /// compositor showing a desk under it.
+    /// The window on the desk the lock came over, which keeps the session's compositor showing a
+    /// desk under it.
     _client: TestClient,
     pub(super) session: Session,
     asked: Rc<RefCell<Vec<String>>>,
@@ -1034,7 +1018,7 @@ impl Locked {
         Self::themed(ui::headless::fixture_runner_inputs)
     }
 
-    /// The same, drawn by a desk presenting itself through `presentation`.
+    /// The same, drawn by a desk presenting itself through `presentation` .
     pub(super) fn themed(presentation: fn() -> ui::application::ComponentRunnerInputs) -> Self {
         let home = private_home();
         let asked = Rc::new(RefCell::new(Vec::new()));
@@ -1074,9 +1058,9 @@ impl Locked {
         }
     }
 
-    /// Play `now` in the player the session follows and read the screen the
-    /// app drew in answer to what it drew in `was`: the session says what
-    /// plays in its reading, and the app draws that reading.
+    /// Play `now` in the player the session follows and read the screen the app drew in answer to
+    /// what it drew in `was` : the session says what plays in its reading, and the app draws that
+    /// reading.
     pub(super) fn plays(
         &mut self,
         now: Option<serde_json::Value>,
@@ -1098,9 +1082,8 @@ impl Locked {
 #[test]
 fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
     let _settled = ui::motion::testing::settled();
-    // The session publishes the time it is to the minute and the screen draws
-    // it: held at the minute the test runs in, the screen changes for what
-    // plays and for nothing else.
+    // The session publishes the time it is to the minute and the screen draws it: held at the
+    // minute the test runs in, the screen changes for what plays and for nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
             u64::try_from(ui::clock::local_now().timestamp().rem_euclid(60))
@@ -1111,9 +1094,8 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
         let mut locked = Locked::new();
         let quiet = locked.quiet.clone();
 
-        // A track starts playing: the session publishes it with the lock, and the
-        // app draws the card it was given, under the clock and the field, no
-        // wider than the card the screen has.
+        // A track starts playing: the session publishes it with the lock, and the app draws the
+        // card it was given, under the clock and the field, no wider than the card the screen has.
         let playing = locked.plays(
             Some(song("Clair de lune", "Claude Debussy", true, true)),
             |media| {
@@ -1144,8 +1126,8 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
             "the app drew the card on the ground it stands on, rather than repainting that ground"
         );
 
-        // The transport the app draws asks the player the session hosts for the
-        // song it shows: the actions the screen publishes are the ones it runs.
+        // The transport the app draws asks the player the session hosts for the song it shows: the
+        // actions the screen publishes are the ones it runs.
         let published = locked.session.surfaces().published("lock");
         let transport = published
             .iter()
@@ -1196,8 +1178,8 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
             &retitled,
         );
 
-        // What the player can be asked changes: the screen draws the transport it
-        // is told of, and none where the player offers none.
+        // What the player can be asked changes: the screen draws the transport it is told of, and
+        // none where the player offers none.
         let stilled = locked.plays(
             Some(song("Nocturne", "Frédéric Chopin", false, false)),
             |media| {
@@ -1213,8 +1195,8 @@ fn the_lock_screen_app_draws_what_plays_and_its_transport_steers_the_player() {
     });
 }
 
-/// How far apart two pictures of a screen are, of 255: the most one cell of
-/// the grid they are compared on differs by.
+/// How far apart two pictures of a screen are, of 255: the most one cell of the grid they are
+/// compared on differs by.
 pub(super) fn apart(one: &[f64], other: &[f64]) -> f64 {
     one.iter()
         .zip(other)
@@ -1222,14 +1204,12 @@ pub(super) fn apart(one: &[f64], other: &[f64]) -> f64 {
         .fold(0.0_f64, f64::max)
 }
 
-/// How much two pictures of the same screen may differ and still be the
-/// same screen: the grid's cells may be resampled differently on displays of
-/// different sizes.
+/// How much two pictures of the same screen may differ and still be the same screen: the grid's
+/// cells may be resampled differently on displays of different sizes.
 pub(super) const CLOSE: f64 = 6.0;
 
-/// What a screenshot shows, as the mean brightness of each cell of a grid
-/// laid over it: a screen filling two displays of different sizes fills the
-/// same part of each.
+/// What a screenshot shows, as the mean brightness of each cell of a grid laid over it: a screen
+/// filling two displays of different sizes fills the same part of each.
 pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
     const COLUMNS: u32 = 16;
     const ROWS: u32 = 10;
@@ -1257,8 +1237,8 @@ pub(super) fn picture(shot: &tilo_compositor::Screenshot) -> Vec<f64> {
     cells
 }
 
-/// The box every pixel `after` changed from `before` covers, `None` when the
-/// two pictures are the same.
+/// The box every pixel `after` changed from `before` covers, `None` when the two pictures are the
+/// same.
 pub(super) fn changed(
     before: &tilo_compositor::Screenshot,
     after: &tilo_compositor::Screenshot,
@@ -1282,16 +1262,15 @@ pub(super) fn changed(
     box_of
 }
 
-/// A level key pressed on the lock screen is answered there: the readout shows
-/// over the lock, on the display the person is at, and the lock keeps every
-/// key and pointer press it always did.
+/// A level key pressed on the lock screen is answered there: the readout shows over the lock, on
+/// the display the person is at, and the lock keeps every key and pointer press it always did.
 #[test]
 fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     const DISPLAY: &str = "HEADLESS-1";
     let _settled = ui::motion::testing::settled();
-    // The screen's clock is the machine's, and it turns over when it does:
-    // held, the pictures either side of the key show the same minute, and
-    // what changed between them is what the key drew.
+    // The screen's clock is the machine's, and it turns over when it does: held, the pictures
+    // either side of the key show the same minute, and what changed between them is what the key
+    // drew.
     let _clock = tilo_test_env::held_wall_clock();
     let home = private_home();
     let held = std::sync::Arc::new(Held::new());
@@ -1341,9 +1320,9 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
             "Speakers, Muted",
             "the locked session answers the device key, naming the output"
         );
-        // The frame the answer is drawn in, over the lock's own: step until a
-        // frame differs from the lock's and the next one is the same, so what is
-        // measured is the readout at rest rather than a frame of its arrival.
+        // The frame the answer is drawn in, over the lock's own: step until a frame differs from
+        // the lock's and the next one is the same, so what is measured is the readout at rest
+        // rather than a frame of its arrival.
         let mut last: Option<tilo_compositor::Screenshot> = None;
         pump(&mut session, &mut [], |session, _| {
             let now = session
@@ -1365,9 +1344,9 @@ fn a_level_key_pressed_on_the_lock_screen_answers_over_it() {
     // across the middle of the display's foot.
     let (left, top, right, bottom) =
         changed(&before, &after).expect("the readout paints over the lock");
-    // The readout stands on the middle of the screen, as one band: its frame
-    // is what the system settings draw, so what is held is that it is centred
-    // and of the readout's size, never the width of a frame of its arrival.
+    // The readout stands on the middle of the screen, as one band: its frame is what the system
+    // settings draw, so what is held is that it is centred and of the readout's size, never the
+    // width of a frame of its arrival.
     assert!(
         left.midpoint(right).abs_diff(WIDTH as usize / 2) <= 24 && right - left <= 500,
         "the readout is across the middle of the screen: {left}..{right}"

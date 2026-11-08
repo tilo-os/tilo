@@ -1,16 +1,12 @@
 //! A workspace's activity, served to the apps this session runs.
-//!
 //! The desk serves the activity model to its own windows in process
-//! ([`tilo_desktop_surface::session::activity`]); an app runs in a process of
-//! its own and reaches the same model through the action broker, under
-//! [`wire::PROVIDER`]. Both ask the same door
-//! ([`ActivityRequests`]): this is the broker's end of it. Its reads are live
-//! views, re-read whenever the desk's model has served something new; its
-//! writes run on the desk's thread when the desk takes them, so a write and
-//! a read of the same change cannot cross.
-//!
-//! What this device has seen is the person's own: an agent asking for it is
-//! refused here, before anything reaches the model.
+//! ([`tilo_desktop_surface::session::activity`]); an app runs in a process of its own and reaches
+//! the same model through the action broker, under [`wire::PROVIDER`]. Both ask the same door
+//! ([`ActivityRequests`]): this is the broker's end of it. Its reads are live views, re-read
+//! whenever the desk's model has served something new; its writes run on the desk's thread when the
+//! desk takes them, so a write and a read of the same change cannot cross.
+//! What this device has seen is the person's own: an agent asking for it is refused here, before
+//! anything reaches the model.
 
 use std::sync::Arc;
 
@@ -41,8 +37,7 @@ impl ActivityWire {
         }
     }
 
-    /// The desk's model served its reads again: what an app follows may read
-    /// differently now.
+    /// The desk's model served its reads again: what an app follows may read differently now.
     pub(crate) fn changed(&self) {
         self.changes
             .send_modify(|revision| *revision = revision.wrapping_add(1));
@@ -75,8 +70,8 @@ fn arguments_of(
     serde_json::from_str(json).map_err(|error| error.to_string())
 }
 
-/// `request`'s caller, as the door knows it: an app reaches the activity as
-/// the person using it, confined to the workspace it runs in.
+/// `request` 's caller, as the door knows it: an app reaches the activity as the person using it,
+/// confined to the workspace it runs in.
 fn caller_of(request: &HostStepRequest<'_>) -> Caller {
     let caller = if request.actor.is_agent() {
         Caller::local_agent(request.actor.id())
@@ -86,9 +81,9 @@ fn caller_of(request: &HostStepRequest<'_>) -> Caller {
     caller.in_workspace(request.workspace)
 }
 
-/// Whether `action` overwrites what documents hold with an earlier state, so
-/// Undo cannot take it back: the changes it drops are in everyone's documents
-/// and its own write is not a change the undo service reverts.
+/// Whether `action` overwrites what documents hold with an earlier state, so Undo cannot take it
+/// back: the changes it drops are in everyone's documents and its own write is not a change the
+/// undo service reverts.
 fn rewrites_history(action: &str) -> bool {
     [wire::UNDO, wire::RESTORE, wire::UNDO_RUN, wire::UNDO_RECORD].contains(&action)
 }
@@ -99,13 +94,11 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
     } else if kind == OperationKind::View {
         ActionContract::view()
     } else if rewrites_history(action) {
-        // Undoing a change, restoring a version and undoing an agent's task
-        // overwrite documents with what they held before: the changes they
-        // drop stay in the record, but Undo does not bring them back, and
-        // they are everybody's. So the declaration says Undo cannot take it
-        // back, and every door asks the person first. Narrating a work group
-        // (naming, splitting, merging) writes the activity record alone and
-        // stays undoable, so it runs at once.
+        // Undoing a change, restoring a version and undoing an agent's task overwrite documents
+        // with what they held before: the changes they drop stay in the record, but Undo does not
+        // bring them back, and they are everybody's. So the declaration says Undo cannot take it
+        // back, and every door asks the person first. Narrating a work group (naming, splitting,
+        // merging) writes the activity record alone and stays undoable, so it runs at once.
         let mut contract = ActionContract {
             kind: ActionKind::Undoable,
             risk: RiskLevel::Destructive,
@@ -210,8 +203,8 @@ impl HostStepServices for ActivityWire {
         self.requests
             .follow(&caller, invocation, &action, arguments)
             .map_err(|error| format!("the activity is not followed: {error:?}"))?;
-        // The follow ends when the broker drops the view, which is when the
-        // app stopped following it.
+        // The follow ends when the broker drops the view, which is when the app stopped following
+        // it.
         let followed = Followed {
             requests: self.requests.clone(),
             caller,
@@ -233,8 +226,8 @@ impl HostStepServices for ActivityWire {
     }
 }
 
-/// A read an app follows: once it stops following it, the model is told, so
-/// what it showed stops counting as what the person is reading.
+/// A read an app follows: once it stops following it, the model is told, so what it showed stops
+/// counting as what the person is reading.
 struct Followed {
     requests: ActivityRequests,
     caller: Caller,

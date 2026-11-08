@@ -80,8 +80,7 @@ pub use crate::config::DisplayConfig;
 
 type Allocator = GbmAllocator<DrmDeviceFd>;
 type Exporter = GbmFramebufferExporter<DrmDeviceFd>;
-/// What a queued frame carries to its vertical blank: its clients'
-/// presentation feedback.
+/// What a queued frame carries to its vertical blank: its clients' presentation feedback.
 type Queued = Option<Presentation>;
 type Manager = DrmOutputManager<Allocator, Exporter, Queued, DrmDeviceFd>;
 type Surface = DrmOutput<Allocator, Exporter, Queued, DrmDeviceFd>;
@@ -106,30 +105,28 @@ struct Lit {
     queued: bool,
     /// The panel is switched off (its CRTC inactive); nothing is drawn.
     dark: bool,
-    /// The CRTC was asked to switch off while the commit before it was
-    /// still in flight: it is switched off on a later pass.
+    /// The CRTC was asked to switch off while the commit before it was still in flight: it is
+    /// switched off on a later pass.
     off_owed: bool,
-    /// A panel built into the machine (eDP, LVDS, DSI): its wake is lit
-    /// only once its backlight is unblanked too.
+    /// A panel built into the machine (eDP, LVDS, DSI): its wake is lit only once its backlight is
+    /// unblanked too.
     builtin: bool,
-    /// The wake this output is in, until it is judged and its first frame
-    /// shown.
+    /// The wake this output is in, until it is judged and its first frame shown.
     wake: Option<Wake>,
     /// When the last frame was queued.
     queued_at: Instant,
     vrr: Vrr,
     /// Why adaptive sync cannot be engaged here, when it cannot.
     vrr_unavailable: Option<AdaptiveSyncUnavailable>,
-    /// Whether the display's EDID asks for HDR, and why HDR cannot be
-    /// driven here when it does.
+    /// Whether the display's EDID asks for HDR, and why HDR cannot be driven here when it does.
     sink_hdr: bool,
     hdr_unavailable: Option<HdrUnavailable>,
-    /// What the display's EDID says of its colour; `None` when it says
-    /// nothing, which is an SDR panel.
+    /// What the display's EDID says of its colour; `None` when it says nothing, which is an SDR
+    /// panel.
     hdr_display: Option<HdrDisplayInfo>,
     color: LitColor,
-    /// What clients on this output are told to allocate, when its planes
-    /// can show their buffers directly.
+    /// What clients on this output are told to allocate, when its planes can show their buffers
+    /// directly.
     feedback: Option<ScanoutFeedback>,
     /// When the next frame may be drawn though nothing was queued.
     next_frame: Instant,
@@ -137,9 +134,8 @@ struct Lit {
     pacing: Pacing,
 }
 
-/// The dma-buf feedback for client surfaces on one output: the primary
-/// GPU's render formats, or, for a surface whose buffer could go straight
-/// onto a plane, the planes' formats first.
+/// The dma-buf feedback for client surfaces on one output: the primary GPU's render formats, or,
+/// for a surface whose buffer could go straight onto a plane, the planes' formats first.
 struct ScanoutFeedback {
     render: DmabufFeedback,
     scanout: DmabufFeedback,
@@ -188,8 +184,7 @@ struct LitColor {
     pass: Option<color::ColorPass>,
     /// The connector signals HDR.
     hdr_on: bool,
-    /// What was asked last and could not be done, so it is not retried
-    /// every frame.
+    /// What was asked last and could not be done, so it is not retried every frame.
     refused: Option<color::Wanted>,
 }
 
@@ -202,21 +197,19 @@ enum Vrr {
     On,
 }
 
-/// One output's wake: its check, and whether it was judged lit and only
-/// the first frame is awaited.
+/// One output's wake: its check, and whether it was judged lit and only the first frame is awaited.
 struct Wake {
     check: WakeCheck,
     judged: bool,
 }
 
-/// How long a queued frame may wait for its vertical blank in a wake
-/// before the link to the display counts as down.
+/// How long a queued frame may wait for its vertical blank in a wake before the link to the display
+/// counts as down.
 const LINK_WAIT: Duration = Duration::from_secs(2);
 
-/// Whether a crtc refused a call because the commit before it was still in
-/// flight, or the call was interrupted: it is made again on a later pass and
-/// nothing failed. A crtc takes one commit at a time, and a commit that sets
-/// a mode holds the crtc for as long as the driver's commit tail runs.
+/// Whether a crtc refused a call because the commit before it was still in flight, or the call was
+/// interrupted: it is made again on a later pass and nothing failed. A crtc takes one commit at a
+/// time, and a commit that sets a mode holds the crtc for as long as the driver's commit tail runs.
 fn retry_later(error: &std::io::Error) -> bool {
     matches!(
         error.raw_os_error(),
@@ -250,7 +243,7 @@ struct Inner {
 }
 
 impl Inner {
-    /// The GPU driving the output named `name`, and the output.
+    /// The GPU driving the output named `name` , and the output.
     fn lit_mut(&mut self, name: &str) -> Option<(&mut Gpu, crtc::Handle)> {
         self.gpus.values_mut().find_map(|gpu| {
             let crtc = gpu
@@ -279,8 +272,8 @@ fn renderer_for(
     .map_err(|error| failed("renderer", error))
 }
 
-/// The TTY backend. Created by [`DrmBackend::start`], which registers the
-/// session, udev, libinput and the GPU in the compositor's loop.
+/// The TTY backend. Created by [`DrmBackend::start`], which registers the session, udev, libinput
+/// and the GPU in the compositor's loop.
 pub struct DrmBackend {
     inner: Rc<RefCell<Inner>>,
     input: Rc<RefCell<libinput::Input>>,
@@ -289,8 +282,7 @@ pub struct DrmBackend {
 }
 
 impl DrmBackend {
-    /// Take the seat, light the primary GPU's connected outputs and read
-    /// the seat's input devices.
+    /// Take the seat, light the primary GPU's connected outputs and read the seat's input devices.
     pub fn start(
         handle: &LoopHandle<'static, LoopData>,
         state: &mut State,
@@ -324,8 +316,7 @@ impl DrmBackend {
         let udev = UdevBackend::new(&seat).map_err(|error| failed("udev", error))?;
         let gpu_path = primary_gpu(&seat, &udev)?;
         drive_primary(handle, &inner, state, &gpu_path)?;
-        // The other GPUs drive their displays; one that cannot be opened
-        // leaves the rest working.
+        // The other GPUs drive their displays; one that cannot be opened leaves the rest working.
         let others =
             devices::filter_kms_nodes(udev.device_list().map(|(_, path)| path.to_path_buf()));
         for path in others.into_iter().filter(|path| *path != gpu_path) {
@@ -412,8 +403,7 @@ impl Backend for DrmBackend {
     }
 
     fn presents_async(&self) -> bool {
-        // A frame is on the panel when its page flip retires, which the
-        // vertical blank reports.
+        // A frame is on the panel when its page flip retires, which the vertical blank reports.
         true
     }
 
@@ -459,8 +449,7 @@ impl Backend for DrmBackend {
             .map_or_else(
                 tilo_color_pipeline::hdr_display::DisplayCapabilities::sdr_default,
                 |lit| match &lit.hdr_display {
-                    // What the sink takes, and only while the connector is
-                    // actually being sent HDR.
+                    // What the sink takes, and only while the connector is actually being sent HDR.
                     Some(info) => tilo_color_pipeline::hdr_display::DisplayCapabilities::from_edid(
                         info,
                         lit.color.hdr_on,
@@ -617,9 +606,8 @@ impl Backend for DrmBackend {
                         &DrmOutputRenderElements::default(),
                     )
                     .map_err(|error| failed(&format!("{}: mode", change.name), error))?;
-                // The new mode reaches the screen with this output's next
-                // commit, which trains the link when the mode needs it: the
-                // wake is judged once a frame follows that commit.
+                // The new mode reaches the screen with this output's next commit, which trains the
+                // link when the mode needs it: the wake is judged once a frame follows that commit.
                 if change.enabled {
                     lit.begin_wake("mode");
                 }
@@ -657,8 +645,7 @@ impl Backend for DrmBackend {
 
     fn set_power(&mut self, state: &mut State, name: &str, on: bool) -> Result<(), BackendError> {
         let mut inner = self.inner.borrow_mut();
-        // A configuration that turned an output off or on changes what is
-        // driven.
+        // A configuration that turned an output off or on changes what is driven.
         log_topology(&mut inner, state);
         let (gpu, crtc) = inner
             .lit_mut(name)
@@ -670,8 +657,8 @@ impl Backend for DrmBackend {
             return Ok(());
         }
         if on {
-            // The next queued frame commits the CRTC active again; it has
-            // to be a whole frame, the old buffers are gone.
+            // The next queued frame commits the CRTC active again; it has to be a whole frame, the
+            // old buffers are gone.
             lit.surface.reset_buffers();
             lit.next_frame = Instant::now();
             lit.off_owed = false;
@@ -682,8 +669,7 @@ impl Backend for DrmBackend {
                 .with_compositor(smithay::backend::drm::compositor::DrmCompositor::clear)
             {
                 Ok(()) => {}
-                // The frame before is still in flight: the crtc is switched
-                // off on a later pass.
+                // The frame before is still in flight: the crtc is switched off on a later pass.
                 Err(DrmError::Access(access)) if retry_later(&access.source) => {
                     lit.off_owed = true;
                 }
@@ -695,16 +681,16 @@ impl Backend for DrmBackend {
         tracing::info!(output = name, on, "panel power");
         drop(inner);
         if on {
-            // A wake is the person asking for the displays: a connected one
-            // that could not be lit before gets another attempt.
+            // A wake is the person asking for the displays: a connected one that could not be lit
+            // before gets another attempt.
             scan_connectors(&self.inner, state);
         }
         Ok(())
     }
 
-    /// Through the CRTC's legacy gamma ioctl, which atomic drivers turn
-    /// into their `GAMMA_LUT`: the display engine applies it after the
-    /// planes are blended, so it holds for directly scanned-out buffers too.
+    /// Through the CRTC's legacy gamma ioctl, which atomic drivers turn into their `GAMMA_LUT` :
+    /// the display engine applies it after the planes are blended, so it holds for directly
+    /// scanned-out buffers too.
     fn set_gamma(
         &mut self,
         _state: &mut State,
@@ -755,8 +741,8 @@ impl Backend for DrmBackend {
             .values()
             .flat_map(|gpu| gpu.outputs.values())
             .filter(|lit| !lit.dark && state.redraw_owed(&lit.output))
-            // A frame already queued is shown at the blank it was built for:
-            // what changed since is drawn in the frame built after it.
+            // A frame already queued is shown at the blank it was built for: what changed since is
+            // drawn in the frame built after it.
             .filter_map(|lit| {
                 if lit.queued {
                     lit.pacing
@@ -769,8 +755,7 @@ impl Backend for DrmBackend {
     }
 }
 
-/// Draw every output that is not waiting for a vertical blank and whose
-/// next frame is due.
+/// Draw every output that is not waiting for a vertical blank and whose next frame is due.
 fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
     if !inner.active {
@@ -792,7 +777,7 @@ fn render_ready(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     }
 }
 
-/// Draw `gpu`'s outputs that are due.
+/// Draw `gpu` 's outputs that are due.
 fn render_gpu(
     gpu: &mut Gpu,
     renderers: &mut Renderers,
@@ -841,8 +826,8 @@ fn render_gpu(
         if !state.take_redraw(&lit.output) {
             continue;
         }
-        // The build starts at its deadline; a wakeup a refresh or more
-        // past it is off the grid, and starts it.
+        // The build starts at its deadline; a wakeup a refresh or more past it is off the grid, and
+        // starts it.
         let start = if now.saturating_duration_since(lit.next_frame) < lit.interval {
             lit.next_frame
         } else {
@@ -866,8 +851,8 @@ fn render_gpu(
             hdr: config.hdr.get(&name).cloned(),
             filter: crate::a11y::visual(&lit.output).color_filter,
         };
-        // An output another GPU shows gets a copy in its swapchain's
-        // format; only one the primary draws directly changes depth.
+        // An output another GPU shows gets a copy in its swapchain's format; only one the primary
+        // draws directly changes depth.
         let depth = (*render == primary).then(|| manager.allocator());
         lit.follow_color(wanted, &mut renderer, device, depth);
         // What the scene draws while the HDR layers in it are recorded.
@@ -921,15 +906,13 @@ fn scene_elements<'r>(
 
 /// What an output shows this frame.
 struct Frame<'r> {
-    /// The scene with the layers' renditions in place, as an SDR output draws
-    /// it.
+    /// The scene with the layers' renditions in place, as an SDR output draws it.
     plain: Vec<OutputRenderElement<Renderer<'r>>>,
-    /// The same scene with the renditions replaced by black, so the layers'
-    /// own light can be added to what they leave; empty when the layers are
-    /// not composited.
+    /// The same scene with the renditions replaced by black, so the layers' own light can be added
+    /// to what they leave; empty when the layers are not composited.
     black: Vec<OutputRenderElement<Renderer<'r>>>,
-    /// The same scene with each layer in its weight channel colour, which says
-    /// how much of it shows through every pixel; likewise empty.
+    /// The same scene with each layer in its weight channel colour, which says how much of it shows
+    /// through every pixel; likewise empty.
     weights: Vec<OutputRenderElement<Renderer<'r>>>,
     /// The HDR layers the scene drew, bottom to top.
     layers: Vec<HdrLayer>,
@@ -946,10 +929,9 @@ impl<'r> Frame<'r> {
     }
 }
 
-/// The frame `output` draws, recording the HDR layers in it. An HDR output
-/// composites them at their own precision: the scene is drawn once with their
-/// renditions out of it and once with each in its weight channel colour, and
-/// what the shader reads both for.
+/// The frame `output` draws, recording the HDR layers in it. An HDR output composites them at their
+/// own precision: the scene is drawn once with their renditions out of it and once with each in its
+/// weight channel colour, and what the shader reads both for.
 fn frame_scene<'r>(
     renderer: &mut Renderer<'r>,
     state: &State,
@@ -984,9 +966,8 @@ fn frame_scene<'r>(
     frame
 }
 
-/// Compose `elements` onto `lit` and queue the frame. `states`: where the
-/// clients' surfaces were drawn, when that was an offscreen pass rather
-/// than this composition.
+/// Compose `elements` onto `lit` and queue the frame. `states` : where the clients' surfaces were
+/// drawn, when that was an offscreen pass rather than this composition.
 fn submit<'r, E: RenderElement<Renderer<'r>>>(
     lit: &mut Lit,
     renderer: &mut Renderer<'r>,
@@ -1001,8 +982,8 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
         .render_frame(renderer, elements, BACKGROUND, FrameFlags::DEFAULT)
     {
         Ok(frame) => {
-            // Clients draw their next frame now; an output with nothing
-            // new is asked again one refresh later.
+            // Clients draw their next frame now; an output with nothing new is asked again one
+            // refresh later.
             let states = states.unwrap_or(&frame.states);
             if let Some(feedback) = &lit.feedback {
                 state.send_scanout_feedback(
@@ -1021,9 +1002,8 @@ fn submit<'r, E: RenderElement<Renderer<'r>>>(
                         lit.queued = true;
                         lit.queued_at = now;
                     }
-                    // The crtc still has the commit before this frame in
-                    // flight: this frame goes out on a later pass, and the
-                    // output is drawn again for it.
+                    // The crtc still has the commit before this frame in flight: this frame goes
+                    // out on a later pass, and the output is drawn again for it.
                     Err(FrameError::DrmError(DrmError::Access(access)))
                         if retry_later(&access.source) =>
                     {
@@ -1097,10 +1077,9 @@ fn vblank(
     }
 }
 
-/// Variable refresh engages only for a fullscreen window on an output that
-/// allows and supports it. The desktop stays at the fixed rate: uneven UI
-/// frame times make many panels flicker in brightness when the refresh rate
-/// follows them.
+/// Variable refresh engages only for a fullscreen window on an output that allows and supports it.
+/// The desktop stays at the fixed rate: uneven UI frame times make many panels flicker in
+/// brightness when the refresh rate follows them.
 fn vrr_wanted(capable: bool, allowed: bool, fullscreen_here: bool) -> bool {
     capable && allowed && fullscreen_here
 }
@@ -1153,8 +1132,8 @@ impl Lit {
         self.surface.reset_buffers();
     }
 
-    /// Ten bits a channel while the output signals HDR, eight otherwise:
-    /// the first format of [`color::depth_formats`] the primary plane takes.
+    /// Ten bits a channel while the output signals HDR, eight otherwise: the first format of
+    /// [`color::depth_formats`] the primary plane takes.
     fn follow_depth(&self, renderer: &mut Renderer<'_>, allocator: &Allocator) {
         let gles: &mut GlesRenderer = renderer.as_mut();
         let renderable: Vec<DrmFormat> = gles
@@ -1190,8 +1169,8 @@ impl Lit {
         }
     }
 
-    /// Engage or release variable refresh for the next frame. A driver that
-    /// refuses it is not asked again for this output.
+    /// Engage or release variable refresh for the next frame. A driver that refuses it is not asked
+    /// again for this output.
     fn follow_vrr(&mut self, wanted: bool) {
         if self.vrr == Vrr::Unable || wanted == (self.vrr == Vrr::On) {
             return;
@@ -1230,10 +1209,9 @@ impl Lit {
     }
 }
 
-/// Judge `lit`'s wake, `observed` the stage seen not to happen (else read
-/// back from the kernel), and write its record. A first failure redoes the
-/// modeset from the CRTC switched off, which retrains the link and
-/// re-enables the panel; a second is final for this wake.
+/// Judge `lit` 's wake, `observed` the stage seen not to happen (else read back from the kernel),
+/// and write its record. A first failure redoes the modeset from the CRTC switched off, which
+/// retrains the link and re-enables the panel; a second is final for this wake.
 fn judge_wake(
     lit: &mut Lit,
     device: &DrmDevice,
@@ -1288,7 +1266,7 @@ fn judge_wake(
     }
 }
 
-/// The entries of `crtc`'s gamma ramp; `None` when it has none.
+/// The entries of `crtc` 's gamma ramp; `None` when it has none.
 fn gamma_size(device: &DrmDevice, crtc: crtc::Handle) -> Option<usize> {
     let info = device.get_crtc(crtc).ok()?;
     usize::try_from(info.gamma_length())
@@ -1296,8 +1274,8 @@ fn gamma_size(device: &DrmDevice, crtc: crtc::Handle) -> Option<usize> {
         .filter(|size| *size >= 2)
 }
 
-/// Whether `crtc` reads back active (its atomic `ACTIVE`, else a bound
-/// mode); `None` when it cannot be read.
+/// Whether `crtc` reads back active (its atomic `ACTIVE` , else a bound mode); `None` when it
+/// cannot be read.
 fn crtc_active(device: &DrmDevice, crtc: crtc::Handle) -> Option<bool> {
     let active = device.get_properties(crtc).ok().and_then(|properties| {
         properties.iter().find_map(|(handle, value)| {
@@ -1308,8 +1286,8 @@ fn crtc_active(device: &DrmDevice, crtc: crtc::Handle) -> Option<bool> {
     active.or_else(|| device.get_crtc(crtc).ok().map(|info| info.mode().is_some()))
 }
 
-/// How a vertical blank reports its frame: the kernel's monotonic time and
-/// counter, or our clock when it gave none (or a realtime stamp).
+/// How a vertical blank reports its frame: the kernel's monotonic time and counter, or our clock
+/// when it gave none (or a realtime stamp).
 fn vblank_shown(metadata: Option<&DrmEventMetadata>) -> Shown {
     match metadata {
         Some(DrmEventMetadata {
@@ -1323,8 +1301,7 @@ fn vblank_shown(metadata: Option<&DrmEventMetadata>) -> Shown {
     }
 }
 
-/// When a vertical blank happened: the kernel's monotonic stamp, or now
-/// when it gave none.
+/// When a vertical blank happened: the kernel's monotonic stamp, or now when it gave none.
 fn vblank_instant(metadata: Option<&DrmEventMetadata>) -> Instant {
     let now = Instant::now();
     let Some(DrmEventMetadata {
@@ -1375,8 +1352,7 @@ fn resume(inner: &Rc<RefCell<Inner>>) {
     inner.active = true;
 }
 
-/// Open the primary GPU, which renders every output, and offer its formats
-/// to clients.
+/// Open the primary GPU, which renders every output, and offer its formats to clients.
 fn drive_primary(
     handle: &LoopHandle<'static, LoopData>,
     inner: &Rc<RefCell<Inner>>,
@@ -1443,13 +1419,11 @@ fn remove_gpu(
     }
 }
 
-/// The GPU whose connectors to drive: udev's primary, else the one with the
-/// most connected connectors.
-///
-/// udev's primary is followed unless its node provably cannot scan out: a
-/// board can hand out a render-only `cardN` for its GPU (the Raspberry Pi's
-/// V3D, for one) while the display controller's node beside it drives the
-/// outputs, and only the latter carries connectors.
+/// The GPU whose connectors to drive: udev's primary, else the one with the most connected
+/// connectors.
+/// udev's primary is followed unless its node provably cannot scan out: a board can hand out a
+/// render-only `cardN` for its GPU (the Raspberry Pi's V3D, for one) while the display controller's
+/// node beside it drives the outputs, and only the latter carries connectors.
 fn primary_gpu(seat: &str, udev: &UdevBackend) -> Result<PathBuf, BackendError> {
     let sysfs = Path::new("/sys/class/drm");
     if let Ok(Some(path)) = udev::primary_gpu(seat)
@@ -1523,8 +1497,8 @@ fn open_gpu(
         .insert_source(notifier, move |event, metadata, data| match event {
             DrmEvent::VBlank(crtc) => {
                 vblank(&vblank_inner, &data.state, dev_id, crtc, metadata.as_ref());
-                // A frame drawn when a display's vertical blank arrives starts
-                // and ends the visual alert as the session's own frames do.
+                // A frame drawn when a display's vertical blank arrives starts and ends the visual
+                // alert as the session's own frames do.
                 crate::a11y::begin_frame(&mut data.state, Instant::now());
                 render_ready(&vblank_inner, &mut data.state);
             }
@@ -1541,10 +1515,9 @@ fn open_gpu(
     })
 }
 
-/// A GPU's renderer. On panfrost (Mali) it runs without per-texture
-/// fences: such a fence makes the driver submit every draw as its own
-/// batch, each reloading and writing back the whole framebuffer; KMS waits
-/// for the frame through the scanout buffer's implicit fence instead.
+/// A GPU's renderer. On panfrost (Mali) it runs without per-texture fences: such a fence makes the
+/// driver submit every draw as its own batch, each reloading and writing back the whole
+/// framebuffer; KMS waits for the frame through the scanout buffer's implicit fence instead.
 fn gles_renderer(
     display: &EGLDisplay,
 ) -> Result<GlesRenderer, smithay::backend::renderer::multigpu::gbm::Error> {
@@ -1576,8 +1549,7 @@ fn driver_of(path: &Path) -> Option<String> {
     Some(driver.file_name()?.to_string_lossy().into_owned())
 }
 
-/// Light connectors that became connected, drop those that went away, on
-/// every GPU.
+/// Light connectors that became connected, drop those that went away, on every GPU.
 fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     let mut inner = inner.borrow_mut();
     let Inner {
@@ -1592,8 +1564,8 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     };
     let devices: Vec<u64> = gpus.keys().copied().collect();
     for device in devices {
-        // Names other GPUs' outputs already have: a connector of the same
-        // name here is told apart by its card.
+        // Names other GPUs' outputs already have: a connector of the same name here is told apart
+        // by its card.
         let taken: HashSet<String> = gpus
             .iter()
             .filter(|(id, _)| **id != device)
@@ -1607,8 +1579,8 @@ fn scan_connectors(inner: &Rc<RefCell<Inner>>, state: &mut State) {
     log_topology(&mut inner, state);
 }
 
-/// The output name of a connector of the card at `path`: the connector's
-/// name (`HDMI-A-1`), or `card1/HDMI-A-1` when another GPU's output has it.
+/// The output name of a connector of the card at `path` : the connector's name (`HDMI-A-1`), or
+/// `card1/HDMI-A-1` when another GPU's output has it.
 fn output_name(path: &Path, connector: &str, taken: &HashSet<String>) -> String {
     if !taken.contains(connector) {
         return connector.to_owned();
@@ -1693,9 +1665,8 @@ fn scan_gpu(
             ));
             continue;
         };
-        // The person's scale for this connector, else the one its panel's
-        // density argues for: a monitor nobody has arranged yet comes up
-        // readable instead of at 100% with tiny text.
+        // The person's scale for this connector, else the one its panel's density argues for: a
+        // monitor nobody has arranged yet comes up readable instead of at 100% with tiny text.
         let (width, height) = mode.size();
         let scale = config.scales.get(&name).copied().unwrap_or_else(|| {
             crate::output::panel_scale((u32::from(width), u32::from(height)), info.size())
@@ -1725,8 +1696,8 @@ fn scan_gpu(
                     .change_current_state(None, Some(*transform), None, None);
             }
             if config.disabled.contains(&name) {
-                // Turned off by the person: known, not shown; its panel
-                // goes dark at the next power sync.
+                // Turned off by the person: known, not shown; its panel goes dark at the next power
+                // sync.
                 state.disable_output(&name);
             }
             gpu.outputs.insert(crtc, lit);
@@ -1767,12 +1738,12 @@ fn log_topology(inner: &mut Inner, state: &State) {
     }
 }
 
-/// Place every lit output: where the configuration says, the rest packed
-/// left to right in their current order after the configured ones, so an
-/// unplugged display leaves no hole for the pointer to get lost in.
+/// Place every lit output: where the configuration says, the rest packed left to right in their
+/// current order after the configured ones, so an unplugged display leaves no hole for the pointer
+/// to get lost in.
 fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut State) {
-    // Outputs a configuration turned off keep their place for when they
-    // come back but take none in the layout.
+    // Outputs a configuration turned off keep their place for when they come back but take none in
+    // the layout.
     let mut lit: Vec<&Output> = gpus
         .values()
         .flat_map(|gpu| gpu.outputs.values())
@@ -1794,13 +1765,10 @@ fn arrange_outputs(gpus: &HashMap<u64, Gpu>, config: &DisplayConfig, state: &mut
     state.rearrange();
 }
 
-/// Drive `info`'s connector from `crtc` in `mode` and make it an output
-/// right of the others.
-/// A connector to light: its name, the CRTC and mode to drive it with and
-/// the scale it starts at.
-/// The EDID the display on the connector `connector` of the card `card`
-/// reports, read from its sysfs node, which the kernel refreshes on every
-/// probe.
+/// Drive `info` 's connector from `crtc` in `mode` and make it an output right of the others. A
+/// connector to light: its name, the CRTC and mode to drive it with and the scale it starts at. The
+/// EDID the display on the connector `connector` of the card `card` reports, read from its sysfs
+/// node, which the kernel refreshes on every probe.
 fn connector_edid(card: &DrmNode, connector: &str) -> Option<Vec<u8>> {
     let connector = connector
         .rsplit_once('/')
@@ -1810,8 +1778,7 @@ fn connector_edid(card: &DrmNode, connector: &str) -> Option<Vec<u8>> {
     std::fs::read(format!("/sys/class/drm/{card}-{connector}/edid")).ok()
 }
 
-/// The EDID identity of the monitor on the connector `connector` of the
-/// card `card`.
+/// The EDID identity of the monitor on the connector `connector` of the card `card` .
 fn monitor_identity(
     card: &DrmNode,
     connector: &str,
@@ -1819,18 +1786,16 @@ fn monitor_identity(
     tilo_wayland_ext::edid::parse_monitor_identity(&connector_edid(card, connector)?)
 }
 
-/// What a display's EDID says of its colour: its primaries, how bright it
-/// goes and which transfers it takes. `None` when it says nothing, which is
-/// an SDR panel.
+/// What a display's EDID says of its colour: its primaries, how bright it goes and which transfers
+/// it takes. `None` when it says nothing, which is an SDR panel.
 fn hdr_display(edid: &[u8]) -> Option<HdrDisplayInfo> {
     let info = tilo_wayland_ext::edid::parse_hdr_display_info(edid);
     (info != HdrDisplayInfo::default_sdr()).then_some(info)
 }
 
-/// Whether a display's EDID asks for HDR: a CTA-861 extension carrying the
-/// HDR static metadata block. Only a display that says it wants HDR is
-/// offered it, since a PQ signal on a panel that does not understand it
-/// arrives washed out.
+/// Whether a display's EDID asks for HDR: a CTA-861 extension carrying the HDR static metadata
+/// block. Only a display that says it wants HDR is offered it, since a PQ signal on a panel that
+/// does not understand it arrives washed out.
 fn edid_wants_hdr(edid: &[u8]) -> bool {
     // The base block is 128 bytes and says how many extension blocks follow.
     let extensions = edid.get(126).copied().unwrap_or(0);
@@ -1839,8 +1804,7 @@ fn edid_wants_hdr(edid: &[u8]) -> bool {
         let Some(block) = edid.get(start..start.saturating_add(128)) else {
             break;
         };
-        // A CTA-861 extension: its data block collection runs from byte 4 to
-        // its DTD offset.
+        // A CTA-861 extension: its data block collection runs from byte 4 to its DTD offset.
         if block.first() != Some(&0x02) {
             continue;
         }
@@ -1855,8 +1819,7 @@ fn edid_wants_hdr(edid: &[u8]) -> bool {
             };
             let length = usize::from(header & 0x1f);
             let body = block.get(at.saturating_add(1)..at.saturating_add(1).saturating_add(length));
-            // An extended data block whose extended tag is the HDR static
-            // metadata block.
+            // An extended data block whose extended tag is the HDR static metadata block.
             if header >> 5 == 7 && body.and_then(|body| body.first()) == Some(&0x06) {
                 return true;
             }
@@ -1866,8 +1829,7 @@ fn edid_wants_hdr(edid: &[u8]) -> bool {
     false
 }
 
-/// The output of the connector `name` (`info`) on the card `card`, named
-/// after the monitor on it.
+/// The output of the connector `name` (`info`) on the card `card` , named after the monitor on it.
 fn new_output(card: &DrmNode, info: &connector::Info, name: &str) -> Output {
     let (mm_w, mm_h) = info.size().unwrap_or((0, 0));
     let identity = monitor_identity(card, name);
@@ -1982,9 +1944,8 @@ fn light(
         .set_size(name, gamma_size(gpu.manager.device(), crtc));
     let interval = refresh_interval(output_mode.refresh);
     tracing::info!(output = name, ?interval, "output lit");
-    // Lighting the output is one commit, and it runs in the driver's commit
-    // tail: the frame it put up is this output's queued frame until its
-    // vblank, which is what proves the link came up.
+    // Lighting the output is one commit, and it runs in the driver's commit tail: the frame it put
+    // up is this output's queued frame until its vblank, which is what proves the link came up.
     let now = Instant::now();
     Some(Lit {
         output,

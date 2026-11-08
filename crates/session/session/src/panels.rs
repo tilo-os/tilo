@@ -1,5 +1,5 @@
-//! The session's surface apps on their layers above the windows: where
-//! each goes on the outputs, and when it shows.
+//! The session's surface apps on their layers above the windows: where each goes on the outputs,
+//! and when it shows.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -21,7 +21,7 @@ fn bar_height() -> i32 {
     height
 }
 
-/// A rectangle in logical pixels as a placement at `scale`.
+/// A rectangle in logical pixels as a placement at `scale` .
 fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     Placement {
         origin: (x, y),
@@ -33,9 +33,8 @@ fn placement(x: i32, y: i32, w: i32, h: i32, scale: f64) -> Placement {
     }
 }
 
-/// A rect on the desk another surface holds while it is up (the banners'
-/// stack, the readout's band), shared with the panels that must keep clear
-/// of it and released once it no longer stands.
+/// A rect on the desk another surface holds while it is up (the banners' stack, the readout's
+/// band), shared with the panels that must keep clear of it and released once it no longer stands.
 #[derive(Clone, Default)]
 pub(crate) struct Reserved {
     /// The rect, and when it stops being held (`None`: until released).
@@ -98,18 +97,17 @@ fn until(hold: ui::time::Duration) -> ui::time::Instant {
         .unwrap_or_else(ui::time::now)
 }
 
-/// The notification banners over the first output, under the bar: the
-/// stack pins itself into its top-right corner, clear of the windows' bars.
+/// The notification banners over the first output, under the bar: the stack pins itself into its
+/// top-right corner, clear of the windows' bars.
 pub(crate) struct Banners {
     host: AppHost,
     link: tilo_notification_banners::Link,
     /// The desk whose windows the stack keeps clear of.
     desk: tilo_desktop_surface::DesktopHandle,
-    /// The outputs the compositor last said it has: the first is the one in
-    /// use, the rest repeat what is about the whole machine.
+    /// The outputs the compositor last said it has: the first is the one in use, the rest repeat
+    /// what is about the whole machine.
     outputs: Vec<tilo_compositor::HostedOutput>,
-    /// The rect the stack covers, which the floating layer keeps clear of
-    /// while a banner shows.
+    /// The rect the stack covers, which the floating layer keeps clear of while a banner shows.
     stack: Reserved,
 }
 
@@ -130,18 +128,17 @@ impl Banners {
         }
     }
 
-    /// Say where the stack stands, so the floating layer's cards keep clear
-    /// of it while a banner shows.
+    /// Say where the stack stands, so the floating layer's cards keep clear of it while a banner
+    /// shows.
     fn publish_stack(&self) {
         let stack = self.link.shown().stack;
         self.stack.set((!stack.is_zero_area()).then_some(stack));
     }
 
-    /// Put the stack on the first output, under the bar, starting where the
-    /// windows' content does; the outputs besides the one in use repeat what
-    /// is about the whole machine. Placed every frame, as the popover is: the
-    /// banners are mounted before any output is lit, and they move with the
-    /// layout from then on.
+    /// Put the stack on the first output, under the bar, starting where the windows' content does;
+    /// the outputs besides the one in use repeat what is about the whole machine. Placed every
+    /// frame, as the popover is: the banners are mounted before any output is lit, and they move
+    /// with the layout from then on.
     fn place(&mut self) {
         let Some(first) = self.outputs.first().copied() else {
             return;
@@ -206,9 +203,8 @@ impl Published for Banners {
         self.host.accessible_labels()
     }
 
-    /// The controls a banner on screen shows by name, where they stand on the
-    /// desk, and the press of one: a banner's buttons answer the control
-    /// socket as any window's do.
+    /// The controls a banner on screen shows by name, where they stand on the desk, and the press
+    /// of one: a banner's buttons answer the control socket as any window's do.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         Published::controls(&mut self.host)
     }
@@ -308,23 +304,19 @@ impl SurfaceHost for Banners {
     }
 }
 
-/// The floating layer over the first output: every activity's card, docked in
-/// a corner column or dragged loose, clear of the bar, the banners and the
-/// readout. The session says what to show and carries out what the person
-/// did; the layer draws it.
+/// The floating layer over the first output: every activity's card, docked in a corner column or
+/// dragged loose, clear of the bar, the banners and the readout. The session says what to show and
+/// carries out what the person did; the layer draws it.
 pub(crate) struct ActivityLayer {
     host: AppHost,
     link: tilo_activities::Link,
-    /// The session's reading of every app's activity, and its rules about
-    /// what shows.
+    /// The session's reading of every app's activity, and its rules about what shows.
     reader: Rc<crate::chrome::Activities>,
-    /// The cards the apps draw themselves: where the layer puts each of
-    /// their windows this pass.
+    /// The cards the apps draw themselves: where the layer puts each of their windows this pass.
     cards: crate::cards::Cards,
     /// The corner docked cards gather in, on this device.
     corner: ui::floating_layer::Corner,
-    /// The outputs the compositor last said it has: the cards stand on the
-    /// first.
+    /// The outputs the compositor last said it has: the cards stand on the first.
     outputs: Vec<tilo_compositor::HostedOutput>,
     /// What the cards keep clear of: the banners' stack, the readout's band.
     banners: Reserved,
@@ -369,8 +361,7 @@ impl ActivityLayer {
         if self.host.placement() != where_ {
             self.host.set_placement(where_);
         }
-        // The layer's own coordinates start at the display's corner, as the
-        // banners' do.
+        // The layer's own coordinates start at the display's corner, as the banners' do.
         let local = |rect: Rect| {
             Rect::new(
                 rect.x0 - f64::from(x),
@@ -389,10 +380,9 @@ impl ActivityLayer {
         };
         let cards = self.reader.cards();
         let expanded = self.reader.expanded();
-        // Where the layer puts the cards their apps draw, this pass: the
-        // app's gesture is a request, and this is the sign the desk places
-        // its window by. The layer lays them out with the same arithmetic
-        // it draws with.
+        // Where the layer puts the cards their apps draw, this pass: the app's gesture is a
+        // request, and this is the sign the desk places its window by. The layer lays them out with
+        // the same arithmetic it draws with.
         let layer = ui::floating_layer::place(&placement, self.corner, &cards, expanded);
         self.cards.begin_slots();
         for placed in &layer.cards {
@@ -465,9 +455,8 @@ impl Published for ActivityLayer {
         self.host.accessible_labels()
     }
 
-    /// The controls a card on screen shows by name, where they stand on the
-    /// desk, and the press of one: a card's buttons answer the control socket
-    /// as any window's do.
+    /// The controls a card on screen shows by name, where they stand on the desk, and the press of
+    /// one: a card's buttons answer the control socket as any window's do.
     fn controls(&mut self) -> Vec<(String, (f64, f64, f64, f64))> {
         Published::controls(&mut self.host)
     }
@@ -506,8 +495,8 @@ impl SurfaceHost for ActivityLayer {
         self.host.layers()
     }
 
-    /// Only the cards take the pointer: a press beside one reaches the window
-    /// under it, as it does anywhere else on the desk.
+    /// Only the cards take the pointer: a press beside one reaches the window under it, as it does
+    /// anywhere else on the desk.
     fn accepts_pointer(&self, x: f64, y: f64) -> bool {
         let (ox, oy) = self.host.placement().origin;
         let point = Point::new(x - f64::from(ox), y - f64::from(oy));
@@ -576,15 +565,13 @@ impl SurfaceHost for ActivityLayer {
     }
 }
 
-/// Where each display stands and where the person is typing, as the session
-/// last saw the compositor: what the readout answers with when a key raises
-/// one.
+/// Where each display stands and where the person is typing, as the session last saw the
+/// compositor: what the readout answers with when a key raises one.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ReadoutPlace {
     /// The focused text field's caret, in desk coordinates.
     caret: Option<Rect>,
-    /// Each display the compositor shows, where it stands and the scale it
-    /// draws at.
+    /// Each display the compositor shows, where it stands and the scale it draws at.
     displays: Vec<crate::displays::Placed>,
 }
 
@@ -592,8 +579,8 @@ pub(crate) struct ReadoutPlace {
 pub(crate) type ReadoutPlaces = Rc<RefCell<ReadoutPlace>>;
 
 impl ReadoutPlace {
-    /// Take the outputs the compositor shows and the caret of the field the
-    /// person types into, as they stand now.
+    /// Take the outputs the compositor shows and the caret of the field the person types into, as
+    /// they stand now.
     pub(crate) fn observe(&mut self, outputs: &[OutputInfo], caret: Option<Rect>) {
         self.displays = crate::displays::placed(outputs)
             .into_iter()
@@ -607,8 +594,7 @@ impl ReadoutPlace {
         self.caret
     }
 
-    /// Where the display `display` stands, or the first one when none is
-    /// named or it is not shown.
+    /// Where the display `display` stands, or the first one when none is named or it is not shown.
     fn output(&self, display: Option<&str>) -> Option<((i32, i32, i32, i32), f64)> {
         let named = display.and_then(|display| {
             self.displays
@@ -621,16 +607,15 @@ impl ReadoutPlace {
     }
 }
 
-/// The hardware keys' readout, on the display whose key changed it: it never
-/// takes the pointer or the keyboard, and shows over the lock too.
+/// The hardware keys' readout, on the display whose key changed it: it never takes the pointer or
+/// the keyboard, and shows over the lock too.
 pub(crate) struct Readout {
     host: tilo_surface_host::WidgetHost,
     /// Where each display stands and where the person types.
     places: ReadoutPlaces,
     /// The display the readout up now answers for, by connector.
     display: Option<String>,
-    /// The band it stands in, which the floating layer keeps clear of while
-    /// it is up.
+    /// The band it stands in, which the floating layer keeps clear of while it is up.
     band: Reserved,
 }
 
@@ -641,8 +626,8 @@ impl Readout {
                 Box::new(tilo_desktop::osd::OsdSlab::new()),
                 Placement {
                     origin: (0, 0),
-                    // Placed on the outputs before anything is drawn; the
-                    // readout's pill is as wide as what it reads.
+                    // Placed on the outputs before anything is drawn; the readout's pill is as wide
+                    // as what it reads.
                     size: (
                         1,
                         u32::try_from(tilo_desktop::osd::surface_height()).unwrap_or(1),
@@ -658,14 +643,13 @@ impl Readout {
         }
     }
 
-    /// Draw in `theme`: the pill's ground is the theme's floating surface, so
-    /// a light style is light, and its words follow the person's settings.
+    /// Draw in `theme` : the pill's ground is the theme's floating surface, so a light style is
+    /// light, and its words follow the person's settings.
     pub(crate) fn set_theme(&mut self, theme: ui::Theme) {
         self.host.set_theme(theme);
     }
 
-    /// Stand on the display `display` answers for, in the band the person is
-    /// not typing in.
+    /// Stand on the display `display` answers for, in the band the person is not typing in.
     fn stand(&mut self, display: Option<&str>) {
         self.display = display.map(str::to_owned);
         let Some(output) = self.places.borrow().output(display) else {
@@ -704,8 +688,8 @@ impl Published for Readout {
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut tilo_surface_host::Look<'_>,
     ) -> Result<ResourceOperationStart, DoorError> {
-        // A readout stands on the display whose key changed it, and keeps
-        // clear of the line the person is typing on.
+        // A readout stands on the display whose key changed it, and keeps clear of the line the
+        // person is typing on.
         if address.resource == tilo_desktop::osd::OSD_RESOURCE && address.action == "show" {
             let display = arguments
                 .get("display")
@@ -720,8 +704,8 @@ impl Published for Readout {
         Published::accessible_labels(&mut self.host)
     }
 
-    /// A key pressed on the lock screen still answers there: the readout is
-    /// the session's own word about what changed, not an app's.
+    /// A key pressed on the lock screen still answers there: the readout is the session's own word
+    /// about what changed, not an app's.
     fn serves_while_locked(&self) -> bool {
         true
     }
@@ -785,22 +769,20 @@ impl SurfaceHost for Readout {
     }
 
     fn outputs_changed(&mut self, _outputs: &[tilo_compositor::HostedOutput]) {
-        // Where the displays stand comes with the session's own reading of
-        // them (connectors, not just rectangles): the readout stands on the
-        // display it answers for again.
+        // Where the displays stand comes with the session's own reading of them (connectors, not
+        // just rectangles): the readout stands on the display it answers for again.
         let display = self.display.clone();
         self.stand(display.as_deref());
     }
 
-    /// A hardware key's answer shows over the lock screen, where it was
-    /// pressed.
+    /// A hardware key's answer shows over the lock screen, where it was pressed.
     fn above_lock(&self) -> bool {
         true
     }
 }
 
-/// A hosted surface the session keeps a hold of after handing it to the
-/// compositor: the chrome, which the session reads back.
+/// A hosted surface the session keeps a hold of after handing it to the compositor: the chrome,
+/// which the session reads back.
 pub(crate) struct Held<T>(pub(crate) Rc<std::cell::RefCell<T>>);
 
 impl<T: SurfaceHost> SurfaceHost for Held<T> {

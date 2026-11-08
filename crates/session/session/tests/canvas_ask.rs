@@ -43,15 +43,15 @@ use common::{
     wait_for,
 };
 
-/// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and
-/// the one the session makes first when the workspace keeps none.
+/// The agent the workspace keeps for [`PERSON`]: the id its actor works as, and the one the session
+/// makes first when the workspace keeps none.
 const AGENT: &str = "assistant";
 
 /// Enter, the key that submits the canvas entry.
 const KEY_ENTER: u32 = 28;
 
-/// A headless session with the shell as the whole screen and the apps a
-/// development session seeds, the framed canvas in front.
+/// A headless session with the shell as the whole screen and the apps a development session seeds,
+/// the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
     let mut session = Session::headless(
         Options {
@@ -83,14 +83,14 @@ fn workspace(session: &Session) -> String {
         .expect("a workspace is in front")
 }
 
-/// Chat's record of the workspace in front, as this session holds it open: the
-/// same record the pass derives turns from, so a test reads it without opening
-/// a second writer on the store the session writes through.
+/// Chat's record of the workspace in front, as this session holds it open: the same record the pass
+/// derives turns from, so a test reads it without opening a second writer on the store the session
+/// writes through.
 fn chat(session: &Session) -> Option<Chat> {
     session.chat_of(&workspace(session))
 }
 
-/// The channels Chat's record holds, as `(id, participant keys)`.
+/// The channels Chat's record holds, as `(id, participant keys)` .
 fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
     chat.channels
         .iter()
@@ -107,8 +107,8 @@ fn channels(chat: &Chat) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// Type `text` in the canvas entry and press Enter: the person asking, through
-/// the shell's own action.
+/// Type `text` in the canvas entry and press Enter: the person asking, through the shell's own
+/// action.
 fn ask(session: &mut Session, text: &str) {
     common::press(session, CANVAS_ENTRY);
     common::type_text(session, text);
@@ -124,9 +124,8 @@ fn ask(session: &mut Session, text: &str) {
     }
 }
 
-/// A question typed into the canvas entry posts into the person's ask
-/// conversation with the agent the workspace keeps, and that conversation stands
-/// on the canvas where they typed.
+/// A question typed into the canvas entry posts into the person's ask conversation with the agent
+/// the workspace keeps, and that conversation stands on the canvas where they typed.
 #[test]
 fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
     let _settled = ui::motion::testing::settled();
@@ -169,8 +168,8 @@ fn a_question_typed_on_the_canvas_asks_the_kept_agent() {
         "the conversation was not there before the ask: {before:?}"
     );
 
-    // Chat's record holds it, with the agent a participant: the turn the broker
-    // delivers to that agent is the person's message in this channel.
+    // Chat's record holds it, with the agent a participant: the turn the broker delivers to that
+    // agent is the person's message in this channel.
     let (_, participants) = channels(&chat(&mut session).expect("Chat's record"))
         .into_iter()
         .find(|(id, _)| *id == channel)
@@ -200,8 +199,8 @@ fn the_ask_is_the_persons_own_step() {
     assert_eq!(verb, "place", "asking is one arranging step");
 }
 
-/// A second ask brings the conversation's place forward instead of standing a
-/// second place of it (`shell.md` §8.1).
+/// A second ask brings the conversation's place forward instead of standing a second place of it
+/// (`shell.md` §8.1).
 #[test]
 fn a_second_ask_brings_the_conversation_forward() {
     let _settled = ui::motion::testing::settled();

@@ -1,15 +1,11 @@
 //! Searchable window rows over the desktop topology.
-//!
-//! Every tab and window group in the active workspace becomes an exactly
-//! addressed row: go to a tab, close a group, close a tab, or move a tab to
-//! another workspace. The rows are render-free data; a host ranks them by
-//! their names with its own scorer and applies the [`WindowAction`] through
-//! its tab lifecycle, so an invocation never synthesises pointer input.
-//!
-//! Going to a window is what a search for it means. Closing, moving and
-//! copying are listed in full for an empty query and for their exact
-//! address, but a search only offers them once it names their verb, so Enter
-//! on a window's name never closes it.
+//! Every tab and window group in the active workspace becomes an exactly addressed row: go to a
+//! tab, close a group, close a tab, or move a tab to another workspace. The rows are render-free
+//! data; a host ranks them by their names with its own scorer and applies the [`WindowAction`]
+//! through its tab lifecycle, so an invocation never synthesises pointer input.
+//! Going to a window is what a search for it means. Closing, moving and copying are listed in full
+//! for an empty query and for their exact address, but a search only offers them once it names
+//! their verb, so Enter on a window's name never closes it.
 use tilo_desktop_model::{
     DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, Workspace,
     WorkspaceSlot,
@@ -38,8 +34,8 @@ pub enum WindowAction {
     CloseGroup { group: GroupId },
     /// Close one tab through the tab lifecycle.
     CloseTab { group: GroupId, tab: TabId },
-    /// Move one tab to another workspace. A client window's document
-    /// leaves its workspace once the person agrees to what crosses.
+    /// Move one tab to another workspace. A client window's document leaves its workspace once the
+    /// person agrees to what crosses.
     MoveTab {
         group: GroupId,
         tab: TabId,
@@ -52,8 +48,8 @@ pub enum WindowAction {
         tab: TabId,
         workspace: WorkspaceSlot,
     },
-    /// [`Self::MoveTab`] to the workspace the invocation names in its
-    /// [`DESTINATION_PARAM`]: the one row a search for "move" offers.
+    /// [`Self::MoveTab`] to the workspace the invocation names in its [`DESTINATION_PARAM`]: the
+    /// one row a search for "move" offers.
     MoveTabTo { group: GroupId, tab: TabId },
     /// [`Self::CopyTab`] to the workspace named in [`DESTINATION_PARAM`].
     CopyTabTo { group: GroupId, tab: TabId },
@@ -73,28 +69,22 @@ pub struct WindowRow {
     pub kind: WindowRowKind,
     pub id: String,
     pub title: String,
-    /// What tells this row apart beyond its title: the strip a window is on
-    /// once there are several, the workspace a move starts from. Never the
-    /// kind of row or a count.
+    /// What tells this row apart beyond its title: the strip a window is on once there are several,
+    /// the workspace a move starts from. Never the kind of row or a count.
     pub subtitle: Option<String>,
-    /// The workspaces a chosen move or copy may go to, by name; empty for
-    /// every other row.
+    /// The workspaces a chosen move or copy may go to, by name; empty for every other row.
     pub destinations: Vec<String>,
-    /// What a person calls this row: its visible names and verb, never an
-    /// internal id. A host ranks these as titles.
+    /// What a person calls this row: its visible names and verb, never an internal id. A host ranks
+    /// these as titles.
     pub names: Vec<String>,
-    /// A weaker name, such as the app a window belongs to; ranked as a
-    /// subtitle.
+    /// A weaker name, such as the app a window belongs to; ranked as a subtitle.
     pub hint: Option<String>,
     pub action: WindowAction,
 }
 
-/// The tile whose face a window row wears — the same artwork the tab
-/// strip and overview card show.
-///
-/// A tab row (`tab.focus`, `tab.close`, `tab.move`, `tab.copy`) wears
-/// that tab. A group-close row wears the group's active tab, or its
-/// first tab if the active one is gone.
+/// The tile whose face a window row wears — the same artwork the tab strip and overview card show.
+/// A tab row (`tab.focus`, `tab.close` , `tab.move` , `tab.copy` ) wears that tab. A group-close
+/// row wears the group's active tab, or its first tab if the active one is gone.
 pub fn window_row_tile<'a>(tree: &'a DesktopTree, id: &str) -> Option<&'a TileContent> {
     let (group_id, tab_id) = window_row_face(id)?;
     let group = tree
@@ -144,12 +134,12 @@ fn window_row_face(id: &str) -> Option<(GroupId, Option<TabId>)> {
     Some((group, None))
 }
 
-/// The exact address of going to `tab` in `group`.
+/// The exact address of going to `tab` in `group` .
 pub fn tab_focus_id(group: GroupId, tab: TabId) -> String {
     format!("tab.focus:{group}:{tab}")
 }
 
-/// The exact address of closing `tab` in `group`.
+/// The exact address of closing `tab` in `group` .
 pub fn tab_close_id(group: GroupId, tab: TabId) -> String {
     format!("tab.close:{group}:{tab}")
 }
@@ -159,34 +149,32 @@ pub fn tab_share_id(group: GroupId, tab: TabId) -> String {
     format!("tab.share:{group}:{tab}")
 }
 
-/// The exact address of no longer sharing `tab` in `group`.
+/// The exact address of no longer sharing `tab` in `group` .
 pub fn tab_unshare_id(group: GroupId, tab: TabId) -> String {
     format!("tab.unshare:{group}:{tab}")
 }
 
-/// The exact address of closing `group`.
+/// The exact address of closing `group` .
 pub fn group_close_id(group: GroupId) -> String {
     format!("group.close:{group}")
 }
 
-/// The exact address of moving `tab` out of `group` to `workspace`.
+/// The exact address of moving `tab` out of `group` to `workspace` .
 pub fn tab_move_id(group: GroupId, tab: TabId, workspace: WorkspaceSlot) -> String {
     format!("tab.move:{group}:{tab}:{}", workspace.raw())
 }
 
-/// The exact address of moving `tab` out of `group` to a workspace the
-/// invocation names.
+/// The exact address of moving `tab` out of `group` to a workspace the invocation names.
 pub fn tab_move_to_id(group: GroupId, tab: TabId) -> String {
     format!("tab.move:{group}:{tab}")
 }
 
-/// The exact address of copying `tab`'s document in `group` into a
-/// workspace the invocation names.
+/// The exact address of copying `tab` 's document in `group` into a workspace the invocation names.
 pub fn tab_copy_to_id(group: GroupId, tab: TabId) -> String {
     format!("tab.copy:{group}:{tab}")
 }
 
-/// The exact address of copying `tab`'s document in `group` into `workspace`.
+/// The exact address of copying `tab` 's document in `group` into `workspace` .
 pub fn tab_copy_id(group: GroupId, tab: TabId, workspace: WorkspaceSlot) -> String {
     format!("tab.copy:{group}:{tab}:{}", workspace.raw())
 }
@@ -201,17 +189,16 @@ fn app_id(tile: &TileContent) -> Option<&str> {
     }
 }
 
-/// The readable end of an app id — `so.tilo.file-explorer` answers to
-/// "file explorer" — so a window titled after its document is still found
-/// by its app.
+/// The readable end of an app id — `so.tilo.file-explorer` answers to "file explorer" — so a window
+/// titled after its document is still found by its app.
 fn app_hint(tile: &TileContent) -> Option<String> {
     let last = app_id(tile)?.rsplit('.').next()?;
     let hint = last.replace(['-', '_'], " ");
     (!hint.trim().is_empty()).then_some(hint)
 }
 
-/// Which window verbs a query names. An empty query names every verb: a
-/// listing is complete, only a search is selective.
+/// Which window verbs a query names. An empty query names every verb: a listing is complete, only a
+/// search is selective.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Verbs {
     close: bool,
@@ -275,18 +262,17 @@ struct Relocation<'a> {
     workspace: &'a Workspace,
     group: GroupId,
     tab: &'a Tab,
-    /// Whether to offer the rows that ask where: in a listing, for their
-    /// exact address, or when a search names the move verbs and this is the
-    /// focused tab, the one tab a typed "move" is about.
+    /// Whether to offer the rows that ask where: in a listing, for their exact address, or when a
+    /// search names the move verbs and this is the focused tab, the one tab a typed "move" is
+    /// about.
     offered: bool,
 }
 
-/// The move and copy rows of one tab. A search for "move" offers one row per
-/// verb, on the focused tab, that asks where ([`DESTINATION_PARAM`]); a list
-/// of every tab times every workspace buries everything else. The listing
-/// (an empty query, for agents) still names each destination, and each
-/// destination's exact address always resolves. A workspace's own history
-/// and a collaborator's window stay where they are.
+/// The move and copy rows of one tab. A search for "move" offers one row per verb, on the focused
+/// tab, that asks where ([`DESTINATION_PARAM`]); a list of every tab times every workspace buries
+/// everything else. The listing (an empty query, for agents) still names each destination, and each
+/// destination's exact address always resolves. A workspace's own history and a collaborator's
+/// window stay where they are.
 fn move_rows(
     rows: &mut Vec<WindowRow>,
     admit: &impl Fn(&str, bool) -> bool,
@@ -379,8 +365,8 @@ fn move_rows(
     }
 }
 
-/// The "Move … to another workspace" row, and the copy row for a window
-/// whose document can be copied, each asking which of `destinations`.
+/// The "Move … to another workspace" row, and the copy row for a window whose document can be
+/// copied, each asking which of `destinations` .
 fn chosen_destination_rows(
     rows: &mut Vec<WindowRow>,
     group: GroupId,
@@ -421,8 +407,7 @@ fn chosen_destination_rows(
     }
 }
 
-/// The close rows for `group` and each of its tabs, admitted only once the
-/// query names the verb.
+/// The close rows for `group` and each of its tabs, admitted only once the query names the verb.
 fn close_rows(
     rows: &mut Vec<WindowRow>,
     admit: &impl Fn(&str, bool) -> bool,
@@ -495,8 +480,8 @@ fn close_rows(
     }
 }
 
-/// The share row of `tab` in `group`: sharing it with the workspace while
-/// `shared` is false, stopping while it is true.
+/// The share row of `tab` in `group` : sharing it with the workspace while `shared` is false,
+/// stopping while it is true.
 fn share_row(
     rows: &mut Vec<WindowRow>,
     admit: &impl Fn(&str, bool) -> bool,
@@ -535,10 +520,8 @@ fn share_row(
 }
 
 /// Every window row of the active workspace that `needle` may be asking for.
-///
-/// Rows are admitted, not ranked: the host ranks [`WindowRow::names`]
-/// against the same needle. A needle equal to a row's exact id always admits
-/// that row, which is how an address resolves.
+/// Rows are admitted, not ranked: the host ranks [`WindowRow::names`] against the same needle. A
+/// needle equal to a row's exact id always admits that row, which is how an address resolves.
 pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
     window_rows_with_sharing(tree, needle, &|_, _| None)
 }
@@ -559,9 +542,9 @@ pub fn window_rows_with_sharing(
     let verbs = Verbs::of(needle);
     let admit = |id: &str, named: bool| named || exact == id;
     let focused = focused_tab(tree, workspace);
-    // An empty listing is "windows to go back to"; a search names every
-    // matching window, including the one already focused. Otherwise
-    // searching for the open Terminal finds only close actions (S05).
+    // An empty listing is "windows to go back to"; a search names every matching window, including
+    // the one already focused. Otherwise searching for the open Terminal finds only close actions
+    // (S05).
     let searching = !exact.is_empty();
     let multi_strip = workspace.strips.len() > 1;
     let mut rows = Vec::new();
@@ -615,9 +598,9 @@ pub fn window_rows_with_sharing(
             }
         }
     }
-    // An empty listing is PALETTE-truncated. Keep the focused group's close
-    // after the "go back to" focus rows so invoke and agents still see it
-    // when a long session has more window actions than one page.
+    // An empty listing is PALETTE-truncated. Keep the focused group's close after the "go back to"
+    // focus rows so invoke and agents still see it when a long session has more window actions than
+    // one page.
     if !searching && let Some(group) = focused_group(tree, workspace) {
         let close_id = group_close_id(group.id);
         if let Some(pos) = rows.iter().position(|row| row.id == close_id) {

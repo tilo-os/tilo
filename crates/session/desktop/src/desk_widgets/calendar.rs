@@ -1,14 +1,12 @@
-//! The Calendar desk widget's content: today at a glance, and the month
-//! around it when open.
-//!
-//! No calendar service feeds the desk yet, so the widget shows only what is
-//! known for certain, the date, and never a stand-in line about events.
-//! Pure: everything is computed from the day it is given.
+//! The Calendar desk widget's content: today at a glance, and the month around it when open.
+//! No calendar service feeds the desk yet, so the widget shows only what is known for certain, the
+//! date, and never a stand-in line about events. Pure: everything is computed from the day it is
+//! given.
 
 use chrono::{Datelike, NaiveDate, Weekday};
 
-/// Weeks a month grid shows: the most any month spans, so the card never
-/// changes height from one month to the next.
+/// Weeks a month grid shows: the most any month spans, so the card never changes height from one
+/// month to the next.
 pub const WEEKS: usize = 6;
 
 /// One month, laid out from the first day of the week the person chose.
@@ -20,8 +18,7 @@ pub struct Month {
     pub columns: [Weekday; 7],
     /// Today, which the grid marks.
     pub today: NaiveDate,
-    /// [`WEEKS`] rows of seven cells; `None` before the first and after the
-    /// last day.
+    /// [`WEEKS`] rows of seven cells; `None` before the first and after the last day.
     pub weeks: [[Option<u32>; 7]; WEEKS],
 }
 
@@ -65,7 +62,7 @@ impl Month {
     }
 }
 
-/// How many days `first`'s month has.
+/// How many days `first` 's month has.
 fn days_in_month(first: NaiveDate) -> u32 {
     first
         .checked_add_months(chrono::Months::new(1))

@@ -16,10 +16,9 @@ pub(super) const ARRIVAL_NOTICE_FOR: Duration = Duration::from_millis(4000);
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct ArrivalShown {
     pub text: String,
-    /// It tells what the people here see of the person: a press opens
-    /// their menu.
+    /// It tells what the people here see of the person: a press opens their menu.
     pub seen: bool,
-    /// How far it has slid out of the faces, `0..=1`.
+    /// How far it has slid out of the faces, `0..=1` .
     pub reveal: f64,
     pub opacity: f32,
 }
@@ -54,8 +53,7 @@ impl TopBarChrome {
         )
     }
 
-    /// The status at `now`; `None` once it has been up its while, or with
-    /// nothing to say.
+    /// The status at `now` ; `None` once it has been up its while, or with nothing to say.
     pub(super) fn arrival_shown(&self, now: Instant) -> Option<ArrivalShown> {
         if self.is_compact() {
             return None;
@@ -94,7 +92,7 @@ impl TopBarChrome {
             .filter(|ends| now < *ends)
     }
 
-    /// Whether the status slides or fades at `now`, so the bar owes frames.
+    /// Whether the status slides or fades at `now` , so the bar owes frames.
     pub(super) fn arrival_notice_moving(&self, now: Instant) -> bool {
         let Some(notice) = self
             .chrome
@@ -114,9 +112,8 @@ impl TopBarChrome {
         )
     }
 
-    /// The status, sliding out of the faces that end at `right_x` and
-    /// yielding to the centre band; returns where the controls before it
-    /// end.
+    /// The status, sliding out of the faces that end at `right_x` and yielding to the centre band;
+    /// returns where the controls before it end.
     pub(super) fn draw_arrival_notice(
         &mut self,
         scene: &mut Scene,
@@ -147,8 +144,7 @@ impl TopBarChrome {
             right,
             center_y + height / 2.0,
         );
-        // It comes out of the faces: uncovered from their side, the words
-        // travelling with the edge.
+        // It comes out of the faces: uncovered from their side, the words travelling with the edge.
         let shown_w = width * shown.reveal.clamp(0.0, 1.0);
         let clip = Rect::new(rect.x1 - shown_w, rect.y0 - 2.0, rect.x1, rect.y1 + 2.0);
         scene.push_layer(
@@ -179,8 +175,7 @@ impl TopBarChrome {
 
     pub(super) const ARRIVAL_TARGET: &'static str = "topbar:arrival";
 
-    /// The status for assistive technology, when a press on it opens the
-    /// person's menu.
+    /// The status for assistive technology, when a press on it opens the person's menu.
     pub(super) fn arrival_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         if self.arrival_rect.is_zero_area() || !self.arrival_pressable {
@@ -199,8 +194,8 @@ impl TopBarChrome {
         )
     }
 
-    /// What a press at `point` on the status asks for: the person's own
-    /// menu, when it tells what the people here see of them.
+    /// What a press at `point` on the status asks for: the person's own menu, when it tells what
+    /// the people here see of them.
     pub(super) fn arrival_intent_at(&self, point: Point) -> Option<ChromeIntent> {
         (self.arrival_pressable && self.arrival_rect.contains(point))
             .then_some(ChromeIntent::ToggleProfile)
@@ -227,8 +222,8 @@ mod tests {
         }
     }
 
-    /// Arriving says who is here on the bar's own faces, in a few words
-    /// beside them, never in a surface of its own; then it lets go.
+    /// Arriving says who is here on the bar's own faces, in a few words beside them, never in a
+    /// surface of its own; then it lets go.
     #[test]
     fn arriving_slides_a_short_name_out_of_the_faces_for_a_moment() {
         ui::i18n::I18nManager::init("en-US");
@@ -251,9 +246,9 @@ mod tests {
         assert_eq!(bar.arrival_shown(later), None, "it goes on its own");
     }
 
-    /// The status going changes the bar only where it stood: the bar's
-    /// parts bound it there, so a frame it fades or leaves in (a strip pan
-    /// just after arriving) repaints that much of the bar, not all of it.
+    /// The status going changes the bar only where it stood: the bar's parts bound it there, so a
+    /// frame it fades or leaves in (a strip pan just after arriving) repaints that much of the bar,
+    /// not all of it.
     #[test]
     fn the_status_going_damages_only_where_it_stood() {
         ui::i18n::I18nManager::init("en-US");
@@ -268,8 +263,7 @@ mod tests {
             at: ui::time::now(),
         });
         let _settled = ui::motion::testing::settled();
-        // One text renderer for both draws: its fonts are what the glyphs
-        // refer to.
+        // One text renderer for both draws: its fonts are what the glyphs refer to.
         let (theme, mut text) = (Theme::default(), TextRenderer::new());
         super::super::tests::lay_out_and_draw_with_text(&mut bar, 1600.0, &theme, &mut text);
         let status = bar.arrival_rect;

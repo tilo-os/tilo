@@ -1,6 +1,6 @@
-//! The questions the services ask on the portal sheet, answered through
-//! its door: every answer names the question it was given for, so one that
-//! arrives after the next question opened leaves that one alone.
+//! The questions the services ask on the portal sheet, answered through its door: every answer
+//! names the question it was given for, so one that arrives after the next question opened leaves
+//! that one alone.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,8 +37,7 @@ fn asking() -> (Session, tilo_service::Questions) {
     (session, questions)
 }
 
-/// The resource publishing `action` among everything the session
-/// publishes.
+/// The resource publishing `action` among everything the session publishes.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -63,7 +62,7 @@ fn showing(session: &Session) -> String {
         .handle
 }
 
-/// Answer `effect` on the portal sheet's door for `handle`.
+/// Answer `effect` on the portal sheet's door for `handle` .
 #[track_caller]
 fn answer(
     session: &mut Session,

@@ -1,10 +1,8 @@
-//! A tab an app opens beside one of its own: it lands in the window group
-//! the app already has, right after the tab it named.
-//!
-//! Applications have no tab strips of their own: another page, file or
-//! conversation is another window of the app, a tab of the group its first
-//! window opened. The request names the tab it belongs beside, so the tab
-//! lands there and nowhere else — never in another app's window group.
+//! A tab an app opens beside one of its own: it lands in the window group the app already has,
+//! right after the tab it named.
+//! Applications have no tab strips of their own: another page, file or conversation is another
+//! window of the app, a tab of the group its first window opened. The request names the tab it
+//! belongs beside, so the tab lands there and nowhere else — never in another app's window group.
 
 use tilo_desktop_model::{GroupId, StripId, Tab, TabId};
 
@@ -13,10 +11,9 @@ use super::{DesktopSurface, RowOp, Shared};
 use crate::TileSource;
 use crate::navigation::RouteIds;
 
-/// Put a window for `app` into the group of the window at `ids`, as its tab
-/// right after it: what an app's request to open beside one of its own tabs
-/// does. A tab opened behind stays where it opened; one opened in front is
-/// the strip's active window.
+/// Put a window for `app` into the group of the window at `ids` , as its tab right after it: what
+/// an app's request to open beside one of its own tabs does. A tab opened behind stays where it
+/// opened; one opened in front is the strip's active window.
 pub(super) fn open_tab_beside(
     tiles: &mut dyn TileSource,
     shared: &mut Shared,
@@ -69,9 +66,9 @@ pub(super) fn open_tab_beside(
 }
 
 impl DesktopSurface {
-    /// Present a tab opened into a group that is already there. A strip not
-    /// built yet holds it in the tree alone; its row finds it when shown. A
-    /// tab opened in front comes into view with its group.
+    /// Present a tab opened into a group that is already there. A strip not built yet holds it in
+    /// the tree alone; its row finds it when shown. A tab opened in front comes into view with its
+    /// group.
     pub(super) fn insert_tab(
         &mut self,
         strip: StripId,
@@ -91,8 +88,8 @@ impl DesktopSurface {
         {
             let host = build_tile(self.tiles.as_mut(), self.controls.as_ref(), &workspace, tab);
             widget.insert_detached_tab(index, descriptor(tab), host);
-            // Inserting a tab puts it in front: put back the tab the tree
-            // says is, so a tab opened behind takes no focus.
+            // Inserting a tab puts it in front: put back the tab the tree says is, so a tab opened
+            // behind takes no focus.
             widget.set_active_tab(front);
         }
         self.structure_dirty = true;

@@ -1,6 +1,5 @@
-//! The palette's host stands above the windows: while it is up the compositor
-//! gives it the pointer across its card, and once it closes nothing of the
-//! palette is painted there any more.
+//! The palette's host stands above the windows: while it is up the compositor gives it the pointer
+//! across its card, and once it closes nothing of the palette is painted there any more.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -98,8 +97,7 @@ fn desk_tree() -> DesktopTree {
 
 const SIZE: (u32, u32) = (1280, 800);
 
-/// The chrome as the session's own host shows it: over the windows, covering
-/// the output.
+/// The chrome as the session's own host shows it: over the windows, covering the output.
 fn chrome_host() -> (WidgetHost, DesktopHandle, ui::headless::FrameHarness) {
     let tree = desk_tree();
     let (surface, handle) = DesktopSurface::new(tree.clone(), 7, Box::new(Notices));
@@ -174,8 +172,8 @@ fn the_palettes_host_stands_above_the_windows_and_paints_nothing_once_closed() {
         host.accepts_pointer(centre.x, centre.y),
         "the palette is painted at {centre:?}, over the window"
     );
-    // The dim behind the card reaches the rest of the display too: what the
-    // palette stands over is still drawn, under it.
+    // The dim behind the card reaches the rest of the display too: what the palette stands over is
+    // still drawn, under it.
     assert!(
         host.accepts_pointer(640.0, 400.0),
         "the scrim covers the window"

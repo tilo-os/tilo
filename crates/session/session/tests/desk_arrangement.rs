@@ -1,20 +1,15 @@
-//! What a person arranges on a workspace's desk is theirs to see, and a desk
-//! this device cannot write is never said to have been refused by the
-//! workspace it shows.
-//!
-//! A workspace whose records are its members' sealed channels keeps its desk
-//! sealed, and a device writes it with the channel keys its secret store holds.
-//! A session with no secret store — as a development session on a headless
-//! machine is, and any build the platform's store does not reach — holds no
-//! channel keys of any workspace. That is this device's own lack, not any
-//! workspace's verdict: the desk stays the one this device keeps, and the
-//! person is told nothing, because no workspace refused a write it never saw.
-//!
-//! The bug this holds: the device tried the write anyway, was told by its own
-//! engine `this device has no secret store, so it holds no channel keys`, and
-//! raised that as a shared-desk refusal — "… did not take your window
-//! arrangement: It stays on this device: the change could not be read" — a
-//! notice that names the workspace and blames the change's shape.
+//! What a person arranges on a workspace's desk is theirs to see, and a desk this device cannot
+//! write is never said to have been refused by the workspace it shows.
+//! A workspace whose records are its members' sealed channels keeps its desk sealed, and a device
+//! writes it with the channel keys its secret store holds. A session with no secret store — as a
+//! development session on a headless machine is, and any build the platform's store does not reach
+//! — holds no channel keys of any workspace. That is this device's own lack, not any workspace's
+//! verdict: the desk stays the one this device keeps, and the person is told nothing, because no
+//! workspace refused a write it never saw.
+//! The bug this holds: the device tried the write anyway, was told by its own engine
+//! `this device has no secret store, so it holds no channel keys` , and raised that as a
+//! shared-desk refusal — "… did not take your window arrangement: It stays on this device: the
+//! change could not be read" — a notice that names the workspace and blames the change's shape.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,8 +24,8 @@
 
 mod common;
 
-// A device that founds its workspace does it through an Automerge worker: this
-// binary is that worker, as the session's own is.
+// A device that founds its workspace does it through an Automerge worker: this binary is that
+// worker, as the session's own is.
 tilo_automerge_isolate::test_worker!();
 
 use tilo_compositor::OutputConfig;
@@ -40,13 +35,13 @@ use tilo_session::{Options, Session};
 const WIDTH: i32 = 1440;
 const HEIGHT: i32 = 900;
 
-/// The person at this device, as `dist/dev/shell-run.sh` mints them: a
-/// throwaway test identity whose certificate lets the device govern the
-/// workspaces it founds, so the session holds one whose records it seals.
+/// The person at this device, as `dist/dev/shell-run.sh` mints them: a throwaway test identity
+/// whose certificate lets the device govern the workspaces it founds, so the session holds one
+/// whose records it seals.
 const PERSON: &str = "Pat";
 
-/// The notices the session shows now, each banner's title and body then each
-/// one retained in the centre: what the person was told, oldest first.
+/// The notices the session shows now, each banner's title and body then each one retained in the
+/// centre: what the person was told, oldest first.
 fn notices(session: &Session) -> Vec<String> {
     let centre = session.notifications();
     let log = centre.log();
@@ -89,19 +84,19 @@ fn workspaces(session: &Session) -> Vec<(String, String)> {
     })
 }
 
-/// The desktop's own action that opens an app, as `dist/dev/shell-run.sh`
-/// drives a session: an app opened on the desk is a window of the workspace in
-/// front, and so a change of that workspace's shared desk.
+/// The desktop's own action that opens an app, as `dist/dev/shell-run.sh` drives a session: an app
+/// opened on the desk is a window of the workspace in front, and so a change of that workspace's
+/// shared desk.
 const OPEN_APP: &str = "open-app";
 
-/// A session whose device holds no channel keys arranges its desk — an app is
-/// opened in the workspace in front — and no workspace is said to have refused
-/// the arrangement: the desk stays this device's, and the person hears nothing.
+/// A session whose device holds no channel keys arranges its desk — an app is opened in the
+/// workspace in front — and no workspace is said to have refused the arrangement: the desk stays
+/// this device's, and the person hears nothing.
 #[test]
 fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     let _settled = ui::motion::testing::settled();
-    // What the session says about the desk's write: the log is where a write
-    // that was not made says why, and this test reads it too.
+    // What the session says about the desk's write: the log is where a write that was not made says
+    // why, and this test reads it too.
     let logged = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
     {
         let sink = LogSink(std::sync::Arc::clone(&logged));
@@ -114,8 +109,8 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
             .try_init();
     }
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    // The identity `dist/dev/shell-run.sh` mints before it starts its session:
-    // a throwaway whose certificate lets the device govern its own workspaces.
+    // The identity `dist/dev/shell-run.sh` mints before it starts its session: a throwaway whose
+    // certificate lets the device govern its own workspaces.
     let identity = home.config().join("tilo/identity");
     std::fs::create_dir_all(&identity).expect("the identity's directory");
     let root = home.root().join("system");
@@ -130,8 +125,8 @@ fn a_desk_this_device_cannot_seal_is_not_said_to_have_been_refused() {
     let state = home.state().to_path_buf();
     let mut session = session(&state);
 
-    // The desk is up, and the workspace it shows is one the engine holds: a
-    // workspace it founded here keeps its records as sealed channels.
+    // The desk is up, and the workspace it shows is one the engine holds: a workspace it founded
+    // here keeps its records as sealed channels.
     common::until(&mut session, "the workspace the desk shows", |session| {
         !workspaces(session).is_empty()
     });

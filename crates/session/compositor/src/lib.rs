@@ -121,14 +121,13 @@ pub use input::{
 pub use keys::{KeyClaim, KeyRepeat};
 pub use layer::LayerPose;
 
-/// How close to the whole timeout a park must be to have ended on the
-/// deadline rather than on arriving work.
+/// How close to the whole timeout a park must be to have ended on the deadline rather than on
+/// arriving work.
 const WAKE_MARGIN: Duration = Duration::from_millis(1);
 pub use output::{HostedOutput, ModeRequest, OutputChange, OutputConfig, OutputInfo};
 
-/// What the person is in the middle of, as the compositor sees it: an
-/// arranging change moves nothing under a gesture or while they type
-/// (shell.md §1).
+/// What the person is in the middle of, as the compositor sees it: an arranging change moves
+/// nothing under a gesture or while they type (shell.md §1).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Underway {
     /// A pointer button is down: a drag or a resize is in flight.
@@ -207,9 +206,9 @@ fn io(error: impl std::fmt::Display) -> Error {
     Error::Io(std::io::Error::other(error.to_string()))
 }
 
-/// The instant a risky display change's wait for the person is measured
-/// from, and against: the clock a test holds, so the wait ends on the
-/// person's answer rather than on how long the machine took to ask.
+/// The instant a risky display change's wait for the person is measured from, and against: the
+/// clock a test holds, so the wait ends on the person's answer rather than on how long the machine
+/// took to ask.
 fn display_clock_now() -> Instant {
     tilo_clock::now()
 }
@@ -220,15 +219,15 @@ const SURFACE_DISPLAY: &str = "tilo-surface";
 /// How far up the process tree a surface app's connections are looked for.
 const TREE_DEPTH: u32 = 16;
 
-/// A display bound for a surface app that has not started yet: the socket is
-/// there for the app to find, and its clients wait until the app is known.
+/// A display bound for a surface app that has not started yet: the socket is there for the app to
+/// find, and its clients wait until the app is known.
 pub struct BoundDisplay {
     socket: Option<ListeningSocket>,
     path: PathBuf,
 }
 
 impl BoundDisplay {
-    /// The path the app connects to: its `WAYLAND_DISPLAY`.
+    /// The path the app connects to: its `WAYLAND_DISPLAY` .
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
@@ -255,7 +254,7 @@ impl Drop for SurfaceDisplay {
     }
 }
 
-/// Whether `pid` is `ancestor`, or was started by it, up the process tree.
+/// Whether `pid` is `ancestor` , or was started by it, up the process tree.
 fn descends_from(pid: i32, ancestor: i32) -> bool {
     let mut current = pid;
     for _ in 0..TREE_DEPTH {
@@ -290,10 +289,8 @@ pub struct LoopData {
 }
 
 /// What the loop tells of each turn of its wait.
-///
-/// Something watching the process for a main loop that has stopped uses it to
-/// tell an idle loop, which waits for events however long, from one that is
-/// stuck between its waits.
+/// Something watching the process for a main loop that has stopped uses it to tell an idle loop,
+/// which waits for events however long, from one that is stuck between its waits.
 pub trait LoopTurns: Send + Sync {
     /// The loop is about to wait for events.
     fn parking(&self);
@@ -306,32 +303,27 @@ pub struct Compositor {
     event_loop: EventLoop<'static, LoopData>,
     display: Display<State>,
     data: LoopData,
-    /// It runs in a window of a desktop it did not start: that desktop owns
-    /// idle, blanking, locking and suspend, so this one runs no idle timers.
+    /// It runs in a window of a desktop it did not start: that desktop owns idle, blanking, locking
+    /// and suspend, so this one runs no idle timers.
     hosted: bool,
-    /// The outputs as Settings and the session last read them
-    /// ([`Compositor::display_snapshot`]).
+    /// The outputs as Settings and the session last read them ([`Compositor::display_snapshot`]).
     displays: settings_bridge::Published,
-    /// Told of every turn of the loop's wait, when someone watches for a loop
-    /// that has stopped.
+    /// Told of every turn of the loop's wait, when someone watches for a loop that has stopped.
     turns: Option<Arc<dyn LoopTurns>>,
     /// The person's accessibility settings as they apply now.
     a11y: A11y,
-    /// The typing and pointing assists for input handed to
-    /// [`Compositor::input`]; a backend's own devices filter theirs before
-    /// they get there.
+    /// The typing and pointing assists for input handed to [`Compositor::input`]; a backend's own
+    /// devices filter theirs before they get there.
     keys: AccessKeys,
-    /// The timings of the loop's turns, when `TILO_FRAME_TRACE` or a profile
-    /// asked for them.
+    /// The timings of the loop's turns, when `TILO_FRAME_TRACE` or a profile asked for them.
     recorder: tilo_frame_metrics::FrameRecorder,
-    /// A turn is open: [`Compositor::begin_tick`] ran and
-    /// [`Compositor::end_tick`] has not.
+    /// A turn is open: [`Compositor::begin_tick`] ran and [`Compositor::end_tick`] has not.
     ticking: bool,
 }
 
 impl Compositor {
-    /// A compositor on the backend `make_backend` creates, which may
-    /// register its sources in the loop it is handed.
+    /// A compositor on the backend `make_backend` creates, which may register its sources in the
+    /// loop it is handed.
     pub fn new(
         policy: Box<dyn WindowPolicy>,
         make_backend: impl FnOnce(
@@ -342,8 +334,8 @@ impl Compositor {
         let event_loop = EventLoop::try_new().map_err(io)?;
         let mut display = Display::<State>::new().map_err(io)?;
         let mut state = State::new(&display.handle(), policy);
-        // Client requests are read after the loop wakes, in `dispatch`; the
-        // loop only needs to wake when the display's socket is readable.
+        // Client requests are read after the loop wakes, in `dispatch` ; the loop only needs to
+        // wake when the display's socket is readable.
         let poll_fd = display.backend().poll_fd().try_clone_to_owned()?;
         event_loop
             .handle()
@@ -393,13 +385,10 @@ impl Compositor {
         })
     }
 
-    /// A compositor in a window of the desktop it runs inside (see
-    /// [`backend::nested`]), the window
+    /// A compositor in a window of the desktop it runs inside (see [`backend::nested`]), the window
     /// [`backend::NestedBackend::open_window`] opened.
-    ///
-    /// The caller opens the window: a session opens it before it builds
-    /// anything else, so the one connection its desktop was handed goes to
-    /// the window and not to whatever the desk starts.
+    /// The caller opens the window: a session opens it before it builds anything else, so the one
+    /// connection its desktop was handed goes to the window and not to whatever the desk starts.
     pub fn nested(
         policy: Box<dyn WindowPolicy>,
         config: &NestedConfig,
@@ -430,21 +419,20 @@ impl Compositor {
         self.data.backend.closed()
     }
 
-    /// Start a recorded turn of the loop. The session calls it before
-    /// [`Compositor::dispatch`] and ends it after the work the frame it drew
-    /// answered.
+    /// Start a recorded turn of the loop. The session calls it before [`Compositor::dispatch`] and
+    /// ends it after the work the frame it drew answered.
     pub fn begin_tick(&mut self) {
         self.ticking = true;
-        // A frame the display retired since the last turn closes the input
-        // measurement of the frame that carried it.
+        // A frame the display retired since the last turn closes the input measurement of the frame
+        // that carried it.
         if let Some((serial, at)) = self.data.state.take_retired() {
             self.recorder.note_retirement(serial, at);
         }
         self.recorder.begin_tick(Instant::now());
     }
 
-    /// The session's own share of the turn before the frame: the desk, the
-    /// apps and the overlays it laid out.
+    /// The session's own share of the turn before the frame: the desk, the apps and the overlays it
+    /// laid out.
     pub fn mark_pump(&mut self, took: Duration) {
         self.recorder.mark_pump(took);
     }
@@ -454,8 +442,7 @@ impl Compositor {
         self.recorder.mark_testctl(took);
     }
 
-    /// The workspace in front changed: its frames are timed until the desk
-    /// rests.
+    /// The workspace in front changed: its frames are timed until the desk rests.
     pub fn workspace_switched(&mut self) {
         self.data.state.workspace_switched();
     }
@@ -479,9 +466,8 @@ impl Compositor {
         self.recorder.end_tick();
     }
 
-    /// Whether a client has drawn something no frame has shown yet: the
-    /// frame the desk owes answers it, and until it is drawn a client is
-    /// waiting on this turn.
+    /// Whether a client has drawn something no frame has shown yet: the frame the desk owes answers
+    /// it, and until it is drawn a client is waiting on this turn.
     pub fn owes_frame(&self) -> bool {
         !self.data.state.redraw.is_empty()
     }
@@ -505,9 +491,8 @@ impl Compositor {
         Ok(self.owes_frame())
     }
 
-    /// When a display builds the frame it owes: one lead before the blank
-    /// that shows it. `None` when no output owes one, so the loop waits for an
-    /// event.
+    /// When a display builds the frame it owes: one lead before the blank that shows it. `None`
+    /// when no output owes one, so the loop waits for an event.
     #[must_use]
     pub fn frame_deadline(&self) -> Option<Instant> {
         self.data.backend.next_deadline(&self.data.state)
@@ -540,9 +525,8 @@ impl Compositor {
         self.render()
     }
 
-    /// How long a loop may wait for clients, devices and its own work before
-    /// the next frame is due; `None` when nothing is due, and it waits for an
-    /// event.
+    /// How long a loop may wait for clients, devices and its own work before the next frame is due;
+    /// `None` when nothing is due, and it waits for an event.
     pub fn next_wait(&self) -> Option<Duration> {
         let now = std::time::Instant::now();
         let backend = self.frame_deadline();
@@ -579,9 +563,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// Drop an output the backend simulates, as unplugging its cable does:
-    /// it leaves the layout, clients stop seeing it and the desktop hears
-    /// the outputs it has now and places its windows on those left.
+    /// Drop an output the backend simulates, as unplugging its cable does: it leaves the layout,
+    /// clients stop seeing it and the desktop hears the outputs it has now and places its windows
+    /// on those left.
     pub fn remove_output(&mut self, name: &str) -> Result<(), Error> {
         self.data
             .backend
@@ -592,8 +576,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Host a surface app above the windows (and above earlier hosts), or
-    /// under them when it says so ([`SurfaceHost::below_windows`]).
+    /// Host a surface app above the windows (and above earlier hosts), or under them when it says
+    /// so ([`SurfaceHost::below_windows`]).
     pub fn add_host(&mut self, mut host: Box<dyn SurfaceHost>) {
         let outputs = self.data.state.hosted_outputs();
         host.outputs_changed(&outputs);
@@ -601,27 +585,27 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
-    /// Connect a client over a socket pair; the returned end is the
-    /// client's (`wl_display` connection).
+    /// Connect a client over a socket pair; the returned end is the client's (`wl_display`
+    /// connection).
     pub fn connect_client(&mut self) -> Result<UnixStream, Error> {
         self.connect_client_as(false, None)
     }
 
-    /// Connect a client the session trusts with privileged protocols
-    /// (locking the session); otherwise as [`Compositor::connect_client`].
+    /// Connect a client the session trusts with privileged protocols (locking the session);
+    /// otherwise as [`Compositor::connect_client`].
     pub fn connect_trusted_client(&mut self) -> Result<UnixStream, Error> {
         self.connect_client_as(true, None)
     }
 
-    /// Connect a client the session trusts, whose layer surfaces stand on
-    /// `output` whatever output they name themselves: the on-screen keyboard
-    /// belongs on the display the person types on, and it asks for none.
+    /// Connect a client the session trusts, whose layer surfaces stand on `output` whatever output
+    /// they name themselves: the on-screen keyboard belongs on the display the person types on, and
+    /// it asks for none.
     pub fn connect_trusted_client_on(&mut self, output: &str) -> Result<UnixStream, Error> {
         self.connect_client_as(true, Some(output.to_owned()))
     }
 
-    /// Connect a client whose layer surfaces stand on `output`, when that
-    /// is named, as [`Compositor::connect_client`] otherwise.
+    /// Connect a client whose layer surfaces stand on `output` , when that is named, as
+    /// [`Compositor::connect_client`] otherwise.
     fn connect_client_as(
         &self,
         trusted: bool,
@@ -642,17 +626,15 @@ impl Compositor {
         Ok(theirs)
     }
 
-    /// The session's X11 displays, by workspace: the app launcher asks one for
-    /// the display it starts an app with. `None` only when the compositor was
-    /// built without its loop.
+    /// The session's X11 displays, by workspace: the app launcher asks one for the display it
+    /// starts an app with. `None` only when the compositor was built without its loop.
     #[must_use]
     pub fn x11_displays(&self) -> Option<X11Displays> {
         self.data.state.x11.clone()
     }
 
-    /// The GPU clients import their dma-bufs on, as the render node a
-    /// process that allocates for them opens (`/dev/dri/renderD128`):
-    /// `None` on a backend with no GPU to import from.
+    /// The GPU clients import their dma-bufs on, as the render node a process that allocates for
+    /// them opens (`/dev/dri/renderD128`): `None` on a backend with no GPU to import from.
     pub fn render_node(&self) -> Option<PathBuf> {
         self.data
             .state
@@ -666,29 +648,25 @@ impl Compositor {
         self.data.state.locked()
     }
 
-    /// Whether the display is blanked: powered down, with only input waking
-    /// it.
+    /// Whether the display is blanked: powered down, with only input waking it.
     pub fn blanked(&self) -> bool {
         self.data.state.idle.session.is_blanked()
     }
 
-    /// Whether the session locked itself — idle, a key or a command — rather
-    /// than a lock client holding it: its own lock screen is what the person
-    /// sees.
+    /// Whether the session locked itself — idle, a key or a command — rather than a lock client
+    /// holding it: its own lock screen is what the person sees.
     pub fn session_locked(&self) -> bool {
         self.data.state.idle.session.is_locked()
     }
 
-    /// Whether the lock is what the outputs show: the lock client's own
-    /// frame is on one of them, or the session draws the lock itself because
-    /// the lock screen's app could not show it.
+    /// Whether the lock is what the outputs show: the lock client's own frame is on one of them, or
+    /// the session draws the lock itself because the lock screen's app could not show it.
     pub fn lock_drawn(&self) -> bool {
         self.data.state.lock_drawn() || self.data.state.lock_view_shows()
     }
 
-    /// Whether a surface of the session's own takes the keyboard now: a
-    /// palette, the overview or the shortcut guide, which see keys before
-    /// any client does.
+    /// Whether a surface of the session's own takes the keyboard now: a palette, the overview or
+    /// the shortcut guide, which see keys before any client does.
     #[must_use]
     pub fn host_takes_keys(&self) -> bool {
         self.data
@@ -698,20 +676,18 @@ impl Compositor {
             .any(|host| host.wants_keyboard())
     }
 
-    /// Whether a fullscreen window is up: it owns its display, and with it
-    /// the controller in the person's hands.
+    /// Whether a fullscreen window is up: it owns its display, and with it the controller in the
+    /// person's hands.
     #[must_use]
     pub fn fullscreen_window(&self) -> bool {
         self.data.state.fullscreen()
     }
 
-    /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives
-    /// on it (a controller's presses, a device's hotplug, a socket a client
-    /// connects to or writes on) ends the wait rather than waiting for the
-    /// next turn. Dropping the watch stops it.
-    ///
-    /// What the descriptor says is read by the caller's own source, not
-    /// here: this only ends the wait.
+    /// Wake [`Compositor::dispatch`] when `fd` is readable, so what arrives on it (a controller's
+    /// presses, a device's hotplug, a socket a client connects to or writes on) ends the wait
+    /// rather than waiting for the next turn. Dropping the watch stops it.
+    /// What the descriptor says is read by the caller's own source, not here: this only ends the
+    /// wait.
     pub fn watch_readable(&mut self, fd: std::os::fd::OwnedFd) -> Result<ReadableWatch, Error> {
         let handle = self.event_loop.handle();
         let token = handle
@@ -794,8 +770,8 @@ impl Compositor {
         Ok(SurfaceDisplay { handle, token })
     }
 
-    /// Listen for clients on a fresh `wayland-N` socket in
-    /// `$XDG_RUNTIME_DIR` and return its name (for `WAYLAND_DISPLAY`).
+    /// Listen for clients on a fresh `wayland-N` socket in `$XDG_RUNTIME_DIR` and return its name
+    /// (for `WAYLAND_DISPLAY` ).
     pub fn listen(&mut self) -> Result<String, Error> {
         let source = ListeningSocketSource::new_auto().map_err(io)?;
         let name = source.socket_name().to_string_lossy().into_owned();
@@ -813,9 +789,8 @@ impl Compositor {
         Ok(name)
     }
 
-    /// Wait up to `timeout` for client requests or backend events, handle
-    /// them and flush the answers; with `None`, wait for an event however
-    /// long that takes.
+    /// Wait up to `timeout` for client requests or backend events, handle them and flush the
+    /// answers; with `None` , wait for an event however long that takes.
     pub fn dispatch(&mut self, timeout: impl Into<Option<Duration>>) -> Result<(), Error> {
         let timeout: Option<Duration> = timeout.into();
         let started = Instant::now();
@@ -836,8 +811,8 @@ impl Compositor {
         if let Some(turns) = &self.turns {
             turns.unparked();
         }
-        // A wait that ran its time out ended on the deadline; one cut short
-        // was ended by work arriving.
+        // A wait that ran its time out ended on the deadline; one cut short was ended by work
+        // arriving.
         self.recorder.mark_sleep(parked);
         let expired = timeout.is_some_and(|timeout| parked.saturating_add(WAKE_MARGIN) >= timeout);
         self.recorder.mark_wake(if expired {
@@ -858,8 +833,7 @@ impl Compositor {
         if self.keys.take_alert() {
             self.flash();
         }
-        // The visual alert fades frame by frame, so every frame it covers
-        // is a new one to draw.
+        // The visual alert fades frame by frame, so every frame it covers is a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
             self.data.state.mark_redraw_all();
         }
@@ -869,15 +843,14 @@ impl Compositor {
         if let Some(x11) = self.data.state.x11.clone() {
             x11.tick(&mut self.data, Instant::now());
         }
-        // A constraint or an inhibitor takes effect for what is focused and
-        // under the pointer now, so it is settled once the clients' requests
-        // and this turn's focus changes were handled.
+        // A constraint or an inhibitor takes effect for what is focused and under the pointer now,
+        // so it is settled once the clients' requests and this turn's focus changes were handled.
         self.data.state.sync_pointer_constraint();
         self.data.state.sync_shortcut_inhibit();
         self.sync_x11();
         self.configure_from_clients();
-        // What answered in this turn is answered; what stayed silent past its
-        // time is not responding.
+        // What answered in this turn is answered; what stayed silent past its time is not
+        // responding.
         self.data.state.advance_app_liveness_at(Instant::now());
         if let Some(undo) = self.data.state.display_changes.due(display_clock_now()) {
             self.put_back(&undo);
@@ -891,10 +864,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// Magnify the whole scene `zoom` times about the pointer, which stays
-    /// on what it points at; 1 (or less) turns the magnifier off. The
-    /// settings in force follow, so the step a shortcut takes and what they
-    /// hold is one zoom, not two.
+    /// Magnify the whole scene `zoom` times about the pointer, which stays on what it points at; 1
+    /// (or less) turns the magnifier off. The settings in force follow, so the step a shortcut
+    /// takes and what they hold is one zoom, not two.
     pub fn set_zoom(&mut self, zoom: f64) {
         let zoom = if zoom.is_finite() { zoom.max(1.0) } else { 1.0 };
         self.data.state.zoom = zoom;
@@ -938,14 +910,14 @@ impl Compositor {
         Ok(())
     }
 
-    /// Tell every running X server what the session holds for it: which X11
-    /// window has the keyboard (Xwayland leaves the X input focus to the
-    /// window manager), how dense the display is and which pointer to draw.
+    /// Tell every running X server what the session holds for it: which X11 window has the keyboard
+    /// (Xwayland leaves the X input focus to the window manager), how dense the display is and
+    /// which pointer to draw.
     fn sync_x11(&mut self) {
         let scale = x11_windows::display_scale(&self.data.state);
         let theme = self.data.state.cursor.theme_name().to_owned();
-        // The X11 window each display's keyboard focus is on, resolved before
-        // the servers are borrowed.
+        // The X11 window each display's keyboard focus is on, resolved before the servers are
+        // borrowed.
         let focus = self
             .data
             .state
@@ -984,8 +956,8 @@ impl Compositor {
         }
     }
 
-    /// Bring every output's visuals in line with the settings, outputs a
-    /// backend found on its own since the last frame included.
+    /// Bring every output's visuals in line with the settings, outputs a backend found on its own
+    /// since the last frame included.
     fn seed_visuals(&self) {
         for output in self.data.state.space.outputs() {
             a11y::seed(output, &self.a11y);
@@ -998,41 +970,38 @@ impl Compositor {
         &self.a11y
     }
 
-    /// Whether a text field waits for typing, and whether the person is
-    /// typing on the glass: what the on-screen keyboard follows.
+    /// Whether a text field waits for typing, and whether the person is typing on the glass: what
+    /// the on-screen keyboard follows.
     #[must_use]
     pub fn text_entry(&self) -> TextEntry {
         self.data.state.text_entry()
     }
 
-    /// The text field the person is typing into, as dictation names it: its
-    /// identity and the revision of what its client last committed, or why
-    /// dictated text may not be written there.
+    /// The text field the person is typing into, as dictation names it: its identity and the
+    /// revision of what its client last committed, or why dictated text may not be written there.
     pub fn dictation_field(&self) -> Result<TextField, TextFieldRefusal> {
         self.data.state.dictation_field()
     }
 
-    /// Insert committed text into `field` once, if the person is still
-    /// typing into that same revision of it. The text goes through the
-    /// trusted input method, never as keystrokes.
+    /// Insert committed text into `field` once, if the person is still typing into that same
+    /// revision of it. The text goes through the trusted input method, never as keystrokes.
     pub fn insert_dictation(&mut self, field: TextField, text: &str) -> TextInsertion {
         self.data.state.insert_dictation(field, text)
     }
 
-    /// Where the focused text field's caret stands in the desk, in logical
-    /// coordinates, from the cursor rectangle its client reported; `None`
-    /// when no field takes text or it never said where its caret is.
+    /// Where the focused text field's caret stands in the desk, in logical coordinates, from the
+    /// cursor rectangle its client reported; `None` when no field takes text or it never said where
+    /// its caret is.
     #[must_use]
     pub fn text_caret(&self) -> Option<TextCaret> {
         self.data.state.text_caret()
     }
 
-    /// Insert `text` into the field the person is typing into, whatever that
-    /// field asks of its content: an emoji keeps none of its secret. The
-    /// text goes through the trusted input method, never as keystrokes.
-    ///
-    /// Answers whether the field declared its content secret, which decides
-    /// whether the text is remembered; `None` when no field takes text now.
+    /// Insert `text` into the field the person is typing into, whatever that field asks of its
+    /// content: an emoji keeps none of its secret. The text goes through the trusted input method,
+    /// never as keystrokes.
+    /// Answers whether the field declared its content secret, which decides whether the text is
+    /// remembered; `None` when no field takes text now.
     pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
         self.data.state.insert_active_text(text)
     }
@@ -1069,15 +1038,14 @@ impl Compositor {
         Ok(true)
     }
 
-    /// Flash every output: a visual alert for what a person who cannot hear
-    /// the alert sound would otherwise miss.
+    /// Flash every output: a visual alert for what a person who cannot hear the alert sound would
+    /// otherwise miss.
     pub fn flash(&mut self) {
         a11y::flash_all(&self.data.state, Instant::now());
         self.data.state.mark_redraw_all();
     }
 
-    /// How held keys repeat, for clients (the seat's repeat info) and
-    /// hosted surfaces alike.
+    /// How held keys repeat, for clients (the seat's repeat info) and hosted surfaces alike.
     pub fn set_key_repeat(&mut self, repeat: KeyRepeat) {
         self.data.state.host_keys.repeat = repeat;
         if let Some(keyboard) = self.data.state.seat.get_keyboard() {
@@ -1086,8 +1054,7 @@ impl Compositor {
         }
     }
 
-    /// Switch the panels whose wanted power changed and write the gamma
-    /// ramps that changed.
+    /// Switch the panels whose wanted power changed and write the gamma ramps that changed.
     fn sync_power(&mut self) {
         let LoopData { state, backend, .. } = &mut self.data;
         backend.sync_power(state);
@@ -1095,10 +1062,9 @@ impl Compositor {
     }
 
     /// Turn night light on at a colour temperature in kelvin (clamped to
-    /// [`gamma::NIGHT_LIGHT_KELVIN`]; 6500 changes nothing, lower is
-    /// warmer) or off (`None`), on every output whose display engine
-    /// carries a gamma ramp. A gamma tool holding an output's ramp keeps
-    /// it until it lets go.
+    /// [`gamma::NIGHT_LIGHT_KELVIN`]; 6500 changes nothing, lower is warmer) or off (`None`), on
+    /// every output whose display engine carries a gamma ramp. A gamma tool holding an output's
+    /// ramp keeps it until it lets go.
     pub fn set_night_light(&mut self, kelvin: Option<u32>) -> Result<(), Error> {
         self.data.state.gamma.set_night_light(kelvin);
         self.sync_power();
@@ -1106,10 +1072,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// Show `light` of their linear light on the displays without a
-    /// backlight or DDC/CI, by connector (`1.0` or absent: not dimmed), on
-    /// top of the tint they already have. A monitor whose brightness is its
-    /// own hardware is not among them: its brightness is set there.
+    /// Show `light` of their linear light on the displays without a backlight or DDC/CI, by
+    /// connector (`1.0` or absent: not dimmed), on top of the tint they already have. A monitor
+    /// whose brightness is its own hardware is not among them: its brightness is set there.
     pub fn set_software_dim(&mut self, dims: &[(String, f32)]) -> Result<(), Error> {
         self.data.state.gamma.set_software_dim(dims);
         self.sync_power();
@@ -1135,16 +1100,16 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
-    /// How every window is framed (its corners, its shadow, its edge) from
-    /// the next frame on. A window that fills the display asks for
-    /// [`WindowFrame::square`] through [`Compositor::set_window_frame_for`].
+    /// How every window is framed (its corners, its shadow, its edge) from the next frame on. A
+    /// window that fills the display asks for [`WindowFrame::square`] through
+    /// [`Compositor::set_window_frame_for`].
     pub fn set_window_frame(&mut self, frame: WindowFrame) {
         self.data.state.frame = frame;
         self.data.state.mark_redraw_all();
     }
 
-    /// Frame the window `id` with `frame` instead of the desktop's, or as
-    /// the desktop frames windows again (`None`).
+    /// Frame the window `id` with `frame` instead of the desktop's, or as the desktop frames
+    /// windows again (`None`).
     pub fn set_window_frame_for(&mut self, id: u64, frame: Option<WindowFrame>) {
         match frame {
             Some(frame) => self.data.state.window_frames.insert(id, frame),
@@ -1153,18 +1118,16 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
-    /// Lay the windows out again, as the policy asks: for a card an app
-    /// draws, whose place the floating layer moved.
+    /// Lay the windows out again, as the policy asks: for a card an app draws, whose place the
+    /// floating layer moved.
     pub fn rearrange(&mut self) {
         self.data.state.rearrange();
         self.data.state.mark_redraw_all();
     }
 
-    /// The windows that closed and are still drawn from the last buffer
-    /// they showed, with the place each one stood at, front first. A window
-    /// stays here until the desktop lets it go with
-    /// [`Compositor::release_snapshot`], the same id maps again, or closes
-    /// push it out.
+    /// The windows that closed and are still drawn from the last buffer they showed, with the place
+    /// each one stood at, front first. A window stays here until the desktop lets it go with
+    /// [`Compositor::release_snapshot`], the same id maps again, or closes push it out.
     pub fn closing_windows(&self) -> Vec<(WindowInfo, (i32, i32, i32, i32))> {
         self.data
             .state
@@ -1174,8 +1137,7 @@ impl Compositor {
             .collect()
     }
 
-    /// Let go of the snapshot of the window `id`: it is gone from the next
-    /// frame on.
+    /// Let go of the snapshot of the window `id` : it is gone from the next frame on.
     pub fn release_snapshot(&mut self, id: u64) {
         self.data.state.release_snapshot(id);
         self.data.state.mark_redraw_all();
@@ -1186,14 +1148,13 @@ impl Compositor {
         self.data.state.gamma.night_light()
     }
 
-    /// Apply idle transitions a session request caused, at once: what the
-    /// session asked for is the person's, and their devices follow it.
+    /// Apply idle transitions a session request caused, at once: what the session asked for is the
+    /// person's, and their devices follow it.
     fn apply_idle(&mut self, transitions: Vec<SessionTransition>) -> Result<(), Error> {
         self.apply_idle_by(transitions, LockedBy::Person)
     }
 
-    /// Apply idle transitions, `locked_by` saying whose the lock is when one
-    /// is among them.
+    /// Apply idle transitions, `locked_by` saying whose the lock is when one is among them.
     fn apply_idle_by(
         &mut self,
         transitions: Vec<SessionTransition>,
@@ -1205,10 +1166,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// When the displays dim, blank, and the session locks or suspends
-    /// with no input. Applied to the current idle episode: a shorter
-    /// timeout can fire at the next dispatch. A hosted session runs no idle
-    /// timers whatever it is given: the desktop it runs in owns idle.
+    /// When the displays dim, blank, and the session locks or suspends with no input. Applied to
+    /// the current idle episode: a shorter timeout can fire at the next dispatch. A hosted session
+    /// runs no idle timers whatever it is given: the desktop it runs in owns idle.
     pub fn set_idle_config(&mut self, config: IdleConfig) {
         let config = if self.hosted {
             IdleConfig::never()
@@ -1242,8 +1202,7 @@ impl Compositor {
         self.data.state.idle.session.config()
     }
 
-    /// The panel's backlight, which the idle dim lowers; without one the
-    /// scene is darkened instead.
+    /// The panel's backlight, which the idle dim lowers; without one the scene is darkened instead.
     pub fn set_backlight(&mut self, backlight: Box<dyn Backlight>) {
         self.data.state.idle.dimmer = dim::ScreenDimmer::new(backlight);
     }
@@ -1256,16 +1215,15 @@ impl Compositor {
         std::mem::take(&mut self.data.state.idle.events)
     }
 
-    /// Whether the lock the session has is the idle timer's rather than the
-    /// person's: theirs is the one their other devices follow, while the idle
-    /// timer's lock stays on this device.
+    /// Whether the lock the session has is the idle timer's rather than the person's: theirs is the
+    /// one their other devices follow, while the idle timer's lock stays on this device.
     #[must_use]
     pub fn lock_by_idle(&self) -> bool {
         self.data.state.lock_by_idle()
     }
 
-    /// Whether the idle dim holds the backlight lowered, so nothing else —
-    /// the session's ambient light loop — raises it behind the person's back.
+    /// Whether the idle dim holds the backlight lowered, so nothing else — the session's ambient
+    /// light loop — raises it behind the person's back.
     #[must_use]
     pub fn dim_holds_backlight(&self) -> bool {
         self.data.state.idle.dimmer.holds_backlight()
@@ -1281,8 +1239,8 @@ impl Compositor {
             .input_idle_for(std::time::Instant::now())
     }
 
-    /// Whether the person was using this device, here or on one of their
-    /// devices nearby, when the idle lock would have fired.
+    /// Whether the person was using this device, here or on one of their devices nearby, when the
+    /// idle lock would have fired.
     #[must_use]
     pub fn in_use(&self) -> bool {
         self.data
@@ -1292,37 +1250,35 @@ impl Compositor {
             .in_use(std::time::Instant::now())
     }
 
-    /// The person used another of their devices at `at`: idle time here
-    /// counts from then, so neither device locks while they are on the other.
+    /// The person used another of their devices at `at` : idle time here counts from then, so
+    /// neither device locks while they are on the other.
     pub fn note_use_elsewhere(&mut self, at: std::time::Instant) {
         self.data.state.idle.session.note_use_elsewhere(at);
     }
 
-    /// Something outside the compositor (a download, a remote session, a
-    /// keep-awake lease) holds the machine awake: it does not suspend when
-    /// idle, though the screen still dims, blanks and locks.
+    /// Something outside the compositor (a download, a remote session, a keep-awake lease) holds
+    /// the machine awake: it does not suspend when idle, though the screen still dims, blanks and
+    /// locks.
     pub fn hold_awake(&mut self, held: bool) {
         self.data.state.idle.suspend_held = held;
     }
 
-    /// Something outside the compositor says the person is there without
-    /// touching anything (an app's `Inhibit IDLE`, a presentation): nothing
-    /// dims, blanks, locks or suspends while it holds, and the idle period
-    /// restarts when it lets go.
+    /// Something outside the compositor says the person is there without touching anything (an
+    /// app's `Inhibit IDLE` , a presentation): nothing dims, blanks, locks or suspends while it
+    /// holds, and the idle period restarts when it lets go.
     pub fn hold_idle(&mut self, held: bool) {
         self.data.state.idle.held = held;
     }
 
-    /// The suspend the idle timers decided on will not happen after all (a
-    /// hold appeared between the tick that decided it and now): the idle
-    /// period restarts rather than a sleep that never came.
+    /// The suspend the idle timers decided on will not happen after all (a hold appeared between
+    /// the tick that decided it and now): the idle period restarts rather than a sleep that never
+    /// came.
     pub fn cancel_suspend(&mut self) {
         self.data.state.idle.session.cancel_suspend();
     }
 
-    /// Lock now (a key or a command): reported as
-    /// [`SessionTransition::Locked`] for the session to start its lock
-    /// client.
+    /// Lock now (a key or a command): reported as [`SessionTransition::Locked`] for the session to
+    /// start its lock client.
     pub fn lock_now(&mut self) -> Result<(), Error> {
         let transitions = self
             .data
@@ -1333,8 +1289,8 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// Lift the session's own lock: the lock screen verified the person.
-    /// A lock client's lock is the client's to lift.
+    /// Lift the session's own lock: the lock screen verified the person. A lock client's lock is
+    /// the client's to lift.
     pub fn unlock(&mut self) -> Result<(), Error> {
         let transitions = self
             .data
@@ -1358,11 +1314,10 @@ impl Compositor {
         Ok(())
     }
 
-    /// Bind the liveness door beside the control socket at `control`: a
-    /// heartbeat answered on the loop, and every thread's state and
-    /// backtrace when asked. The socket is `control`'s with `.live` after
-    /// it ([`tilo_liveness::socket_path`]). `None` when this compositor has
-    /// no loop to answer from, or the socket could not be bound.
+    /// Bind the liveness door beside the control socket at `control` : a heartbeat answered on the
+    /// loop, and every thread's state and backtrace when asked. The socket is `control` 's with
+    /// `.live` after it ([`tilo_liveness::socket_path`]). `None` when this compositor has no loop
+    /// to answer from, or the socket could not be bound.
     pub fn serve_liveness(
         &self,
         control: &std::path::Path,
@@ -1372,8 +1327,8 @@ impl Compositor {
         tilo_liveness::serve(control, handle, bind)
     }
 
-    /// Switch every panel off now, as the idle timeout would (the power
-    /// key); input lights them again.
+    /// Switch every panel off now, as the idle timeout would (the power key); input lights them
+    /// again.
     pub fn blank_now(&mut self) -> Result<(), Error> {
         let transitions = self
             .data
@@ -1384,8 +1339,8 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// Light the panels without counting as input (a notification that
-    /// wakes the screen): the lock and idle timers stay as they are.
+    /// Light the panels without counting as input (a notification that wakes the screen): the lock
+    /// and idle timers stay as they are.
     pub fn wake_displays(&mut self) -> Result<(), Error> {
         let transitions = self
             .data
@@ -1396,7 +1351,7 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// The machine is about to sleep: lock first when `lock_on_sleep`.
+    /// The machine is about to sleep: lock first when `lock_on_sleep` .
     pub fn prepare_for_sleep(
         &mut self,
         lock_on_sleep: bool,
@@ -1422,10 +1377,9 @@ impl Compositor {
         self.apply_idle(transitions)
     }
 
-    /// Offer `offer` (bytes per format) as `selection` for a hosted
-    /// surface app, as a client's copy would; Wayland and X11 clients read
-    /// it from the compositor. An empty offer drops a hosted app's
-    /// selection.
+    /// Offer `offer` (bytes per format) as `selection` for a hosted surface app, as a client's copy
+    /// would; Wayland and X11 clients read it from the compositor. An empty offer drops a hosted
+    /// app's selection.
     pub fn set_selection(
         &mut self,
         selection: Selection,
@@ -1436,26 +1390,24 @@ impl Compositor {
         Ok(())
     }
 
-    /// Start dragging `offer` (bytes per format; files as `text/uri-list`)
-    /// out of the hosted surface app the pointer is pressed on, as a
-    /// client's drag would: Wayland clients, X11 clients and hosted apps
-    /// under the pointer are offered it until the button comes up, and the
-    /// app learns how it went ([`SurfaceHost::drag_ended`]). False when
-    /// there is nothing to drag or no hosted surface under the pointer.
+    /// Start dragging `offer` (bytes per format; files as `text/uri-list` ) out of the hosted
+    /// surface app the pointer is pressed on, as a client's drag would: Wayland clients, X11
+    /// clients and hosted apps under the pointer are offered it until the button comes up, and the
+    /// app learns how it went ([`SurfaceHost::drag_ended`]). False when there is nothing to drag or
+    /// no hosted surface under the pointer.
     pub fn start_drag(&mut self, offer: Vec<(String, Vec<u8>)>) -> Result<bool, Error> {
         self.start_host_drag(HostDrag { offer, icon: None })
     }
 
-    /// [`Compositor::start_drag`] with an icon under the pointer, or a
-    /// drag that follows the finger holding the app when a touch holds it.
+    /// [`Compositor::start_drag`] with an icon under the pointer, or a drag that follows the finger
+    /// holding the app when a touch holds it.
     pub fn start_host_drag(&mut self, drag: HostDrag) -> Result<bool, Error> {
         let started = self.data.state.start_host_drag(drag.offer, drag.icon);
         self.display.flush_clients()?;
         Ok(started)
     }
 
-    /// Start the drags hosted apps asked for while handling input
-    /// ([`SurfaceHost::take_drag`]).
+    /// Start the drags hosted apps asked for while handling input ([`SurfaceHost::take_drag`]).
     fn start_asked_drags(&mut self) {
         let asked: Vec<HostDrag> = self
             .data
@@ -1471,9 +1423,8 @@ impl Compositor {
         }
     }
 
-    /// How often `selection` changed hands: with
-    /// [`Compositor::selection_formats`], tells a selection that was
-    /// replaced by one offering the same formats from one that stayed.
+    /// How often `selection` changed hands: with [`Compositor::selection_formats`], tells a
+    /// selection that was replaced by one offering the same formats from one that stayed.
     #[must_use]
     pub fn selection_changes(&self, selection: Selection) -> u64 {
         self.data.state.selections.changes(selection)
@@ -1512,8 +1463,8 @@ impl Compositor {
         clipboard_history::Pull::new(reader, mime).map_err(Error::Io)
     }
 
-    /// The executables of display tools the person trusts: their risky
-    /// changes apply without asking (see [`DisplayEvent::Confirm`]).
+    /// The executables of display tools the person trusts: their risky changes apply without asking
+    /// (see [`DisplayEvent::Confirm`]).
     pub fn set_trusted_display_tools(
         &mut self,
         tools: impl IntoIterator<Item = std::path::PathBuf>,
@@ -1526,15 +1477,15 @@ impl Compositor {
         self.data.state.display_changes.take_events()
     }
 
-    /// The person keeps the change they were asked about; false when `id`
-    /// is no longer the open question.
+    /// The person keeps the change they were asked about; false when `id` is no longer the open
+    /// question.
     pub fn keep_display_change(&mut self, id: u64) -> bool {
         let heads = self.data.state.heads_now();
         self.data.state.display_changes.keep(id, &heads)
     }
 
-    /// The person reverts the change they were asked about; false when
-    /// `id` is no longer the open question.
+    /// The person reverts the change they were asked about; false when `id` is no longer the open
+    /// question.
     pub fn revert_display_change(&mut self, id: u64) -> Result<bool, Error> {
         let Some(undo) = self
             .data
@@ -1566,8 +1517,8 @@ impl Compositor {
             .output_infos(|output| backend.output_colour(output))
     }
 
-    /// The monitors of the displays a fullscreen window owns: the bar there
-    /// steps aside and leaves the display to the window.
+    /// The monitors of the displays a fullscreen window owns: the bar there steps aside and leaves
+    /// the display to the window.
     pub fn fullscreen_monitors(&self) -> Vec<String> {
         self.data.state.fullscreen_monitors()
     }
@@ -1580,14 +1531,14 @@ impl Compositor {
         self.displays.snapshot()
     }
 
-    /// A counter that changes exactly when the published displays do, for a
-    /// reader that watches them without copying the snapshot every pass.
+    /// A counter that changes exactly when the published displays do, for a reader that watches
+    /// them without copying the snapshot every pass.
     pub fn displays_generation(&self) -> u64 {
         self.displays.generation()
     }
 
-    /// Take the outputs as they are now for Settings and the session: what
-    /// changed since the last pass is written where Settings reads it.
+    /// Take the outputs as they are now for Settings and the session: what changed since the last
+    /// pass is written where Settings reads it.
     pub fn publish_displays(&mut self) {
         let state = &self.data.state;
         let outputs: Vec<(smithay::output::Output, bool)> = state
@@ -1607,9 +1558,9 @@ impl Compositor {
             .refresh(&outputs, &capabilities, backend.describe());
     }
 
-    /// The outputs a fullscreen window owns, by connector name: the shell's
-    /// bar there steps aside and leaves the display to the window, on the
-    /// same displays as [`Compositor::fullscreen_monitors`].
+    /// The outputs a fullscreen window owns, by connector name: the shell's bar there steps aside
+    /// and leaves the display to the window, on the same displays as
+    /// [`Compositor::fullscreen_monitors`].
     pub fn fullscreen_outputs(&self) -> Vec<String> {
         self.data.state.fullscreen_outputs()
     }
@@ -1626,8 +1577,8 @@ impl Compositor {
             && self.data.state.output_power.lit(name)
     }
 
-    /// Apply (or test) the display configurations clients sent and tell
-    /// them how it went, then show every manager the outputs as they are.
+    /// Apply (or test) the display configurations clients sent and tell them how it went, then show
+    /// every manager the outputs as they are.
     fn configure_from_clients(&mut self) {
         let state = &mut self.data.state;
         for pending in state.output_management.take_pending() {
@@ -1682,8 +1633,8 @@ impl Compositor {
         state.output_management.publish(&display, outputs.iter());
     }
 
-    /// Change outputs' modes, scales, rotations and places (as a display
-    /// tool would through `wlr-output-management`). All or nothing.
+    /// Change outputs' modes, scales, rotations and places (as a display tool would through
+    /// `wlr-output-management` ). All or nothing.
     pub fn configure_outputs(&mut self, changes: &[OutputChange]) -> Result<(), Error> {
         self.data
             .backend
@@ -1693,8 +1644,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Apply everything the person configured (see [`Settings`]), now and
-    /// for outputs and devices that appear later.
+    /// Apply everything the person configured (see [`Settings`]), now and for outputs and devices
+    /// that appear later.
     pub fn apply_settings(&mut self, settings: &Settings) -> Result<(), Error> {
         self.set_display_config(&settings.display)?;
         self.set_input_config(settings.input.clone());
@@ -1704,9 +1655,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Apply the person's display configuration to the outputs there are
-    /// and keep it for those plugged in later. A configuration the outputs
-    /// cannot take is refused whole.
+    /// Apply the person's display configuration to the outputs there are and keep it for those
+    /// plugged in later. A configuration the outputs cannot take is refused whole.
     pub fn set_display_config(&mut self, config: &DisplayConfig) -> Result<(), Error> {
         self.data.backend.set_display_config(config);
         if config.night_light != self.night_light() {
@@ -1716,9 +1666,8 @@ impl Compositor {
         if !changes.is_empty() {
             self.configure_outputs(&changes)?;
         }
-        // Which display is primary is told to the desk after the outputs are
-        // as the configuration asked, so it is resolved against the displays
-        // that are lit now.
+        // Which display is primary is told to the desk after the outputs are as the configuration
+        // asked, so it is resolved against the displays that are lit now.
         self.data.state.set_primary_output(config.primary.clone());
         Ok(())
     }
@@ -1731,8 +1680,8 @@ impl Compositor {
     /// Type with the person's keyboard layout.
     pub fn set_keyboard_layout(&mut self, layout: &KeyboardLayout) {
         self.data.state.keyboard = Some(layout.clone());
-        // X11 clients type in the seat's layout too, and everything that
-        // asks which layout is in force hears the same.
+        // X11 clients type in the seat's layout too, and everything that asks which layout is in
+        // force hears the same.
         for server in &mut self.data.state.xwms {
             if let Some(windows) = server.windows.as_mut() {
                 windows.publish_keyboard(layout);
@@ -1743,9 +1692,8 @@ impl Compositor {
             return;
         };
         let xkb = smithay::input::keyboard::XkbConfig {
-            // Every name is stated: an empty one would take the machine's
-            // (`XKB_DEFAULT_*`), so a person's chosen layout would type with
-            // the host's rules and options mixed in.
+            // Every name is stated: an empty one would take the machine's (`XKB_DEFAULT_*`), so a
+            // person's chosen layout would type with the host's rules and options mixed in.
             rules: "evdev",
             model: &layout.model,
             layout: &layout.layout,
@@ -1761,8 +1709,7 @@ impl Compositor {
         }
     }
 
-    /// The layout the keyboard types in now, as XKB names it; `None` without
-    /// a keyboard.
+    /// The layout the keyboard types in now, as XKB names it; `None` without a keyboard.
     pub fn keyboard_layout(&mut self) -> Option<String> {
         let LoopData { state, .. } = &mut self.data;
         let keyboard = state.seat.get_keyboard()?;
@@ -1791,9 +1738,9 @@ impl Compositor {
         (pointer.x, pointer.y)
     }
 
-    /// Give every input to `observer` before the desktop sees it; what it
-    /// takes (returns `true` for) is not routed. An input capture takes the
-    /// input while it holds the person's keyboard and pointer.
+    /// Give every input to `observer` before the desktop sees it; what it takes (returns `true`
+    /// for) is not routed. An input capture takes the input while it holds the person's keyboard
+    /// and pointer.
     pub fn set_input_observer(
         &mut self,
         observer: Option<Arc<dyn Fn(ObservedInput) -> bool + Send + Sync>>,
@@ -1801,8 +1748,8 @@ impl Compositor {
         self.data.state.input_observer = observer;
     }
 
-    /// The mapped windows an app may capture: its foreign-toplevel
-    /// identifier, app id and title, bottom first.
+    /// The mapped windows an app may capture: its foreign-toplevel identifier, app id and title,
+    /// bottom first.
     #[must_use]
     pub fn shareable_windows(&self) -> Vec<(String, Option<String>, String)> {
         self.data
@@ -1814,25 +1761,22 @@ impl Compositor {
             .collect()
     }
 
-    /// Where a shareable window (`Compositor::shareable_windows`'s
-    /// identifier) is in the layout.
+    /// Where a shareable window (`Compositor::shareable_windows`'s identifier) is in the layout.
     #[must_use]
     pub fn shareable_window_rect(&self, identifier: &str) -> Option<(i32, i32, i32, i32)> {
         self.data.state.shareable_window_rect(identifier)
     }
 
-    /// Where the mapped window whose [`WindowInfo::id`] is `id` stands in the
-    /// layout: `(x, y, width, height)` of the content, which is what a tool
-    /// driving the desk aims at. `None` for a window that is not mapped or
-    /// not placed on a display.
+    /// Where the mapped window whose [`WindowInfo::id`] is `id` stands in the layout:
+    /// `(x, y, width, height)` of the content, which is what a tool driving the desk aims at.
+    /// `None` for a window that is not mapped or not placed on a display.
     #[must_use]
     pub fn window_rect(&self, id: u64) -> Option<(i32, i32, i32, i32)> {
         self.data.state.window_rect(id)
     }
 
-    /// The foreign-toplevel identifier of the mapped window whose
-    /// [`WindowInfo::id`] is `id`: what a capture names a window by, and how
-    /// what the desk knows of a window reaches what it shows.
+    /// The foreign-toplevel identifier of the mapped window whose [`WindowInfo::id`] is `id` : what
+    /// a capture names a window by, and how what the desk knows of a window reaches what it shows.
     #[must_use]
     pub fn capture_identifier(&self, id: u64) -> Option<String> {
         self.data
@@ -1844,23 +1788,22 @@ impl Compositor {
             .map(|(identifier, _)| identifier)
     }
 
-    /// The evdev code of a key of the active layout that produces
-    /// `keysym`; `None` when the layout cannot type it.
+    /// The evdev code of a key of the active layout that produces `keysym` ; `None` when the layout
+    /// cannot type it.
     #[must_use]
     pub fn keycode_for_keysym(&mut self, keysym: u32) -> Option<u32> {
         self.data.state.keycode_for_keysym(keysym)
     }
 
-    /// Whether the person is in the middle of something an arrangement must
-    /// not move under, and why. Shell.md §1's one fixed rule reads it.
+    /// Whether the person is in the middle of something an arrangement must not move under, and
+    /// why. Shell.md §1's one fixed rule reads it.
     #[must_use]
     pub fn underway(&self) -> Underway {
         self.data.state.underway()
     }
 
-    /// Route one input event (see [`InputEvent`]) and flush what it sent.
-    /// Route one input event (see [`InputEvent`]) through the person's
-    /// assists and flush what it sent.
+    /// Route one input event (see [`InputEvent`]) and flush what it sent. Route one input event
+    /// (see [`InputEvent`]) through the person's assists and flush what it sent.
     pub fn input(&mut self, event: InputEvent) -> Result<(), Error> {
         let now = Instant::now();
         self.recorder.note_input(now);
@@ -1880,22 +1823,21 @@ impl Compositor {
         Ok(())
     }
 
-    /// Keep the text fields the person can type into on the keyboard's
-    /// focus: clients hear about the field that has it and the input method
-    /// that serves it, whether the field is a client's or the session's own.
+    /// Keep the text fields the person can type into on the keyboard's focus: clients hear about
+    /// the field that has it and the input method that serves it, whether the field is a client's
+    /// or the session's own.
     fn sync_text_input(&mut self) {
         self.data.state.sync_text_input();
     }
 
-    /// Whether an input method — the on-screen keyboard, a composing engine
-    /// — is connected now, and so serves the field the person types into.
+    /// Whether an input method — the on-screen keyboard, a composing engine — is connected now, and
+    /// so serves the field the person types into.
     #[must_use]
     pub fn input_method_connected(&self) -> bool {
         self.data.state.input_method_connected()
     }
 
-    /// Draw a frame on every output that can take one and tell clients it
-    /// was shown.
+    /// Draw a frame on every output that can take one and tell clients it was shown.
     pub fn render(&mut self) -> Result<(), Error> {
         self.sync_text_input();
         self.seed_visuals();
@@ -1903,15 +1845,14 @@ impl Compositor {
         // however late that frame is, and an alert whose run is over goes away
         // on the frame that draws the scene without it.
         a11y::begin_frame(&mut self.data.state, Instant::now());
-        // The visual alert fades frame by frame, so each frame it covers is
-        // a new one to draw.
+        // The visual alert fades frame by frame, so each frame it covers is a new one to draw.
         if a11y::flashing(&self.data.state, Instant::now()) {
             self.data.state.mark_redraw_all();
         }
         let mut drew = false;
-        // The displays hold each frame for this long: a surface whose content
-        // only moves draws one frame per one of these, so what the person sees
-        // runs at the screens' rate rather than at the loop's.
+        // The displays hold each frame for this long: a surface whose content only moves draws one
+        // frame per one of these, so what the person sees runs at the screens' rate rather than at
+        // the loop's.
         let interval = self.data.state.frame_interval();
         for host in &mut self.data.state.hosts {
             host.set_frame_interval(interval);
@@ -1920,8 +1861,8 @@ impl Compositor {
         if drew {
             self.data.state.mark_redraw_all();
         }
-        // A frame can move windows (a strip panning, a group resizing): the
-        // policy places them where the surfaces just laid them out.
+        // A frame can move windows (a strip panning, a group resizing): the policy places them
+        // where the surfaces just laid them out.
         self.data.state.rearrange();
         let drawn_before = self.data.state.frames_drawn();
         let submitting = Instant::now();
@@ -1938,23 +1879,22 @@ impl Compositor {
             // Nothing was drawn: no frame will answer this turn's input.
             self.recorder.settle_unpainted_input();
         }
-        // The frame is on the output now, so the clients that drew it hear
-        // about it before anything the frame itself asked for is served: a
-        // capture to read back, a blur of what lies below a window. Those go
-        // with the frame but are not what answers it, so they run behind it
-        // and the client starts its next frame while they are made.
+        // The frame is on the output now, so the clients that drew it hear about it before anything
+        // the frame itself asked for is served: a capture to read back, a blur of what lies below a
+        // window. Those go with the frame but are not what answers it, so they run behind it and
+        // the client starts its next frame while they are made.
         self.display.flush_clients()?;
         self.data.backend.serve_captures(&mut self.data.state);
         self.data.backend.serve_backdrops(&mut self.data.state);
-        // Answers read back after the frame's own pictures, and whatever is
-        // still queued for clients, reach them here.
+        // Answers read back after the frame's own pictures, and whatever is still queued for
+        // clients, reach them here.
         self.data.state.confirm_lock();
         self.display.flush_clients()?;
         Ok(())
     }
 
-    /// What an output (or part of one) or a window shows now, read back as
-    /// rows of R, G, B, A: what a share stream pushes.
+    /// What an output (or part of one) or a window shows now, read back as rows of R, G, B, A: what
+    /// a share stream pushes.
     pub fn read_back(&mut self, target: &capture::Target) -> Result<Screenshot, Error> {
         Ok(self
             .data
@@ -2015,15 +1955,14 @@ impl Compositor {
             .read_back_scaled(&mut self.data.state, target, max)?)
     }
 
-    /// The last frame drawn on the output named `name`.
+    /// The last frame drawn on the output named `name` .
     pub fn screenshot(&mut self, name: &str) -> Result<Screenshot, Error> {
         Ok(self.data.backend.screenshot(&mut self.data.state, name)?)
     }
 
-    /// Route one input event from another device — a portal
-    /// `RemoteDesktop` or `InputCapture` session, a share, a remote-typing
-    /// link — through the firewall ([`remote_input`]): it reaches the seat
-    /// only while the person allows it.
+    /// Route one input event from another device — a portal `RemoteDesktop` or `InputCapture`
+    /// session, a share, a remote-typing link — through the firewall ([`remote_input`]): it reaches
+    /// the seat only while the person allows it.
     pub fn input_remote(&mut self, event: InputEvent) -> Result<(), Error> {
         self.data.state.handle_remote_input(event);
         self.start_asked_drags();
@@ -2032,10 +1971,9 @@ impl Compositor {
         Ok(())
     }
 
-    /// Why input from another device is refused now — the person cut it, they
-    /// are using this machine's own keyboard or pointer, or the session is
-    /// locked. `None` when it would be let in. What a share checks before it
-    /// acts for a remote viewer at the viewer's own seat.
+    /// Why input from another device is refused now — the person cut it, they are using this
+    /// machine's own keyboard or pointer, or the session is locked. `None` when it would be let in.
+    /// What a share checks before it acts for a remote viewer at the viewer's own seat.
     #[must_use]
     pub fn remote_input_refusal(&self) -> Option<&'static str> {
         self.data
@@ -2050,8 +1988,8 @@ impl Compositor {
         self.data.state.seats.open()
     }
 
-    /// End `seat`: its window sees the release of every key and button it
-    /// still held, and the seat is gone.
+    /// End `seat` : its window sees the release of every key and button it still held, and the seat
+    /// is gone.
     pub fn close_seat(&mut self, seat: Seat) {
         self.data.state.close_seat(seat);
     }
@@ -2103,8 +2041,8 @@ impl Compositor {
             pressed: false,
         } = &event
         {
-            // The seat lets go of the key before its release is delivered: it
-            // is not pressed into it again for the release.
+            // The seat lets go of the key before its release is delivered: it is not pressed into
+            // it again for the release.
             self.data.state.seat_forget_key(seat, *keycode);
         }
         let Some(person) = self.data.state.seat_begin(seat) else {
@@ -2155,8 +2093,8 @@ impl Compositor {
         Ok(typed)
     }
 
-    /// Ask the window `seat` aims at to close, as its own close button would.
-    /// Whether it had a window to ask.
+    /// Ask the window `seat` aims at to close, as its own close button would. Whether it had a
+    /// window to ask.
     pub fn seat_close_window(&mut self, seat: Seat) -> bool {
         let Some(aim) = self
             .data
@@ -2204,9 +2142,9 @@ impl Compositor {
         self.read_back(&target).map_err(|error| error.to_string())
     }
 
-    /// Cut every remote input: nothing from another device reaches the seat
-    /// until the person allows it again ([`Compositor::allow_remote_input`]).
-    /// The person's own Ctrl+Alt+Escape does this too.
+    /// Cut every remote input: nothing from another device reaches the seat until the person allows
+    /// it again ([`Compositor::allow_remote_input`]). The person's own Ctrl+Alt+Escape does this
+    /// too.
     pub fn cut_remote_input(&mut self) {
         self.data.state.remote_input.cut();
     }
@@ -2230,15 +2168,14 @@ impl Compositor {
         self.data.state.mark_redraw_all();
     }
 
-    /// The processes whose clients disconnected since the last look: the
-    /// apps that exited.
+    /// The processes whose clients disconnected since the last look: the apps that exited.
     pub fn take_exited_pids(&mut self) -> Vec<u32> {
         self.data.state.take_exited_pids()
     }
 
-    /// The areas the layer surfaces on `output` keep for themselves at its
-    /// edges, as logical rectangles `(x, y, w, h)`: what the desktop keeps
-    /// windows and the desk itself out of (the bar's height along the top).
+    /// The areas the layer surfaces on `output` keep for themselves at its edges, as logical
+    /// rectangles `(x, y, w, h)` : what the desktop keeps windows and the desk itself out of (the
+    /// bar's height along the top).
     pub fn reserved(&self, output: &str) -> Vec<(i32, i32, i32, i32)> {
         self.data
             .state
@@ -2260,24 +2197,22 @@ impl Compositor {
         self.data.state.set_layer_shown(namespace, shown);
     }
 
-    /// Whether the session shows its layer surface `namespace`, hid it, or
-    /// never said (shown).
+    /// Whether the session shows its layer surface `namespace` , hid it, or never said (shown).
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
         self.data.state.layer_shown(namespace)
     }
 
-    /// Whether the app of the layer surface `namespace` has drawn it: a
-    /// surface shows nothing before its first buffer, so a motion about it
-    /// starts with that frame.
+    /// Whether the app of the layer surface `namespace` has drawn it: a surface shows nothing
+    /// before its first buffer, so a motion about it starts with that frame.
     #[must_use]
     pub fn layer_drawn(&self, namespace: &str) -> bool {
         self.data.state.layer_drawn(namespace)
     }
 
-    /// Draw the layer surface `namespace` as `pose` says from the next frame
-    /// on, or as it stands again for `None`: how the session moves a panel
-    /// of its own, whose app cannot know it was shown or hidden.
+    /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands
+    /// again for `None` : how the session moves a panel of its own, whose app cannot know it was
+    /// shown or hidden.
     pub fn set_layer_pose(&mut self, namespace: &str, pose: Option<LayerPose>) {
         self.data.state.set_layer_pose(namespace, pose);
     }
@@ -2293,9 +2228,9 @@ impl Compositor {
             .collect()
     }
 
-    /// The colour the client of the window `id` says its content is in: the
-    /// image description it attached through `wp_color_management_v1`, or
-    /// `None` when it attached none. A share stream tags its frames with it.
+    /// The colour the client of the window `id` says its content is in: the image description it
+    /// attached through `wp_color_management_v1` , or `None` when it attached none. A share stream
+    /// tags its frames with it.
     #[must_use]
     pub fn window_color(
         &self,
@@ -2316,17 +2251,16 @@ impl Compositor {
         server.windows.as_ref()?.identity(surface.window_id())
     }
 
-    /// Ask the window with `id` to close, as its own close button would: the
-    /// client decides what closing means, and does it.
+    /// Ask the window with `id` to close, as its own close button would: the client decides what
+    /// closing means, and does it.
     pub fn close_window(&mut self, id: u64) {
         self.data.state.close_window(id);
     }
 
-    /// Judge every app the person sent input to: one that has not answered
-    /// its ping within [`app_liveness::UNANSWERED`] is not responding.
-    /// Returns whether the set of such windows changed. The loop calls this
-    /// on its own when [`Compositor::next_wait`] says a verdict is due; tests
-    /// pass the instant to judge at.
+    /// Judge every app the person sent input to: one that has not answered its ping within
+    /// [`app_liveness::UNANSWERED`] is not responding. Returns whether the set of such windows
+    /// changed. The loop calls this on its own when [`Compositor::next_wait`] says a verdict is
+    /// due; tests pass the instant to judge at.
     pub fn advance_app_liveness_at(&mut self, now: Instant) -> bool {
         self.data.state.advance_app_liveness_at(now)
     }
@@ -2337,16 +2271,14 @@ impl Compositor {
         self.data.state.not_responding()
     }
 
-    /// The person chose "Wait" on window `id`: its app gets another period
-    /// to answer. Returns whether the windows that say "Not responding"
-    /// changed.
+    /// The person chose "Wait" on window `id` : its app gets another period to answer. Returns
+    /// whether the windows that say "Not responding" changed.
     pub fn wait_window(&mut self, id: u64) -> bool {
         self.data.state.wait_for_window(id)
     }
 
-    /// The person chose "Force quit" on window `id`: the client's
-    /// connection ends, so its windows go now, and the process it was is
-    /// returned for the session to end.
+    /// The person chose "Force quit" on window `id` : the client's connection ends, so its windows
+    /// go now, and the process it was is returned for the session to end.
     pub fn force_quit_window(&mut self, id: u64) -> Option<u32> {
         self.data.state.force_quit_window(id)
     }
@@ -2356,8 +2288,8 @@ impl Compositor {
         self.data.state.idle_inhibited()
     }
 
-    /// The windows whose idle inhibitor is on screen: what holds the machine
-    /// awake, for the session to say who it is.
+    /// The windows whose idle inhibitor is on screen: what holds the machine awake, for the session
+    /// to say who it is.
     pub fn visible_idle_inhibitors(&self) -> Vec<WindowInfo> {
         self.data.state.visible_idle_inhibitors()
     }
@@ -2367,9 +2299,8 @@ impl Compositor {
         self.data.state.focused_window()
     }
 
-    /// The identifier the focused window can be captured under, when it has
-    /// focus and can be captured at all: a capture that names no window
-    /// takes this one.
+    /// The identifier the focused window can be captured under, when it has focus and can be
+    /// captured at all: a capture that names no window takes this one.
     #[must_use]
     pub fn focused_shareable_window(&self) -> Option<String> {
         let focused = self.focused_window()?.id;
@@ -2382,24 +2313,23 @@ impl Compositor {
             .map(|(identifier, _)| identifier)
     }
 
-    /// An activation token for something the session itself did (the
-    /// person chose a notification, so its app should come to the front):
-    /// handing it to the app lets that app raise its window.
+    /// An activation token for something the session itself did (the person chose a notification,
+    /// so its app should come to the front): handing it to the app lets that app raise its window.
     pub fn activation_token(&mut self) -> String {
         self.data.state.protocols.external_activation_token()
     }
 
-    /// A waker for the loop, from any thread: waking it ends the wait of
-    /// [`Compositor::dispatch`], so news of a surface app's background work
-    /// is drawn without waiting for the next input or due frame.
+    /// A waker for the loop, from any thread: waking it ends the wait of [`Compositor::dispatch`],
+    /// so news of a surface app's background work is drawn without waiting for the next input or
+    /// due frame.
     #[must_use]
     pub fn waker(&self) -> std::task::Waker {
         std::task::Waker::from(std::sync::Arc::new(LoopWaker(self.event_loop.get_signal())))
     }
 }
 
-/// A descriptor [`Compositor::watch_readable`] polls for the loop: its
-/// readiness ends the wait, and dropping the watch stops the polling.
+/// A descriptor [`Compositor::watch_readable`] polls for the loop: its readiness ends the wait, and
+/// dropping the watch stops the polling.
 #[derive(Debug)]
 pub struct ReadableWatch {
     handle: LoopHandle<'static, LoopData>,
@@ -2426,8 +2356,8 @@ impl std::task::Wake for LoopWaker {
 }
 
 impl std::os::fd::AsFd for Compositor {
-    /// The loop's descriptor, readable when [`Compositor::dispatch`] has
-    /// work, for embedding in another loop.
+    /// The loop's descriptor, readable when [`Compositor::dispatch`] has work, for embedding in
+    /// another loop.
     fn as_fd(&self) -> std::os::fd::BorrowedFd<'_> {
         self.event_loop.as_fd()
     }

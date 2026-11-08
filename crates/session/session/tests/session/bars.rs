@@ -1,7 +1,6 @@
-//! A bar on every display: the desk places one per display, the display in
-//! use full and the others compact, follows the displays as they come and
-//! go, and takes a bar off its display for a fullscreen window there, back
-//! over that window when the person reaches for it.
+//! A bar on every display: the desk places one per display, the display in use full and the others
+//! compact, follows the displays as they come and go, and takes a bar off its display for a
+//! fullscreen window there, back over that window when the person reaches for it.
 
 use super::*;
 
@@ -9,8 +8,8 @@ use tilo_compositor::{InputEvent, OutputChange};
 use tilo_desktop::chrome::TopBarPresence;
 use tilo_session::{BarShown, Session};
 
-/// Two displays side by side, the built-in one first: the arrangement a
-/// session with a monitor plugged in on the right starts in.
+/// Two displays side by side, the built-in one first: the arrangement a session with a monitor
+/// plugged in on the right starts in.
 fn two_displays() -> Session {
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     Session::headless(
@@ -24,9 +23,8 @@ fn two_displays() -> Session {
     .expect("session")
 }
 
-/// Where each bar stands: the display it stands on, its ends across the
-/// desk, whether it is the full bar, and whether it left the desk for a
-/// window over it.
+/// Where each bar stands: the display it stands on, its ends across the desk, whether it is the
+/// full bar, and whether it left the desk for a window over it.
 fn bars_by_display(session: &Session) -> Vec<(Option<u32>, f64, f64, bool, bool)> {
     session
         .bars()
@@ -43,8 +41,7 @@ fn bars_by_display(session: &Session) -> Vec<(Option<u32>, f64, f64, bool, bool)
         .collect()
 }
 
-/// Two displays carry two bars, each on its own display: the one in use
-/// full, the other compact.
+/// Two displays carry two bars, each on its own display: the one in use full, the other compact.
 #[test]
 fn every_display_carries_a_bar_of_its_own() {
     let _settled = ui::motion::testing::settled();
@@ -108,8 +105,8 @@ fn every_display_carries_a_bar_of_its_own() {
     assert!(placement.fullscreen.is_empty());
 }
 
-/// A bar stands where its display is, so a display arriving or going takes
-/// the bars with it on the next pass.
+/// A bar stands where its display is, so a display arriving or going takes the bars with it on the
+/// next pass.
 #[test]
 fn a_display_arriving_or_going_changes_the_bars() {
     let _settled = ui::motion::testing::settled();
@@ -164,8 +161,7 @@ fn a_display_arriving_or_going_changes_the_bars() {
     );
 }
 
-/// Ask for the whole display (`on`) or give it back, as a client's own
-/// toplevel says.
+/// Ask for the whole display (`on`) or give it back, as a client's own toplevel says.
 fn set_fullscreen(client: &mut TestClient, on: bool) {
     if let Some(toplevel) = &client.toplevel {
         if on {
@@ -180,9 +176,8 @@ fn set_fullscreen(client: &mut TestClient, on: bool) {
     client.exchange();
 }
 
-/// A fullscreen window on the second display owns it: that display's
-/// compact bar leaves the desk, and the bar of the display the person
-/// works on stays.
+/// A fullscreen window on the second display owns it: that display's compact bar leaves the desk,
+/// and the bar of the display the person works on stays.
 #[test]
 fn a_fullscreen_window_on_a_display_takes_that_displays_bar_away() {
     let _settled = ui::motion::testing::settled();
@@ -204,8 +199,8 @@ fn a_fullscreen_window_on_a_display_takes_that_displays_bar_away() {
         "the window stands on the second display: {rect:?}"
     );
 
-    // The person goes back to the first display: the second one carries
-    // the compact bar the window will take.
+    // The person goes back to the first display: the second one carries the compact bar the window
+    // will take.
     assert!(session.handle().focus_display(in_use), "back to the panel");
     settle(&mut session, 2);
     assert_eq!(
@@ -309,8 +304,7 @@ fn rect_of(session: &mut Session, app: &str) -> (i32, i32, i32, i32) {
         .expect("the window is shown")
 }
 
-/// What the person sees on the display at `y` down from its top edge, in
-/// the middle of it.
+/// What the person sees on the display at `y` down from its top edge, in the middle of it.
 fn pixel_at(session: &mut Session, y: i32) -> [u8; 4] {
     let frame = session
         .compositor()
@@ -322,20 +316,19 @@ fn pixel_at(session: &mut Session, y: i32) -> [u8; 4] {
         .expect("the point is on the display")
 }
 
-/// A line of the window well below the bar's band, where the bar never
-/// reaches.
+/// A line of the window well below the bar's band, where the bar never reaches.
 const WINDOW_LINE: i32 = 200;
 
-/// Whether two pixels are the same colour to the eye: one composited on a
-/// card is rounded by a unit or two off another.
+/// Whether two pixels are the same colour to the eye: one composited on a card is rounded by a unit
+/// or two off another.
 fn same_colour(one: [u8; 4], other: [u8; 4]) -> bool {
     one.iter()
         .zip(other)
         .all(|(one, other)| one.abs_diff(other) <= 4)
 }
 
-/// A window of `app` filling the display, and the rect it then stands in:
-/// the person took it full screen and the bar has gone again.
+/// A window of `app` filling the display, and the rect it then stands in: the person took it full
+/// screen and the bar has gone again.
 fn covering_window(
     session: &mut Session,
     client: &mut TestClient,
@@ -351,9 +344,8 @@ fn covering_window(
     whole
 }
 
-/// Taken full screen, the window takes the whole display and the bar's room
-/// with it; entering shows the bar over the window for its idle time, and
-/// then it goes again.
+/// Taken full screen, the window takes the whole display and the bar's room with it; entering shows
+/// the bar over the window for its idle time, and then it goes again.
 #[test]
 fn a_window_covering_its_display_takes_the_bars_room() {
     let _settled = ui::motion::testing::settled();
@@ -430,9 +422,9 @@ fn a_window_covering_its_display_takes_the_bars_room() {
     assert_eq!(rect_of(&mut session, app), whole);
 }
 
-/// Over a window covering its display, the bar stays away until it is reached
-/// for: the top edge, a key, and leaving full screen again, with a press in
-/// the band staying the window's while the bar is away.
+/// Over a window covering its display, the bar stays away until it is reached for: the top edge, a
+/// key, and leaving full screen again, with a press in the band staying the window's while the bar
+/// is away.
 #[test]
 fn the_bar_comes_back_over_a_window_covering_its_display() {
     let _settled = ui::motion::testing::settled();
@@ -446,8 +438,7 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
     let height = session.bars()[0].rect.height();
     let whole = covering_window(&mut session, &mut client, app);
 
-    // A press in the top band while it is away is the window's, and does not
-    // bring it back.
+    // A press in the top band while it is away is the window's, and does not bring it back.
     motion(&mut session, f64::from(WIDTH) / 2.0, 1.0);
     settle(&mut session, 2);
     client.seen.buttons.clear();
@@ -463,8 +454,7 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
     );
     assert_eq!(rect_of(&mut session, app), whole);
 
-    // The person pushes the pointer to the top edge: the bar comes back over
-    // the window.
+    // The person pushes the pointer to the top edge: the bar comes back over the window.
     for y in [200.0, 60.0, 12.0, 0.0] {
         motion(&mut session, f64::from(WIDTH) / 2.0, y);
         settle(&mut session, 2);
@@ -508,8 +498,8 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
     );
     key(&mut session, KEY_LEFT_META, false);
 
-    // Shown over the window, the bar takes the pointer there: a press on it
-    // is the bar's, and the window under it never sees it.
+    // Shown over the window, the bar takes the pointer there: a press on it is the bar's, and the
+    // window under it never sees it.
     motion(&mut session, f64::from(WIDTH) / 2.0, 12.0);
     settle(&mut session, 2);
     client.seen.buttons.clear();
@@ -551,9 +541,8 @@ fn the_bar_comes_back_over_a_window_covering_its_display() {
     );
 }
 
-/// The person's own "hide the top bar", with no fullscreen window anywhere:
-/// the bar leaves the desk, the windows take its strip, and turning the
-/// setting off docks it again.
+/// The person's own "hide the top bar", with no fullscreen window anywhere: the bar leaves the
+/// desk, the windows take its strip, and turning the setting off docks it again.
 #[test]
 fn hiding_the_top_bar_in_settings_gives_its_strip_to_the_windows() {
     let _settled = ui::motion::testing::settled();
@@ -589,8 +578,8 @@ fn hiding_the_top_bar_in_settings_gives_its_strip_to_the_windows() {
     })
     .expect("hiding the bar in the settings takes it off the desk");
 
-    // The desk gives the window the strip the bar took: it grows by the
-    // bar's height, and nothing else moves.
+    // The desk gives the window the strip the bar took: it grows by the bar's height, and nothing
+    // else moves.
     let docked_size = (docked.2, docked.3);
     let mut taller = None;
     pump(&mut session, &mut [&mut client], |_, clients| {

@@ -29,13 +29,13 @@ use ui::{TextRenderer, Theme};
 use super::DesktopSurface;
 use crate::navigation::Admitted;
 
-/// The views this desktop runs for the windows that embed them, and the
-/// windows its menus offer to share.
+/// The views this desktop runs for the windows that embed them, and the windows its menus offer to
+/// share.
 #[derive(Default)]
 pub(super) struct LiveShares {
     views: Views<TileHost>,
-    /// Where each view is drawn this frame, in the surface's coordinates:
-    /// its place and what of it may show.
+    /// Where each view is drawn this frame, in the surface's coordinates: its place and what of it
+    /// may show.
     placed: Vec<(ResourceView, Rect, Rect)>,
     /// The windows a share item stands in the menu of.
     offered: HashSet<u64>,
@@ -48,8 +48,8 @@ impl DesktopSurface {
     /// before the bars take the frame's slots.
     pub(super) fn offer_window_shares(&mut self) {
         if !self.tiles.draws_embeds() {
-            // Nothing is shared from a desktop that cannot show the shares'
-            // views: no window offers the sharing row.
+            // Nothing is shared from a desktop that cannot show the shares' views: no window offers
+            // the sharing row.
             self.shared.borrow_mut().window_offers.clear();
             return;
         }
@@ -70,8 +70,8 @@ impl DesktopSurface {
                         tilo_desktop_model::TileContent::LocalApp { label, .. } => label.clone(),
                         _ => tab.app_title.clone().unwrap_or_else(|| tab.title.clone()),
                     };
-                    // What the window says it shows (a note's title) names
-                    // the share better than its tab, which may name the app.
+                    // What the window says it shows (a note's title) names the share better than
+                    // its tab, which may name the app.
                     let location = self
                         .window_slots
                         .toolbar(tab.id)
@@ -80,8 +80,7 @@ impl DesktopSurface {
                         .map(|location| location.label.clone())
                         .filter(|label| !label.trim().is_empty())
                         .unwrap_or_else(|| tab.title.clone());
-                    // Where in the record the window is: the note, not the
-                    // notebook.
+                    // Where in the record the window is: the note, not the notebook.
                     let item = location.and_then(|location| location.anchor.clone());
                     Some(OpenWindow {
                         tab: tab.id,
@@ -108,9 +107,9 @@ impl DesktopSurface {
         self.live_shares.windows = windows;
     }
 
-    /// Ask the sharing app for window `tab`'s share row: share it with its
-    /// workspace's people, or stop sharing it. Whether it was asked: false
-    /// when the app lists no such window, or already does what is asked.
+    /// Ask the sharing app for window `tab` 's share row: share it with its workspace's people, or
+    /// stop sharing it. Whether it was asked: false when the app lists no such window, or already
+    /// does what is asked.
     pub(super) fn ask_window_share(&self, tab: tilo_desktop_model::TabId, share: bool) -> bool {
         let shared = window_share::shared();
         let Some(window) = self
@@ -150,8 +149,7 @@ impl DesktopSurface {
         asked
     }
 
-    /// Hand the sharing app what the windows' menus asked of it. Whether
-    /// anything was asked.
+    /// Hand the sharing app what the windows' menus asked of it. Whether anything was asked.
     pub(super) fn take_window_share_asks(&mut self) -> bool {
         let chosen = self.window_slots.take_host_actions();
         let asks = host::asks(chosen, &self.live_shares.windows, &window_share::shared());
@@ -169,9 +167,9 @@ impl DesktopSurface {
         asked
     }
 
-    /// Run the views the shown windows embed: start the ones newly asked
-    /// for, drop the ones no longer asked for, and tell each window how its
-    /// views are coming along. Whether any view changed.
+    /// Run the views the shown windows embed: start the ones newly asked for, drop the ones no
+    /// longer asked for, and tell each window how its views are coming along. Whether any view
+    /// changed.
     pub(super) fn follow_embeds(
         &mut self,
         state: &ui::widget::AppModel,
@@ -246,9 +244,8 @@ impl DesktopSurface {
         }
     }
 
-    /// Draw each view over the window that embeds it, laid out at a
-    /// window's size and scaled into its place, clipped to what of it may
-    /// show.
+    /// Draw each view over the window that embeds it, laid out at a window's size and scaled into
+    /// its place, clipped to what of it may show.
     pub(super) fn draw_embeds(
         &mut self,
         scene: &mut Scene,

@@ -1,14 +1,12 @@
-//! A window's first ask arrives on a socket the session waits on: the
-//! connection itself ends the loop's wait, so nothing of the ask waits for
-//! the loop's next look.
+//! A window's first ask arrives on a socket the session waits on: the connection itself ends the
+//! loop's wait, so nothing of the ask waits for the loop's next look.
 
 use super::*;
 
 use std::io::Read as _;
 use ui::floating_surface::{FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage};
 
-/// What a window says on its own connection: the launcher's handshake and the
-/// version it speaks.
+/// What a window says on its own connection: the launcher's handshake and the version it speaks.
 fn first_ask() -> Vec<u8> {
     let mut frames = serde_json::to_vec(&serde_json::json!({
         "protocol": launcher::services::SHELL_UI_LAUNCH_PROTOCOL,
@@ -26,9 +24,8 @@ fn first_ask() -> Vec<u8> {
     frames
 }
 
-/// A window that connects to the session's shell-ui socket on a desk nobody
-/// touches is taken off it as the connection arrives, not after a poll: its
-/// connection is what ends the loop's wait.
+/// A window that connects to the session's shell-ui socket on a desk nobody touches is taken off it
+/// as the connection arrives, not after a poll: its connection is what ends the loop's wait.
 #[test]
 fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     let _settled = ui::motion::testing::settled();
@@ -37,10 +34,10 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
     environment.set("XDG_RUNTIME_DIR", runtime.path());
     let mut session = session();
 
-    // Nothing of the desk's own is due for a second at least, so a connection
-    // that waited for the loop's next look would wait that long. The desk gets
-    // there as its own timer passes, which a loaded machine takes longer over:
-    // the test waits for that rather than counting the frames it takes.
+    // Nothing of the desk's own is due for a second at least, so a connection that waited for the
+    // loop's next look would wait that long. The desk gets there as its own timer passes, which a
+    // loaded machine takes longer over: the test waits for that rather than counting the frames it
+    // takes.
     pump(&mut session, &mut [], |session, _| {
         wait_for(session).is_none_or(|idle| idle >= Duration::from_secs(1))
     });
@@ -58,8 +55,8 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
         stream.write_all(&first_ask()).expect("the handshake");
         stream.flush().expect("the handshake");
         let _ = stream.shutdown(std::net::Shutdown::Write);
-        // This session started no app of that name, so the connection is
-        // closed rather than answered: its end is the session's word.
+        // This session started no app of that name, so the connection is closed rather than
+        // answered: its end is the session's word.
         let mut frame = [0_u8; 4096];
         loop {
             match stream.read(&mut frame) {
@@ -87,12 +84,11 @@ fn a_window_connecting_on_an_idle_desk_is_taken_at_once() {
         let step = started.elapsed();
         waited += step;
         if let Ok(taken) = takes.try_recv() {
-            // The connection ended the step it arrived in: a loop that looked
-            // only at the end of its wait would have run the whole wait, and
-            // that is the poll this rules out. Only a wait long enough to tell
-            // a wake from a frame is probed: a display's own frame rate is not
-            // what this test is about, and how long the asking thread waited is
-            // the machine's answer, not the session's.
+            // The connection ended the step it arrived in: a loop that looked only at the end of
+            // its wait would have run the whole wait, and that is the poll this rules out. Only a
+            // wait long enough to tell a wake from a frame is probed: a display's own frame rate is
+            // not what this test is about, and how long the asking thread waited is the machine's
+            // answer, not the session's.
             if wait >= Duration::from_millis(100) {
                 assert!(
                     step < wait,

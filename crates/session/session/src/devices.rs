@@ -54,8 +54,8 @@ pub enum DevicesAction {
         /// The row's key, as the reading lists it.
         #[param("The row, as the reading lists it")]
         row: String,
-        /// What was pressed on it: its body, the action it names, or its
-        /// answer to a device asking for this one's sound.
+        /// What was pressed on it: its body, the action it names, or its answer to a device asking
+        /// for this one's sound.
         #[param("The part of the row that was pressed")]
         part: RowPart,
     },
@@ -71,13 +71,10 @@ pub enum DevicesAction {
     },
 }
 
-/// The person's devices as the fabric reads them, what plays here that they
-/// can take, the remote audio the service reports, and the session one of
-/// them hands this one, as one reading.
-///
-/// A sound the picker dropped is no longer one this device can send, and the
-/// service keeps a sound only while it can still be sent, so a pick that
-/// names a sound which left is forgotten here.
+/// The person's devices as the fabric reads them, what plays here that they can take, the remote
+/// audio the service reports, and the session one of them hands this one, as one reading.
+/// A sound the picker dropped is no longer one this device can send, and the service keeps a sound
+/// only while it can still be sent, so a pick that names a sound which left is forgotten here.
 #[must_use]
 pub(crate) fn current(
     fabric: &SharedLink,
@@ -141,8 +138,7 @@ pub(crate) fn current(
     }
 }
 
-/// Read the person's devices off `fabric`: this machine first, then those
-/// here, then by name.
+/// Read the person's devices off `fabric` : this machine first, then those here, then by name.
 fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
     let local = fabric
         .local_device_fabric_identity()
@@ -175,25 +171,24 @@ fn read(fabric: &SharedLink) -> Vec<PersonalDevice> {
     devices
 }
 
-/// The person's devices as the session's services publish them: read off the
-/// fabric every pass, so a device that comes or goes is one revision.
+/// The person's devices as the session's services publish them: read off the fabric every pass, so
+/// a device that comes or goes is one revision.
 pub(crate) struct Served {
     fabric: SharedLink,
-    /// What the services read of this device, of which the reading says
-    /// what plays here that a device can take.
+    /// What the services read of this device, of which the reading says what plays here that a
+    /// device can take.
     readings: crate::status::Shared,
     /// The sound of this device's that a press on a device would send.
     chosen: Rc<RefCell<Option<u64>>>,
-    /// The session another of the person's devices handed this one, until
-    /// the person continues it here.
+    /// The session another of the person's devices handed this one, until the person continues it
+    /// here.
     handoff: Rc<RefCell<Option<MediaOffer>>>,
-    /// The presses the person made on the rows, waiting for the loop that
-    /// holds the fabric, the wakes and the search.
+    /// The presses the person made on the rows, waiting for the loop that holds the fabric, the
+    /// wakes and the search.
     pressed: Rc<RefCell<Vec<Press>>>,
     /// The accessories the person asked to move to another device.
     handed: Rc<RefCell<Vec<HandOff>>>,
-    /// The reading last reported, so a pass that changed nothing is no
-    /// revision.
+    /// The reading last reported, so a pass that changed nothing is no revision.
     published: RefCell<Option<DevicesReading>>,
 }
 
@@ -204,8 +199,7 @@ pub(crate) struct Press {
     pub(crate) part: RowPart,
 }
 
-/// One accessory asked to move to another device: its address, and the
-/// device it goes to.
+/// One accessory asked to move to another device: its address, and the device it goes to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct HandOff {
     pub(crate) address: String,
@@ -213,8 +207,8 @@ pub(crate) struct HandOff {
 }
 
 impl Served {
-    /// The service publishing what `fabric`, `readings`, `chosen` and
-    /// `handoff` read, whose presses `pressed` carries to the loop.
+    /// The service publishing what `fabric` , `readings` , `chosen` and `handoff` read, whose
+    /// presses `pressed` carries to the loop.
     pub(crate) fn new(
         fabric: SharedLink,
         readings: crate::status::Shared,
@@ -271,14 +265,13 @@ impl Service for Served {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }
         match decode::<DevicesAction>(&self.resources(), resource, action, arguments)? {
-            // What a press does is the session's own: it sends what plays
-            // here over the fabric, wakes the device, or opens Settings where
-            // the device is managed.
+            // What a press does is the session's own: it sends what plays here over the fabric,
+            // wakes the device, or opens Settings where the device is managed.
             DevicesAction::Press { row, part } => {
                 self.pressed.borrow_mut().push(Press { row, part });
             }
-            // Moving an accessory is the session's too: it needs the fabric
-            // and both devices' Bluetooth, so the loop carries it out.
+            // Moving an accessory is the session's too: it needs the fabric and both devices'
+            // Bluetooth, so the loop carries it out.
             DevicesAction::HandOff { address, device } => {
                 self.handed.borrow_mut().push(HandOff { address, device });
             }

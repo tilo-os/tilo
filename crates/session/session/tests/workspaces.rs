@@ -1,10 +1,8 @@
-//! The person's own workspaces, as every device of theirs knows them: the
-//! workspace a fresh device starts from is theirs and is kept in their list
-//! beside the desk, and the workspaces they make are added to it — so their
-//! other devices learn of them and open them there.
-//!
-//! The list outlives the session: coming back to a device finds the same
-//! workspaces listed, none of them twice.
+//! The person's own workspaces, as every device of theirs knows them: the workspace a fresh device
+//! starts from is theirs and is kept in their list beside the desk, and the workspaces they make
+//! are added to it — so their other devices learn of them and open them there.
+//! The list outlives the session: coming back to a device finds the same workspaces listed, none of
+//! them twice.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,8 +27,8 @@ use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// A session keeping this device's desk, and the person's list of their own
-/// workspaces, under `state`.
+/// A session keeping this device's desk, and the person's list of their own workspaces, under
+/// `state` .
 fn session_keeping(state: &Path) -> Session {
     Session::headless(
         Options {
@@ -44,8 +42,7 @@ fn session_keeping(state: &Path) -> Session {
     .expect("session")
 }
 
-/// The workspaces on this desk: id, name, the id it has on every device, in
-/// order.
+/// The workspaces on this desk: id, name, the id it has on every device, in order.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -66,8 +63,8 @@ fn list_path(state: &Path) -> std::path::PathBuf {
     state.join("tilo").join("personal-workspaces.postcard")
 }
 
-/// This computer's person: a device of theirs, certified for their own root
-/// key, kept in an identity root of the test's own.
+/// This computer's person: a device of theirs, certified for their own root key, kept in an
+/// identity root of the test's own.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
@@ -90,8 +87,7 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
-    // The name they go by, which the workspace learns of them: never their
-    // device's.
+    // The name they go by, which the workspace learns of them: never their device's.
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: cert.user_public_key,
@@ -113,9 +109,8 @@ fn a_fresh_device_starts_from_the_persons_own_workspace_and_keeps_it_listed() {
         let held = held(&session);
         assert_eq!(held.len(), 1, "a fresh device starts from one workspace");
         let (id, name, workspace) = held[0].clone();
-        // A workspace is the same on every device, by the id its key
-        // derives: the one the person starts from opens again by that id, not
-        // by one only this desk knew.
+        // A workspace is the same on every device, by the id its key derives: the one the person
+        // starts from opens again by that id, not by one only this desk knew.
         let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace).expect("a workspace");
         assert_eq!(
             id,
@@ -186,7 +181,7 @@ fn sheet(session: &Session) -> HeadlessApp<WorkspaceSettingsApp> {
     app
 }
 
-/// Press the control `id` of `app`, as the person's own gesture.
+/// Press the control `id` of `app` , as the person's own gesture.
 fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
         .perform_named(id, &ui::a11y::Action::Activate)
@@ -194,9 +189,9 @@ fn press(app: &mut HeadlessApp<WorkspaceSettingsApp>, id: &str) {
     app.settle();
 }
 
-/// Workspace settings offers the person's devices for the workspace, and
-/// keeping this one off it takes the workspace off this desk, where it stays:
-/// the choice is theirs and their other devices keep it in step.
+/// Workspace settings offers the person's devices for the workspace, and keeping this one off it
+/// takes the workspace off this desk, where it stays: the choice is theirs and their other devices
+/// keep it in step.
 #[test]
 fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
     let _settled = ui::motion::testing::settled();
@@ -205,8 +200,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
     let state = tempfile::tempdir().expect("a state directory");
     let mut session = session_keeping(state.path());
     session.step(Duration::from_millis(1)).expect("a frame");
-    // Two workspaces, so the desk may let one go without leaving the person
-    // with none.
+    // Two workspaces, so the desk may let one go without leaving the person with none.
     session
         .invoke(CHROME_RESOURCE, "new-workspace", &serde_json::Map::new())
         .expect("the desk makes a workspace");
@@ -261,8 +255,7 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
         !after.iter().any(|(_, _, workspace)| *workspace == front),
         "the workspace in front is the one kept off"
     );
-    // It stays off: the choice is in the person's own list, not only on the
-    // desk it was made at.
+    // It stays off: the choice is in the person's own list, not only on the desk it was made at.
     for _ in 0..3 {
         session.step(Duration::from_millis(1)).expect("a frame");
     }
@@ -280,8 +273,8 @@ fn keeping_a_workspace_off_this_device_takes_it_off_this_desks() {
         "and comes back off the desk in the next session"
     );
 
-    // The desk keeps the person one workspace: their last one is not kept
-    // off this device, and its row says it still shows here.
+    // The desk keeps the person one workspace: their last one is not kept off this device, and its
+    // row says it still shows here.
     session
         .invoke(
             CHROME_RESOURCE,

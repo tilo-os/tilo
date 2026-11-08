@@ -1,7 +1,6 @@
-//! `zwlr_screencopy_manager_v1` (version 3): a frame per copy, of a whole
-//! output or a region of it, into shared memory or a dma-buf, with or
-//! without the pointer, at once (`copy`) or once something changed
-//! (`copy_with_damage`).
+//! `zwlr_screencopy_manager_v1` (version 3): a frame per copy, of a whole output or a region of it,
+//! into shared memory or a dma-buf, with or without the pointer, at once (`copy`) or once something
+//! changed (`copy_with_damage`).
 
 use std::sync::Mutex;
 use std::time::Duration;
@@ -67,8 +66,8 @@ impl Frame {
 
 /// What a frame copies, and whether it was used.
 pub struct FrameData {
-    /// The output and the region in its physical pixels; `None` when the
-    /// output is not ours or the region misses it (the frame failed).
+    /// The output and the region in its physical pixels; `None` when the output is not ours or the
+    /// region misses it (the frame failed).
     target: Option<Target>,
     cursor: bool,
     /// Set once a copy was asked for, with whether it waits for damage.
@@ -237,7 +236,7 @@ impl Dispatch<ZwlrScreencopyFrameV1, FrameData> for State {
     }
 }
 
-/// Whether `buffer` can take a frame of `size`.
+/// Whether `buffer` can take a frame of `size` .
 fn check_buffer(
     state: &State,
     buffer: &WlBuffer,

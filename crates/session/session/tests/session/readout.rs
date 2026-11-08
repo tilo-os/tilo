@@ -1,18 +1,14 @@
-//! The readout that answers a media or mode key: what it says, where it
-//! stands, and what it leaves alone.
-//!
-//! Key presses go through the seat the way a person's do, and what the
-//! readout says is read from the session's accessible labels — the same words
-//! a screen reader gets.
+//! The readout that answers a media or mode key: what it says, where it stands, and what it leaves
+//! alone.
+//! Key presses go through the seat the way a person's do, and what the readout says is read from
+//! the session's accessible labels — the same words a screen reader gets.
 
 use super::*;
 
-/// Step the session until its readout says `words`, and what it says there.
-///
-/// The readout is up for a moment of its own, and a machine running a whole
-/// suite at once can spend that moment on the turn that raised it: the turns
-/// that wait for it and the read of what it says happen at one reading of the
-/// clock, so the readout the key raised is the one read.
+/// Step the session until its readout says `words` , and what it says there.
+/// The readout is up for a moment of its own, and a machine running a whole suite at once can spend
+/// that moment on the turn that raised it: the turns that wait for it and the read of what it says
+/// happen at one reading of the clock, so the readout the key raised is the one read.
 #[track_caller]
 pub(super) fn readout_saying(session: &mut Session, words: &str) -> String {
     ui::time::testing::with_monotonic_time(ui::time::now(), || {

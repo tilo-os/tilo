@@ -38,13 +38,12 @@ const CACHE_LIMIT: usize = 512;
 enum Layer {
     /// An icon name in the person's themes, or an absolute icon path.
     Named(String),
-    /// Pixels the sender handed over, already decoded and bounded, one per
-    /// size it offered; the one that fills the paint size is picked.
+    /// Pixels the sender handed over, already decoded and bounded, one per size it offered; the one
+    /// that fills the paint size is picked.
     Pixels(Vec<ui::peniko::ImageData>),
 }
 
-/// The artwork of one notification: the first of its layers that has
-/// pixels.
+/// The artwork of one notification: the first of its layers that has pixels.
 pub(crate) struct Artwork {
     key: String,
     layers: Vec<Layer>,
@@ -55,8 +54,8 @@ impl AppImageSource for Artwork {
         &self.key
     }
 
-    /// Never touches the disk on the frame's thread: an icon that is not
-    /// rasterised yet is asked for, and this frame paints without it.
+    /// Never touches the disk on the frame's thread: an icon that is not rasterised yet is asked
+    /// for, and this frame paints without it.
     fn pixels(&self, device_px: u32) -> Option<ui::peniko::ImageData> {
         let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
         for layer in &self.layers {
@@ -77,10 +76,9 @@ impl AppImageSource for Artwork {
     }
 }
 
-/// The artwork a window brought of its own: the icon the program set for
-/// that window, whether it handed over pixels or named a theme icon. Keyed by
-/// the window and the icon's serial, so a program that sets another icon is
-/// new artwork and the same one is not painted again.
+/// The artwork a window brought of its own: the icon the program set for that window, whether it
+/// handed over pixels or named a theme icon. Keyed by the window and the icon's serial, so a
+/// program that sets another icon is new artwork and the same one is not painted again.
 pub(crate) fn window_art(window: u64, icon: &tilo_compositor::WindowIcon) -> AppImage {
     let layers = match icon.artwork() {
         tilo_compositor::IconArtwork::Named(name) => vec![Layer::Named(name.clone())],
@@ -108,9 +106,8 @@ pub(crate) fn window_art(window: u64, icon: &tilo_compositor::WindowIcon) -> App
 }
 
 impl crate::Session {
-    /// Hand the desk each window's own icon, which it paints on the window's
-    /// tab and in the switcher, and let go of the icons of windows that
-    /// closed or set none.
+    /// Hand the desk each window's own icon, which it paints on the window's tab and in the
+    /// switcher, and let go of the icons of windows that closed or set none.
     pub(crate) fn feed_window_artwork(&mut self) {
         let mut shown = BTreeMap::new();
         for (window, _) in self.compositor.windows() {
@@ -135,8 +132,8 @@ impl crate::Session {
     }
 }
 
-/// The pixels that fill `device_px`: the smallest offer at least that big, so
-/// artwork is never stretched, else the largest there is.
+/// The pixels that fill `device_px` : the smallest offer at least that big, so artwork is never
+/// stretched, else the largest there is.
 fn pick(images: &[ui::peniko::ImageData], device_px: u32) -> Option<ui::peniko::ImageData> {
     images
         .iter()
@@ -146,11 +143,10 @@ fn pick(images: &[ui::peniko::ImageData], device_px: u32) -> Option<ui::peniko::
         .cloned()
 }
 
-/// The artwork for a notification from `app_id`, hinting `desktop_entry`
-/// and the sender's claimed `app_icon`, with `pixels` the sender handed
-/// over; keyed by the notification's id and arrival generation so a
-/// replaced image is never mistaken for the old one. `None` when nothing
-/// names artwork.
+/// The artwork for a notification from `app_id` , hinting `desktop_entry` and the sender's claimed
+/// `app_icon` , with `pixels` the sender handed over; keyed by the notification's id and arrival
+/// generation so a replaced image is never mistaken for the old one. `None` when nothing names
+/// artwork.
 pub(crate) fn notification(
     key: String,
     app_id: Option<&str>,
@@ -176,20 +172,19 @@ fn notification_layers(
 ) -> Vec<Layer> {
     let mut layers = Vec::with_capacity(4);
     let attributed = app_id.map(str::trim).filter(|id| !id.is_empty());
-    // The app this is from: the one the launcher proved, else the installed
-    // app a tool the launcher proved none for names itself after.
+    // The app this is from: the one the launcher proved, else the installed app a tool the launcher
+    // proved none for names itself after.
     let proven = attributed.filter(|id| !id.starts_with('/'));
     let named = proven.is_none().then(|| caption_app(sender_name)).flatten();
     if let Some(app) = proven.map(str::to_owned).or_else(|| named.clone()) {
-        // The icon the installed package of that app signed, else the theme
-        // icon named like its id — what most Wayland applications with no
-        // desktop entry of their own install. An app the theme does not draw
-        // shows the glyph the launcher gives it.
+        // The icon the installed package of that app signed, else the theme icon named like its id
+        // — what most Wayland applications with no desktop entry of their own install. An app the
+        // theme does not draw shows the glyph the launcher gives it.
         let name = installed_icon(&app).unwrap_or(app);
         layers.push(Layer::Named(name));
     }
-    // A sender with an app of its own is drawn as that app: what it says it
-    // is stands only for a sender no app answers for.
+    // A sender with an app of its own is drawn as that app: what it says it is stands only for a
+    // sender no app answers for.
     if named.is_none() {
         if let Some(name) = desktop_entry
             .map(str::trim)
@@ -206,24 +201,23 @@ fn notification_layers(
     layers
 }
 
-/// The icon a desktop entry names, for the entry id `desktop_id`.
+/// The icon a desktop entry names, for the entry id `desktop_id` .
 fn entry_icon(desktop_id: &str) -> Option<String> {
     desktop_entry::cache::cached_scan(&crate::app_names::entry_locales())
         .find(desktop_id)
         .and_then(|entry| entry.icon.clone())
 }
 
-/// The absolute path of the icon the installed package `app_id` signed, as
-/// the app lists' worker last resolved it. Never touches the disk: a package
-/// installed since is artwork of its own only once the lists were read
-/// again, and until then the theme icon named like the id shows.
+/// The absolute path of the icon the installed package `app_id` signed, as the app lists' worker
+/// last resolved it. Never touches the disk: a package installed since is artwork of its own only
+/// once the lists were read again, and until then the theme icon named like the id shows.
 fn installed_icon(app_id: &str) -> Option<String> {
     let lists = LISTS.lock_recover().as_ref()?.latest();
     installed_icon_in(&lists, app_id)
 }
 
-/// The installed app a sender names itself after, for a sender the launcher
-/// proved no app for: a link, a script or a tool posting on an app's behalf.
+/// The installed app a sender names itself after, for a sender the launcher proved no app for: a
+/// link, a script or a tool posting on an app's behalf.
 fn caption_app(sender_name: Option<&str>) -> Option<String> {
     let name = sender_name?;
     let lists = LISTS.lock_recover();
@@ -232,10 +226,9 @@ fn caption_app(sender_name: Option<&str>) -> Option<String> {
     app
 }
 
-/// The installed app that shows itself as `name`, as the launcher lists it:
-/// a Tilo package's id, else a host app's desktop-entry icon, else its
-/// desktop id — the launcher's own order of names to draw. `None` when this
-/// device installs no app by that name.
+/// The installed app that shows itself as `name` , as the launcher lists it: a Tilo package's id,
+/// else a host app's desktop-entry icon, else its desktop id — the launcher's own order of names to
+/// draw. `None` when this device installs no app by that name.
 fn named_app(lists: &AppLists, name: &str) -> Option<String> {
     let name = name.trim();
     if name.is_empty() {
@@ -260,8 +253,8 @@ fn installed_icon_in(lists: &AppLists, app_id: &str) -> Option<String> {
     let app = if icons.contains_key(app_id) {
         app_id.to_owned()
     } else {
-        // A notification can name an app by an id it no longer installs
-        // under: the package that took its place signed the artwork.
+        // A notification can name an app by an id it no longer installs under: the package that
+        // took its place signed the artwork.
         tilo_action_policy::earlier::held_current(app_id)
     };
     icons
@@ -269,19 +262,18 @@ fn installed_icon_in(lists: &AppLists, app_id: &str) -> Option<String> {
         .and_then(|path| path.to_str().map(str::to_owned))
 }
 
-/// The app lists search reads of this device, where a notification's app
-/// icon is found: set once at startup, kept current by their own worker.
+/// The app lists search reads of this device, where a notification's app icon is found: set once at
+/// startup, kept current by their own worker.
 static LISTS: Mutex<Option<Lists>> = Mutex::new(None);
 
-/// Answer an app's artwork from `lists`. Before this — and in a session given
-/// lists fixed up front, which are all the artwork there is — only the icons
-/// those lists carry are named.
+/// Answer an app's artwork from `lists` . Before this — and in a session given lists fixed up
+/// front, which are all the artwork there is — only the icons those lists carry are named.
 pub(crate) fn set_lists(lists: Lists) {
     *LISTS.lock_recover() = Some(lists);
 }
 
-/// The app lists as last read, for the names they carry: the installed
-/// packages' own names and the machine's desktop entries.
+/// The app lists as last read, for the names they carry: the installed packages' own names and the
+/// machine's desktop entries.
 pub(crate) fn app_lists() -> Option<Arc<AppLists>> {
     LISTS.lock_recover().as_ref().map(Lists::latest)
 }
@@ -292,8 +284,7 @@ pub(crate) fn set_wake(wake: Arc<dyn Fn() + Send + Sync>) {
 }
 
 struct Registry {
-    /// Each icon's pixels at each size; `None` once a theme was found not
-    /// to have it.
+    /// Each icon's pixels at each size; `None` once a theme was found not to have it.
     answers: Mutex<BTreeMap<(String, u32), Option<ui::peniko::ImageData>>>,
     /// What was already asked for, so one frame does not queue it twice.
     asked: Mutex<BTreeSet<(String, u32)>>,
@@ -313,8 +304,7 @@ fn registry() -> &'static Registry {
 }
 
 impl Registry {
-    /// What `name` at `px` rasterises to; `None` while that is still being
-    /// found out.
+    /// What `name` at `px` rasterises to; `None` while that is still being found out.
     #[expect(
         clippy::option_option,
         reason = "three answers differ: not found out yet, this theme has no such icon, pixels"
@@ -333,8 +323,7 @@ impl Registry {
             return;
         }
         if self.sender().send(key.clone()).is_err() {
-            // The worker went away before taking it: let a later frame ask
-            // again.
+            // The worker went away before taking it: let a later frame ask again.
             self.asked.lock_recover().remove(&key);
         }
     }
@@ -372,14 +361,12 @@ impl Registry {
     }
 }
 
-/// The pixels of an icon an application names for its tray item, looked up
-/// in the person's themes — under the item's own `theme_path` first, so an
-/// application that ships its theme is drawn from it — and rasterised
-/// `device_px` square: `(width, height, straight-alpha RGBA)`, or `None`
-/// when no theme has it or it cannot be decoded.
-///
-/// This reads the disk, so the tray host calls it while reading an item on
-/// its own runtime, never from the session's loop.
+/// The pixels of an icon an application names for its tray item, looked up in the person's themes —
+/// under the item's own `theme_path` first, so an application that ships its theme is drawn from it
+/// — and rasterised `device_px` square: `(width, height, straight-alpha RGBA)` , or `None` when no
+/// theme has it or it cannot be decoded.
+/// This reads the disk, so the tray host calls it while reading an item on its own runtime, never
+/// from the session's loop.
 pub(crate) fn tray_raster(
     name: &str,
     theme_path: Option<&str>,
@@ -402,8 +389,8 @@ pub(crate) fn tray_raster(
     Some((pixels.width, pixels.height, Arc::new(pixels.rgba)))
 }
 
-/// The pixels of icon `name` at `px` square, or `None` when no theme has
-/// it or it cannot be decoded.
+/// The pixels of icon `name` at `px` square, or `None` when no theme has it or it cannot be
+/// decoded.
 fn resolve(name: &str, px: u32) -> Option<ui::peniko::ImageData> {
     let file = icon_theme::lookup(name, px, 1)?;
     let bytes = read_bounded(&file.path)?;
@@ -575,8 +562,8 @@ mod tests {
         assert_eq!((pixels.width, pixels.height), (2, 1));
     }
 
-    /// The pixels a window hands over come in several sizes: the one that
-    /// fills the slot is shown, so the artwork is never stretched.
+    /// The pixels a window hands over come in several sizes: the one that fills the slot is shown,
+    /// so the artwork is never stretched.
     #[test]
     fn a_windows_icon_is_shown_at_the_size_that_fills_its_slot() {
         let images: Vec<ui::peniko::ImageData> = [16, 32, 48]
@@ -600,9 +587,8 @@ mod tests {
         );
     }
 
-    /// A program the launcher proved no app for (a tool posting for one) is
-    /// drawn by the installed app its caption names: each app by its own
-    /// name, an app the device does not install by none.
+    /// A program the launcher proved no app for (a tool posting for one) is drawn by the installed
+    /// app its caption names: each app by its own name, an app the device does not install by none.
     #[test]
     fn an_installed_app_is_found_by_the_name_a_sender_claimed() {
         let lists = AppLists {
@@ -640,9 +626,8 @@ mod tests {
         );
     }
 
-    /// A tool posting on an installed app's behalf is drawn by that app: the
-    /// icon name it claimed is no mark for an app. A tool no app answers for
-    /// still shows its own.
+    /// A tool posting on an installed app's behalf is drawn by that app: the icon name it claimed
+    /// is no mark for an app. A tool no app answers for still shows its own.
     #[test]
     fn a_claimed_icon_stands_only_for_a_sender_no_app_answers_for() {
         set_lists(Lists::fixed(AppLists {
@@ -683,9 +668,9 @@ mod tests {
         assert_eq!(layers(None), vec![Some("dialog-information".to_string())]);
     }
 
-    /// An icon an application names for its tray item is read the way a
-    /// notification's is: straight-alpha RGBA at the size asked for, and
-    /// nothing at all for one that cannot be decoded.
+    /// An icon an application names for its tray item is read the way a notification's is:
+    /// straight-alpha RGBA at the size asked for, and nothing at all for one that cannot be
+    /// decoded.
     #[test]
     fn a_named_tray_icon_comes_back_as_rgba_pixels() {
         let dir = tempfile::tempdir().expect("a theme");

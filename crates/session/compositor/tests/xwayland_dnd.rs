@@ -1,6 +1,6 @@
-//! Files dragged between an X11 client and the session's surface apps on a
-//! headless compositor: an X11 window as the drag's target, and an X11
-//! client as the drag's source, over the compositor's XDND bridge.
+//! Files dragged between an X11 client and the session's surface apps on a headless compositor: an
+//! X11 window as the drag's target, and an X11 client as the drag's source, over the compositor's
+//! XDND bridge.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -35,8 +35,8 @@ const BTN_LEFT: u32 = 0x110;
 const URI_LIST: &str = "text/uri-list";
 const FILES: &[u8] = b"file:///home/someone/a%20b.txt\r\nfile:///home/someone/c.png\r\n";
 
-/// A compositor with one output and Xwayland, an X11 client on it and a
-/// surface app that takes file lists.
+/// A compositor with one output and Xwayland, an X11 client on it and a surface app that takes file
+/// lists.
 struct Session {
     compositor: Compositor,
     x11: RustConnection,
@@ -75,8 +75,7 @@ impl Session {
         }
     }
 
-    /// A mapped 200x150 window the stack policy centres, `XdndAware` at the
-    /// newest version.
+    /// A mapped 200x150 window the stack policy centres, `XdndAware` at the newest version.
     fn x11_window(&mut self) -> Window {
         let window = self.x11.generate_id().expect("id");
         self.x11
@@ -139,8 +138,8 @@ impl Session {
             .expect("gc");
         self.x11.map_window(window).expect("map");
         self.x11.flush().expect("flush");
-        // A mapped window that painted is one Xwayland has a buffer for, and
-        // so one the session finds under the pointer.
+        // A mapped window that painted is one Xwayland has a buffer for, and so one the session
+        // finds under the pointer.
         self.x11
             .poly_fill_rectangle(
                 window,
@@ -173,8 +172,7 @@ impl Session {
         window
     }
 
-    /// The window the pointer is over that takes XDND messages, and the
-    /// version it speaks.
+    /// The window the pointer is over that takes XDND messages, and the version it speaks.
     fn target_under_pointer(&self) -> Option<(Window, u32)> {
         let child = self
             .x11
@@ -197,7 +195,7 @@ impl Session {
         Some((child, version))
     }
 
-    /// The atom named `name`.
+    /// The atom named `name` .
     fn atom(&self, name: &str) -> Atom {
         self.x11
             .intern_atom(false, name.as_bytes())
@@ -207,7 +205,7 @@ impl Session {
             .atom
     }
 
-    /// Send `words` of `kind` to `window`.
+    /// Send `words` of `kind` to `window` .
     fn message(&self, window: Window, kind: Atom, words: [u32; 5]) {
         let event = ClientMessageEvent::new(32, window, kind, words);
         self.x11
@@ -216,7 +214,7 @@ impl Session {
         self.x11.flush().expect("flush");
     }
 
-    /// Start dragging `self.files` into `target`.
+    /// Start dragging `self.files` into `target` .
     fn enter(&self, target: Window, version: u32, source: Window) {
         self.message(
             target,
@@ -225,7 +223,7 @@ impl Session {
         );
     }
 
-    /// The drag is at root position `(x, y)` over `target`.
+    /// The drag is at root position `(x, y)` over `target` .
     fn position(&self, target: Window, source: Window, x: f64, y: f64) {
         #[allow(
             clippy::cast_possible_truncation,
@@ -245,7 +243,7 @@ impl Session {
         );
     }
 
-    /// The drag dropped on `target`.
+    /// The drag dropped on `target` .
     fn drop(&self, target: Window, source: Window) {
         self.message(
             target,
@@ -263,7 +261,7 @@ impl Session {
         );
     }
 
-    /// The drop is done with `source`.
+    /// The drop is done with `source` .
     fn finished(&self, target: Window, source: Window) {
         self.message(
             source,
@@ -306,7 +304,7 @@ impl Session {
         self.x11.flush().expect("flush");
     }
 
-    /// Read the drag's data a target was given, as `text/uri-list`.
+    /// Read the drag's data a target was given, as `text/uri-list` .
     fn read_drop(&mut self, window: Window, source: Window) {
         self.x11
             .convert_selection(
@@ -342,8 +340,7 @@ impl Session {
         self.finished(source, window);
     }
 
-    /// Run the session on for a moment, as it would between two of a
-    /// person's actions.
+    /// Run the session on for a moment, as it would between two of a person's actions.
     fn settle(&mut self) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_millis(100) {
@@ -358,7 +355,7 @@ impl Session {
         }
     }
 
-    /// Let the compositor and the X11 client run until `done`.
+    /// Let the compositor and the X11 client run until `done` .
     fn pump(&mut self, mut done: impl FnMut(&Session) -> bool) {
         let started = Instant::now();
         while started.elapsed() < Duration::from_secs(20) {
@@ -396,8 +393,8 @@ impl Session {
                     self.status(words[0], target);
                 } else if message.type_ == self.atom("XdndDrop") {
                     let source = words[0];
-                    // Our own connection does the reading: collect the
-                    // answer on the next turn of the loop.
+                    // Our own connection does the reading: collect the answer on the next turn of
+                    // the loop.
                     self.read_drop(target, source);
                 }
             }
@@ -406,9 +403,9 @@ impl Session {
     }
 }
 
-/// An X11 client on `display`: Xwayland answers the connection's setup only
-/// after it has roundtripped with the compositor, so the client waits in a
-/// thread while the compositor dispatches here.
+/// An X11 client on `display` : Xwayland answers the connection's setup only after it has
+/// roundtripped with the compositor, so the client waits in a thread while the compositor
+/// dispatches here.
 fn x11_client(compositor: &mut Compositor, display: u32) -> (RustConnection, Window) {
     let (sender, receiver) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
@@ -582,8 +579,8 @@ fn files_dragged_out_of_an_x11_window_drop_on_a_surface_app() {
         .set_selection_owner(window, session.atom("XdndSelection"), x11rb::CURRENT_TIME)
         .expect("owner");
     session.x11.flush().expect("flush");
-    // The session sees the new drag source on its own round of the loop
-    // before the pointer leaves the window.
+    // The session sees the new drag source on its own round of the loop before the pointer leaves
+    // the window.
     session.settle();
 
     input(
@@ -600,8 +597,7 @@ fn files_dragged_out_of_an_x11_window_drop_on_a_surface_app() {
             pressed: true,
         },
     );
-    // The compositor raises its proxy over everything else while the X11
-    // client may be dragging.
+    // The compositor raises its proxy over everything else while the X11 client may be dragging.
     input(
         &mut session.compositor,
         InputEvent::PointerMotion {

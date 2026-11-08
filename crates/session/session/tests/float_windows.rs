@@ -1,13 +1,10 @@
-//! Floating a window over the desk in a real session: the chord and the
-//! window's own menu lift it out of its strip and keep the place it stands
-//! at in the desk's record, the same record's undo floats it again, and a
-//! float carried back over its strip shows the gap it would land in and
+//! Floating a window over the desk in a real session: the chord and the window's own menu lift it
+//! out of its strip and keep the place it stands at in the desk's record, the same record's undo
+//! floats it again, and a float carried back over its strip shows the gap it would land in and
 //! snaps into it.
-//!
-//! The pictures are written to `$FLOAT_WINDOWS_OUT` (default
-//! `~/.cache/float-snap/shots`): the desk with the conversation floating
-//! over its strip, carried over the windows it covers, and the gap it snaps
-//! into, in both themes.
+//! The pictures are written to `$FLOAT_WINDOWS_OUT` (default `~/.cache/float-snap/shots` ): the
+//! desk with the conversation floating over its strip, carried over the windows it covers, and the
+//! gap it snaps into, in both themes.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -37,15 +34,14 @@ use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig};
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 /// The conversation the captures float, and the two windows it floats over.
 const CHAT: &str = "so.tilo.lang.chat";
 const MAIL: &str = "so.tilo.lang.mail";
 const NOTES: &str = "so.tilo.lang.notes";
-/// The person's appearance section: the theme is chosen through its own
-/// published `field-edit`, as Settings does.
+/// The person's appearance section: the theme is chosen through its own published `field-edit` , as
+/// Settings does.
 const APPEARANCE: &str = "settings:settings.appearance";
 /// The left button of a two-and-more button pointer.
 const BTN_LEFT: u32 = 0x110;
@@ -54,8 +50,8 @@ const KEY_F: u32 = 33;
 const KEY_LEFT_SHIFT: u32 = 42;
 const KEY_LEFT_META: u32 = 125;
 
-/// A session as a development one starts: the tilolang shell as the whole
-/// screen, the seeded apps published, and the appearance section beside them.
+/// A session as a development one starts: the tilolang shell as the whole screen, the seeded apps
+/// published, and the appearance section beside them.
 fn session() -> Session {
     let apps = common::seeded_apps();
     Session::headless(
@@ -65,9 +61,8 @@ fn session() -> Session {
             shell: false,
             collab: false,
             search: tilo_session::SearchOptions {
-                // The apps installed on this device, as a real session
-                // reads them: the launcher opens them, and the desk names
-                // their windows by their own names.
+                // The apps installed on this device, as a real session reads them: the launcher
+                // opens them, and the desk names their windows by their own names.
                 lists: tilo_session::Lists::fixed(tilo_session::AppLists::read()),
                 ..tilo_session::SearchOptions::default()
             },
@@ -98,8 +93,8 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     panic!("{what} never happened");
 }
 
-/// Open `app` on the desk, the way the launcher opens one, and answer its
-/// tab's id once the desk has it.
+/// Open `app` on the desk, the way the launcher opens one, and answer its tab's id once the desk
+/// has it.
 fn open(session: &mut Session, app: &str) -> u64 {
     let arguments = json!({ "app": app });
     session
@@ -116,7 +111,7 @@ fn open(session: &mut Session, app: &str) -> u64 {
     tab_of(session, app).expect("the app's window is on the desk")
 }
 
-/// The tab of `app`'s window, while the desk holds one.
+/// The tab of `app` 's window, while the desk holds one.
 fn tab_of(session: &Session, app: &str) -> Option<u64> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -140,8 +135,8 @@ fn rect(session: &Session, tab: u64) -> ui::kurbo::Rect {
         .unwrap_or_else(|| panic!("the window {tab} is drawn"))
 }
 
-/// The window `tab`, as the desk's record reads it: the place it keeps, and
-/// whether it floats above the desk.
+/// The window `tab` , as the desk's record reads it: the place it keeps, and whether it floats
+/// above the desk.
 fn held(session: &Session, tab: u64) -> StripReading {
     let reading = session.arrangement().borrow().reading();
     let key = tab.to_string();
@@ -158,7 +153,7 @@ fn held(session: &Session, tab: u64) -> StripReading {
         .unwrap_or_else(|| panic!("the desk keeps the strip of the window {tab}"))
 }
 
-/// The windows of the strip holding `tab`, in the order it lays them out.
+/// The windows of the strip holding `tab` , in the order it lays them out.
 fn order(session: &Session, tab: u64) -> Vec<u64> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -181,16 +176,15 @@ fn order(session: &Session, tab: u64) -> Vec<u64> {
     })
 }
 
-/// The desk the captures show: a conversation, a letter and a note in one
-/// strip, the conversation in front.
+/// The desk the captures show: a conversation, a letter and a note in one strip, the conversation
+/// in front.
 fn desk() -> Session {
     let mut session = session();
     step(&mut session);
     for app in [CHAT, MAIL, NOTES] {
         open(&mut session, app);
     }
-    // The window in front is the conversation: the chord and the menu act
-    // on it.
+    // The window in front is the conversation: the chord and the menu act on it.
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let handle = session.handle().clone();
     let mut tree = handle.read(Clone::clone);
@@ -208,8 +202,8 @@ fn desk() -> Session {
     if let Some((strip, group)) = found {
         tree.active_group.insert(strip, group);
     }
-    // Three windows of a strip's own width all fit beside each other: each
-    // takes a narrow share of the strip, as the person would set them.
+    // Three windows of a strip's own width all fit beside each other: each takes a narrow share of
+    // the strip, as the person would set them.
     for strip in tree
         .workspaces
         .iter_mut()
@@ -234,8 +228,8 @@ fn key(session: &mut Session, keycode: u32, pressed: bool) {
     step(session);
 }
 
-/// Press `action`'s chord as a person presses it: the modifiers held, the
-/// key tapped, the modifiers let go.
+/// Press `action` 's chord as a person presses it: the modifiers held, the key tapped, the
+/// modifiers let go.
 fn press(session: &mut Session, action: ShortcutAction) {
     let chord = ShortcutConfig::default()
         .bindings
@@ -310,7 +304,7 @@ fn rows(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Open the window menu for `tab`, as the shell's menu does.
+/// Open the window menu for `tab` , as the shell's menu does.
 fn open_menu(session: &mut Session, tab: u64) {
     let arguments = json!({ "tab": tab.to_string() });
     session
@@ -320,8 +314,8 @@ fn open_menu(session: &mut Session, tab: u64) {
             arguments.as_object().expect("an object"),
         )
         .expect("the window menu opens");
-    // The menu is a surface of its own: give it the frames it takes to show
-    // and draw through the compositor before what it shows is read or seen.
+    // The menu is a surface of its own: give it the frames it takes to show and draw through the
+    // compositor before what it shows is read or seen.
     for _ in 0..8 {
         step(session);
     }
@@ -340,8 +334,8 @@ fn choose(session: &mut Session, row: &str) {
     step(session);
 }
 
-/// Set the field `field` of the appearance section to `value` through the
-/// section's own published `field-edit`, as Settings does.
+/// Set the field `field` of the appearance section to `value` through the section's own published
+/// `field-edit` , as Settings does.
 fn set_field(session: &mut Session, field: &str, value: &Value) {
     let arguments = json!({
         "edit": {"path": [{"field": field}], "op": "set", "value": value}
@@ -378,7 +372,7 @@ fn shots() -> PathBuf {
     )
 }
 
-/// Write the screen as `<shots>/<name>.png`, with what it says beside it.
+/// Write the screen as `<shots>/<name>.png` , with what it says beside it.
 #[track_caller]
 fn capture(session: &mut Session, name: &str) {
     let dir = shots();
@@ -402,10 +396,9 @@ fn capture(session: &mut Session, name: &str) {
     .expect("write the labels");
 }
 
-/// The chord lifts the window in front above the desk at the floating
-/// window's size, the place it stands at is the desk's record, the window's
-/// own menu offers it back into its strip, and the record's undo floats it
-/// again.
+/// The chord lifts the window in front above the desk at the floating window's size, the place it
+/// stands at is the desk's record, the window's own menu offers it back into its strip, and the
+/// record's undo floats it again.
 #[test]
 fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     let _settled = ui::motion::testing::settled();
@@ -420,8 +413,8 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
         held(session, chat).floating
     });
 
-    // The place it stands at is the record's: the floating size, its corner
-    // and how far it is from it.
+    // The place it stands at is the record's: the floating size, its corner and how far it is from
+    // it.
     let floating = held(&session, chat);
     assert_eq!(
         (floating.float_width, floating.float_height),
@@ -482,8 +475,7 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
         "snapped back with no target returns it exactly where it was"
     );
 
-    // The record's undo takes that one step back, and the window floats
-    // again.
+    // The record's undo takes that one step back, and the window floats again.
     session
         .undo_arrangement()
         .expect("the desk undoes the step");
@@ -498,9 +490,8 @@ fn the_chord_floats_the_window_and_the_record_keeps_where_it_stands() {
     capture(&mut session, "float-light");
 }
 
-/// A float carried back over its strip shows the gap it would land in while
-/// the hand is still down, and letting go there snaps it into that gap as
-/// one step of the desk's record.
+/// A float carried back over its strip shows the gap it would land in while the hand is still down,
+/// and letting go there snaps it into that gap as one step of the desk's record.
 #[test]
 fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     let _settled = ui::motion::testing::settled();
@@ -528,15 +519,15 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
     let grab = (over.x1 - 220.0, over.y0 + 22.0);
     pointer_at(&mut session, grab);
     button(&mut session, true);
-    // Over the letter it covers, the float stands on its own ground and its
-    // own elevation: its bar reads as its own, never as the letter's.
+    // Over the letter it covers, the float stands on its own ground and its own elevation: its bar
+    // reads as its own, never as the letter's.
     pointer_at(&mut session, (letter.center().x, letter.center().y));
     for _ in 0..4 {
         step(&mut session);
     }
     capture(&mut session, "carried-dark");
-    // The hand goes where the window would land: in the gap between the
-    // letter and the note, still on the strip, so the strip shows it.
+    // The hand goes where the window would land: in the gap between the letter and the note, still
+    // on the strip, so the strip shows it.
     let gap = f64::midpoint(letter.x1, note.x0);
     let carried = (gap, letter.y0 + 22.0);
 

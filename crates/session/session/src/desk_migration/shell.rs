@@ -29,13 +29,12 @@ use crate::desk_doc::StateNotice;
 /// The version of the file the shell last wrote.
 pub(crate) const VERSION: u32 = 6;
 
-/// The suffix the file is moved to once its desk is this device's: what was
-/// there is kept for good, and nothing reads it again.
+/// The suffix the file is moved to once its desk is this device's: what was there is kept for good,
+/// and nothing reads it again.
 const IMPORTED: &str = "imported";
 
-/// Largest desk file this build reads. A desk is a few hundred windows at
-/// most; anything past this is not one, and reading it would cost the
-/// session's memory to find out.
+/// Largest desk file this build reads. A desk is a few hundred windows at most; anything past this
+/// is not one, and reading it would cost the session's memory to find out.
 const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// `state.json` as a versioned format: a file of an older version comes up to
@@ -54,9 +53,9 @@ pub(crate) const STATE_FORMAT: Format = Format {
     ],
 };
 
-/// The file the shell kept this device's desk in, where a device that ran it
-/// still has one. `TILO_STATE_PATH` overrides it, as it did for the shell: a
-/// harness that kept its desk elsewhere wrote it elsewhere.
+/// The file the shell kept this device's desk in, where a device that ran it still has one.
+/// `TILO_STATE_PATH` overrides it, as it did for the shell: a harness that kept its desk elsewhere
+/// wrote it elsewhere.
 pub fn shell_state_path() -> Option<PathBuf> {
     if let Some(set) = std::env::var_os("TILO_STATE_PATH").filter(|set| !set.is_empty()) {
         return Some(PathBuf::from(set));
@@ -66,28 +65,26 @@ pub fn shell_state_path() -> Option<PathBuf> {
 
 /// What became of the desk the shell kept.
 pub(crate) enum Imported {
-    /// Nothing came over: this device has a desk already, or the shell kept
-    /// none here.
+    /// Nothing came over: this device has a desk already, or the shell kept none here.
     Nothing,
     /// The desk the shell kept is this device's desk now.
     Desk,
-    /// The desk is on disk and this build did not open it, with what the
-    /// person is told about it. The file was not changed.
+    /// The desk is on disk and this build did not open it, with what the person is told about it.
+    /// The file was not changed.
     Refused(StateNotice),
 }
 
-/// Bring the desk `file` holds over into `doc`, the desk's one document at
-/// `document`, written by `actor`, unless this device has a desk already. The
-/// file is moved aside once the document is written: a session that dies
-/// before the write lands imports again.
+/// Bring the desk `file` holds over into `doc` , the desk's one document at `document` , written by
+/// `actor` , unless this device has a desk already. The file is moved aside once the document is
+/// written: a session that dies before the write lands imports again.
 pub(crate) fn bring_over(
     file: &Path,
     document: &Path,
     doc: &mut AutoCommit,
     actor: automerge::ActorId,
 ) -> Imported {
-    // A desk this device used is never replaced by one an older program
-    // kept: the person has worked here since.
+    // A desk this device used is never replaced by one an older program kept: the person has worked
+    // here since.
     if desktop_doc::workspaces(doc) > 0 {
         return Imported::Nothing;
     }
@@ -100,8 +97,7 @@ pub(crate) fn bring_over(
         Ok(stored) => stored.schema_version,
         Err(error) => return Imported::Refused(unreadable(file, error.to_string())),
     };
-    // An older file comes up to date first, a copy of it kept; a newer one is
-    // refused untouched.
+    // An older file comes up to date first, a copy of it kept; a newer one is refused untouched.
     let bytes = match STATE_FORMAT.bring_up(file, text.into_bytes(), stored) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -122,8 +118,8 @@ pub(crate) fn bring_over(
         Err(error) => return Imported::Refused(unreadable(file, error.to_string())),
     };
     if tree.workspaces.is_empty() {
-        // A file the shell wrote before its person had a workspace: nothing
-        // in it to bring over, and no reason to read it again.
+        // A file the shell wrote before its person had a workspace: nothing in it to bring over,
+        // and no reason to read it again.
         set_aside(file);
         return Imported::Nothing;
     }
@@ -192,14 +188,12 @@ struct StoredVersion {
     schema_version: u32,
 }
 
-/// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every
-/// workspace one, a strip and its first windows (chat, activity, notes)
-/// under ids in the [`RESERVED_SALT`] namespace, which nobody but that code
-/// minted in. A Lounge the person never put a window or tab of their own
-/// into (every window and tab id of it in that namespace) goes; one they
-/// used stays as it is, and so does one that is a workspace's only strip.
-/// Focus on a dropped strip moves to the workspace's first strip.
-///
+/// Version 3 to 4: workspaces no longer get a Lounge. Version 3 gave every workspace one, a strip
+/// and its first windows (chat, activity, notes) under ids in the [`RESERVED_SALT`] namespace,
+/// which nobody but that code minted in. A Lounge the person never put a window or tab of their own
+/// into (every window and tab id of it in that namespace) goes; one they used stays as it is, and
+/// so does one that is a workspace's only strip. Focus on a dropped strip moves to the workspace's
+/// first strip.
 /// [`RESERVED_SALT`]: tilo_desktop_model::ids::RESERVED_SALT
 #[allow(
     clippy::needless_pass_by_value,
@@ -291,10 +285,9 @@ fn drop_untouched_lounges(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&file).map_err(|error| error.to_string())
 }
 
-/// Version 4 to 5: Activity is an app. Version 4 kept the Activity window
-/// as a tile of its own kind; it becomes the Activity app's window, in the
-/// same place under the same tab id, and opens the app when the session
-/// starts like any app's window.
+/// Version 4 to 5: Activity is an app. Version 4 kept the Activity window as a tile of its own
+/// kind; it becomes the Activity app's window, in the same place under the same tab id, and opens
+/// the app when the session starts like any app's window.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
@@ -318,9 +311,8 @@ fn activity_becomes_an_app(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
             tab["tile"] = serde_json::json!({
                 "LocalApp": {
                     "app_id": tilo_actions::remote::workspace_activity::APP_ID,
-                    // The name the shell titled it by; the app's own name is
-                    // the same word, and this record is what a window's
-                    // chrome shows before the app answers.
+                    // The name the shell titled it by; the app's own name is the same word, and
+                    // this record is what a window's chrome shows before the app answers.
                     "label": "Activity",
                     "note": "",
                 }
@@ -334,11 +326,10 @@ fn activity_becomes_an_app(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&file).map_err(|error| error.to_string())
 }
 
-/// Version 5 to 6: the device's record of the rooms it held was part of the
-/// desk file; it is not the desk. The shell moved it to a file of its own as
-/// these rooms became workspace documents, so it is dropped here with the
-/// step that dropped it there — a record that could not be read stays in the
-/// copy kept beside the file.
+/// Version 5 to 6: the device's record of the rooms it held was part of the desk file; it is not
+/// the desk. The shell moved it to a file of its own as these rooms became workspace documents, so
+/// it is dropped here with the step that dropped it there — a record that could not be read stays
+/// in the copy kept beside the file.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "a migration step: every step of a file's migrations takes its bytes and returns them"
@@ -356,8 +347,8 @@ fn owner_record_leaves_the_file(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod tests {
-    //! A desk the shell kept at any version it wrote comes over as this
-    //! device's desk, and comes over once.
+    //! A desk the shell kept at any version it wrote comes over as this device's desk, and comes
+    //! over once.
 
     use super::*;
     use crate::desk_doc::{DeskDoc, Kept};
@@ -375,8 +366,8 @@ mod tests {
     /// The salt a second device of the person minted under.
     const OTHER_DEVICE: u16 = 0x1234;
 
-    /// The desk a person left: two workspaces, each with a Main and a Side
-    /// strip and a window per tab.
+    /// The desk a person left: two workspaces, each with a Main and a Side strip and a window per
+    /// tab.
     fn desk() -> DesktopTree {
         let mut minter = IdMinter::new(7);
         let mut tree = DesktopTree::default();
@@ -427,8 +418,8 @@ mod tests {
         }
     }
 
-    /// A Lounge as version 3 made it: a strip and three windows under ids in
-    /// the reserved namespace, which the person never put a window into.
+    /// A Lounge as version 3 made it: a strip and three windows under ids in the reserved
+    /// namespace, which the person never put a window into.
     fn lounge() -> Strip {
         let mut strip = Strip::new(StripId(compose_id(RESERVED_SALT, 1)), "Lounge");
         for (counter, title) in [(2, "Chat"), (3, "Activity"), (4, "Notes")] {
@@ -456,8 +447,8 @@ mod tests {
         strip
     }
 
-    /// `desk` as the shell wrote it in `version`: the file's own version, and
-    /// what only that version's file carried.
+    /// `desk` as the shell wrote it in `version` : the file's own version, and what only that
+    /// version's file carried.
     fn shell_file(desk: &DesktopTree, version: u32) -> Vec<u8> {
         let mut file = serde_json::to_value(desk).expect("a desk is json");
         if version <= 4 {
@@ -543,7 +534,7 @@ mod tests {
         PathBuf::from(format!("{}.{IMPORTED}", file.display()))
     }
 
-    /// A device that ran the shell, with its desk file at `file`.
+    /// A device that ran the shell, with its desk file at `file` .
     fn shell_device() -> (tempfile::TempDir, tempfile::TempDir, PathBuf) {
         let state = tempfile::tempdir().expect("a state directory");
         let config = tempfile::tempdir().expect("a config directory");
@@ -553,10 +544,9 @@ mod tests {
         (state, config, file)
     }
 
-    /// A desk the shell wrote in any version it wrote over comes over whole:
-    /// the same workspaces, strips, windows and tabs, on the ids they had; the
-    /// file it came from moves aside, kept, and the older file it was is kept
-    /// beside it.
+    /// A desk the shell wrote in any version it wrote over comes over whole: the same workspaces,
+    /// strips, windows and tabs, on the ids they had; the file it came from moves aside, kept, and
+    /// the older file it was is kept beside it.
     #[test]
     fn the_shells_desk_comes_over_at_every_version_it_wrote() {
         let left = desk();
@@ -616,10 +606,9 @@ mod tests {
         }
     }
 
-    /// A desk from before workspaces stopped getting a Lounge comes up
-    /// without the ones nobody used, and with the one the person put a window
-    /// into; focus on a dropped Lounge moves to the workspace's first strip
-    /// left.
+    /// A desk from before workspaces stopped getting a Lounge comes up without the ones nobody
+    /// used, and with the one the person put a window into; focus on a dropped Lounge moves to the
+    /// workspace's first strip left.
     #[test]
     fn a_v3_desk_keeps_the_lounges_someone_used_and_drops_the_rest() {
         let (state, _config, file) = shell_device();
@@ -693,8 +682,7 @@ mod tests {
         );
     }
 
-    /// The desk is imported once: a device that has one keeps it, whatever is
-    /// on disk afterwards.
+    /// The desk is imported once: a device that has one keeps it, whatever is on disk afterwards.
     #[test]
     fn a_device_that_has_a_desk_does_not_import_again() {
         let (state, _config, file) = shell_device();
@@ -713,8 +701,8 @@ mod tests {
         assert!(file.exists(), "nothing imported the second file");
     }
 
-    /// A desk this build does not open is not written over and not moved: the
-    /// person is told where it still is, and no desk takes its place.
+    /// A desk this build does not open is not written over and not moved: the person is told where
+    /// it still is, and no desk takes its place.
     #[test]
     fn a_desk_this_build_does_not_open_is_left_where_it_is() {
         let (state, _config, file) = shell_device();
@@ -764,8 +752,8 @@ mod tests {
         );
     }
 
-    /// The chain keeps every version the shell wrote loadable: the step from
-    /// the version before the current one reads the file that version wrote.
+    /// The chain keeps every version the shell wrote loadable: the step from the version before the
+    /// current one reads the file that version wrote.
     #[test]
     fn every_version_the_shell_wrote_comes_up_to_the_one_this_build_reads() {
         assert!(STATE_FORMAT.is_whole());

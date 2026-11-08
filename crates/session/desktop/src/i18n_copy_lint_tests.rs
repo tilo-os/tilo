@@ -1,8 +1,7 @@
-//! Keeps English prose out of the desktop's copy builders; the scan itself
-//! lives in `tilo-copy-lint`, shared with the shell.
+//! Keeps English prose out of the desktop's copy builders; the scan itself lives in
+//! `tilo-copy-lint` , shared with the shell.
 
-/// Literals that look like prose but are not copy. Each entry is
-/// `(path under src/, literal)`.
+/// Literals that look like prose but are not copy. Each entry is `(path under src/, literal)` .
 const ALLOWED: &[(&str, &str)] = &[];
 
 #[test]

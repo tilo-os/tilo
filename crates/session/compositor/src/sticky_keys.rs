@@ -1,10 +1,8 @@
-//! Typing assists: keys that wait until they are meant (slow keys) and
-//! modifiers that stay down until the chord is typed (sticky keys).
-//!
-//! Both are pure state machines over raw evdev keycodes and caller-supplied
-//! instants, so their timing is deterministic under test.
-//! [`crate::backend::drm::access_keys`] puts them, with bounce keys and mouse
-//! keys, in front of the compositor's input routing.
+//! Typing assists: keys that wait until they are meant (slow keys) and modifiers that stay down
+//! until the chord is typed (sticky keys).
+//! Both are pure state machines over raw evdev keycodes and caller-supplied instants, so their
+//! timing is deterministic under test. [`crate::backend::drm::access_keys`] puts them, with bounce
+//! keys and mouse keys, in front of the compositor's input routing.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -14,8 +12,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
-/// How soon a modifier pressed a second time after its first press counts as
-/// pressed twice: from then on it stays down until it is pressed again.
+/// How soon a modifier pressed a second time after its first press counts as pressed twice: from
+/// then on it stays down until it is pressed again.
 pub const LOCK_WINDOW: Duration = Duration::from_millis(400);
 
 /// Whether an evdev keycode is a modifier key: shift, control, alt, super.
@@ -36,27 +34,24 @@ pub fn is_modifier(keycode: u32) -> bool {
 /// A key edge to deliver: an evdev keycode and whether it is a press.
 pub type Edge = (u32, bool);
 
-/// Sticky keys: a modifier stays down until the key it modifies has been
-/// typed, so a chord can be typed one key at a time. Pressing a modifier
-/// twice in quick succession locks it down until it is pressed again.
-///
-/// A modifier's press is delivered as it happens, so every application sees
-/// the modifier the moment the person pressed it; what changes is that its
-/// physical release is swallowed and the release is sent when the chord is
-/// done.
+/// Sticky keys: a modifier stays down until the key it modifies has been typed, so a chord can be
+/// typed one key at a time. Pressing a modifier twice in quick succession locks it down until it is
+/// pressed again.
+/// A modifier's press is delivered as it happens, so every application sees the modifier the moment
+/// the person pressed it; what changes is that its physical release is swallowed and the release is
+/// sent when the chord is done.
 #[derive(Debug, Default)]
 pub struct StickyKeys {
     /// Modifiers held down by the latch, and whether each is locked.
     latched: BTreeMap<u32, Latched>,
     /// The last modifier press, for the second press that locks it.
     last_press: Option<(u32, Instant)>,
-    /// Keys whose press was delivered, so the latch lets go once the last of
-    /// them is released.
+    /// Keys whose press was delivered, so the latch lets go once the last of them is released.
     typing: BTreeSet<u32>,
     /// Modifiers whose physical key is down, so hardware repeat is ignored.
     down: BTreeSet<u32>,
-    /// Releases of modifiers whose press was never delivered (the press that
-    /// unlocked it), which must go nowhere.
+    /// Releases of modifiers whose press was never delivered (the press that unlocked it), which
+    /// must go nowhere.
     unlocked: BTreeSet<u32>,
 }
 
@@ -70,9 +65,9 @@ enum Latched {
 }
 
 impl StickyKeys {
-    /// The edges a physical press stands for at `now`: its own press for any
-    /// key, nothing for a latched modifier that is already down (or a
-    /// hardware repeat), and a release for a locked modifier being unlocked.
+    /// The edges a physical press stands for at `now` : its own press for any key, nothing for a
+    /// latched modifier that is already down (or a hardware repeat), and a release for a locked
+    /// modifier being unlocked.
     pub fn press(&mut self, keycode: u32, now: Instant) -> Vec<Edge> {
         if !is_modifier(keycode) {
             self.typing.insert(keycode);
@@ -83,15 +78,15 @@ impl StickyKeys {
             return Vec::new();
         }
         if self.latched.get(&keycode).copied() == Some(Latched::Locked) {
-            // Pressing a locked modifier lets it go; its own release then
-            // belongs to a press that was never delivered.
+            // Pressing a locked modifier lets it go; its own release then belongs to a press that
+            // was never delivered.
             self.latched.remove(&keycode);
             self.unlocked.insert(keycode);
             self.last_press = None;
             return vec![(keycode, false)];
         }
-        // A second press soon after the first locks it; a later one is a
-        // new chord for a latch that is already down.
+        // A second press soon after the first locks it; a later one is a new chord for a latch that
+        // is already down.
         let again = self.last_press.is_some_and(|(last, at)| {
             last == keycode && now.saturating_duration_since(at) < LOCK_WINDOW
         });
@@ -113,10 +108,9 @@ impl StickyKeys {
         }
     }
 
-    /// The edges a physical release stands for: the key's own release for an
-    /// ordinary key, followed by the releases of the latch once the last key
-    /// of the chord has come up; none for a latched modifier, which stays
-    /// down.
+    /// The edges a physical release stands for: the key's own release for an ordinary key, followed
+    /// by the releases of the latch once the last key of the chord has come up; none for a latched
+    /// modifier, which stays down.
     pub fn release(&mut self, keycode: u32, _now: Instant) -> Vec<Edge> {
         self.down.remove(&keycode);
         if !is_modifier(keycode) {
@@ -128,8 +122,7 @@ impl StickyKeys {
             return edges;
         }
         if self.unlocked.remove(&keycode) {
-            // The press that unlocked this modifier is the one we delivered
-            // as its release.
+            // The press that unlocked this modifier is the one we delivered as its release.
             return Vec::new();
         }
         Vec::new()
@@ -153,9 +146,8 @@ impl StickyKeys {
             .collect()
     }
 
-    /// Every modifier whose press was delivered, for switching sticky keys
-    /// off: its release must be delivered too, or the seat keeps the
-    /// modifier down forever.
+    /// Every modifier whose press was delivered, for switching sticky keys off: its release must be
+    /// delivered too, or the seat keeps the modifier down forever.
     pub fn reset(&mut self) -> Vec<Edge> {
         let edges: Vec<Edge> = self
             .latched
@@ -177,8 +169,8 @@ impl StickyKeys {
 pub enum SlowPress {
     /// The key has been held long enough: deliver the press now.
     Deliver,
-    /// The press waits; it is delivered if the key is still down once the
-    /// delay has passed, and dropped if it is released first.
+    /// The press waits; it is delivered if the key is still down once the delay has passed, and
+    /// dropped if it is released first.
     Wait,
 }
 
@@ -191,20 +183,19 @@ pub enum SlowRelease {
     Drop,
 }
 
-/// Slow keys: a key must be held for a moment before it counts, so a brush
-/// against the keyboard types nothing.
+/// Slow keys: a key must be held for a moment before it counts, so a brush against the keyboard
+/// types nothing.
 #[derive(Debug, Default)]
 pub struct SlowKeys {
-    /// Presses held back until their delay passes, with the instant they
-    /// are due.
+    /// Presses held back until their delay passes, with the instant they are due.
     waiting: BTreeMap<u32, Instant>,
     /// Keys whose press was delivered and whose release is still owed.
     down: BTreeSet<u32>,
 }
 
 impl SlowKeys {
-    /// Offer a physical press at `now`, with `delay` the time the key must
-    /// be held (`None` delivers at once).
+    /// Offer a physical press at `now` , with `delay` the time the key must be held (`None`
+    /// delivers at once).
     pub fn press(&mut self, keycode: u32, now: Instant, delay: Option<Duration>) -> SlowPress {
         match delay {
             Some(delay) if !delay.is_zero() => {
@@ -218,7 +209,7 @@ impl SlowKeys {
         }
     }
 
-    /// Offer a physical release at `now`.
+    /// Offer a physical release at `now` .
     pub fn release(&mut self, keycode: u32, _now: Instant) -> SlowRelease {
         if self.waiting.remove(&keycode).is_some() {
             return SlowRelease::Drop;
@@ -227,8 +218,7 @@ impl SlowKeys {
         SlowRelease::Deliver
     }
 
-    /// The presses whose delay has passed by `now`, in the order they were
-    /// pressed.
+    /// The presses whose delay has passed by `now` , in the order they were pressed.
     pub fn due(&mut self, now: Instant) -> Vec<u32> {
         let due: Vec<u32> = self
             .waiting

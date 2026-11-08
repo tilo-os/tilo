@@ -1,19 +1,14 @@
 //! Starting the desktop's surface apps as processes of their own.
-//!
-//! The bar, the desk, the panels and the sheets are ordinary apps, and the
-//! session runs each in a process of its own: it hands the app one end of a
-//! socket it trusts ([`Compositor::connect_trusted_client`]) and names the
-//! layer surface its window is to become in its environment. What the app
-//! draws reaches the compositor as a client's buffer, shown and given input
-//! like any other client's; nothing of the app runs in the session.
-//!
-//! A surface is still an app that does things, so it is also handed one end
-//! of an actions socket: on it the session answers the actions it publishes
-//! ([`ActionDoor`]) and asks the surface to run one of its own, both as
-//! [`RemoteActionMessage`]s of the protocol every app speaks to its host.
-//! Those are the only messages: what a surface shows it reads from the
-//! resources it holds, and what was done is said in actions.
-//!
+//! The bar, the desk, the panels and the sheets are ordinary apps, and the session runs each in a
+//! process of its own: it hands the app one end of a socket it trusts
+//! ([`Compositor::connect_trusted_client`]) and names the layer surface its window is to become in
+//! its environment. What the app draws reaches the compositor as a client's buffer, shown and given
+//! input like any other client's; nothing of the app runs in the session.
+//! A surface is still an app that does things, so it is also handed one end of an actions socket:
+//! on it the session answers the actions it publishes ([`ActionDoor`]) and asks the surface to run
+//! one of its own, both as [`RemoteActionMessage`]s of the protocol every app speaks to its host.
+//! Those are the only messages: what a surface shows it reads from the resources it holds, and what
+//! was done is said in actions.
 //! [`Compositor::connect_trusted_client`]: tilo_compositor::Compositor::connect_trusted_client
 
 use std::collections::{HashMap, VecDeque};
@@ -76,8 +71,7 @@ impl Anchor {
     /// The right edge.
     pub const RIGHT: Self = Self(1 << 3);
 
-    /// Whether none of the edges is pinned: the surface says its own size
-    /// and place itself.
+    /// Whether none of the edges is pinned: the surface says its own size and place itself.
     #[must_use]
     pub const fn is_empty(self) -> bool {
         self.0 == 0
@@ -121,8 +115,7 @@ pub enum Keyboard {
     None,
     /// When the person clicks it (a panel with a field in it).
     OnDemand,
-    /// Always: the surface is the session's keyboard focus (the lock
-    /// screen).
+    /// Always: the surface is the session's keyboard focus (the lock screen).
     Exclusive,
 }
 
@@ -139,27 +132,24 @@ impl Keyboard {
 /// One surface app, and the layer surface the session makes its window.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Surface {
-    /// What the session calls it: its name in logs and its key when it
-    /// stops.
+    /// What the session calls it: its name in logs and its key when it stops.
     pub name: String,
-    /// The app it is started as: what the broker admits its connection to
-    /// the session's services by, and what its own actions are published
-    /// under.
+    /// The app it is started as: what the broker admits its connection to the session's services
+    /// by, and what its own actions are published under.
     pub app_id: String,
     /// The program to start.
     pub program: PathBuf,
     /// Where its window stands on the output.
     pub layer: Layer,
-    /// The kind of surface it is, as the compositor and a person's tools
-    /// name it (`tilo-bar`, `tilo-desk`, …).
+    /// The kind of surface it is, as the compositor and a person's tools name it (`tilo-bar`,
+    /// `tilo-desk` , …).
     pub namespace: String,
     /// The edges it is pinned to.
     pub anchor: Anchor,
-    /// Its size in logical pixels; a side pinned to two edges takes the
-    /// room between them, so 0 means "all of it".
+    /// Its size in logical pixels; a side pinned to two edges takes the room between them, so 0
+    /// means "all of it".
     pub size: (u32, u32),
-    /// The margin from each edge it is pinned to, in logical pixels:
-    /// top, right, bottom, left.
+    /// The margin from each edge it is pinned to, in logical pixels: top, right, bottom, left.
     pub margin: (i32, i32, i32, i32),
     /// The band along the output edge the desktop leaves free for it;
     /// 0 reserves nothing.
@@ -168,16 +158,15 @@ pub struct Surface {
     pub keyboard: Keyboard,
     /// The person the app shows (its own name, its own avatar).
     pub person: String,
-    /// Whether its window becomes the session's lock screen instead of a
-    /// layer surface.
+    /// Whether its window becomes the session's lock screen instead of a layer surface.
     pub lock: bool,
-    /// The output it stands on when its window names none of its own: the
-    /// display its client is connected for, and any output otherwise.
+    /// The output it stands on when its window names none of its own: the display its client is
+    /// connected for, and any output otherwise.
     pub output: Option<String>,
 }
 
 impl Surface {
-    /// A surface app named `name` and started from `program`.
+    /// A surface app named `name` and started from `program` .
     #[must_use]
     pub fn new(name: impl Into<String>, program: impl Into<PathBuf>) -> Self {
         let name = name.into();
@@ -207,14 +196,14 @@ impl Surface {
         Ok(Self::new(name, program_path(name)?))
     }
 
-    /// Pin the window to `edges`.
+    /// Pin the window to `edges` .
     #[must_use]
     pub fn anchor(mut self, edges: Anchor) -> Self {
         self.anchor = edges;
         self
     }
 
-    /// Stand on `layer`.
+    /// Stand on `layer` .
     #[must_use]
     pub fn layer(mut self, layer: Layer) -> Self {
         self.layer = layer;
@@ -228,8 +217,7 @@ impl Surface {
         self
     }
 
-    /// Stand `margin` (top, right, bottom, left) logical pixels from the
-    /// edges it is pinned to.
+    /// Stand `margin` (top, right, bottom, left) logical pixels from the edges it is pinned to.
     #[must_use]
     pub fn margin(mut self, margin: (i32, i32, i32, i32)) -> Self {
         self.margin = margin;
@@ -250,15 +238,14 @@ impl Surface {
         self
     }
 
-    /// Start it as the app `app_id` instead of [`Self::new`]'s first-party
-    /// id for its name.
+    /// Start it as the app `app_id` instead of [`Self::new`]'s first-party id for its name.
     #[must_use]
     pub fn app_id(mut self, app_id: impl Into<String>) -> Self {
         self.app_id = app_id.into();
         self
     }
 
-    /// Let the window take the keyboard `how`.
+    /// Let the window take the keyboard `how` .
     #[must_use]
     pub fn keyboard(mut self, how: Keyboard) -> Self {
         self.keyboard = how;
@@ -279,17 +266,16 @@ impl Surface {
         self
     }
 
-    /// Stand on the display named `output`, for a window that names no
-    /// output of its own: the person's keyboard goes on the display they
-    /// type on.
+    /// Stand on the display named `output` , for a window that names no output of its own: the
+    /// person's keyboard goes on the display they type on.
     #[must_use]
     pub fn on(mut self, output: impl Into<String>) -> Self {
         self.output = Some(output.into());
         self
     }
 
-    /// What the app reads of the surface it is to become and of the desktop
-    /// it runs on, beside the `WAYLAND_SOCKET` it is handed.
+    /// What the app reads of the surface it is to become and of the desktop it runs on, beside the
+    /// `WAYLAND_SOCKET` it is handed.
     #[must_use]
     pub fn environment(&self) -> Vec<(String, String)> {
         let mut environment = vec![
@@ -328,9 +314,9 @@ impl Surface {
         if self.lock {
             environment.push((String::from("TILO_SURFACE_LOCK"), String::from("1")));
         }
-        // A surface app is Tilo's own app, whatever desktop this session was
-        // started inside: its appearance and its menu entries come from the
-        // session's settings, never from a host desktop around it.
+        // A surface app is Tilo's own app, whatever desktop this session was started inside: its
+        // appearance and its menu entries come from the session's settings, never from a host
+        // desktop around it.
         environment.extend(
             tilo_app_launch::env::desktop_variables()
                 .map(|(name, value)| (name.to_owned(), value.to_owned())),
@@ -342,12 +328,12 @@ impl Surface {
 /// The descriptor an app's end of the trusted socket is handed as.
 const SOCKET_DESCRIPTOR: i32 = 3;
 
-/// The descriptor an app's end of the actions socket is handed as: the
-/// number [`ACTIONS_FD_ENV`] names in the app's environment.
+/// The descriptor an app's end of the actions socket is handed as: the number [`ACTIONS_FD_ENV`]
+/// names in the app's environment.
 const ACTIONS_DESCRIPTOR: i32 = 4;
 
-/// How many invocations' outcomes one surface's connection remembers, so
-/// an answer asked after it ended is still given.
+/// How many invocations' outcomes one surface's connection remembers, so an answer asked after it
+/// ended is still given.
 const ANSWERED_KEPT: usize = 256;
 
 /// How often a surface that has listed nothing yet is asked again.
@@ -356,9 +342,8 @@ const LISTING_INTERVAL: std::time::Duration = std::time::Duration::from_millis(1
 /// The provider surface apps address the desktop's actions under.
 pub const SESSION_PROVIDER: &str = tilo_runtime::session_door::SESSION_PROVIDER;
 
-/// What the session answers its surface apps' actions from: the published
-/// side every caller of the desktop reaches, so a surface invokes what a
-/// person's palette or an agent invokes.
+/// What the session answers its surface apps' actions from: the published side every caller of the
+/// desktop reaches, so a surface invokes what a person's palette or an agent invokes.
 pub trait ActionDoor {
     /// What the desktop publishes now: its resources, each with its actions.
     fn resources(&mut self) -> Vec<tilo_actions::ResourceSpec>;
@@ -377,8 +362,7 @@ pub trait ActionDoor {
 /// Why a surface app did not start.
 #[derive(Debug)]
 pub enum StartError {
-    /// No program by that name is installed beside the session or on
-    /// `PATH`.
+    /// No program by that name is installed beside the session or on `PATH` .
     NotFound {
         /// The name asked for.
         name: String,
@@ -392,9 +376,8 @@ pub enum StartError {
         /// The system's refusal.
         source: std::io::Error,
     },
-    /// The gate that holds the app until the session recorded its launch
-    /// could not be made: without it the app could reach the session ahead of
-    /// its record, so it is not started at all.
+    /// The gate that holds the app until the session recorded its launch could not be made: without
+    /// it the app could reach the session ahead of its record, so it is not started at all.
     Gate(std::io::Error),
 }
 
@@ -416,8 +399,8 @@ impl std::fmt::Display for StartError {
 
 impl std::error::Error for StartError {}
 
-/// The name a surface app of `name` asks the compositor for, which is what
-/// the session shows and hides it by.
+/// The name a surface app of `name` asks the compositor for, which is what the session shows and
+/// hides it by.
 #[must_use]
 pub fn namespace(name: &str) -> String {
     format!("tilo-{name}")
@@ -466,12 +449,11 @@ struct Running {
     name: String,
     child: Child,
     started: Instant,
-    /// The actions socket to it: what it asks, what it reports, and the
-    /// invocations the session asked it to run.
+    /// The actions socket to it: what it asks, what it reports, and the invocations the session
+    /// asked it to run.
     actions: Connection,
-    /// The display of the app's own, while it listens: what the app reaches
-    /// the compositor on beside its window's connection. It listens until
-    /// the app is gone, and nothing else reads it.
+    /// The display of the app's own, while it listens: what the app reaches the compositor on
+    /// beside its window's connection. It listens until the app is gone, and nothing else reads it.
     _display: Option<tilo_compositor::SurfaceDisplay>,
 }
 
@@ -481,36 +463,34 @@ struct Connection {
     incoming: mpsc::Receiver<RemoteActionMessage>,
     /// How each invocation the session asked the surface to run stands.
     asked: HashMap<u64, InvocationState>,
-    /// The invocation id the app named each ask with, back to the session's
-    /// id for it: an answer names the invocation, never the ask.
+    /// The invocation id the app named each ask with, back to the session's id for it: an answer
+    /// names the invocation, never the ask.
     by_invocation: HashMap<InvocationId, u64>,
     /// The provider the surface answers its actions under.
     provider: String,
     /// The correlation the next catalogue request is sent under.
     listing: u64,
-    /// The correlation of the request whose page is due, if one is: a page
-    /// that answers any other request is a listing the session has given up
-    /// on, and reading it into this one would repeat rows.
+    /// The correlation of the request whose page is due, if one is: a page that answers any other
+    /// request is a listing the session has given up on, and reading it into this one would repeat
+    /// rows.
     awaited: Option<u64>,
-    /// When the last catalogue request went out, so a surface that has
-    /// published nothing yet is asked again rather than never.
+    /// When the last catalogue request went out, so a surface that has published nothing yet is
+    /// asked again rather than never.
     listed_at: Option<Instant>,
     /// What the surface offers: the actions its catalogue lists.
     published: Vec<ExportedAction>,
-    /// The rows of the listing being read, page by page, before they are
-    /// what the session answers from. A listing is paged: a surface with
-    /// more rows than fit says so, and the pages are followed until the
-    /// last is in.
+    /// The rows of the listing being read, page by page, before they are what the session answers
+    /// from. A listing is paged: a surface with more rows than fit says so, and the pages are
+    /// followed until the last is in.
     reading: Vec<CatalogueRow>,
-    /// How the last invocations its app run ended, newest last, so one the
-    /// session answered as accepted can be asked after.
+    /// How the last invocations its app run ended, newest last, so one the session answered as
+    /// accepted can be asked after.
     answered: VecDeque<(InvocationId, InvocationUpdate)>,
 }
 
 impl Connection {
-    /// The socket pair `stream` is one end of, with a reader and a writer
-    /// thread: neither side's news waits on the other's writing. The reader
-    /// wakes the loop as each message lands.
+    /// The socket pair `stream` is one end of, with a reader and a writer thread: neither side's
+    /// news waits on the other's writing. The reader wakes the loop as each message lands.
     fn of(stream: UnixStream, wake: Option<tilo_service::Wake>) -> Self {
         let (outgoing, writes) = mpsc::channel();
         let (incoming_sender, incoming) = mpsc::channel();
@@ -548,16 +528,13 @@ impl Connection {
         }
     }
 
-    /// What the surface offers now, as it last listed it: the rows it
-    /// offers, and the provider it offers them under.
-    ///
-    /// A page the surface has more after is followed by the next one; the
-    /// copy the session answers from moves once the last page is in.
-    ///
-    /// Only the page the session is waiting for continues the listing: a
-    /// listing the session gave up on is asked for again, and its pages
-    /// arrive beside the new one's. Reading those would repeat rows, and a
-    /// listing that never runs out.
+    /// What the surface offers now, as it last listed it: the rows it offers, and the provider it
+    /// offers them under.
+    /// A page the surface has more after is followed by the next one; the copy the session answers
+    /// from moves once the last page is in.
+    /// Only the page the session is waiting for continues the listing: a listing the session gave
+    /// up on is asked for again, and its pages arrive beside the new one's. Reading those would
+    /// repeat rows, and a listing that never runs out.
     fn listed(&mut self, correlation: u64, page: CataloguePage) {
         if self.awaited != Some(correlation) {
             return;
@@ -568,8 +545,8 @@ impl Connection {
 
     /// The page the session is waiting for, into the listing being read.
     fn read_page(&mut self, page: CataloguePage) {
-        // A cursor from another revision is the surface saying to start
-        // over: these rows do not continue what was read before them.
+        // A cursor from another revision is the surface saying to start over: these rows do not
+        // continue what was read before them.
         if page.stale_cursor {
             self.list();
             return;
@@ -598,8 +575,8 @@ impl Connection {
             .collect();
     }
 
-    /// What the surface offers changed, so its listing is read from the
-    /// start again: whatever the session was part way through is superseded.
+    /// What the surface offers changed, so its listing is read from the start again: whatever the
+    /// session was part way through is superseded.
     fn relisted(&mut self, page: CataloguePage) {
         self.reading.clear();
         self.awaited = None;
@@ -616,8 +593,8 @@ impl Connection {
         });
     }
 
-    /// The correlation the next catalogue request is sent under, and when it
-    /// went out: its page is the one the listing waits for.
+    /// The correlation the next catalogue request is sent under, and when it went out: its page is
+    /// the one the listing waits for.
     fn next_listing(&mut self) -> u64 {
         let correlation = self.listing;
         self.listing = self.listing.wrapping_add(1);
@@ -626,8 +603,8 @@ impl Connection {
         correlation
     }
 
-    /// When this surface is asked to list itself again, while it has
-    /// published nothing yet or its listing is part way through.
+    /// When this surface is asked to list itself again, while it has published nothing yet or its
+    /// listing is part way through.
     fn next_deadline(&self) -> Option<Instant> {
         if !self.published.is_empty() && self.reading.is_empty() {
             return None;
@@ -639,14 +616,13 @@ impl Connection {
         )
     }
 
-    /// Ask again when the surface has listed nothing yet and the last ask is
-    /// old enough: an app that mounts late is still heard.
+    /// Ask again when the surface has listed nothing yet and the last ask is old enough: an app
+    /// that mounts late is still heard.
     fn list_if_silent(&mut self) {
-        // A whole listing with nothing being read is what the surface
-        // offers, and it asks again only when it says its offer moved. One
-        // part way through whose next page has not come for a listing
-        // interval is asked for again from the start, and the pages of the
-        // one given up on are then ignored.
+        // A whole listing with nothing being read is what the surface offers, and it asks again
+        // only when it says its offer moved. One part way through whose next page has not come for
+        // a listing interval is asked for again from the start, and the pages of the one given up
+        // on are then ignored.
         if !self.published.is_empty() && self.reading.is_empty() {
             return;
         }
@@ -679,8 +655,7 @@ impl Connection {
     }
 }
 
-/// Read messages from the surface off `stream` until it closes, waking the
-/// session's loop for each.
+/// Read messages from the surface off `stream` until it closes, waking the session's loop for each.
 fn read_messages(
     mut stream: UnixStream,
     incoming: &mpsc::Sender<RemoteActionMessage>,
@@ -722,25 +697,22 @@ pub struct Surfaces {
     running: Vec<Running>,
     /// The id the next invocation asked of a surface app is named by.
     asked: u64,
-    /// The session's launch records, once it has lent them: each surface it
-    /// starts is written into them, so its connection to the session's
-    /// services is admitted for the launch that made it. `None` before the
-    /// session lends them, and in a session that serves no services.
+    /// The session's launch records, once it has lent them: each surface it starts is written into
+    /// them, so its connection to the session's services is admitted for the launch that made it.
+    /// `None` before the session lends them, and in a session that serves no services.
     launches: Option<std::sync::Arc<crate::Launches>>,
-    /// The socket the session serves its services on, once it has lent it:
-    /// what a surface app connects to read and change what the session
-    /// publishes, as any app of the session does.
+    /// The socket the session serves its services on, once it has lent it: what a surface app
+    /// connects to read and change what the session publishes, as any app of the session does.
     services: Option<PathBuf>,
-    /// What wakes the session's loop when a surface app says something, so
-    /// an app's answer is taken the instant it arrives.
+    /// What wakes the session's loop when a surface app says something, so an app's answer is taken
+    /// the instant it arrives.
     wake: Option<tilo_service::Wake>,
 }
 
 impl Surfaces {
-    /// The session's launch records and the socket it serves its services
-    /// on, which every surface app started from here on is told of. Without
-    /// a socket, a surface reads nothing of the session: it is a window
-    /// only. `wake` ends the loop's wait when a surface says something.
+    /// The session's launch records and the socket it serves its services on, which every surface
+    /// app started from here on is told of. Without a socket, a surface reads nothing of the
+    /// session: it is a window only. `wake` ends the loop's wait when a surface says something.
     pub fn lend(
         &mut self,
         launches: std::sync::Arc<crate::Launches>,
@@ -774,10 +746,9 @@ impl Surfaces {
             source,
         })?;
         let actions = theirs.as_raw_fd();
-        // A display of the app's own, beside the connection its window is
-        // drawn on: what speaks the compositor's input protocols — the
-        // on-screen keyboard's input method — reaches it there, as the app
-        // the session started.
+        // A display of the app's own, beside the connection its window is drawn on: what speaks the
+        // compositor's input protocols — the on-screen keyboard's input method — reaches it there,
+        // as the app the session started.
         let display = match compositor.bind_surface_display() {
             Ok(display) => Some(display),
             Err(error) => {
@@ -792,10 +763,9 @@ impl Surfaces {
         let mut command = Command::new(&surface.program);
         command
             .envs(surface.environment())
-            // What the app is of this session: the launch the session
-            // records for the process it starts here, and the connection to
-            // the session's services it makes for itself, as any app of the
-            // session does.
+            // What the app is of this session: the launch the session records for the process it
+            // starts here, and the connection to the session's services it makes for itself, as any
+            // app of the session does.
             .env(APP_ID_ENV, &surface.app_id)
             .env(WORKSPACE_ENV, workspace);
         if let Some(display) = &display {
@@ -805,25 +775,24 @@ impl Surfaces {
             command.env(SOCKET_ENV, services);
         }
         command
-            // The app's end of the socket becomes a fixed descriptor in its
-            // process; the compositor answers on the other end here.
+            // The app's end of the socket becomes a fixed descriptor in its process; the compositor
+            // answers on the other end here.
             .env("WAYLAND_SOCKET", SOCKET_DESCRIPTOR.to_string())
             // The other end of the actions socket, beside it.
             .env(ACTIONS_FD_ENV, ACTIONS_DESCRIPTOR.to_string())
-            // A surface app shows on this session's displays only: an X
-            // display of the desktop around a nested session is not one.
+            // A surface app shows on this session's displays only: an X display of the desktop
+            // around a nested session is not one.
             .env_remove("DISPLAY")
             .stdin(Stdio::null());
-        // The launch is recorded once the process exists, and the app must
-        // not reach the session before it is: this holds it at its stdin
-        // until then, as the launcher is held for an app the session opens.
+        // The launch is recorded once the process exists, and the app must not reach the session
+        // before it is: this holds it at its stdin until then, as the launcher is held for an app
+        // the session opens.
         let registration =
             launcher::registration_gate::install(&mut command).map_err(StartError::Gate)?;
-        // Safety: this runs in the child between `fork` and `exec`, where
-        // the app has done nothing yet; it touches no memory the parent
-        // shares with other threads. The actions descriptor is moved out of
-        // the range the fixed ones take before either is placed, so handing
-        // over one cannot overwrite the other.
+        // Safety: this runs in the child between `fork` and `exec` , where the app has done nothing
+        // yet; it touches no memory the parent shares with other threads. The actions descriptor is
+        // moved out of the range the fixed ones take before either is placed, so handing over one
+        // cannot overwrite the other.
         unsafe {
             command.pre_exec(move || {
                 let actions = libc::fcntl(actions, libc::F_DUPFD_CLOEXEC, 10);
@@ -844,8 +813,8 @@ impl Surfaces {
             program: surface.program.clone(),
             source,
         })?;
-        // The app is known now: what connects to its display from here on is
-        // the app and what it runs, and is trusted as the surface it is.
+        // The app is known now: what connects to its display from here on is the app and what it
+        // runs, and is trusted as the surface it is.
         let display = display.and_then(|display| {
             compositor
                 .accept_surface_clients(display, child.id(), surface.output.clone())
@@ -858,12 +827,11 @@ impl Surfaces {
                 })
                 .ok()
         });
-        // The process that will connect the session's services is the one
-        // started here: its launch is written before the app has anything to
-        // say, as it is for any app the session starts.
+        // The process that will connect the session's services is the one started here: its launch
+        // is written before the app has anything to say, as it is for any app the session starts.
         if let Some(launches) = &self.launches {
-            // A surface app is the session's own program, run in its own
-            // place: no package sandbox has the documents store bound in.
+            // A surface app is the session's own program, run in its own place: no package sandbox
+            // has the documents store bound in.
             launches.started(child.id(), &surface.app_id, workspace, false);
         }
         // The record exists: the app may reach what it published.
@@ -874,8 +842,8 @@ impl Surfaces {
                 "a surface app was not released to its session"
             );
         }
-        // The child has its own copies: these would only keep the
-        // connections' other ends open after the app is gone.
+        // The child has its own copies: these would only keep the connections' other ends open
+        // after the app is gone.
         drop(socket);
         drop(theirs);
         tracing::info!(
@@ -897,8 +865,8 @@ impl Surfaces {
         Ok(())
     }
 
-    /// Start `surface` if the session can, and say so in the log if not: a
-    /// missing surface app loses its surface, never the session.
+    /// Start `surface` if the session can, and say so in the log if not: a missing surface app
+    /// loses its surface, never the session.
     pub fn start_or_log(
         &mut self,
         compositor: &mut Compositor,
@@ -925,8 +893,8 @@ impl Surfaces {
             .collect()
     }
 
-    /// When a surface app that published nothing yet is asked to list
-    /// itself again, so an app that mounts late is still heard.
+    /// When a surface app that published nothing yet is asked to list itself again, so an app that
+    /// mounts late is still heard.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.running
             .iter()
@@ -934,9 +902,9 @@ impl Surfaces {
             .min()
     }
 
-    /// Take in the surface apps that exited, and give the session their
-    /// names. A surface app is meant to outlive the session's run: one that
-    /// exited is reported, never restarted on the session's behalf.
+    /// Take in the surface apps that exited, and give the session their names. A surface app is
+    /// meant to outlive the session's run: one that exited is reported, never restarted on the
+    /// session's behalf.
     pub fn poll(&mut self) -> Vec<String> {
         let mut exited = Vec::new();
         let mut running = Vec::with_capacity(self.running.len());
@@ -962,12 +930,12 @@ impl Surfaces {
         exited
     }
 
-    /// Answer what the surface apps asked since the last turn, and take in
-    /// how the invocations they were asked to run stand.
+    /// Answer what the surface apps asked since the last turn, and take in how the invocations they
+    /// were asked to run stand.
     pub fn serve(&mut self, door: &mut dyn ActionDoor) {
         for app in &mut self.running {
-            // A surface publishes its actions once it has mounted: until it
-            // has listed them, the session asks again.
+            // A surface publishes its actions once it has mounted: until it has listed them, the
+            // session asks again.
             app.actions.list_if_silent();
             while let Ok(message) = app.actions.incoming.try_recv() {
                 match message {
@@ -981,9 +949,9 @@ impl Surfaces {
                         };
                         app.actions.listed(correlation, page);
                     }
-                    // What the surface offers changed, and it says so as it
-                    // does: a panel's controls are there while the device
-                    // can do them, which the session reads as it moves.
+                    // What the surface offers changed, and it says so as it does: a panel's
+                    // controls are there while the device can do them, which the session reads as
+                    // it moves.
                     RemoteActionMessage::CatalogueChanged { page } => {
                         app.actions.relisted(page);
                     }
@@ -998,10 +966,9 @@ impl Surfaces {
                             app.actions.settle(invocation, &state.update);
                         }
                     }
-                    // The app runs what it publishes: what it asks of its
-                    // own actions comes back over the same socket, as the
-                    // broker hands a provider the invocation of its own
-                    // actions, and nothing of it is the session's.
+                    // The app runs what it publishes: what it asks of its own actions comes back
+                    // over the same socket, as the broker hands a provider the invocation of its
+                    // own actions, and nothing of it is the session's.
                     RemoteActionMessage::Invoke(request)
                         if request.target.provider == tilo_actions::remote::OWN_PROVIDER =>
                     {
@@ -1023,9 +990,8 @@ impl Surfaces {
         }
     }
 
-    /// Ask the surface app `name` to run `action` of `resource`, as one of
-    /// the actions it publishes, with `argument`, and name the invocation
-    /// `id`; `None` when no such app runs.
+    /// Ask the surface app `name` to run `action` of `resource` , as one of the actions it
+    /// publishes, with `argument` , and name the invocation `id` ; `None` when no such app runs.
     pub fn ask(
         &mut self,
         name: &str,
@@ -1080,8 +1046,8 @@ impl Surfaces {
             .find_map(|running| running.actions.asked.get(&id))
     }
 
-    /// Stop `name`, if it runs, and wait for it: its socket closes and the
-    /// compositor forgets its surfaces.
+    /// Stop `name` , if it runs, and wait for it: its socket closes and the compositor forgets its
+    /// surfaces.
     pub fn stop(&mut self, name: &str) {
         let Some(place) = self.running.iter().position(|running| running.name == name) else {
             return;
@@ -1107,9 +1073,8 @@ impl Drop for Surfaces {
     }
 }
 
-/// The session's answer to one message from a surface app: `None` for a
-/// message no host answers (an answer arriving at the host, and anything
-/// the desktop does not offer).
+/// The session's answer to one message from a surface app: `None` for a message no host answers (an
+/// answer arriving at the host, and anything the desktop does not offer).
 fn answer(
     door: &mut dyn ActionDoor,
     answered: &mut VecDeque<(InvocationId, InvocationUpdate)>,
@@ -1165,8 +1130,8 @@ fn answer(
                 status,
             }))
         }
-        // The desktop runs every action it offers to its end, so an
-        // invocation stands where its receipt left it.
+        // The desktop runs every action it offers to its end, so an invocation stands where its
+        // receipt left it.
         RemoteActionMessage::Observe { invocation, .. } => Some(RemoteActionMessage::Update {
             invocation,
             state: answered
@@ -1183,8 +1148,7 @@ fn answer(
     }
 }
 
-/// Where what `resources` publishes stands: equal revisions publish the
-/// same actions.
+/// Where what `resources` publishes stands: equal revisions publish the same actions.
 fn revision(resources: &[tilo_actions::ResourceSpec]) -> String {
     use std::hash::{Hash as _, Hasher as _};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -1195,8 +1159,8 @@ fn revision(resources: &[tilo_actions::ResourceSpec]) -> String {
     format!("{:x}", hasher.finish())
 }
 
-/// The latest update of an invocation whose receipt is `status`; `None`
-/// for a receipt that left it running and so has nothing new to say.
+/// The latest update of an invocation whose receipt is `status` ; `None` for a receipt that left it
+/// running and so has nothing new to say.
 pub(crate) fn outcome(
     invocation: InvocationId,
     status: &ReceiptStatus,
@@ -1278,9 +1242,9 @@ mod tests {
 
     #[test]
     fn a_surface_app_starts_as_an_app_of_this_desktop() {
-        // A surface reads its appearance and its menu entries from the
-        // session's settings: told nothing of the desktop, it would take them
-        // from a host desktop the session happens to run inside.
+        // A surface reads its appearance and its menu entries from the session's settings: told
+        // nothing of the desktop, it would take them from a host desktop the session happens to run
+        // inside.
         let environment: std::collections::BTreeMap<String, String> =
             Surface::new("quick-settings", "/usr/bin/tilo-quick-settings")
                 .environment()
@@ -1324,8 +1288,8 @@ mod tests {
         assert!(!(Anchor::TOP | Anchor::BOTTOM).is_empty());
     }
 
-    /// One row of a surface's listing, offering `action`: enough for a page
-    /// without a surface app to answer.
+    /// One row of a surface's listing, offering `action` : enough for a page without a surface app
+    /// to answer.
     fn row(action: &str) -> CatalogueRow {
         let resource = tilo_actions::ResourceSpec::new(
             "quick-settings.panel",
@@ -1352,7 +1316,7 @@ mod tests {
         )
     }
 
-    /// The message the session sent the surface off `session`.
+    /// The message the session sent the surface off `session` .
     fn told(session: &mut UnixStream) -> RemoteActionMessage {
         let body = FRAMING.read(session).expect("a read").expect("a message");
         RemoteActionFrame::decode(&body).expect("a frame").message

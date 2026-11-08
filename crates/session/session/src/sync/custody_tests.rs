@@ -1,12 +1,9 @@
-//! What an app writes on one device reaches the workspace's other devices:
-//! the broker commits it to this device's owner, the canonical copy of the
-//! workspace here, and the owner's outgoing custody leaves on the plane's
-//! session with the workspace's host, which hands it to every other member.
-//!
-//! Two sessions' planes on this machine's loopback, each with its own
-//! engine, join one workspace governed by a host on this machine whose
-//! certificate takes part in no channels: the workspace's records are
-//! documents the owner commits.
+//! What an app writes on one device reaches the workspace's other devices: the broker commits it to
+//! this device's owner, the canonical copy of the workspace here, and the owner's outgoing custody
+//! leaves on the plane's session with the workspace's host, which hands it to every other member.
+//! Two sessions' planes on this machine's loopback, each with its own engine, join one workspace
+//! governed by a host on this machine whose certificate takes part in no channels: the workspace's
+//! records are documents the owner commits.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -28,7 +25,7 @@ use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::fabric::Continuity;
 
-/// `key`'s certificate as a device of the person whose root key is `root`.
+/// `key` 's certificate as a device of the person whose root key is `root` .
 fn certified(
     root: &SigningKey,
     key: &SigningKey,
@@ -48,9 +45,8 @@ fn certified(
     cert
 }
 
-/// A host on this machine governing one workspace, certified so that it
-/// takes part in no channels: what its members record is committed in the
-/// clear.
+/// A host on this machine governing one workspace, certified so that it takes part in no channels:
+/// what its members record is committed in the clear.
 struct Host {
     relay: Option<tilo_relay::daemon::Relay>,
     workspaces: tilo_relay::workspaces::Workspaces,
@@ -69,12 +65,12 @@ impl Drop for Host {
 }
 
 impl Host {
-    /// A host of the person whose root key is `[0x71; 32]`.
+    /// A host of the person whose root key is `[0x71; 32]` .
     fn start() -> Self {
         Self::of(&SigningKey::from_bytes(&[0x71; 32]))
     }
 
-    /// A host of the person `owner_key`, on this machine.
+    /// A host of the person `owner_key` , on this machine.
     fn of(owner_key: &SigningKey) -> Self {
         let state = tempfile::tempdir().expect("the host's directory");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -128,7 +124,7 @@ impl Host {
         }
     }
 
-    /// An invitation to the workspace that only `person`'s devices redeem.
+    /// An invitation to the workspace that only `person` 's devices redeem.
     fn invitation(&self, person: [u8; 32], request: u8) -> String {
         let issued = self
             .runtime
@@ -148,8 +144,8 @@ impl Host {
         tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
     }
 
-    /// Where this host is reached for its workspace, as it signed it: what a
-    /// device of the person is told to dial.
+    /// Where this host is reached for its workspace, as it signed it: what a device of the person
+    /// is told to dial.
     fn host_hint(&self) -> tilo_peer_state::join::TransportHint {
         self.runtime
             .block_on(self.workspaces.hosts(&self.workspace))
@@ -180,8 +176,8 @@ impl Device {
         )
     }
 
-    /// A session of `key`, a device certified by `root`: two of them are two
-    /// devices of one person.
+    /// A session of `key` , a device certified by `root` : two of them are two devices of one
+    /// person.
     fn of(root: &SigningKey, key: SigningKey, label: &str) -> Self {
         let cert = certified(root, &key, label, DeviceCapabilities::member());
         let identity = tilo_network_actor::HostIdentity {
@@ -222,8 +218,8 @@ impl Device {
         self.engine.identity().device_cert.user_public_key
     }
 
-    /// Join the host's workspace with an invitation for this person, and
-    /// wait until the workspace is held here.
+    /// Join the host's workspace with an invitation for this person, and wait until the workspace
+    /// is held here.
     fn join(&self, host: &Host, request: u8) -> WorkspaceId {
         let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
         let slot = WorkspaceSlot::of_workspace(workspace_id);
@@ -250,10 +246,9 @@ impl Device {
         }
     }
 
-    /// Enter the host's workspace as a further device of this person, at the
-    /// host's own signed address: nothing is invited here, and the workspace
-    /// answers with what it holds, so this device takes part in it from then
-    /// on. Answers the workspace, and how long the entry took.
+    /// Enter the host's workspace as a further device of this person, at the host's own signed
+    /// address: nothing is invited here, and the workspace answers with what it holds, so this
+    /// device takes part in it from then on. Answers the workspace, and how long the entry took.
     fn enter(&self, host: &Host) -> (WorkspaceId, Duration) {
         let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
         let started = std::time::Instant::now();
@@ -281,8 +276,8 @@ impl Device {
     }
 }
 
-/// The receipt of an effect this device's app had in `workspace`, as the
-/// broker records it: redacted, its actor this device's person.
+/// The receipt of an effect this device's app had in `workspace` , as the broker records it:
+/// redacted, its actor this device's person.
 fn receipt(
     device: &Device,
     workspace_id: WorkspaceId,
@@ -305,7 +300,7 @@ fn receipt(
     }
 }
 
-/// Whether `device`'s copy of `workspace` holds the receipt of `invocation`.
+/// Whether `device` 's copy of `workspace` holds the receipt of `invocation` .
 fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) -> bool {
     device
         .engine
@@ -367,9 +362,9 @@ fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
     }
 }
 
-/// Have `device`'s app write `invocation` into `workspace`, as the broker
-/// commits what an app did: the owner's custody leaves for the workspace's
-/// host, which hands it to the workspace's other devices.
+/// Have `device` 's app write `invocation` into `workspace` , as the broker commits what an app
+/// did: the owner's custody leaves for the workspace's host, which hands it to the workspace's
+/// other devices.
 fn write(
     runtime: &tokio::runtime::Runtime,
     device: &Device,
@@ -391,8 +386,8 @@ fn write(
     );
 }
 
-/// Wait until `device`'s copy of the workspace holds the receipt of
-/// `invocation`, answering how long that took.
+/// Wait until `device` 's copy of the workspace holds the receipt of `invocation` , answering how
+/// long that took.
 fn wait_for(
     device: &Device,
     workspace_id: WorkspaceId,
@@ -410,11 +405,10 @@ fn wait_for(
     started.elapsed()
 }
 
-/// One person's further device takes their workspace in at its host without
-/// an invitation: a device certified by a member's root is that member's
-/// device, so the workspace admits it and answers with what it holds. What was
-/// written on the person's other device before this one came up is here, and
-/// what this one writes reaches the other.
+/// One person's further device takes their workspace in at its host without an invitation: a device
+/// certified by a member's root is that member's device, so the workspace admits it and answers
+/// with what it holds. What was written on the person's other device before this one came up is
+/// here, and what this one writes reaches the other.
 #[test]
 #[allow(
     clippy::significant_drop_tightening,
@@ -437,8 +431,8 @@ fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let earlier = uuid::Uuid::new_v4();
     write(&runtime, &laptop, workspace, earlier);
 
-    // The desktop enters the workspace at its host: no invitation, and the
-    // workspace's whole history comes with the entry.
+    // The desktop enters the workspace at its host: no invitation, and the workspace's whole
+    // history comes with the entry.
     let (entered_workspace, entry) = desktop.enter(&host);
     assert_eq!(entered_workspace, workspace);
     let history = wait_for(&desktop, workspace, earlier);

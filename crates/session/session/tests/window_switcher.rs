@@ -74,9 +74,9 @@ fn group(id: u64, tab: Tab) -> WindowGroup {
     }
 }
 
-/// The desk the session starts on: two strips and three windows in the workspace in front —
-/// two of the notes app, one of the mail app — and a window of another workspace, which the
-/// walk never crosses.
+/// The desk the session starts on: two strips and three windows in the workspace in front — two of
+/// the notes app, one of the mail app — and a window of another workspace, which the walk never
+/// crosses.
 fn desk_tree() -> DesktopTree {
     let mut work = Workspace::new(WorkspaceSlot(1), "Work");
     work.strips = vec![
@@ -115,7 +115,7 @@ fn session() -> Session {
     session_on(WIDTH, HEIGHT)
 }
 
-/// [`session`] drawing on a display `width` by `height`: a small one holds fewer cards.
+/// [`session`] drawing on a display `width` by `height` : a small one holds fewer cards.
 fn session_on(width: i32, height: i32) -> Session {
     let mut session = Session::headless(
         Options {
@@ -126,8 +126,8 @@ fn session_on(width: i32, height: i32) -> Session {
         &[OutputConfig::new("HEADLESS-1", width, height)],
     )
     .expect("session");
-    // A held Tab repeats on a desktop; here a key is pressed once, so a slow step does not
-    // turn one press into several.
+    // A held Tab repeats on a desktop; here a key is pressed once, so a slow step does not turn one
+    // press into several.
     session.compositor().set_key_repeat(KeyRepeat {
         delay: Duration::from_secs(1),
         rate: 0,
@@ -186,7 +186,7 @@ fn hold_alt_tab(session: &mut Session) -> Duration {
     pressed.elapsed()
 }
 
-/// Move the pointer to the centre of card `index`, as the panel was last drawn.
+/// Move the pointer to the centre of card `index` , as the panel was last drawn.
 fn move_to_card(session: &mut Session, index: usize) {
     let cards = session.window_switcher().card_rects();
     let (_, card) = cards
@@ -202,9 +202,9 @@ fn move_to_card(session: &mut Session, index: usize) {
         .expect("the pointer moves");
 }
 
-/// Holding Alt+Tab shows the panel over the windows of the workspace in front, in the walk's
-/// order, across its strips and no other workspace's windows; Shift walks the other way and
-/// Escape leaves the person where they were.
+/// Holding Alt+Tab shows the panel over the windows of the workspace in front, in the walk's order,
+/// across its strips and no other workspace's windows; Shift walks the other way and Escape leaves
+/// the person where they were.
 #[test]
 fn holding_alt_tab_shows_the_workspaces_windows_across_its_strips() {
     let _settled = ui::motion::testing::settled();
@@ -291,8 +291,8 @@ fn letting_alt_go_goes_to_the_window_the_walk_reached() {
     eprintln!("letting Alt go went to Mail {settled:?} later");
 }
 
-/// The key above Tab walks only the windows of the app in front, across strips; Home and End
-/// choose the first and last of them by place, and Enter goes to the chosen one.
+/// The key above Tab walks only the windows of the app in front, across strips; Home and End choose
+/// the first and last of them by place, and Enter goes to the chosen one.
 #[test]
 fn alt_grave_walks_only_the_front_apps_windows() {
     let _settled = ui::motion::testing::settled();
@@ -399,8 +399,8 @@ fn a_card_under_the_pointer_is_chosen_on_sight_and_a_press_goes_there() {
         "the card under the pointer is chosen on sight",
         |session| front(session) == "Budget",
     );
-    // The card the walk reached may stand elsewhere: the pointer goes to where it stands now
-    // before the press, as the person's would.
+    // The card the walk reached may stand elsewhere: the pointer goes to where it stands now before
+    // the press, as the person's would.
     move_to_card(&mut session, 2);
     session
         .compositor()
@@ -542,9 +542,8 @@ fn a_workspace_too_full_for_cards_shows_the_page_the_walk_reached() {
     });
 }
 
-/// The keys the walk answers to stand under the cards, in the person's own
-/// words, and a reader hears them after the windows: the same hints the
-/// panel draws.
+/// The keys the walk answers to stand under the cards, in the person's own words, and a reader
+/// hears them after the windows: the same hints the panel draws.
 #[test]
 fn the_panels_keys_are_read_under_its_windows() {
     let _settled = ui::motion::testing::settled();
@@ -566,9 +565,8 @@ fn the_panels_keys_are_read_under_its_windows() {
     );
 }
 
-/// The card the walk reached wears the person's colour at its edge, and the
-/// cards it passed do not: which window Alt+Tab would go to reads at a
-/// glance, whatever the theme.
+/// The card the walk reached wears the person's colour at its edge, and the cards it passed do not:
+/// which window Alt+Tab would go to reads at a glance, whatever the theme.
 #[test]
 fn the_walked_card_wears_the_accent_at_its_edge() {
     let _settled = ui::motion::testing::settled();
@@ -604,9 +602,8 @@ fn the_walked_card_wears_the_accent_at_its_edge() {
     }
 }
 
-/// How far the frame's pixels along a card's top edge stand from `to`: the
-/// least of the rows the edge's ring covers, at three places across it, as
-/// summed channel distance.
+/// How far the frame's pixels along a card's top edge stand from `to` : the least of the rows the
+/// edge's ring covers, at three places across it, as summed channel distance.
 fn nearest_edge_pixel(frame: &tilo_compositor::Screenshot, card: Rect, to: [u8; 3]) -> u32 {
     let distance = |pixel: [u8; 4]| -> u32 {
         [0, 1, 2]
@@ -639,8 +636,8 @@ fn on_display(value: f64) -> i32 {
     pixel
 }
 
-/// Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands
-/// over the desk.
+/// Alt+Tab with one window open does nothing: there is nowhere to walk, and no panel stands over
+/// the desk.
 #[test]
 fn one_window_opens_no_walk() {
     let _settled = ui::motion::testing::settled();

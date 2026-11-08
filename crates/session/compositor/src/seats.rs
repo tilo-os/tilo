@@ -1,16 +1,13 @@
 //! Seats beside the person's: a pointer and a keyboard of its own.
-//!
-//! The compositor drives one app-facing seat: clients see one pointer and
-//! one keyboard. Everyone else who acts in a window — an agent through its
-//! computer tools, a person watching a shared window from another device —
-//! acts at a [`Seat`] of their own: its own pointer position, its own
-//! keyboard focus, and its own held keys and buttons. While one of its
-//! events is delivered the app-facing seat stands where the seat left its
-//! pointer, types into the window it aims at, and holds exactly the keys and
-//! buttons the seat holds; afterwards the person's pointer, focus and holds
-//! are back. A `Shift` an agent holds never shifts the person's typing, a
-//! drag an agent began never ends with the person's click, and neither one
-//! moves the window the person is working in to the front.
+//! The compositor drives one app-facing seat: clients see one pointer and one keyboard. Everyone
+//! else who acts in a window — an agent through its computer tools, a person watching a shared
+//! window from another device — acts at a [`Seat`] of their own: its own pointer position, its own
+//! keyboard focus, and its own held keys and buttons. While one of its events is delivered the
+//! app-facing seat stands where the seat left its pointer, types into the window it aims at, and
+//! holds exactly the keys and buttons the seat holds; afterwards the person's pointer, focus and
+//! holds are back. A `Shift` an agent holds never shifts the person's typing, a drag an agent began
+//! never ends with the person's click, and neither one moves the window the person is working in to
+//! the front.
 
 use std::collections::BTreeSet;
 
@@ -35,8 +32,8 @@ pub struct Aim {
 }
 
 impl Aim {
-    /// The rectangle the seat acts in, `(x, y, width, height)` in the
-    /// layout: its window's, or the whole layout's.
+    /// The rectangle the seat acts in, `(x, y, width, height)` in the layout: its window's, or the
+    /// whole layout's.
     #[must_use]
     pub fn viewport(&self) -> (f64, f64, f64, f64) {
         self.window
@@ -54,7 +51,7 @@ pub struct WindowAim {
     pub id: u64,
     /// Its foreign-toplevel identifier, which captures name it by.
     pub identifier: String,
-    /// Its place in the layout, `(x, y, width, height)`.
+    /// Its place in the layout, `(x, y, width, height)` .
     pub rect: (f64, f64, f64, f64),
 }
 
@@ -76,14 +73,13 @@ pub(crate) struct Held {
 pub(crate) struct Seats {
     next: u64,
     held: std::collections::BTreeMap<u64, Held>,
-    /// The keys the app-facing keyboard holds down: the person's, between a
-    /// seat's events.
+    /// The keys the app-facing keyboard holds down: the person's, between a seat's events.
     shown_keys: BTreeSet<u32>,
     /// The pointer buttons this machine's own pointer holds down.
     person_buttons: BTreeSet<u32>,
-    /// How many seats and the person hold each pointer button down. One
-    /// pointer serves them all: a press reaches the window at 0→1 and its
-    /// release at 1→0, so a drag one began never ends on another's click.
+    /// How many seats and the person hold each pointer button down. One pointer serves them all: a
+    /// press reaches the window at 0→1 and its release at 1→0, so a drag one began never ends on
+    /// another's click.
     button_holders: std::collections::BTreeMap<u32, usize>,
 }
 
@@ -111,8 +107,8 @@ impl Seats {
         self.held.remove(&seat.0)
     }
 
-    /// Fold one of the person's own keys into what the app-facing keyboard
-    /// holds, for the next seat event to put aside and put back.
+    /// Fold one of the person's own keys into what the app-facing keyboard holds, for the next seat
+    /// event to put aside and put back.
     pub(crate) fn hold_person_key(&mut self, keycode: u32, pressed: bool) {
         if pressed {
             self.shown_keys.insert(keycode);
@@ -121,15 +117,15 @@ impl Seats {
         }
     }
 
-    /// Fold one of the person's own pointer buttons into the one pointer the
-    /// windows see: whether the app-facing pointer hears it.
+    /// Fold one of the person's own pointer buttons into the one pointer the windows see: whether
+    /// the app-facing pointer hears it.
     pub(crate) fn hold_person_button(&mut self, button: u32, pressed: bool) -> bool {
         if !pressed
             && !self.person_buttons.contains(&button)
             && !self.button_holders.contains_key(&button)
         {
-            // A button nobody here pressed is let go: a drop the desktop ends
-            // on a release it never saw pressed, as a hosted app's drag does.
+            // A button nobody here pressed is let go: a drop the desktop ends on a release it never
+            // saw pressed, as a hosted app's drag does.
             return true;
         }
         let Self {
@@ -149,8 +145,8 @@ impl Seats {
     }
 }
 
-/// Fold one holder's button transition into the shared count: `true` when
-/// the app-facing pointer must hear it.
+/// Fold one holder's button transition into the shared count: `true` when the app-facing pointer
+/// must hear it.
 fn fold(
     held: &mut BTreeSet<u32>,
     holders: &mut std::collections::BTreeMap<u32, usize>,
@@ -181,8 +177,7 @@ fn fold(
     }
 }
 
-/// What the person had in front while a seat's event is delivered, put back
-/// when the event is done.
+/// What the person had in front while a seat's event is delivered, put back when the event is done.
 pub(crate) struct Person {
     pointer: Point<f64, Logical>,
     focus: Option<WlSurface>,
@@ -190,10 +185,9 @@ pub(crate) struct Person {
 }
 
 impl State {
-    /// Put the person's pointer, focus and holds aside and stand the app-facing
-    /// seat in `seat`'s place, for one event or a run of them. `None` for a seat
-    /// this compositor does not have, or while the session is locked: the lock
-    /// screen is not a way into the machine.
+    /// Put the person's pointer, focus and holds aside and stand the app-facing seat in `seat` 's
+    /// place, for one event or a run of them. `None` for a seat this compositor does not have, or
+    /// while the session is locked: the lock screen is not a way into the machine.
     pub(crate) fn seat_begin(&mut self, seat: Seat) -> Option<Person> {
         if !self.seats.has(seat) || self.locked() {
             return None;
@@ -209,8 +203,8 @@ impl State {
         };
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let time = self.now_ms();
-        // The person lets go of what this seat does not hold, while the
-        // person's own focus still hears the release.
+        // The person lets go of what this seat does not hold, while the person's own focus still
+        // hears the release.
         let released: Vec<u32> = person.keys.difference(&held.keys).copied().collect();
         keys(self, &released, false, serial, time);
         // The seat stands where it left its pointer, and types into its window.
@@ -227,9 +221,8 @@ impl State {
         Some(person)
     }
 
-    /// Forget `keycode` among what `seat` holds: a release the seat sent lets
-    /// go of it before the event begins, so the app-facing keyboard is not
-    /// pressed into it again.
+    /// Forget `keycode` among what `seat` holds: a release the seat sent lets go of it before the
+    /// event begins, so the app-facing keyboard is not pressed into it again.
     pub(crate) fn seat_forget_key(&mut self, seat: Seat, keycode: u32) {
         if let Some(held) = self.seats.get_mut(seat) {
             held.keys.remove(&keycode);
@@ -281,9 +274,9 @@ impl State {
                 let Some(held) = self.seats.get_mut(seat) else {
                     return;
                 };
-                // A key the seat held was pressed when the event began, and
-                // one it does not hold is the person's: only the transition
-                // the app-facing keyboard has not heard yet is delivered.
+                // A key the seat held was pressed when the event began, and one it does not hold is
+                // the person's: only the transition the app-facing keyboard has not heard yet is
+                // delivered.
                 let had = held.keys.contains(&keycode);
                 if pressed {
                     held.keys.insert(keycode);
@@ -294,20 +287,20 @@ impl State {
                     self.key(keycode, pressed, serial, time);
                 }
             }
-            // Touches, tablets, gestures and switches belong to the person's
-            // own devices, and no seat carries them.
+            // Touches, tablets, gestures and switches belong to the person's own devices, and no
+            // seat carries them.
             _ => {}
         }
     }
 
-    /// Put the person back: their pointer, their focus, and exactly the keys
-    /// and buttons they held before the seat's event.
+    /// Put the person back: their pointer, their focus, and exactly the keys and buttons they held
+    /// before the seat's event.
     pub(crate) fn seat_end(&mut self, seat: Seat, person: Person) {
         let held = self.seats.get(seat).cloned().unwrap_or_default();
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
         let time = self.now_ms();
-        // The seat lets go of what the person does not hold, while the seat's
-        // own window still hears the release.
+        // The seat lets go of what the person does not hold, while the seat's own window still
+        // hears the release.
         let released: Vec<u32> = held.keys.difference(&person.keys).copied().collect();
         keys(self, &released, false, serial, time);
         self.seat_keys_only = false;
@@ -347,8 +340,8 @@ impl State {
         self.seats.close(seat);
     }
 
-    /// The pointer at `at` in the layout, delivered to the surface under it
-    /// and to no hosted surface.
+    /// The pointer at `at` in the layout, delivered to the surface under it and to no hosted
+    /// surface.
     fn seat_pointer(&mut self, at: (f64, f64), serial: Serial, time: u32) {
         let location = self.clamp_to_outputs(Point::from(at));
         self.pointer = location;
@@ -399,8 +392,7 @@ impl State {
             .shareable_windows()
             .into_iter()
             .filter(|(_, info)| info.app_id.as_deref() == Some(app))
-            // A dialog stands in its window's place: the window itself is
-            // what an agent aims at.
+            // A dialog stands in its window's place: the window itself is what an agent aims at.
             .filter(|(_, info)| info.parent.is_none())
             .map(|(identifier, _)| identifier)
             .next_back()
@@ -422,8 +414,8 @@ impl State {
         self.seat_aim_window(seat, &identifier)
     }
 
-    /// Aim `seat` at the window a foreign-toplevel `identifier` names, as a
-    /// share of that window does.
+    /// Aim `seat` at the window a foreign-toplevel `identifier` names, as a share of that window
+    /// does.
     pub(crate) fn seat_aim_window(&mut self, seat: Seat, identifier: &str) -> Result<Aim, String> {
         let window = self
             .capture
@@ -451,8 +443,8 @@ impl State {
             return Err(NO_SEAT.to_owned());
         };
         if held.pointer.is_none() {
-            // A seat that has not moved yet stands in the window's top-left
-            // corner, where its first coordinate is a pixel of the window.
+            // A seat that has not moved yet stands in the window's top-left corner, where its first
+            // coordinate is a pixel of the window.
             held.pointer = Some((aim.rect.0, aim.rect.1));
         }
         held.aim = Some(aim);
@@ -479,6 +471,5 @@ impl State {
     }
 }
 
-/// What an op is told when its seat has gone: no op answers for a seat the
-/// person's Stop ended.
+/// What an op is told when its seat has gone: no op answers for a seat the person's Stop ended.
 const NO_SEAT: &str = "this seat has ended";

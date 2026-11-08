@@ -1,26 +1,18 @@
-//! "Join a workspace…" as a person on a computer set up for a community
-//! meets it: opening the sheet reads that site's directory and lists the
-//! public workspaces it serves, who is in each one now and how many belong.
-//! The workspaces this computer holds open instead of joining, and a site
-//! that cannot be read says so without hiding them.
-//!
-//! Joining one asks the door its listing names, as the person at this
-//! computer and by their own name, and the invitation the door answers with
-//! is what puts the workspace on the desk: one it holds from then on, open
-//! rather than to join, with everything the workspace held before this
-//! computer arrived. A door that refuses says why, where the person
-//! pressed, and leaves the workspace one to try again.
-//!
-//! A link or a code pasted into the sheet joins the same way: an
-//! invitation's text is redeemed where it names, and a workspace's link
-//! joins the workspace on the site it points at.
-//!
-//! A computer set up for a community (`community.toml`) is in it already:
-//! its session asks the community's own door as it starts, through the same
-//! join, and asks once more when the machine's network comes back while the
-//! join is still waiting. What the person decided — joined, or joined and
-//! left — is theirs, and keeps every computer of theirs from joining it
-//! again on its own.
+//! "Join a workspace…" as a person on a computer set up for a community meets it: opening the sheet
+//! reads that site's directory and lists the public workspaces it serves, who is in each one now
+//! and how many belong. The workspaces this computer holds open instead of joining, and a site that
+//! cannot be read says so without hiding them.
+//! Joining one asks the door its listing names, as the person at this computer and by their own
+//! name, and the invitation the door answers with is what puts the workspace on the desk: one it
+//! holds from then on, open rather than to join, with everything the workspace held before this
+//! computer arrived. A door that refuses says why, where the person pressed, and leaves the
+//! workspace one to try again.
+//! A link or a code pasted into the sheet joins the same way: an invitation's text is redeemed
+//! where it names, and a workspace's link joins the workspace on the site it points at.
+//! A computer set up for a community (`community.toml`) is in it already: its session asks the
+//! community's own door as it starts, through the same join, and asks once more when the machine's
+//! network comes back while the join is still waiting. What the person decided — joined, or joined
+//! and left — is theirs, and keeps every computer of theirs from joining it again on its own.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -64,33 +56,30 @@ use tilo_session::{Options, Session};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
-// A host admits its members' records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// A host admits its members' records through an Automerge worker: this binary is that worker, as it
+// is the session's own.
 tilo_automerge_isolate::test_worker!();
 
 const WIDTH: i32 = 1280;
 const HEIGHT: i32 = 800;
 
-/// The app the lounge's workspace talks in, and the record its people wrote
-/// there before this computer joined: the chat's own workspace record.
+/// The app the lounge's workspace talks in, and the record its people wrote there before this
+/// computer joined: the chat's own workspace record.
 const CHAT: &str = "so.tilo.chat";
 const CHAT_RECORD: &str = "";
-/// How long the lounge's chat ran before this computer joined: long enough
-/// that the host asks the page that wrote it for the record, as it does
-/// once a workspace's sealed history is a fair length.
+/// How long the lounge's chat ran before this computer joined: long enough that the host asks the
+/// page that wrote it for the record, as it does once a workspace's sealed history is a fair
+/// length.
 const HISTORY: i64 = 300;
-/// Twelve hours, in nanoseconds: how long the certificate a session starts
-/// with has been out.
+/// Twelve hours, in nanoseconds: how long the certificate a session starts with has been out.
 const TWELVE_HOURS_NS: u64 = 43_200_000_000_000;
-/// A day and a half, in nanoseconds: how long ago the certificate a session
-/// starts with was issued.
+/// A day and a half, in nanoseconds: how long ago the certificate a session starts with was issued.
 const A_DAY_AND_A_HALF_NS: u64 = 129_600_000_000_000;
 
 const COMMUNITY_WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
 const CLUB_WORKSPACE: &str = "1b7c4e08-3a5d-42f6-8c9e-2d6f0a1b3c5e";
 
-/// A session on the headless backend, taking no part in the collaboration
-/// plane.
+/// A session on the headless backend, taking no part in the collaboration plane.
 fn session() -> Session {
     Session::headless(
         Options {
@@ -103,8 +92,8 @@ fn session() -> Session {
     .expect("session")
 }
 
-/// Point this computer at the community site `site` for the test's
-/// lifetime. Returns the configuration's directory, which goes with it.
+/// Point this computer at the community site `site` for the test's lifetime. Returns the
+/// configuration's directory, which goes with it.
 fn community_site(env: &mut tilo_test_env::ScopedEnv, site: &str) -> tempfile::TempDir {
     let dir = tempfile::tempdir().expect("a directory for the configuration");
     let config = dir.path().join("community.toml");
@@ -113,8 +102,7 @@ fn community_site(env: &mut tilo_test_env::ScopedEnv, site: &str) -> tempfile::T
     dir
 }
 
-/// The workspaces this computer holds: the desk's id, the name shown and the
-/// workspace's id.
+/// The workspaces this computer holds: the desk's id, the name shown and the workspace's id.
 fn held(session: &Session) -> Vec<(String, String, String)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -141,8 +129,8 @@ fn open_directory(session: &mut Session) {
 
 /// Run the session until the sheet's directories answered the read it is on.
 fn wait_until_the_directory_answered(session: &mut Session) {
-    // The site's directories are answered by other runtimes, and a busy
-    // machine takes as long at that as the suite allows, not a second count.
+    // The site's directories are answered by other runtimes, and a busy machine takes as long at
+    // that as the suite allows, not a second count.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let standing = session
@@ -161,8 +149,8 @@ fn wait_until_the_directory_answered(session: &mut Session) {
     }
 }
 
-/// Read the site `site` in the open sheet, as the person typing its address
-/// into its search field does, and wait until it answered.
+/// Read the site `site` in the open sheet, as the person typing its address into its search field
+/// does, and wait until it answered.
 fn look_up_site(session: &mut Session, site: &str) {
     let sheet = publisher(session, "look").expect("the directory sheet looks a site up");
     let arguments = serde_json::json!({ "text": site })
@@ -199,15 +187,15 @@ fn listing(session: &Session, name: &str) -> Listing {
         .unwrap_or_else(|| panic!("the sheet lists {name}"))
 }
 
-/// Write what the session shows where a person can look at it, when the run
-/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+/// Write what the session shows where a person can look at it, when the run asked for shots:
+/// `TILO_SURFACE_SHOTS` names where they go.
 fn capture(session: &mut Session, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
     else {
         return;
     };
-    // Draw what the sheet holds now: a site's listings arrive after the
-    // sheet opens, and the frame on screen may still be the one before them.
+    // Draw what the sheet holds now: a site's listings arrive after the sheet opens, and the frame
+    // on screen may still be the one before them.
     for _ in 0..3 {
         session
             .step(std::time::Duration::from_millis(1))
@@ -284,8 +272,7 @@ fn now_ms() -> u64 {
     .expect("a time in milliseconds")
 }
 
-/// A site that serves `entry.json` naming a directory, and the page the
-/// test puts in it.
+/// A site that serves `entry.json` naming a directory, and the page the test puts in it.
 fn site() -> (Responder, Arc<Mutex<String>>) {
     let page = Arc::new(Mutex::new(String::new()));
     let served = Arc::clone(&page);
@@ -304,8 +291,8 @@ fn site() -> (Responder, Arc<Mutex<String>>) {
     (responder, page)
 }
 
-/// A site that lists `entries` and answers the door of the workspace named
-/// `workspace` with `door`, a function of the join request it was asked.
+/// A site that lists `entries` and answers the door of the workspace named `workspace` with `door`
+/// , a function of the join request it was asked.
 fn joining_site(
     workspace: &str,
     entries: Vec<DirectoryEntry>,
@@ -334,9 +321,9 @@ fn joining_site(
     })
 }
 
-/// This computer's person: a device of theirs, certified for their own root
-/// key, kept in an identity root of the test's own. Returns the root's
-/// directory, and the key a door's invitation for them is bound to.
+/// This computer's person: a device of theirs, certified for their own root key, kept in an
+/// identity root of the test's own. Returns the root's directory, and the key a door's invitation
+/// for them is bound to.
 fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> (tempfile::TempDir, [u8; 32]) {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[0x22; 32]);
@@ -344,9 +331,9 @@ fn this_computer(env: &mut tilo_test_env::ScopedEnv) -> (tempfile::TempDir, [u8;
     (root, person.verifying_key().to_bytes())
 }
 
-/// A computer of `person`'s: the device `device`, certified for their root key
-/// and kept in an identity root of the test's own, which is this computer's
-/// from here on. Returns the root's directory.
+/// A computer of `person` 's: the device `device` , certified for their root key and kept in an
+/// identity root of the test's own, which is this computer's from here on. Returns the root's
+/// directory.
 fn a_device(
     env: &mut tilo_test_env::ScopedEnv,
     person: &ed25519_dalek::SigningKey,
@@ -372,8 +359,7 @@ fn a_device(
     tilo_user_identity::persist::write_device_cert(&paths.device_cert, &cert)
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
-    // The name they go by, which the workspace learns of them: never their
-    // device's.
+    // The name they go by, which the workspace learns of them: never their device's.
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: cert.user_public_key,
@@ -384,8 +370,8 @@ fn a_device(
     root
 }
 
-/// A door's answer letting `person` into `workspace`: an invitation bound to
-/// them, signed by a device of the workspace's host.
+/// A door's answer letting `person` into `workspace` : an invitation bound to them, signed by a
+/// device of the workspace's host.
 fn invitation_for(workspace: &str, person: [u8; 32]) -> String {
     let host = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
     let host_device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
@@ -420,8 +406,7 @@ fn invitation_for(workspace: &str, person: [u8; 32]) -> String {
     .to_string()
 }
 
-/// The resource publishing `action` among everything the session
-/// publishes.
+/// The resource publishing `action` among everything the session publishes.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -435,12 +420,11 @@ fn publisher(session: &Session, action: &str) -> Option<String> {
     find(&session.resources(), action)
 }
 
-/// Press the sheet's button for joining the listing `key`.
+/// Press the sheet's button for joining the listing `key` .
 fn ask_to_join(session: &mut Session, key: &str) {
-    // The row is drawn from what the sites list, and other runtimes answer
-    // that: a busy machine takes as long at it as the suite allows. Press a
-    // row that is there, so a press that cannot be carried out says why
-    // instead of waiting out the suite's bound for a join never asked for.
+    // The row is drawn from what the sites list, and other runtimes answer that: a busy machine
+    // takes as long at it as the suite allows. Press a row that is there, so a press that cannot be
+    // carried out says why instead of waiting out the suite's bound for a join never asked for.
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let standing = session
@@ -473,14 +457,14 @@ fn ask_to_join(session: &mut Session, key: &str) {
 /// Run the session until `done` holds, or fail saying what never happened.
 #[track_caller]
 fn wait_until(session: &mut Session, what: &str, done: impl Fn(&Session) -> bool) {
-    // What this waits for is other runtimes' work (the site's answer, the
-    // record arriving), so the bound is the suite's, not a second count.
+    // What this waits for is other runtimes' work (the site's answer, the record arriving), so the
+    // bound is the suite's, not a second count.
     common::until(session, what, |session| done(session));
 }
 
-/// Wait until the directory is done with the person: it closes once the join's
-/// enrollment settles, which is the pass after the workspace is held here, so
-/// the person lands in the workspace they joined a frame later.
+/// Wait until the directory is done with the person: it closes once the join's enrollment settles,
+/// which is the pass after the workspace is held here, so the person lands in the workspace they
+/// joined a frame later.
 fn wait_until_the_directory_is_done(session: &mut Session) {
     wait_until(
         session,
@@ -495,8 +479,8 @@ fn wait_until_the_directory_is_done(session: &mut Session) {
     );
 }
 
-/// What the site lists: its own community workspace, a club, and the
-/// workspace this computer holds already.
+/// What the site lists: its own community workspace, a club, and the workspace this computer holds
+/// already.
 fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> String {
     let mut entries = vec![community_entry(34, now_ms()), club_entry(now_ms())];
     entries.push(DirectoryEntry {
@@ -514,8 +498,7 @@ fn page_listing_the_workspace_on_this_desk(held_name: &str, held_room: &str) -> 
     page_of(entries)
 }
 
-/// What the community's own workspace says of itself on its row, and of
-/// the people in it now.
+/// What the community's own workspace says of itself on its row, and of the people in it now.
 fn asserts_the_communitys_row(session: &Session) {
     let community = listing(session, "Tilers");
     assert_eq!(
@@ -733,8 +716,7 @@ fn joining_a_listed_workspace_asks_its_door_and_lands_in_it() {
         "as this person, by the name they go by rather than their device's"
     );
     wait_until_the_directory_is_done(&mut session);
-    // Opening the directory again does not offer the club to join: this
-    // computer holds it now.
+    // Opening the directory again does not offer the club to join: this computer holds it now.
     open_directory(&mut session);
     assert!(
         !rows(&session).iter().any(|(name, ..)| name == "Book club"),
@@ -757,8 +739,8 @@ fn a_door_that_refuses_says_why_where_the_person_now_is() {
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
     ask_to_join(&mut session, CLUB_WORKSPACE);
-    // The sheet leaves as soon as the join starts; the refusal reaches the
-    // person as a banner where they are now.
+    // The sheet leaves as soon as the join starts; the refusal reaches the person as a banner where
+    // they are now.
     wait_until(&mut session, "the door answered", |session| {
         listing(session, "Book club").action == ListingAction::TryAgain
     });
@@ -823,8 +805,8 @@ fn a_members_only_lounge_says_ask_for_an_invite_and_lands_nowhere() {
     wait_until(&mut session, "the door answered", |session| {
         listing(session, "Book club").action == ListingAction::TryAgain
     });
-    // Choosing Join closed the sheet when the join started: the refusal
-    // reaches the person as a banner, in the door's own words.
+    // Choosing Join closed the sheet when the join started: the refusal reaches the person as a
+    // banner, in the door's own words.
     wait_until(&mut session, "the refusal is said as a banner", |session| {
         session
             .notifications()
@@ -858,9 +840,8 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer's certificate lasted a day, and it ran out twelve hours
-    // ago: custody starts holding one the host would refuse for having run
-    // out.
+    // This computer's certificate lasted a day, and it ran out twelve hours ago: custody starts
+    // holding one the host would refuse for having run out.
     let (person_hex, expired_paths) = expired_throwaway_identity(&mut home);
     let person = hex::decode(&person_hex)
         .ok()
@@ -875,22 +856,20 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
         "this computer starts with an expired certificate"
     );
     let lounge = Lounge::start(person, "Coffee's on");
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
-    // The renewal is this session's own: it resolves the identity from the
-    // environment the test set, so a certificate issued to the device that
-    // joins is renewed, never a sibling test's.
+    // The renewal is this session's own: it resolves the identity from the environment the test
+    // set, so a certificate issued to the device that joins is renewed, never a sibling test's.
     let mut session = collaborative_session(state.path());
     session.step(Duration::from_millis(1)).unwrap();
     open_directory(&mut session);
     look_up_site(&mut session, &lounge.entry);
     ask_to_join(&mut session, &lounge.workspace);
     wait_until_the_lounge_is_here(&mut session, &lounge);
-    // What the join presented was the renewal, not the certificate that had
-    // run out: custody holds a certificate issued since, and the workspace
-    // holds this device under it.
+    // What the join presented was the renewal, not the certificate that had run out: custody holds
+    // a certificate issued since, and the workspace holds this device under it.
     let presented = tilo_user_identity::persist::read_device_cert(&expired_paths.device_cert)
         .expect("the presented certificate");
     assert!(
@@ -903,8 +882,8 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
             .is_some_and(|expires| expires > tilo_clock::unix_now_ns()),
         "and it has not run out"
     );
-    // The workspace is held before it is in front: the person lands in it a
-    // frame later, so wait for the landing rather than sampling the frame.
+    // The workspace is held before it is in front: the person lands in it a frame later, so wait
+    // for the landing rather than sampling the frame.
     wait_until(
         &mut session,
         "the person lands in the lounge: the renewal was admitted",
@@ -917,10 +896,9 @@ fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
     );
 }
 
-/// A throwaway identity in `home`, with its certificate replaced by one
-/// issued a day and a half ago — expired, as a session that slept past it
-/// left it. Returns the person's root key in hex and the paths its keys and
-/// certificate live under, which live as long as `home` does.
+/// A throwaway identity in `home` , with its certificate replaced by one issued a day and a half
+/// ago — expired, as a session that slept past it left it. Returns the person's root key in hex and
+/// the paths its keys and certificate live under, which live as long as `home` does.
 fn expired_throwaway_identity(
     home: &mut tilo_test_env::TestHome,
 ) -> (String, tilo_user_identity::IdentityPaths) {
@@ -978,12 +956,12 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
-    // The door welcomes this person with an invitation, and the host takes
-    // that invitation back before the enrollment can spend it: the join gets
-    // past the door and is refused where the workspace is taken in.
+    // The door welcomes this person with an invitation, and the host takes that invitation back
+    // before the enrollment can spend it: the join gets past the door and is refused where the
+    // workspace is taken in.
     let lounge = Lounge::start_with(person, "Coffee's on", true);
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -995,10 +973,9 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
         .handle()
         .read(|tree| tree.active_workspace().map(|workspace| workspace.slot));
     ask_to_join(&mut session, &lounge.workspace);
-    // The person chose Join, so the sheet closes as it starts (see
-    // `follow_directory`): what became of the join is said where they are.
-    // The host answered the door before the enrollment was asked of it, so
-    // its refusal comes back as an answer, not as the join's patience spent.
+    // The person chose Join, so the sheet closes as it starts (see `follow_directory` ): what
+    // became of the join is said where they are. The host answered the door before the enrollment
+    // was asked of it, so its refusal comes back as an answer, not as the join's patience spent.
     let refused = common::wait_maybe(&mut session, |session| {
         (listing(session, "Lounge").action == ListingAction::TryAgain).then_some(())
     });
@@ -1013,8 +990,8 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
         session.shell_refusals(),
         session.accessible_labels()
     );
-    // The person stays where they were: no empty workspace was ever shown to
-    // arrive in, and none was taken away again.
+    // The person stays where they were: no empty workspace was ever shown to arrive in, and none
+    // was taken away again.
     let in_front_after = session
         .handle()
         .read(|tree| tree.active_workspace().map(|workspace| workspace.slot));
@@ -1063,8 +1040,8 @@ fn a_join_the_host_refuses_at_enrollment_lands_nowhere_and_says_why() {
     );
 }
 
-/// A session that takes part in the collaboration plane, keeping the workspaces
-/// it holds beside `state`.
+/// A session that takes part in the collaboration plane, keeping the workspaces it holds beside
+/// `state` .
 fn collaborative_session(state: &std::path::Path) -> Session {
     Session::headless(
         Options {
@@ -1078,7 +1055,7 @@ fn collaborative_session(state: &std::path::Path) -> Session {
     .expect("session")
 }
 
-/// `key`'s certificate as a device of the person whose root key is `root`.
+/// `key` 's certificate as a device of the person whose root key is `root` .
 fn certified(
     root: &ed25519_dalek::SigningKey,
     key: &ed25519_dalek::SigningKey,
@@ -1098,12 +1075,11 @@ fn certified(
     cert
 }
 
-/// The token a page spends at the lounge's door, for the one invitation it
-/// redeems.
+/// The token a page spends at the lounge's door, for the one invitation it redeems.
 const TOKEN: &[u8] = b"the lounge's one-time token";
 
-/// A grant admitting `person` to `workspace` as an editor, signed by the lounge's
-/// owner `root` as its door signs one.
+/// A grant admitting `person` to `workspace` as an editor, signed by the lounge's owner `root` as
+/// its door signs one.
 fn grant_for(owner_key: &ed25519_dalek::SigningKey, workspace: &str, label: &str) -> PreAdmission {
     let mut grant = PreAdmission {
         workspace: workspace.to_owned(),
@@ -1120,10 +1096,9 @@ fn grant_for(owner_key: &ed25519_dalek::SigningKey, workspace: &str, label: &str
     grant
 }
 
-/// This computer's person: an identity of its own in `home`'s
-/// configuration, and a device certified for it under a key root, kept in
-/// `home` too so it lives as long as the test. Returns the root to hold, and
-/// the person's key.
+/// This computer's person: an identity of its own in `home` 's configuration, and a device
+/// certified for it under a key root, kept in `home` too so it lives as long as the test. Returns
+/// the root to hold, and the person's key.
 fn this_computer_with_an_identity(
     home: &mut tilo_test_env::TestHome,
 ) -> (std::path::PathBuf, [u8; 32]) {
@@ -1145,8 +1120,7 @@ fn this_computer_with_an_identity(
         .next()
         .expect("an identity")
         .public_key;
-    // The name they go by, which the site's door learns of them: never
-    // their device's.
+    // The name they go by, which the site's door learns of them: never their device's.
     ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
         ui::local_identity::LocalIdentity {
             group_public_key: person,
@@ -1157,7 +1131,7 @@ fn this_computer_with_an_identity(
     (root, person)
 }
 
-/// A chat record holding `line`: what one of the lounge's people wrote.
+/// A chat record holding `line` : what one of the lounge's people wrote.
 fn chat_with(line: &str) -> automerge::AutoCommit {
     use automerge::ROOT;
     let mut document = automerge::AutoCommit::new();
@@ -1166,12 +1140,10 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
     document
 }
 
-/// A site's workspace as a site runs it: a host on this machine governs the
-/// workspace, a page of the site's person recorded there before anyone joined
-/// this computer, and the site's entry and door stand in front of it.
-///
-/// Dropping it takes the page down before the runtime it runs on, and shuts
-/// the host down.
+/// A site's workspace as a site runs it: a host on this machine governs the workspace, a page of
+/// the site's person recorded there before anyone joined this computer, and the site's entry and
+/// door stand in front of it.
+/// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
     page: Option<PeerHandle>,
     relay: Option<tilo_relay::daemon::Relay>,
@@ -1179,11 +1151,11 @@ struct Lounge {
     runtime: tokio::runtime::Runtime,
     workspaces: tilo_relay::workspaces::Workspaces,
     host_cert: tilo_user_identity::DeviceCert,
-    /// The certificate of the site's page, the device that recorded in the
-    /// workspace before anyone joined.
+    /// The certificate of the site's page, the device that recorded in the workspace before anyone
+    /// joined.
     page_device: tilo_user_identity::DeviceCert,
-    /// The page's own copy of the workspace's shared desktop: what it laid
-    /// out, and the base of every later change it writes.
+    /// The page's own copy of the workspace's shared desktop: what it laid out, and the base of
+    /// every later change it writes.
     page_desktop: std::cell::RefCell<automerge::AutoCommit>,
     person: [u8; 32],
     /// The site's workspace, by id.
@@ -1211,13 +1183,11 @@ impl RunOn for tokio::runtime::Handle {
     }
 }
 
-/// Run `work` on `runtime`, giving up after the suite's hang bound.
-///
-/// The lounge's host, its pages and its governance live on runtimes of their
-/// own, so what a test waits for there is not a step of the session the suite's
-/// waits drive: a loaded machine takes a while over a relay's start, a page's
-/// write and a governance change, and a wait with no bound at all reports
-/// nothing when one of them never comes back.
+/// Run `work` on `runtime` , giving up after the suite's hang bound.
+/// The lounge's host, its pages and its governance live on runtimes of their own, so what a test
+/// waits for there is not a step of the session the suite's waits drive: a loaded machine takes a
+/// while over a relay's start, a page's write and a governance change, and a wait with no bound at
+/// all reports nothing when one of them never comes back.
 #[track_caller]
 fn block_on_within<T>(
     runtime: &impl RunOn,
@@ -1225,8 +1195,8 @@ fn block_on_within<T>(
     work: impl std::future::Future<Output = T>,
 ) -> T {
     let bound = tilo_test_env::hang_bound();
-    // The timer is made inside the runtime: a timeout built outside it has no
-    // reactor to be woken by.
+    // The timer is made inside the runtime: a timeout built outside it has no reactor to be woken
+    // by.
     match runtime.run_on(async move { tokio::time::timeout(bound, work).await }) {
         Ok(value) => value,
         Err(elapsed) => panic!(
@@ -1242,9 +1212,9 @@ impl Drop for Lounge {
             return;
         };
         if std::thread::panicking() {
-            // A test that already failed leaves with its report: the relay's
-            // own shutdown is not waited for on the way out of a panic, where
-            // a second panic would take the report away.
+            // A test that already failed leaves with its report: the relay's own shutdown is not
+            // waited for on the way out of a panic, where a second panic would take the report
+            // away.
             return;
         }
         block_on_within(
@@ -1256,16 +1226,15 @@ impl Drop for Lounge {
 }
 
 impl Lounge {
-    /// The lounge's workspace, whose chat already holds `written`.
+    /// The lounge's workspace, whose chat already holds `written` .
     fn start(person: [u8; 32], written: &str) -> Self {
         Self::start_with(person, written, false)
     }
 
-    /// [`Self::start`], with the door's invitation taken back before the
-    /// enrollment spends it when `withdraw_invitation`: the host's door lets
-    /// the person in, and the host refuses the enrollment that follows. That
-    /// is the join that reached a host which no longer admits the invitation
-    /// it answered with, so no workspace is ever held.
+    /// [`Self::start`], with the door's invitation taken back before the enrollment spends it when
+    /// `withdraw_invitation` : the host's door lets the person in, and the host refuses the
+    /// enrollment that follows. That is the join that reached a host which no longer admits the
+    /// invitation it answered with, so no workspace is ever held.
     fn start_with(person: [u8; 32], written: &str, withdraw_invitation: bool) -> Self {
         let state = tempfile::tempdir().expect("a directory for the lounge's host");
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -1293,35 +1262,32 @@ impl Lounge {
     }
 }
 
-/// A key the lounge keeps to itself: drawn for each lounge rather than a
-/// constant, because the suites on a machine share one network, and two lounges
-/// answering to one node id answer each other's joins as a host that does not
-/// govern the room the join names.
+/// A key the lounge keeps to itself: drawn for each lounge rather than a constant, because the
+/// suites on a machine share one network, and two lounges answering to one node id answer each
+/// other's joins as a host that does not govern the room the join names.
 fn lounge_key() -> [u8; 32] {
     let mut key = [0; 32];
     getrandom::fill(&mut key).expect("a key for the lounge");
     key
 }
 
-/// The host behind the lounge's site: a relay of this machine, certified
-/// under a key root of the test's own, which governs the lounge's workspace and
-/// keeps what its page writes sealed.
+/// The host behind the lounge's site: a relay of this machine, certified under a key root of the
+/// test's own, which governs the lounge's workspace and keeps what its page writes sealed.
 struct LoungeHost {
     relay: tilo_relay::daemon::Relay,
     workspaces: tilo_relay::workspaces::Workspaces,
     /// The key the host's certificates are signed under.
     owner_key: ed25519_dalek::SigningKey,
     host_cert: tilo_user_identity::DeviceCert,
-    /// The key and certificate of the site's page, the device that recorded
-    /// in the workspace before anyone joined.
+    /// The key and certificate of the site's page, the device that recorded in the workspace before
+    /// anyone joined.
     page_key: ed25519_dalek::SigningKey,
     page_device: tilo_user_identity::DeviceCert,
     workspace: String,
 }
 
 impl LoungeHost {
-    /// A host governing a workspace of its own, with the site's page entered in
-    /// it.
+    /// A host governing a workspace of its own, with the site's page entered in it.
     fn start(runtime: &tokio::runtime::Runtime, state: &std::path::Path) -> Self {
         let owner_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
         let host_key = ed25519_dalek::SigningKey::from_bytes(&lounge_key());
@@ -1425,10 +1391,9 @@ impl LoungeHost {
             )
             .expect("the site's page goes on talking");
         }
-        // The line is the lounge's before anyone joins: the test proves a
-        // join brings it, not that a write lands.
-        // The page's writes reach the host through other runtimes' work, so the
-        // wait is the suite's, not a second count.
+        // The line is the lounge's before anyone joins: the test proves a join brings it, not that
+        // a write lands. The page's writes reach the host through other runtimes' work, so the wait
+        // is the suite's, not a second count.
         tilo_test_env::wait_until("the page's line to reach the lounge's host", || {
             for event in page.drain() {
                 if let PeerEvent::CompactionRequested {
@@ -1453,14 +1418,11 @@ impl LoungeHost {
         page
     }
 
-    /// The site as the world meets it: its entry, the directory of the
-    /// workspaces it serves, and the door it admits `person` at, where a page
-    /// spends the one-time token and is given an invitation only they can
-    /// redeem. Returns the door and the site's entry.
-    ///
-    /// With `withdraw_invitation` the invitation the door answers with is
-    /// taken back before the enrollment can spend it: the host refuses the
-    /// enrollment that follows the door's welcome.
+    /// The site as the world meets it: its entry, the directory of the workspaces it serves, and
+    /// the door it admits `person` at, where a page spends the one-time token and is given an
+    /// invitation only they can redeem. Returns the door and the site's entry.
+    /// With `withdraw_invitation` the invitation the door answers with is taken back before the
+    /// enrollment can spend it: the host refuses the enrollment that follows the door's welcome.
     fn door(
         &self,
         runtime: &tokio::runtime::Runtime,
@@ -1513,8 +1475,8 @@ impl LoungeHost {
                 ),
                 ("POST", "/directory") => json(page_of_the_site.clone()),
                 ("POST", asked) if asked == behind || asked == "/door/join" => {
-                    // The door admits this person: an invitation only they
-                    // can redeem, and the one-time token a page spends.
+                    // The door admits this person: an invitation only they can redeem, and the
+                    // one-time token a page spends.
                     let mut request_id = [0u8; 32];
                     request_id[..4]
                         .copy_from_slice(&next.fetch_add(1, Ordering::Relaxed).to_le_bytes());
@@ -1533,9 +1495,8 @@ impl LoungeHost {
                     )
                     .expect("an invitation for this person");
                     if withdraw_invitation {
-                        // The host takes back the invitation it answered
-                        // with: the door welcomed the person, and the
-                        // enrollment that follows is refused.
+                        // The host takes back the invitation it answered with: the door welcomed
+                        // the person, and the enrollment that follows is refused.
                         block_on_within(
                             &answer,
                             "the lounge to take its invitation back",
@@ -1569,8 +1530,8 @@ impl LoungeHost {
     }
 }
 
-/// The strips and windows a desk shows in `workspace`, in order: each strip
-/// by its name and the titles of the windows in it.
+/// The strips and windows a desk shows in `workspace` , in order: each strip by its name and the
+/// titles of the windows in it.
 fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -1595,8 +1556,8 @@ fn desk_layout(session: &Session, workspace: &str) -> Vec<(String, Vec<String>)>
     })
 }
 
-/// The strips and windows a shared desktop holds, as [`desk_layout`] gives a
-/// desk's: what every device showing the workspace should see.
+/// The strips and windows a shared desktop holds, as [`desk_layout`] gives a desk's: what every
+/// device showing the workspace should see.
 fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     let mut layout: Vec<(String, Vec<String>)> = desktop
         .tree
@@ -1623,12 +1584,12 @@ fn recorded_layout(desktop: &SharedDesktop) -> Vec<(String, Vec<String>)> {
     layout
 }
 
-/// A strip the site holds as a test writes it: its id, its name, and the
-/// windows in it, each window's id and title.
+/// A strip the site holds as a test writes it: its id, its name, and the windows in it, each
+/// window's id and title.
 type HeldStrip<'a> = (u64, &'a str, &'a [(u64, &'a str)]);
 
-/// A workspace's shared desktop, as the people in it left it: `strips` names
-/// each strip with the windows opened in it, all of them `person`'s.
+/// A workspace's shared desktop, as the people in it left it: `strips` names each strip with the
+/// windows opened in it, all of them `person` 's.
 fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
     let mut workspace = Workspace::new(WorkspaceSlot(1), "Lounge");
     let mut authors = std::collections::BTreeMap::new();
@@ -1671,17 +1632,16 @@ fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
 }
 
 impl Lounge {
-    /// The site's page lays its workspace out as `desktop` says: the strips
-    /// and windows its people see there, written into the workspace's shared
-    /// desktop record as every member's page writes it.
+    /// The site's page lays its workspace out as `desktop` says: the strips and windows its people
+    /// see there, written into the workspace's shared desktop record as every member's page writes
+    /// it.
     fn page_writes_desktop(&self, desktop: &SharedDesktop) {
         let page = self.page.as_ref().expect("the site's page runs");
         let person = hex::encode(self.page_device.user_public_key);
         let mut doc = self.page_desktop.borrow_mut();
         let before = doc.get_heads();
-        // The record's first publication in a session is a snapshot: the
-        // route it is kept on is founded by it, which is what a host replays
-        // to the devices that join later.
+        // The record's first publication in a session is a snapshot: the route it is kept on is
+        // founded by it, which is what a host replays to the devices that join later.
         let first = before.is_empty();
         assert!(
             shared_record::write(&mut doc, desktop).expect("the page lays its workspace out"),
@@ -1707,8 +1667,8 @@ impl Lounge {
         .expect("the site's page lays out the workspace's desktop");
     }
 
-    /// Wait until the lounge's host holds `desktop` as its shared desktop:
-    /// the page's write reached it, and every device that joins now sees it.
+    /// Wait until the lounge's host holds `desktop` as its shared desktop: the page's write reached
+    /// it, and every device that joins now sees it.
     fn wait_for_desktop(&self, desktop: &SharedDesktop) {
         tilo_test_env::wait_until("the page's desktop to reach the lounge's host", || {
             let held = block_on_within(
@@ -1725,8 +1685,8 @@ impl Lounge {
         });
     }
 
-    /// A link to the lounge's workspace carrying an invitation for this
-    /// person, as whoever shares the workspace copies it.
+    /// A link to the lounge's workspace carrying an invitation for this person, as whoever shares
+    /// the workspace copies it.
     fn invitation_link(&self) -> String {
         let issued = block_on_within(
             &self.runtime,
@@ -1770,8 +1730,8 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -1798,8 +1758,8 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the lounge has not removed them");
-    // The slot is made once the host admits the device, and the person lands
-    // in it: wait for the desk to show it, as the person would see it.
+    // The slot is made once the host admits the device, and the person lands in it: wait for the
+    // desk to show it, as the person would see it.
     wait_until(&mut session, "the lounge is on the desk", |session| {
         held(session)
             .iter()
@@ -1810,8 +1770,8 @@ fn a_person_who_joins_a_listed_workspace_arrives_in_it_with_its_people() {
         .find(|(_, _, workspace)| workspace == &lounge.workspace)
         .expect("the workspace is on the desk");
     assert_eq!(joined.1, "Lounge", "under the name the site listed it by");
-    // Whose the workspace is stays its host's governance's to say: joining it
-    // never makes it this person's.
+    // Whose the workspace is stays its host's governance's to say: joining it never makes it this
+    // person's.
     wait_until(
         &mut session,
         "the lounge's owner is named here",
@@ -1837,8 +1797,8 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -1882,8 +1842,8 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
         "in the part the invitation gave them"
     );
     assert!(!member.removed, "and the workspace has not removed them");
-    // The slot is made once the host admits the device, and the person lands
-    // in it: wait for the desk to show it, as the person would see it.
+    // The slot is made once the host admits the device, and the person lands in it: wait for the
+    // desk to show it, as the person would see it.
     wait_until(
         &mut session,
         "the linked workspace is on the desk",
@@ -1904,8 +1864,8 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
     wait_until_the_directory_is_done(&mut session);
 }
 
-/// The lounge's workspace as its people left it: two strips, and three
-/// windows written by another member. What a computer that joins sees.
+/// The lounge's workspace as its people left it: two strips, and three windows written by another
+/// member. What a computer that joins sees.
 fn the_lounges_desktop(person: &str) -> SharedDesktop {
     shared_desktop(
         person,
@@ -1916,9 +1876,9 @@ fn the_lounges_desktop(person: &str) -> SharedDesktop {
     )
 }
 
-/// A computer joins the lounge and shows its workspace as the site holds it:
-/// the strips and windows another member laid out, a window they open or move
-/// afterwards, and their pointer drawn in the workspace where they are.
+/// A computer joins the lounge and shows its workspace as the site holds it: the strips and windows
+/// another member laid out, a window they open or move afterwards, and their pointer drawn in the
+/// workspace where they are.
 #[test]
 fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     let _settled = ui::motion::testing::settled();
@@ -1926,14 +1886,14 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
-    // The site's people left the workspace's desktop as two strips of
-    // windows; another member wrote them before this computer joined.
+    // The site's people left the workspace's desktop as two strips of windows; another member wrote
+    // them before this computer joined.
     let member = hex::encode(lounge.page_device.user_public_key);
     let laid_out = the_lounges_desktop(&member);
     lounge.page_writes_desktop(&laid_out);
     lounge.wait_for_desktop(&laid_out);
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -1942,8 +1902,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     // The window another member works in: the work strip's only window.
     let sheets = shared_desktop_tab(&laid_out, "Sheets");
     assert!(sheets != 0, "the site opened a window in the work strip");
-    // The workspace in front is the lounge, and it shows exactly what the
-    // site holds: the same strips, with the same windows in them.
+    // The workspace in front is the lounge, and it shows exactly what the site holds: the same
+    // strips, with the same windows in them.
     wait_until_desk(
         &mut session,
         &lounge.workspace,
@@ -1965,8 +1925,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
         "the same strips, with the same windows in them"
     );
 
-    // Another member opens a window beside one of theirs, and moves one of
-    // theirs: the desk here follows without anyone touching it.
+    // Another member opens a window beside one of theirs, and moves one of theirs: the desk here
+    // follows without anyone touching it.
     let reopened = another_member_edits(laid_out, &member);
     lounge.page_writes_desktop(&reopened);
     lounge.wait_for_desktop(&reopened);
@@ -1979,8 +1939,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
 
     the_pointer_follows(&mut session, &lounge);
 
-    // The sheets window is the one the site opened first: it moved with the
-    // rest, and is not this computer's to see twice.
+    // The sheets window is the one the site opened first: it moved with the rest, and is not this
+    // computer's to see twice.
     assert!(
         desk_layout(&session, &lounge.workspace)
             .iter()
@@ -1991,8 +1951,8 @@ fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
     );
 }
 
-/// Where the desk draws the tile of window `tab`, in the surface's
-/// coordinates, as of the last layout: `None` while it is not shown.
+/// Where the desk draws the tile of window `tab` , in the surface's coordinates, as of the last
+/// layout: `None` while it is not shown.
 fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
     session
         .handle()
@@ -2002,8 +1962,8 @@ fn tile_here(session: &Session, tab: u64) -> Option<ui::kurbo::Rect> {
         .map(|(_, rect)| rect)
 }
 
-/// [`wait_until`], for a desk that must come to show what the site holds:
-/// says what the desk shows instead when it never does.
+/// [`wait_until`], for a desk that must come to show what the site holds: says what the desk shows
+/// instead when it never does.
 #[track_caller]
 fn wait_until_desk(
     session: &mut Session,
@@ -2022,9 +1982,8 @@ fn wait_until_desk(
     );
 }
 
-/// The desktop as another member leaves it: a window they open beside one
-/// of theirs in the work strip, and the chat window they move there from the
-/// talk strip.
+/// The desktop as another member leaves it: a window they open beside one of theirs in the work
+/// strip, and the chat window they move there from the talk strip.
 fn another_member_edits(mut reopened: SharedDesktop, member: &str) -> SharedDesktop {
     let work = reopened
         .tree
@@ -2090,9 +2049,8 @@ fn window_in_front(session: &Session) -> Option<TabId> {
     })
 }
 
-/// The pointer of a person working in another member's window: the desk
-/// draws it there, wherever the person here is looking, without the roster
-/// being opened, and follows where they move it.
+/// The pointer of a person working in another member's window: the desk draws it there, wherever
+/// the person here is looking, without the roster being opened, and follows where they move it.
 fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
     // Their pointer, over a window they work in: the desk draws it there,
     // wherever the person here is looking, without the roster being opened.
@@ -2130,7 +2088,7 @@ fn the_pointer_follows(session: &mut Session, lounge: &Lounge) {
     );
 }
 
-/// The id of the window titled `title` on `desktop`.
+/// The id of the window titled `title` on `desktop` .
 fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
     desktop
         .tree
@@ -2146,8 +2104,8 @@ fn shared_desktop_tab(desktop: &SharedDesktop, title: &str) -> u64 {
         )
 }
 
-/// Join the lounge's listed workspace and wait until its content and its
-/// people reached this computer.
+/// Join the lounge's listed workspace and wait until its content and its people reached this
+/// computer.
 fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
     open_directory(session);
     look_up_site(session, &lounge.entry);
@@ -2155,8 +2113,8 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
     wait_until_the_lounge_is_here(session, lounge);
 }
 
-/// The lounge's other member says they are here, as every device does when it
-/// joins: their presence in the workspace, under their own device.
+/// The lounge's other member says they are here, as every device does when it joins: their presence
+/// in the workspace, under their own device.
 fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.publish_presence(
@@ -2169,8 +2127,7 @@ fn other_member_arrives(lounge: &Lounge) {
     .expect("the other member says they are here");
 }
 
-/// The lounge's other member moves their pointer to `(x, y)` of the tile of
-/// `tab` in the workspace.
+/// The lounge's other member moves their pointer to `(x, y)` of the tile of `tab` in the workspace.
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
     page.publish_presence(
@@ -2188,15 +2145,13 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
 /// How long the desk is stepped between one pointing and the next.
 const POINT_AGAIN: Duration = Duration::from_millis(200);
 
-/// Wait until the desk draws the other member's pointer at `(x, y)` over the
-/// tile of `tab`, pointing again as it waits.
-///
-/// Their pointer is a live frame the host fans out and never keeps: a host
-/// whose queue for this device is full drops it (that is what ephemeral
-/// means), and a person's pointer keeps moving, so the test says where they
-/// are more than once rather than sampling a frame that may have been shed.
-/// What the wait is for is unchanged — the desk drawing their pointer where
-/// they put it — and its only bound is the suite's hang bound.
+/// Wait until the desk draws the other member's pointer at `(x, y)` over the tile of `tab` ,
+/// pointing again as it waits.
+/// Their pointer is a live frame the host fans out and never keeps: a host whose queue for this
+/// device is full drops it (that is what ephemeral means), and a person's pointer keeps moving, so
+/// the test says where they are more than once rather than sampling a frame that may have been
+/// shed. What the wait is for is unchanged — the desk drawing their pointer where they put it — and
+/// its only bound is the suite's hang bound.
 #[track_caller]
 fn wait_until_their_pointer(
     session: &mut Session,
@@ -2228,7 +2183,7 @@ fn wait_until_their_pointer(
     }
 }
 
-/// Whether the desk drew someone's pointer at `(x, y)` of the tile of `tab`.
+/// Whether the desk drew someone's pointer at `(x, y)` of the tile of `tab` .
 fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
     session
         .drawn_peer_pointers()
@@ -2244,12 +2199,11 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
 /// Wait until the lounge's workspace and its people reached this computer,
 /// saying which of the two is still missing when they do not.
 fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
-    // The join is the site's door, the workspace's keys and its roster arriving
-    // from other runtimes, and the session gives a host its own patience to
-    // answer them: the wait spans that patience and the suite's hang bound
-    // after it, so a host answering slowly is waited for rather than called
-    // hung, and the session's note on a join that did not happen is what the
-    // test reports when the wait runs out.
+    // The join is the site's door, the workspace's keys and its roster arriving from other
+    // runtimes, and the session gives a host its own patience to answer them: the wait spans that
+    // patience and the suite's hang bound after it, so a host answering slowly is waited for rather
+    // than called hung, and the session's note on a join that did not happen is what the test
+    // reports when the wait runs out.
     let here = common::wait_maybe_past(session, tilo_session::sync::JOIN_PATIENCE, |session| {
         let held = session.held_workspaces();
         let people = session.people(&lounge.workspace);
@@ -2272,11 +2226,11 @@ fn wait_until_the_lounge_is_here(session: &mut Session, lounge: &Lounge) {
     );
 }
 
-/// The line the lounge's chat holds here, as the person reads it: `None`
-/// until this computer may open the record's sealed history.
+/// The line the lounge's chat holds here, as the person reads it: `None` until this computer may
+/// open the record's sealed history.
 fn chat_here(session: &Session, workspace: &str) -> Option<String> {
-    // The workspace may hold nothing yet, and until this computer is admitted to
-    // the record's channel its writes are not this computer's to open.
+    // The workspace may hold nothing yet, and until this computer is admitted to the record's
+    // channel its writes are not this computer's to open.
     let Ok(Some(record)) = session.read_record(workspace, CHAT, CHAT_RECORD) else {
         return None;
     };
@@ -2311,8 +2265,8 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Coffee's on");
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -2328,9 +2282,8 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
         chat, "Coffee's on",
         "the line the lounge wrote before this computer joined reads as it was written"
     );
-    // The record the line came in is the workspace's, sealed as its host keeps it:
-    // what the joined device read it through is the channel service, not a
-    // plain copy of the workspace's document.
+    // The record the line came in is the workspace's, sealed as its host keeps it: what the joined
+    // device read it through is the channel service, not a plain copy of the workspace's document.
     let record = session
         .read_record(&lounge.workspace, CHAT, CHAT_RECORD)
         .expect("the chat is this computer's to read")
@@ -2361,8 +2314,8 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
-    // The lounge is not this computer's community: the person types its
-    // address into the sheet, as anyone joining a site they were given does.
+    // The lounge is not this computer's community: the person types its address into the sheet, as
+    // anyone joining a site they were given does.
     let _config = community_site(home.env(), "");
     let state = tempfile::tempdir().expect("a directory for this computer's desk");
     let mut session = collaborative_session(state.path());
@@ -2401,9 +2354,8 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         ),
     )
     .expect("the lounge removes this person");
-    // The workspace's governance is what every device's roster is read from, and
-    // it lists this person no longer: the devices of theirs on the workspace's
-    // roster are gone.
+    // The workspace's governance is what every device's roster is read from, and it lists this
+    // person no longer: the devices of theirs on the workspace's roster are gone.
     let (_generation, members) = block_on_within(
         &lounge.runtime,
         "the lounge's members",
@@ -2414,8 +2366,8 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         .get(&hex::encode(person))
         .expect("the workspace remembers the person it removed");
     assert!(mark.removed, "the workspace removed this person: {mark:?}");
-    // The page, still a member, hears the workspace's governance and lists the
-    // person no more, as every device's roster follows it.
+    // The page, still a member, hears the workspace's governance and lists the person no more, as
+    // every device's roster follows it.
     let page = lounge.page.as_ref().expect("the site's page runs");
     let removed = hex::encode(person);
     tilo_test_env::wait_until(
@@ -2428,8 +2380,8 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         },
     );
 
-    // The lounge's page writes after the removal: the workspace's content from
-    // now on is not this computer's, so the line never reads here.
+    // The lounge's page writes after the removal: the workspace's content from now on is not this
+    // computer's, so the line never reads here.
     let route = DocumentRoute {
         app_id: CHAT.to_owned(),
         cluster_id: lounge.workspace.clone(),

@@ -1,15 +1,11 @@
 //! Where the people overlay stands: at an edge, as a desk widget does.
-//!
-//! The overlay is one more thing kept at the edges of the screen, so it is
-//! laid out, dragged and snapped by the desk's own edge mechanism
-//! ([`crate::desk_edges`]): it waits at a [`DockEdge`], steps past the
-//! widgets and system activities already there, follows the pointer while
-//! dragged and, let go, snaps to the edge nearest the pointer. The host
-//! keeps the edge where the desk widgets keep theirs
-//! (`settings_store::desk_widgets::PEOPLE_OVERLAY`).
-//!
-//! Only the presentation is its own: from where it was let go, the panel
-//! springs to its new slot instead of jumping there.
+//! The overlay is one more thing kept at the edges of the screen, so it is laid out, dragged and
+//! snapped by the desk's own edge mechanism ([`crate::desk_edges`]): it waits at a [`DockEdge`],
+//! steps past the widgets and system activities already there, follows the pointer while dragged
+//! and, let go, snaps to the edge nearest the pointer. The host keeps the edge where the desk
+//! widgets keep theirs (`settings_store::desk_widgets::PEOPLE_OVERLAY`).
+//! Only the presentation is its own: from where it was let go, the panel springs to its new slot
+//! instead of jumping there.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -24,18 +20,15 @@ use ui::tokens::{EffectiveMotion, MotionSource};
 
 use crate::desk_edges::{self, DockEdge, EdgeDrag, Item};
 
-/// The overlay's placement: its edge, where it is drawn now, and a drag in
-/// progress.
+/// The overlay's placement: its edge, where it is drawn now, and a drag in progress.
 #[derive(Debug)]
 pub struct Dock {
     edge: DockEdge,
     /// The slot at its edge, as last laid out.
     rest: Option<Rect>,
-    /// How far from its slot the panel is drawn while it springs there
-    /// after a drop.
+    /// How far from its slot the panel is drawn while it springs there after a drop.
     settle: MotionValue<Point>,
-    /// Where the panel was drawn when let go, until the next layout starts
-    /// the spring from there.
+    /// Where the panel was drawn when let go, until the next layout starts the spring from there.
     dropped: Option<Point>,
     press: Option<EdgeDrag<()>>,
     /// The pointer during a press, in the host's coordinates.
@@ -68,9 +61,9 @@ impl Dock {
         self.edge = edge;
     }
 
-    /// Lay the panel of `size` out at its edge in `area`, past `occupied`
-    /// (widgets and activities already at the edges), and return where to
-    /// draw it: in its slot, shifted by a drag, or springing from a drop.
+    /// Lay the panel of `size` out at its edge in `area` , past `occupied` (widgets and activities
+    /// already at the edges), and return where to draw it: in its slot, shifted by a drag, or
+    /// springing from a drop.
     pub fn frame(
         &mut self,
         area: Rect,
@@ -124,8 +117,8 @@ impl Dock {
         self.press = Some(EdgeDrag::new((), point));
     }
 
-    /// The pointer moved to `point` while pressed. Returns whether the
-    /// panel is being dragged (then it is drawn under the pointer).
+    /// The pointer moved to `point` while pressed. Returns whether the panel is being dragged (then
+    /// it is drawn under the pointer).
     pub fn drag(&mut self, point: Point) -> bool {
         let Some(press) = self.press.as_mut() else {
             return false;
@@ -145,9 +138,8 @@ impl Dock {
         self.press.is_some()
     }
 
-    /// The press ended at `point`. A drag snaps to the edge nearest the
-    /// pointer and returns it (for the host to keep); a press that never
-    /// dragged (a click) returns `None`.
+    /// The press ended at `point` . A drag snaps to the edge nearest the pointer and returns it
+    /// (for the host to keep); a press that never dragged (a click) returns `None` .
     pub fn release(&mut self, point: Point) -> Option<DockEdge> {
         let press = self.press.take()?;
         let shift = press.shift(point);
@@ -159,8 +151,7 @@ impl Dock {
         Some(edge)
     }
 
-    /// Drop a press (the pointer left the window): the panel springs back
-    /// to its slot.
+    /// Drop a press (the pointer left the window): the panel springs back to its slot.
     pub fn cancel(&mut self) {
         if let Some(press) = self.press.take()
             && let (Some(rest), Some(shift)) = (self.rest, press.shift(self.pointer))

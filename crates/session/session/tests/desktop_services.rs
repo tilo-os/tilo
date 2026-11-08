@@ -34,8 +34,8 @@ fn published(resources: &[ResourceSpec], id: &str) -> bool {
         .any(|spec| spec.id.as_str() == id || published(&spec.children, id))
 }
 
-/// The portal frontend, as xdg-desktop-portal forwards an app's call: it asks
-/// for a note on the session's own bus and gives the app the reply.
+/// The portal frontend, as xdg-desktop-portal forwards an app's call: it asks for a note on the
+/// session's own bus and gives the app the reply.
 fn ask_for_a_note(
     runtime: &tokio::runtime::Runtime,
     bus: &PrivateBus,
@@ -78,8 +78,8 @@ fn ask_for_a_note(
 
 #[test]
 fn a_portal_file_chooser_request_is_the_sessions_question() {
-    // The services keep their priority contacts and their schedules under the
-    // person's home: this test's own, never the machine's.
+    // The services keep their priority contacts and their schedules under the person's home: this
+    // test's own, never the machine's.
     let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
@@ -118,8 +118,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     let call = ask_for_a_note(runtime, &bus);
 
     let resource = format!("question:portal:{REQUEST}");
-    // The question wakes the loop: a turn that would wait a minute ends
-    // when it is asked.
+    // The question wakes the loop: a turn that would wait a minute ends when it is asked.
     let asked = std::time::Instant::now();
     let question = common::wait_for(
         &mut session,
@@ -155,7 +154,7 @@ fn a_portal_file_chooser_request_is_the_sessions_question() {
     assert!(session.read(&resource).is_none(), "answered, it is gone");
 }
 
-/// The control assistive technology names `name` under `node`, by target.
+/// The control assistive technology names `name` under `node` , by target.
 fn control(node: &ui::a11y::AccessNode, name: &str) -> Option<String> {
     if node.name.as_deref() == Some(name)
         && let Some(target) = &node.action_target
@@ -170,17 +169,16 @@ fn until<T>(session: &mut Session, asked: impl FnMut(&mut Session) -> Option<T>)
     common::wait_maybe(session, asked)
 }
 
-/// An app's notification with its own image is shown by the banners and
-/// kept in the centre; the button the person presses on the banner reaches
-/// the app, and so does opening it from the centre.
+/// An app's notification with its own image is shown by the banners and kept in the centre; the
+/// button the person presses on the banner reaches the app, and so does opening it from the centre.
 #[allow(
     clippy::too_many_lines,
     reason = "one app's notification, banner to centre"
 )]
 #[test]
 fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
-    // The services keep their priority contacts and their schedules under the
-    // person's home: this test's own, never the machine's.
+    // The services keep their priority contacts and their schedules under the person's home: this
+    // test's own, never the machine's.
     let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
@@ -281,9 +279,9 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     let chosen = until(&mut session, |_| hear.try_recv().ok());
     assert_eq!(chosen, Some((id, "archive".to_owned())));
 
-    // Opening it from the centre is the same press, and the centre's
-    // published verb carries it to the app that sent it. A notification the
-    // person opens later has left the banners and waits in the centre.
+    // Opening it from the centre is the same press, and the centre's published verb carries it to
+    // the app that sent it. A notification the person opens later has left the banners and waits in
+    // the centre.
     let second = runtime.block_on(async {
         let posted = async |title: &'static str| {
             let reply = proxy
@@ -305,8 +303,7 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
             reply.body().deserialize::<u32>().unwrap()
         };
         let second = posted("Invoice").await;
-        // The banners hold a few; the ones they push off retire to the
-        // centre.
+        // The banners hold a few; the ones they push off retire to the centre.
         for title in [
             "Receipt",
             "Reminder",
@@ -353,8 +350,8 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
         )
         .expect("open the notification");
     let opened = until(&mut session, |_| hear.try_recv().ok());
-    // The app's own connection is closed where the runtime it was made on
-    // runs: dropping it outside would need a reactor that is gone.
+    // The app's own connection is closed where the runtime it was made on runs: dropping it outside
+    // would need a reactor that is gone.
     runtime.block_on(async {
         drop(proxy);
         drop(app);
@@ -366,17 +363,16 @@ fn an_apps_notification_is_a_banner_whose_action_reaches_the_app() {
     );
 }
 
-/// A banner whose sender gave it a lifetime leaves the stack once that time
-/// has run out on screen with nobody holding it, and waits in the centre: a
-/// banner no one dismisses still goes.
+/// A banner whose sender gave it a lifetime leaves the stack once that time has run out on screen
+/// with nobody holding it, and waits in the centre: a banner no one dismisses still goes.
 #[allow(
     clippy::too_many_lines,
     reason = "one banner's whole life, from posted to retired"
 )]
 #[test]
 fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
-    // The services keep their priority contacts and their schedules under the
-    // person's home: this test's own, never the machine's.
+    // The services keep their priority contacts and their schedules under the person's home: this
+    // test's own, never the machine's.
     let _home = tilo_test_env::TestHome::new().expect("the test's home");
     let bus = PrivateBus::start();
     let wake = tilo_service::LoopWake::default();
@@ -437,8 +433,8 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
                     "From Ada",
                     Vec::<&str>::new(),
                     HashMap::<String, zbus::zvariant::Value>::new(),
-                    // Four seconds on screen: long enough to watch it arrive
-                    // and go again even where one frame takes most of a second.
+                    // Four seconds on screen: long enough to watch it arrive and go again even
+                    // where one frame takes most of a second.
                     4000_i32,
                 ),
             )
@@ -458,8 +454,8 @@ fn a_banner_leaves_the_stack_once_its_lifetime_runs_out() {
             .then_some(())
     });
     assert!(up.is_some(), "the banner shows to begin with");
-    // Still up on the next pass: it went because its lifetime ran out, not
-    // because the test looked again too late.
+    // Still up on the next pass: it went because its lifetime ran out, not because the test looked
+    // again too late.
     let still = until(&mut session, |session| {
         session
             .banners()

@@ -31,15 +31,15 @@ use tilo_color_pipeline::hdr_surface::{
 /// Layers the shader composites; the recorder never hands it more.
 pub(super) const LAYERS: usize = MAX_HDR_LAYERS;
 
-/// The texture unit the first layer's plane is bound to; the pass's own
-/// textures take the units below it.
+/// The texture unit the first layer's plane is bound to; the pass's own textures take the units
+/// below it.
 pub(super) const PLANE_UNIT: i32 = 3;
 
-/// One layer as the pass draws it: its plane's samples, and the uniforms that
-/// place it and say what its samples mean.
+/// One layer as the pass draws it: its plane's samples, and the uniforms that place it and say what
+/// its samples mean.
 pub(super) struct Light {
-    /// The plane at the buffer's precision: one half-float RGBA texel per
-    /// pixel, the signal in the layer's own transfer.
+    /// The plane at the buffer's precision: one half-float RGBA texel per pixel, the signal in the
+    /// layer's own transfer.
     pub texture: GlesTexture,
     /// This layer's uniforms, named for the slot it was given.
     pub uniforms: Vec<Uniform<'static>>,
@@ -52,9 +52,9 @@ pub(super) struct Lights {
 }
 
 impl Lights {
-    /// The layers `layers` as the pass draws them, uploading the planes that
-    /// are new since the last frame. An error means the frame is drawn without
-    /// them, showing the layers' tone-mapped renditions as an SDR output does.
+    /// The layers `layers` as the pass draws them, uploading the planes that are new since the last
+    /// frame. An error means the frame is drawn without them, showing the layers' tone-mapped
+    /// renditions as an SDR output does.
     pub(super) fn prepare(
         &mut self,
         renderer: &mut Renderer<'_>,
@@ -82,8 +82,8 @@ impl Lights {
     }
 }
 
-/// The uniforms the pass's shader reads the layers through: the three
-/// planes, and per slot where its texels land on screen and what they hold.
+/// The uniforms the pass's shader reads the layers through: the three planes, and per slot where
+/// its texels land on screen and what they hold.
 pub(super) fn uniform_names() -> Vec<UniformName<'static>> {
     let mut names = vec![UniformName::new("lit_tex", UniformType::_1i)];
     for slot in 0..LAYERS {
@@ -107,8 +107,7 @@ pub(super) fn uniform_names() -> Vec<UniformName<'static>> {
     names
 }
 
-/// The plane's samples as a half-float RGBA texture: the signal in its own
-/// transfer, alpha opaque.
+/// The plane's samples as a half-float RGBA texture: the signal in its own transfer, alpha opaque.
 fn upload(renderer: &mut Renderer<'_>, plane: &HdrPlane) -> Result<GlesTexture, String> {
     let width = i32::try_from(plane.width()).map_err(|_| format!("{} wide", plane.width()))?;
     let height = i32::try_from(plane.height()).map_err(|_| format!("{} high", plane.height()))?;
@@ -143,8 +142,8 @@ fn signal_bytes(plane: &HdrPlane) -> Vec<u8> {
     bytes
 }
 
-/// The uniforms of the layer in `slot`: where its texels are on screen, how
-/// much of it shows, and how its signal turns into light.
+/// The uniforms of the layer in `slot` : where its texels are on screen, how much of it shows, and
+/// how its signal turns into light.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_precision_loss,
@@ -206,7 +205,7 @@ mod tests {
         HdrSurface::from_signal_rgb(2, 2, [[0.0, 0.5, 1.0]; 4], signal).expect("a plane")
     }
 
-    /// A layer of `surface`'s plane drawn at `at`, one texel per pixel.
+    /// A layer of `surface` 's plane drawn at `at` , one texel per pixel.
     fn layer(surface: &HdrSurface, channel: u8, at: (f64, f64)) -> HdrLayer {
         let image_to_scene = Affine::translate(at);
         HdrLayer {
@@ -251,8 +250,8 @@ mod tests {
             [0.0],
             "PQ is the shader's code 0"
         );
-        // A scene pixel maps to the plane texel under it: the layer's top left
-        // pixel centre is its first texel's centre, and so on.
+        // A scene pixel maps to the plane texel under it: the layer's top left pixel centre is its
+        // first texel's centre, and so on.
         let row_x = value(&uniforms, "layer_row_x[2]");
         let row_y = value(&uniforms, "layer_row_y[2]");
         let texel = |x: f32, y: f32| {

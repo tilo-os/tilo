@@ -1,20 +1,16 @@
-//! What a session keeps to itself when it runs in a window of the desktop
-//! it was started from.
-//!
-//! A nested session lives inside someone's desktop, so it must leave that
-//! desktop alone: it serves its desktop services on no bus of it unless a
-//! flag names one (a private dbus-daemon), and it never exports its
-//! displays with `dbus-update-activation-environment`, which would point the
-//! surrounding session's systemd user manager and D-Bus-activated services
-//! at its own Wayland socket, and no D-Bus name of its own lands on the
-//! host's buses. Its own XDG names stay clear of the host's too: the
-//! `wayland-N` socket and the Xwayland display are picked from the free
-//! ones, so several nested sessions can run beside a desktop and each other.
+//! What a session keeps to itself when it runs in a window of the desktop it was started from.
+//! A nested session lives inside someone's desktop, so it must leave that desktop alone: it serves
+//! its desktop services on no bus of it unless a flag names one (a private dbus-daemon), and it
+//! never exports its displays with `dbus-update-activation-environment` , which would point the
+//! surrounding session's systemd user manager and D-Bus-activated services at its own Wayland
+//! socket, and no D-Bus name of its own lands on the host's buses. Its own XDG names stay clear of
+//! the host's too: the `wayland-N` socket and the Xwayland display are picked from the free ones,
+//! so several nested sessions can run beside a desktop and each other.
 
 use crate::desktop_services::{Bus, Buses};
 
-/// How a session shows itself: on a bare TTY, with no display at all, or in
-/// a window of the desktop it is started from.
+/// How a session shows itself: on a bare TTY, with no display at all, or in a window of the desktop
+/// it is started from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Backend {
     /// On a bare TTY ([`Session::drm`](crate::Session::drm)).
@@ -22,8 +18,7 @@ pub enum Backend {
     /// With no display, for tests and screenshots
     /// ([`Session::headless`](crate::Session::headless)).
     Headless,
-    /// In a window of the desktop it is started from
-    /// ([`Session::nested`](crate::Session::nested)).
+    /// In a window of the desktop it is started from ([`Session::nested`](crate::Session::nested)).
     Nested,
 }
 
@@ -45,14 +40,13 @@ impl Backend {
 pub struct Reach {
     /// The buses its desktop services serve on.
     pub buses: Buses,
-    /// Whether its displays are exported to the systemd user manager and
-    /// D-Bus activation.
+    /// Whether its displays are exported to the systemd user manager and D-Bus activation.
     pub export_displays: bool,
 }
 
 impl Reach {
-    /// What `backend` reaches of `buses` as asked for: a nested session
-    /// keeps to the buses a flag names, and exports nothing.
+    /// What `backend` reaches of `buses` as asked for: a nested session keeps to the buses a flag
+    /// names, and exports nothing.
     #[must_use]
     pub fn new(backend: Backend, buses: Buses) -> Self {
         match backend {
@@ -70,9 +64,8 @@ impl Reach {
         }
     }
 
-    /// The session bus a flag named: what a command started in the session
-    /// reaches the portal and the notifications daemon by, rather than the
-    /// bus its own environment names.
+    /// The session bus a flag named: what a command started in the session reaches the portal and
+    /// the notifications daemon by, rather than the bus its own environment names.
     #[must_use]
     pub fn session_bus(&self) -> Option<&str> {
         match &self.buses.session {

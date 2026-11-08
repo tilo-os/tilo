@@ -1,18 +1,14 @@
 //! Watching the folders that file-changed triggers name.
-//!
 //! [`FolderWatch`] watches exactly the folders it was last given
-//! ([`watched_folders`](super::triggers::watched_folders), resolved from each
-//! trigger's capability) and reports what changed inside them since the last
-//! look, as [`FolderChange`]s for the file-changed trigger source.
-//!
-//! A file is reported once, and only after it has stopped changing: dropping
-//! one file into a folder makes the kernel announce its creation and then
-//! every chunk written into it, so a shortcut watching the folder would
-//! otherwise run again and again on a file it already has. A first sighting
-//! of a file restarts its `SETTLE` timer; the change it is reported as is the
-//! first one seen (a file that is written and then renamed into the folder is
-//! there as a creation), and a change seen while a file settles keeps it
-//! settling.
+//! ([`watched_folders`](super::triggers::watched_folders), resolved from each trigger's capability)
+//! and reports what changed inside them since the last look, as [`FolderChange`]s for the
+//! file-changed trigger source.
+//! A file is reported once, and only after it has stopped changing: dropping one file into a folder
+//! makes the kernel announce its creation and then every chunk written into it, so a shortcut
+//! watching the folder would otherwise run again and again on a file it already has. A first
+//! sighting of a file restarts its `SETTLE` timer; the change it is reported as is the first one
+//! seen (a file that is written and then renamed into the folder is there as a creation), and a
+//! change seen while a file settles keeps it settling.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -24,8 +20,8 @@ use tilo_files::native::{ChangeWatch, WatchEvent, Watcher};
 
 use super::triggers::{FileChange, FolderChange, WatchedFolder};
 
-/// How long a file must go untouched before the change is reported, so one
-/// write of a file is one change.
+/// How long a file must go untouched before the change is reported, so one write of a file is one
+/// change.
 pub const SETTLE: Duration = Duration::from_millis(1500);
 
 /// A watcher over the folders file-changed triggers name.
@@ -33,8 +29,7 @@ pub const SETTLE: Duration = Duration::from_millis(1500);
 pub struct FolderWatch {
     folders: Vec<WatchedFolder>,
     watcher: Option<(Vec<ChangeWatch>, mpsc::Receiver<WatchEvent>)>,
-    /// Changes seen but not yet reported, and when each file was last seen
-    /// changing.
+    /// Changes seen but not yet reported, and when each file was last seen changing.
     settling: BTreeMap<FolderChange, Instant>,
 }
 
@@ -48,8 +43,8 @@ impl std::fmt::Debug for FolderWatch {
 }
 
 impl FolderWatch {
-    /// Watch exactly `folders` from now on. A folder that cannot be watched
-    /// (it does not exist, or the watch limit is reached) is skipped.
+    /// Watch exactly `folders` from now on. A folder that cannot be watched (it does not exist, or
+    /// the watch limit is reached) is skipped.
     pub fn watch(&mut self, folders: Vec<WatchedFolder>) {
         if folders == self.folders {
             return;
@@ -80,15 +75,14 @@ impl FolderWatch {
         self.watcher = Some((watches, receiver));
     }
 
-    /// Every file that changed inside a watched folder and has since
-    /// settled, once per file: rewriting a file, or removing it and writing
-    /// it again, reports the first change seen, so one file is one run.
+    /// Every file that changed inside a watched folder and has since settled, once per file:
+    /// rewriting a file, or removing it and writing it again, reports the first change seen, so one
+    /// file is one run.
     pub fn changes(&mut self) -> Vec<FolderChange> {
         self.changes_at(Instant::now())
     }
 
-    /// When the oldest change held back has settled, so the next pass
-    /// reports it.
+    /// When the oldest change held back has settled, so the next pass reports it.
     pub fn next_deadline(&self) -> Option<Instant> {
         self.settling
             .values()
@@ -126,8 +120,8 @@ impl FolderWatch {
         changes
     }
 
-    /// Record that `found` was seen changing at `now`, keeping the change a
-    /// file is first reported as.
+    /// Record that `found` was seen changing at `now` , keeping the change a file is first reported
+    /// as.
     fn settle(&mut self, found: FolderChange, now: Instant) {
         let seen = self
             .settling
@@ -142,8 +136,8 @@ impl FolderWatch {
     }
 }
 
-/// What a change means for the file it names. A rescan names the folder
-/// itself, which is no file of it.
+/// What a change means for the file it names. A rescan names the folder itself, which is no file of
+/// it.
 fn file_change(kind: ChangeKind) -> Option<FileChange> {
     match kind {
         ChangeKind::Created => Some(FileChange::Created),
@@ -212,8 +206,8 @@ mod tests {
         };
         let mut seen = Vec::new();
         let mut watch = FolderWatch::default();
-        // A file written, and written again a moment later, settles from the
-        // second write: the first one's window passing reports nothing.
+        // A file written, and written again a moment later, settles from the second write: the
+        // first one's window passing reports nothing.
         watch.settle(write(FileChange::Created), start);
         watch.settle(write(FileChange::Modified), start + SETTLE / 2);
         seen.extend(watch.changes_at(start + SETTLE));

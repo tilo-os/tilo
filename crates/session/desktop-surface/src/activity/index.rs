@@ -19,8 +19,8 @@ use ui::widget::{HistoryEntry, HistoryEntryId};
 use super::ActivityTree;
 use tilo_desktop_model::WorkspaceId;
 
-/// Hard ceilings keep a corrupt index or a workspace with thousands of references
-/// from turning opening History into an unbounded allocation.
+/// Hard ceilings keep a corrupt index or a workspace with thousands of references from turning
+/// opening History into an unbounded allocation.
 pub const MAX_FEED_ENTRIES: usize = 2_000;
 pub const MAX_INDEXED_RECORDS: usize = 512;
 
@@ -77,8 +77,8 @@ impl HistoryOrigin {
     }
 }
 
-/// One current-admission record, captured through a read-only owner borrow.
-/// Missing and unsettled owners carry no document; clones must be settled.
+/// One current-admission record, captured through a read-only owner borrow. Missing and unsettled
+/// owners carry no document; clones must be settled.
 #[derive(Clone)]
 pub struct DetachedRecordHistory {
     pub app: String,
@@ -117,25 +117,25 @@ impl PartialOrd for WorkspaceHistoryId {
     }
 }
 
-/// A history row plus enough provenance to open, diff, or undo it against the
-/// correct document later.
+/// A history row plus enough provenance to open, diff, or undo it against the correct document
+/// later.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WorkspaceHistoryEntry {
     pub id: WorkspaceHistoryId,
     pub entry: HistoryEntry,
 }
 
-/// Private read state for one collaborative document. Full Automerge heads
-/// define the causal past; exceptions acknowledge individual changes without
-/// claiming that their concurrent siblings were read.
+/// Private read state for one collaborative document. Full Automerge heads define the causal past;
+/// exceptions acknowledge individual changes without claiming that their concurrent siblings were
+/// read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct DocumentSeenFrontier {
     pub heads: Vec<String>,
     pub exceptions: BTreeSet<String>,
 }
 
-/// When this device left a workspace and the causal frontier it had seen
-/// then. Private to the device; the host keeps it with the seen frontiers.
+/// When this device left a workspace and the causal frontier it had seen then. Private to the
+/// device; the host keeps it with the seen frontiers.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 pub struct WorkspaceDeparture {
     pub departed_at_secs: u64,
@@ -149,10 +149,10 @@ pub struct WorkspaceSeenFrontier {
 }
 
 impl WorkspaceSeenFrontier {
-    /// Advance origins the current index exposed, retaining absent origins and
-    /// previously acknowledged exceptions outside a bounded projection.
-    /// A workspace-scoped tree is only a projection of the global tree document, so
-    /// its visible changes are exceptions rather than an unsafe global head.
+    /// Advance origins the current index exposed, retaining absent origins and previously
+    /// acknowledged exceptions outside a bounded projection. A workspace-scoped tree is only a
+    /// projection of the global tree document, so its visible changes are exceptions rather than an
+    /// unsafe global head.
     pub fn mark_seen(&mut self, index: &WorkspaceHistoryIndex) {
         let workspace_scoped = index.query.as_ref().is_some_and(|query| {
             query.workspace.is_some()
@@ -198,10 +198,9 @@ impl WorkspaceHistoryEntry {
     /// accepts only a 16-byte id.  Authoritative operations must retain `id`.
     pub fn timeline_entry(&self) -> HistoryEntry {
         let mut projected = self.entry.clone();
-        // Collaborative named ranges live in the workspace tree and address
-        // its native ids. Preserve those ids so adding record rows cannot
-        // detach an existing name from its band. Only foreign document ids
-        // need projection into the shared widget namespace.
+        // Collaborative named ranges live in the workspace tree and address its native ids.
+        // Preserve those ids so adding record rows cannot detach an existing name from its band.
+        // Only foreign document ids need projection into the shared widget namespace.
         if self.id.origin == HistoryOrigin::DesktopTree {
             return projected;
         }
@@ -217,11 +216,11 @@ impl WorkspaceHistoryEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceHistoryQuery {
-    /// `Some` includes only records held by, or originally minted in, this
-    /// workspace. `None` defers scope to `workspaces`.
+    /// `Some` includes only records held by, or originally minted in, this workspace. `None` defers
+    /// scope to `workspaces` .
     pub workspace: Option<WorkspaceId>,
-    /// When set, restrict a multi-workspace query to this exact union instead
-    /// of treating `workspace: None` as unrestricted device history.
+    /// When set, restrict a multi-workspace query to this exact union instead of treating
+    /// `workspace: None` as unrestricted device history.
     pub workspaces: Option<Vec<WorkspaceId>>,
     pub limit: usize,
 }
@@ -254,8 +253,8 @@ impl WorkspaceHistoryQuery {
 /// downloaded; silently omitting it would make the history falsely reassuring.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FeedCoverage {
-    /// The live tree has an unfinished producer transaction. No history read
-    /// may implicitly commit it; observation resumes after producer settlement.
+    /// The live tree has an unfinished producer transaction. No history read may implicitly commit
+    /// it; observation resumes after producer settlement.
     pub pending_tree: bool,
     pub referenced_records: usize,
     pub indexed_records: usize,
@@ -288,9 +287,9 @@ impl Default for WorkspaceHistoryIndex {
     }
 }
 
-/// The rows of `doc`, each saying what a model described it as when one did:
-/// a description stands in place of the change's own summary, never beside
-/// it, and never replaces its author, time or kind.
+/// The rows of `doc` , each saying what a model described it as when one did: a description stands
+/// in place of the change's own summary, never beside it, and never replaces its author, time or
+/// kind.
 fn described(mut rows: Vec<HistoryEntry>, doc: &AutoCommit) -> Vec<HistoryEntry> {
     crate::activity::describer::shown(&mut rows, doc);
     rows
@@ -323,10 +322,9 @@ impl WorkspaceHistoryIndex {
         &self.coverage
     }
 
-    /// Retain only names whose whole positional span belongs to one document.
-    /// Until named-range storage carries an explicit multi-origin membership
-    /// list, dropping an ambiguous band is safer than visually absorbing and
-    /// potentially undoing changes from another record.
+    /// Retain only names whose whole positional span belongs to one document. Until named-range
+    /// storage carries an explicit multi-origin membership list, dropping an ambiguous band is
+    /// safer than visually absorbing and potentially undoing changes from another record.
     pub fn origin_safe_named_ranges(&self, ranges: &[ui::NamedRange]) -> Vec<ui::NamedRange> {
         let projected: Vec<(HistoryEntryId, &HistoryOrigin)> = self
             .entries
@@ -364,8 +362,8 @@ impl WorkspaceHistoryIndex {
             .collect()
     }
 
-    /// Replaces the entire admitted multi-owner input atomically. Never borrows
-    /// a live store mutably or closes a producer transaction.
+    /// Replaces the entire admitted multi-owner input atomically. Never borrows a live store
+    /// mutably or closes a producer transaction.
     pub fn refresh_detached(
         &mut self,
         tree: &mut impl ActivityTree,
@@ -399,9 +397,9 @@ impl WorkspaceHistoryIndex {
                 .cloned()
             else {
                 coverage.unavailable_records.push(record.checkout.clone());
-                // Keep the last settled rendering while this admitted owner is
-                // busy, but never carry rows from an owner absent from the new
-                // admission. Unavailable documents cannot establish seen heads.
+                // Keep the last settled rendering while this admitted owner is busy, but never
+                // carry rows from an owner absent from the new admission. Unavailable documents
+                // cannot establish seen heads.
                 for row in self
                     .entries
                     .iter()
@@ -503,10 +501,9 @@ impl WorkspaceHistoryIndex {
     }
 }
 
-/// The feed lists what people did to the workspace: housekeeping about a
-/// document (a read marker, a reading position) and content that came from
-/// outside (a refresh's articles, a process's output) stay in that document's
-/// own history.
+/// The feed lists what people did to the workspace: housekeeping about a document (a read marker, a
+/// reading position) and content that came from outside (a refresh's articles, a process's output)
+/// stay in that document's own history.
 fn insert_rows(
     target: &mut BTreeMap<WorkspaceHistoryId, WorkspaceHistoryEntry>,
     origin: &HistoryOrigin,

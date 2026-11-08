@@ -5,16 +5,14 @@ use super::*;
 /// A window's place on the screen: its corner and its size.
 type Placed = (i32, i32, i32, i32);
 
-/// Two windows on one screen, the second opened beside the first: the
-/// session settles on the width they share, and the window that was open
-/// first draws itself in it, as a person's app does when the desk resizes
-/// it. Returns the two windows' clients — closing them closes the windows —
-/// and their rectangles, in the order they stand in.
+/// Two windows on one screen, the second opened beside the first: the session settles on the width
+/// they share, and the window that was open first draws itself in it, as a person's app does when
+/// the desk resizes it. Returns the two windows' clients — closing them closes the windows — and
+/// their rectangles, in the order they stand in.
 fn two_windows(session: &mut Session) -> (TestClient, TestClient, [Placed; 2]) {
     let mut terminal = mapped(session, "org.example.Terminal");
     let files = mapped(session, "so.tilo.file-explorer");
-    // The window that opened second takes half the strip from the first, on
-    // the width's own clock.
+    // The window that opened second takes half the strip from the first, on the width's own clock.
     let mut at = ui::time::now();
     for _ in 0..40 {
         at = at
@@ -24,8 +22,8 @@ fn two_windows(session: &mut Session) -> (TestClient, TestClient, [Placed; 2]) {
             session.step(Duration::from_millis(1)).expect("step");
         });
     }
-    // The window that was open first is handed the width it now shares the
-    // strip at, and draws itself in it.
+    // The window that was open first is handed the width it now shares the strip at, and draws
+    // itself in it.
     pump(session, &mut [&mut terminal], |session, clients| {
         let Some((width, height)) = clients[0].seen.size else {
             return false;
@@ -53,10 +51,9 @@ fn shots_dir() -> std::path::PathBuf {
     )
 }
 
-/// Two windows on one screen stand on the desktop's wallpaper, not in its
-/// corners: the first keeps the gutter past the leading edge, the last the
-/// one before the trailing edge, they share what lies between, and both
-/// start a step below the bar.
+/// Two windows on one screen stand on the desktop's wallpaper, not in its corners: the first keeps
+/// the gutter past the leading edge, the last the one before the trailing edge, they share what
+/// lies between, and both start a step below the bar.
 #[track_caller]
 fn assert_pair_stands_in_the_strip([first, last]: [Placed; 2]) {
     #[allow(

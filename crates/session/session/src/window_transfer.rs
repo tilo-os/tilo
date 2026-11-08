@@ -29,18 +29,17 @@ use ui::record::{RecordCheckout, RecordId, RecordOpenError};
 /// Why a step of a move could not be taken.
 #[derive(Debug)]
 pub(crate) enum Fault {
-    /// The record itself: missing, retired, not what it claims to be, or the
-    /// disk refused a read or a write.
+    /// The record itself: missing, retired, not what it claims to be, or the disk refused a read or
+    /// a write.
     Transfer(TransferError),
     /// The app's profile could not be opened where the launcher keeps it.
     Profile(String),
-    /// A write the move made has not reached the disk, so nothing else may
-    /// read it yet.
+    /// A write the move made has not reached the disk, so nothing else may read it yet.
     Unwritten,
 }
 
-/// One app's profile for one workspace: the directory the launcher points that
-/// app's data home at there, and the workspace its records are scoped to.
+/// One app's profile for one workspace: the directory the launcher points that app's data home at
+/// there, and the workspace its records are scoped to.
 #[derive(Clone, Debug)]
 pub(crate) struct Profile {
     /// The app's `XDG_DATA_HOME` in that workspace, as the launcher sets it.
@@ -70,18 +69,17 @@ impl Profile {
 
 /// What a window's record became in the workspace the person carried it to.
 pub(crate) struct Arrived {
-    /// The record where the window showed it, as the destination's copy was
-    /// made from it: what the retirement of the source names, and what the
-    /// source is read through once its app let go.
+    /// The record where the window showed it, as the destination's copy was made from it: what the
+    /// retirement of the source names, and what the source is read through once its app let go.
     pub(crate) origin: Origin,
-    /// The record it arrived as: a record of the destination, sharing the
-    /// whole history of the one it left.
+    /// The record it arrived as: a record of the destination, sharing the whole history of the one
+    /// it left.
     pub(crate) target: RecordCheckout,
 }
 
-/// Read the record `id` that the window at `instance` shows in `source`, and
-/// make it a record of `destination` under an id nothing there holds, with the
-/// presentation the instance saved. Nothing in `source` changes.
+/// Read the record `id` that the window at `instance` shows in `source` , and make it a record of
+/// `destination` under an id nothing there holds, with the presentation the instance saved. Nothing
+/// in `source` changes.
 pub(crate) fn take(
     source: &Profile,
     destination: &Profile,
@@ -113,12 +111,11 @@ pub(crate) fn take(
     .map_err(Fault::Transfer)?;
     match landing.durability(to.store().as_ref()) {
         Durability::Durable => {}
-        // A write that has not reached the disk is a record nothing else may
-        // read yet, and a failed one never will: the move cannot go on.
+        // A write that has not reached the disk is a record nothing else may read yet, and a failed
+        // one never will: the move cannot go on.
         Durability::Pending | Durability::Failed(_) => return Err(Fault::Unwritten),
     }
-    // The window reopens where the person left it, not at the top of the
-    // record it now shares.
+    // The window reopens where the person left it, not at the top of the record it now shares.
     if let Some(view) = from
         .saved_view(instance)
         .map_err(|error| Fault::Profile(error.to_string()))?
@@ -129,13 +126,11 @@ pub(crate) fn take(
     Ok(Arrived { origin, target })
 }
 
-/// `origin`'s document as its writer last made it durable, once that writer
-/// has let go; `None` while an app still holds it.
-///
-/// `until` is the heads the app gave with its retirement: the document as it
-/// was just before it stamped itself retired, which is everything the move
-/// still has to bring along, and which a retired document can no longer be
-/// read as it stands.
+/// `origin` 's document as its writer last made it durable, once that writer has let go; `None`
+/// while an app still holds it.
+/// `until` is the heads the app gave with its retirement: the document as it was just before it
+/// stamped itself retired, which is everything the move still has to bring along, and which a
+/// retired document can no longer be read as it stands.
 pub(crate) fn released(
     source: &Profile,
     origin: &Origin,
@@ -169,12 +164,11 @@ pub(crate) enum Merged {
     Nothing,
     /// The changes arrived, on the disk.
     Written(usize),
-    /// The destination's app holds the record open: it must let go before the
-    /// merge can be written.
+    /// The destination's app holds the record open: it must let go before the merge can be written.
     Held,
 }
 
-/// Merge every change `source` holds that `target` lacks in `destination`.
+/// Merge every change `source` holds that `target` lacks in `destination` .
 pub(crate) fn merge(
     destination: &Profile,
     target: &RecordCheckout,
@@ -205,9 +199,8 @@ pub(crate) fn merge(
     }
 }
 
-/// Stamp `origin` in `profile` retired, saying why: that it moved to `why`'s
-/// workspace, or that it never made it there. A document already retired is
-/// left as it is.
+/// Stamp `origin` in `profile` retired, saying why: that it moved to `why` 's workspace, or that it
+/// never made it there. A document already retired is left as it is.
 pub(crate) fn retire(profile: &Profile, origin: &Origin, why: &Retirement) -> Result<(), Fault> {
     let held = profile.open()?;
     transfer::retire(held.store(), &profile.app, held.workspace_id(), origin, why)
@@ -215,9 +208,9 @@ pub(crate) fn retire(profile: &Profile, origin: &Origin, why: &Retirement) -> Re
         .map_err(Fault::Transfer)
 }
 
-/// Take one step of a move off the loop's thread and hand back what it came
-/// to, for a later pass to pick up: nothing on the loop waits on the disk.
-/// `None` when this machine will not start the thread.
+/// Take one step of a move off the loop's thread and hand back what it came to, for a later pass to
+/// pick up: nothing on the loop waits on the disk. `None` when this machine will not start the
+/// thread.
 pub(crate) fn off_loop<T, F>(step: F) -> Option<Receiver<T>>
 where
     T: Send + 'static,
@@ -233,9 +226,8 @@ where
     Some(answers)
 }
 
-/// Take the last word of a move off the loop's thread, which nothing waits
-/// for: `Err` when this machine will not start the thread, so the last word is
-/// never taken and whoever asked is told.
+/// Take the last word of a move off the loop's thread, which nothing waits for: `Err` when this
+/// machine will not start the thread, so the last word is never taken and whoever asked is told.
 pub(crate) fn off_loop_detached<F>(step: F) -> std::io::Result<()>
 where
     F: FnOnce() + Send + 'static,

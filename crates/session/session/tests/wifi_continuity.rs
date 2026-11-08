@@ -1,7 +1,6 @@
-//! Settings shares the Wi-Fi passphrase this device learned with the person's
-//! other devices, and answers for a network they shared, over the action door
-//! a shipped app already speaks: the session answers it from its own device
-//! fabric, sealed to each of the person's devices.
+//! Settings shares the Wi-Fi passphrase this device learned with the person's other devices, and
+//! answers for a network they shared, over the action door a shipped app already speaks: the
+//! session answers it from its own device fabric, sealed to each of the person's devices.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -45,8 +44,8 @@ const PASSWORD: &str = "a passphrase sealed to the person's devices";
 struct Person {
     device: ed25519_dalek::SigningKey,
     cert: DeviceCert,
-    // The environment the identity was provisioned in, restored before the
-    // directories it names are removed.
+    // The environment the identity was provisioned in, restored before the directories it names are
+    // removed.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
     _home: tempfile::TempDir,
@@ -105,8 +104,8 @@ fn desk(person: &Person) -> DesktopTree {
     }
 }
 
-/// What an app presents to join `channel`: the certificate, and the device's
-/// proof that it is the certificate's.
+/// What an app presents to join `channel` : the certificate, and the device's proof that it is the
+/// certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: WORKSPACE.to_owned(),
@@ -122,8 +121,8 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A directory for the plane's socket that only this user reaches: the
-/// broker refuses to serve one anybody else could open.
+/// A directory for the plane's socket that only this user reaches: the broker refuses to serve one
+/// anybody else could open.
 fn private_socket() -> (tempfile::TempDir, PathBuf) {
     use std::os::unix::fs::PermissionsExt as _;
     let root = tempfile::tempdir().expect("a directory to serve the plane in");
@@ -133,11 +132,11 @@ fn private_socket() -> (tempfile::TempDir, PathBuf) {
     (root, socket)
 }
 
-/// A session serving Settings on `socket`, on this computer's certified
-/// device, with the person's desk.
+/// A session serving Settings on `socket` , on this computer's certified device, with the person's
+/// desk.
 fn session(socket: &Path, person: &Person) -> Session {
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), SETTINGS, WORKSPACE, true);
     let mut session = Session::headless(
@@ -167,8 +166,8 @@ fn channel() -> String {
     tilo_action_broker::route::CrdtRoute::record(SETTINGS, WORKSPACE, RECORD).channel_key()
 }
 
-/// An app connected to the session's plane as Settings in the workspace, as
-/// the launcher hands it the connection.
+/// An app connected to the session's plane as Settings in the workspace, as the launcher hands it
+/// the connection.
 fn connect(socket: &Path) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, SETTINGS, WORKSPACE)
@@ -183,8 +182,8 @@ fn connect(socket: &Path) -> CollabClient {
     client
 }
 
-/// Settings' own calls, on a connection to the session's plane: the passphrase
-/// it learned here is shared, then read back, as their other device would.
+/// Settings' own calls, on a connection to the session's plane: the passphrase it learned here is
+/// shared, then read back, as their other device would.
 fn app(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,

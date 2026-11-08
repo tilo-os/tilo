@@ -1,20 +1,17 @@
 //! A tilolang app whose types hold an outside service's resources keeps them in step with that
 //! service in a real session (`docs/architecture/apps.md` §1, §8).
-//!
 //! The app is the `YouTube` client (`apps/tl/tube`), its package a fixture installed as an app
-//! whose signed manifest declares `origins = ["youtube"]`. The session's own launch path starts
-//! the app's connector as a sandboxed process — here the launcher is a stand-in that runs a
-//! child of this test binary as that process — and the child runs the platform's
-//! `tilolang_youtube::connector::serve` loop over a scripted service: the same connector the
-//! system ships, answering a script instead of `YouTube`.
-//!
-//! What this proves is the whole path and nothing test-only about it: a search action an
-//! instance runs queues an outside effect, the session hands the effect to the connector over
-//! the socket it started, and the answer lands in the client's record — its videos and the
-//! search's settled state — which the session publishes and its door reads.
-//!
-//! Before this work the session started no connector at all: the effect stayed in the
-//! instance's own process, and nothing outside ever asked `YouTube`.
+//! whose signed manifest declares `origins = ["youtube"]` . The session's own launch path starts
+//! the app's connector as a sandboxed process — here the launcher is a stand-in that runs a child
+//! of this test binary as that process — and the child runs the platform's
+//! `tilolang_youtube::connector::serve` loop over a scripted service: the same connector the system
+//! ships, answering a script instead of `YouTube` .
+//! What this proves is the whole path and nothing test-only about it: a search action an instance
+//! runs queues an outside effect, the session hands the effect to the connector over the socket it
+//! started, and the answer lands in the client's record — its videos and the search's settled state
+//! — which the session publishes and its door reads.
+//! Before this work the session started no connector at all: the effect stayed in the instance's
+//! own process, and nothing outside ever asked `YouTube` .
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -109,13 +106,13 @@ fn scripted() -> tilolang_youtube::Scripted {
     }
 }
 
-/// Write the launcher the session starts the apps' connectors through: the stand-in runs this
-/// test binary as the connector process, on the gate the launcher is handed. The apps are the
-/// ones installed in `home`'s own store ([`common::install_apps_in`]), the `YouTube` client's
-/// signed package among them; its manifest declares the `youtube` origin.
+/// Write the launcher the session starts the apps' connectors through: the stand-in runs this test
+/// binary as the connector process, on the gate the launcher is handed. The apps are the ones
+/// installed in `home` 's own store ([`common::install_apps_in`]), the `YouTube` client's signed
+/// package among them; its manifest declares the `youtube` origin.
 fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn {
-    // The launcher the session starts connectors through: it runs this test binary as the
-    // connector process, keeping the gate it was handed as stdin.
+    // The launcher the session starts connectors through: it runs this test binary as the connector
+    // process, keeping the gate it was handed as stdin.
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
         &format!(
@@ -130,10 +127,10 @@ fn connector_launcher(home: &tilo_test_env::TestHome) -> tilo_test_env::StandIn 
 }
 
 /// A headless session with the shell as the whole screen and the seeded apps published (the
-/// `YouTube` client among them), its apps started through `home`'s launcher. The apps are the
-/// ones installed in `home`'s own app store, as a device's are: the client's package is a
-/// signed `.tapp` whose manifest declares the `youtube` origin, so the session plans its
-/// connector the way it plans any installed app's.
+/// `YouTube` client among them), its apps started through `home` 's launcher. The apps are the ones
+/// installed in `home` 's own app store, as a device's are: the client's package is a signed
+/// `.tapp` whose manifest declares the `youtube` origin, so the session plans its connector the way
+/// it plans any installed app's.
 fn session(
     home: &tilo_test_env::TestHome,
     root: &Path,
@@ -171,8 +168,8 @@ fn session(
 fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() {
     let _settled = ui::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
-    // The apps a development session runs, installed in this test's own store: the YouTube
-    // client's signed package is one of them, with the manifest that declares its origin.
+    // The apps a development session runs, installed in this test's own store: the YouTube client's
+    // signed package is one of them, with the manifest that declares its origin.
     let store = home.data().join("tilo-apps");
     common::install_apps_in(&store, &home.state().join("tilolang"));
     home.env().set("TILO_APPS_DATA_DIR", &store);
@@ -180,8 +177,8 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     let root = private_home();
     let mut session = session(&home, root.path(), &launcher);
 
-    // The client's root is published by the seeded apps, and the video the scripted service
-    // answers with is not in it: only the scenario's own are.
+    // The client's root is published by the seeded apps, and the video the scripted service answers
+    // with is not in it: only the scenario's own are.
     common::until(&mut session, "the client's root", |session| {
         session
             .resources()
@@ -193,8 +190,8 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         "the answer's video is not in the record before the search"
     );
 
-    // The person's search, through the session's door as any action: the outside effect it
-    // queues goes to the connector the session started for the app's origin.
+    // The person's search, through the session's door as any action: the outside effect it queues
+    // goes to the connector the session started for the app's origin.
     let root = session
         .resources()
         .into_iter()
@@ -225,9 +222,9 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
         )
         .expect("the search action runs");
 
-    // The answer lands in the client's record: the video the scripted service found and the
-    // channel it names, each a resource of the client's the door reads, and the search settled
-    // (`search_state` `done`, so the client's view stops saying it searches).
+    // The answer lands in the client's record: the video the scripted service found and the channel
+    // it names, each a resource of the client's the door reads, and the search settled
+    // (`search_state` `done` , so the client's view stops saying it searches).
     common::until(&mut session, "the answer in the record", |session| {
         record_says(session, VIDEO) && record_says(session, NAME)
     });
@@ -243,8 +240,8 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     );
 }
 
-/// The client's items of the kind `kind` (`Video`, `Channel`): each its published id and the
-/// text of each of its fields that is a text, read through the session's door.
+/// The client's items of the kind `kind` (`Video`, `Channel` ): each its published id and the text
+/// of each of its fields that is a text, read through the session's door.
 fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     let Some(root) = session
         .resources()
@@ -286,8 +283,8 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
     items
 }
 
-/// Whether any of the client's records holds `text` in a text field, as the session's door
-/// reads them.
+/// Whether any of the client's records holds `text` in a text field, as the session's door reads
+/// them.
 fn record_says(session: &Session, text: &str) -> bool {
     ["Video", "Channel"].into_iter().any(|kind| {
         client_items(session, kind)

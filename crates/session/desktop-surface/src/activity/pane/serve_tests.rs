@@ -82,10 +82,9 @@ fn marking_the_summary_viewed_moves_what_is_new_and_leaves_the_workspace_alone()
     assert_eq!(tree.doc.get_heads(), heads, "seeing history writes nothing");
 }
 
-/// Two people in one workspace, each with Activity open on their own device:
-/// what is new is each person's own. One marking it viewed moves only their
-/// summary and unread count; it writes nothing to the workspace the other could
-/// receive.
+/// Two people in one workspace, each with Activity open on their own device: what is new is each
+/// person's own. One marking it viewed moves only their summary and unread count; it writes nothing
+/// to the workspace the other could receive.
 #[test]
 fn two_people_in_one_workspace_each_see_their_own_whats_new() {
     let (mut mine, workspace) = workspace_a_peer_changed();

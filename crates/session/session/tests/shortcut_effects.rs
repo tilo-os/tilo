@@ -1,7 +1,6 @@
-//! The shortcuts of the one table on a real session: the chords the session
-//! answers open the surface each names, and the chords the desk answers move
-//! its windows — pressed as a person presses them, through the keyboard the
-//! compositor gives the session.
+//! The shortcuts of the one table on a real session: the chords the session answers open the
+//! surface each names, and the chords the desk answers move its windows — pressed as a person
+//! presses them, through the keyboard the compositor gives the session.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -33,8 +32,7 @@ use tilo_sheets::Seat as _;
 use tilo_test_env::ScopedEnv;
 use ui::shortcut_table::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutHome, fixed_shortcut};
 
-/// One display's refresh: how often the session asks its clients for their
-/// next frame.
+/// One display's refresh: how often the session asks its clients for their next frame.
 const REFRESH: Duration = Duration::from_millis(16);
 
 /// What a key sends, evdev codes.
@@ -79,8 +77,7 @@ fn window(id: u64, title: &str, app: &str) -> Tab {
     }
 }
 
-/// The desk the session starts on: one strip of two windows, the first with
-/// two tabs.
+/// The desk the session starts on: one strip of two windows, the first with two tabs.
 fn desk_tree() -> DesktopTree {
     let first = WindowGroup {
         id: 3,
@@ -117,8 +114,8 @@ fn desk_tree() -> DesktopTree {
     tree
 }
 
-/// The panel's app, as the session starts it: a stand-in that stays up while
-/// the stack has the panel open.
+/// The panel's app, as the session starts it: a stand-in that stays up while the stack has the
+/// panel open.
 fn panel_binary() -> PathBuf {
     tilo_test_env::sibling_binary("tilo-session", "tilo-surface-probe")
 }
@@ -203,8 +200,8 @@ fn modifier_keys(chord: &KeyChord) -> Vec<u32> {
         .collect()
 }
 
-/// Press the chord the person's table binds `action` to, as a person does:
-/// the modifiers held, the key tapped, the modifiers let go.
+/// Press the chord the person's table binds `action` to, as a person does: the modifiers held, the
+/// key tapped, the modifiers let go.
 fn press(session: &mut Session, action: ShortcutAction) {
     let chord = ShortcutConfig::default()
         .bindings
@@ -214,8 +211,7 @@ fn press(session: &mut Session, action: ShortcutAction) {
     press_chord(session, &chord);
 }
 
-/// Press `chord` as a person does, through the keyboard the compositor gives
-/// the session.
+/// Press `chord` as a person does, through the keyboard the compositor gives the session.
 fn press_chord(session: &mut Session, chord: &KeyChord) {
     let held = modifier_keys(chord);
     for keycode in &held {
@@ -265,8 +261,8 @@ fn menu_tab(session: &Session) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Write the screen as `<dir>/<name>.png` when the person running the test
-/// asks for captures: what the chord looks like where they read it.
+/// Write the screen as `<dir>/<name>.png` when the person running the test asks for captures: what
+/// the chord looks like where they read it.
 fn capture(session: &mut Session, name: &str) {
     let Some(dir) = std::env::var_os("SHORTCUT_SHOTS").map(PathBuf::from) else {
         return;
@@ -308,8 +304,7 @@ fn guide_up(session: &Session) -> bool {
         .is_some_and(|seat| seat.presentation().is_open())
 }
 
-/// Every app the desk shows a window of, or holds a window for while its app
-/// arrives.
+/// Every app the desk shows a window of, or holds a window for while its app arrives.
 fn apps(session: &Session) -> Vec<String> {
     session.handle().read(|tree| {
         tree.workspaces
@@ -329,9 +324,8 @@ fn apps(session: &Session) -> Vec<String> {
     })
 }
 
-/// Every shortcut of the session's side opens or starts what it names: the
-/// search, the window in front's menu, the guide, quick settings and its
-/// pages, a conversation, and the magnifier's zoom.
+/// Every shortcut of the session's side opens or starts what it names: the search, the window in
+/// front's menu, the guide, quick settings and its pages, a conversation, and the magnifier's zoom.
 #[test]
 fn the_session_answers_every_shortcut_of_its_side() {
     let _panel = panel_environment();
@@ -360,8 +354,8 @@ fn the_session_answers_every_shortcut_of_its_side() {
             continue;
         }
         let mut session = session_with(desk_tree());
-        // Zooming out from the magnifier's off has nothing to zoom out of:
-        // the chord that turned it on gives it something.
+        // Zooming out from the magnifier's off has nothing to zoom out of: the chord that turned it
+        // on gives it something.
         if action == ShortcutAction::MagnifierZoomOut {
             press(&mut session, ShortcutAction::ToggleMagnifier);
         }
@@ -382,8 +376,8 @@ fn the_session_answers_every_shortcut_of_its_side() {
                     session.quick_settings_open()
                 });
             }
-            // The bell opens the one list of notifications: the centre over
-            // the desk, not a page of quick settings.
+            // The bell opens the one list of notifications: the centre over the desk, not a page of
+            // quick settings.
             ShortcutAction::Notifications => {
                 until(&mut session, "the notification centre", |session| {
                     session
@@ -430,8 +424,8 @@ fn row_chord(session: &Session, row: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// The chord the catalogue fixes for `id`, in the system's own spelling: its
-/// Super form where it binds one.
+/// The chord the catalogue fixes for `id` , in the system's own spelling: its Super form where it
+/// binds one.
 #[track_caller]
 fn fixed_chord(id: &str) -> String {
     let fixed = fixed_shortcut(id).expect("the catalogue binds it");
@@ -466,8 +460,8 @@ fn resource(session: &Session, id: &str) -> Option<tilo_actions::ResourceSpec> {
     find(&session.resources(), id)
 }
 
-/// The chord the desk's chrome publishes beside the action `verb`: the text
-/// the search paints at the row's end.
+/// The chord the desk's chrome publishes beside the action `verb` : the text the search paints at
+/// the row's end.
 fn search_chord(session: &Session, verb: &str) -> Option<String> {
     resource(session, CHROME_RESOURCE)?
         .actions
@@ -485,7 +479,7 @@ fn search_rows(session: &Session) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Step the session until the search shows a row called `title`.
+/// Step the session until the search shows a row called `title` .
 #[track_caller]
 fn until_a_row(session: &mut Session, title: &str) {
     for _ in 0..120 {
@@ -519,9 +513,8 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
         menu_tab(session).as_deref() == Some("20")
     });
 
-    // The reading spells the chord the way the table stores it (a key
-    // legend lowercases a bare letter); the menu paints it in the keyboard's
-    // own legends.
+    // The reading spells the chord the way the table stores it (a key legend lowercases a bare
+    // letter); the menu paints it in the keyboard's own legends.
     assert_eq!(
         row_chord(&session, "window-fullscreen"),
         Some(mine.display()),
@@ -560,8 +553,8 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
     );
     capture(&mut session, "window-menu");
 
-    // A window of one tab is its tab: closing either is the same command, so
-    // its Close row reads the chord that closes a tab.
+    // A window of one tab is its tab: closing either is the same command, so its Close row reads
+    // the chord that closes a tab.
     let mut single = desk_tree();
     single.workspaces[0].strips[0].window_groups.truncate(1);
     single.workspaces[0].strips[0].window_groups[0]
@@ -584,10 +577,9 @@ fn the_window_menu_shows_the_chord_the_table_binds() {
     capture(&mut lone, "window-menu-close");
 }
 
-/// A window's menu belongs to its window: one still up when the window in
-/// front closes goes with it, rather than standing over the desk with nothing
-/// to say and holding what the person presses, and the next window's menu
-/// opens as it always does.
+/// A window's menu belongs to its window: one still up when the window in front closes goes with
+/// it, rather than standing over the desk with nothing to say and holding what the person presses,
+/// and the next window's menu opens as it always does.
 #[test]
 fn the_window_menu_closes_with_the_window_it_belongs_to() {
     let _panel = panel_environment();
@@ -597,8 +589,8 @@ fn the_window_menu_closes_with_the_window_it_belongs_to() {
         menu_tab(session).as_deref() == Some("20")
     });
 
-    // The window in front goes by the chord that closes it, not by the
-    // menu's own row: the menu is left behind holding a window that is gone.
+    // The window in front goes by the chord that closes it, not by the menu's own row: the menu is
+    // left behind holding a window that is gone.
     let close = fixed_shortcut("fixed-close-tab").expect("closing the window is fixed");
     press_chord(&mut session, &close.chords()[0]);
     until(&mut session, "the window in front to go", |session| {
@@ -618,8 +610,8 @@ fn the_window_menu_closes_with_the_window_it_belongs_to() {
         "no rows stand for the window that went"
     );
 
-    // And the menu is a menu again for the window in front now: the record of
-    // the view that drew the one that went does not stand in its way.
+    // And the menu is a menu again for the window in front now: the record of the view that drew
+    // the one that went does not stand in its way.
     press(&mut session, ShortcutAction::TabMenu);
     until(&mut session, "the next window's menu", |session| {
         menu_tab(session).as_deref() == Some("21")
@@ -630,12 +622,11 @@ fn the_window_menu_closes_with_the_window_it_belongs_to() {
     );
 }
 
-/// The search a person opens lists the actions a shortcut runs with the chord
-/// the one table binds it to, which the row paints in the keyboard's legends.
-///
-/// The desk publishes that chord beside each action it offers a search, and
-/// the context menu and the search paint the text it publishes: rebinding
-/// reaches it as it reaches the menus, which the desk's own test follows.
+/// The search a person opens lists the actions a shortcut runs with the chord the one table binds
+/// it to, which the row paints in the keyboard's legends.
+/// The desk publishes that chord beside each action it offers a search, and the context menu and
+/// the search paint the text it publishes: rebinding reaches it as it reaches the menus, which the
+/// desk's own test follows.
 #[test]
 fn the_search_shows_the_chord_beside_the_action() {
     let _panel = panel_environment();
@@ -657,9 +648,8 @@ fn the_search_shows_the_chord_beside_the_action() {
     capture(&mut session, "search");
 }
 
-/// The chords of the desk's side reach the desk of a real session: the tab
-/// in front moves, a tab leaves its window for one of its own, and an app
-/// opens where the person is.
+/// The chords of the desk's side reach the desk of a real session: the tab in front moves, a tab
+/// leaves its window for one of its own, and an app opens where the person is.
 #[test]
 fn the_desk_answers_its_shortcuts_inside_the_session() {
     let mut session = session_with(desk_tree());

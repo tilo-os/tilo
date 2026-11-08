@@ -1,8 +1,7 @@
 //! A newly installed device enrols its boot key with the person's identity:
-//! `tilo-disk-encrypt enrol --sibling` reaches the running session on its
-//! socket, the person's root certifies the boot key, and the half that boots
-//! the disk is sealed to the person's secret-sync key and published to their
-//! other devices.
+//! `tilo-disk-encrypt enrol --sibling` reaches the running session on its socket, the person's root
+//! certifies the boot key, and the half that boots the disk is sealed to the person's secret-sync
+//! key and published to their other devices.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -26,8 +25,7 @@ use tilo_unlock_protocol::{
 };
 use tilo_user_identity::IdentityPaths;
 
-/// The person's identity in a directory of its own, as the desktop's own
-/// start reads it.
+/// The person's identity in a directory of its own, as the desktop's own start reads it.
 fn person() -> (
     std::path::PathBuf,
     tilo_test_env::ScopedEnv,

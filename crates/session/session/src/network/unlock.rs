@@ -1,24 +1,17 @@
 //! Another of the person's devices asking for its disk-unlock half.
-//!
-//! Every device of the person holds the sibling halves of the others, sealed
-//! to the person's root-derived secret-sync key ([`tilo_device_fabric::unlock`]).
-//! Early boot of an enrolled device reaches this one over
-//! [`tilo_unlock_protocol::UNLOCK_ALPN`]: it presents the boot key certificate
-//! the person's root signed, answers this device's challenge, and waits. The
-//! person is asked on the session's question sheet, with the approval code
-//! the boot screen shows; an approval releases the half sealed to the boot's
-//! ephemeral key, and the next boot needs another approval.
-//!
-//! The answer is a fact this device keeps ([`UnlockDecisionRecord`]) and
-//! their other devices carry: a boot whose stream went away before the answer
-//! reached it hears the same answer again, with a half sealed to its own new
-//! key where the person allowed it, instead of asking them twice.
-//!
-//! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the
-//! session's enrolment socket ([`tilo_unlock_protocol::ENROL_SOCKET`]): the
-//! boot key is certified by the person's root, the sibling half is sealed to
-//! the secret-sync key, and the enrolment is published in this device's
-//! fabric record for the person's other devices to carry.
+//! Every device of the person holds the sibling halves of the others, sealed to the person's
+//! root-derived secret-sync key ([`tilo_device_fabric::unlock`]). Early boot of an enrolled device
+//! reaches this one over [`tilo_unlock_protocol::UNLOCK_ALPN`]: it presents the boot key
+//! certificate the person's root signed, answers this device's challenge, and waits. The person is
+//! asked on the session's question sheet, with the approval code the boot screen shows; an approval
+//! releases the half sealed to the boot's ephemeral key, and the next boot needs another approval.
+//! The answer is a fact this device keeps ([`UnlockDecisionRecord`]) and their other devices carry:
+//! a boot whose stream went away before the answer reached it hears the same answer again, with a
+//! half sealed to its own new key where the person allowed it, instead of asking them twice.
+//! `tilo-disk-encrypt enrol --sibling` reaches [`Unlock::enrol`] through the session's enrolment
+//! socket ([`tilo_unlock_protocol::ENROL_SOCKET`]): the boot key is certified by the person's root,
+//! the sibling half is sealed to the secret-sync key, and the enrolment is published in this
+//! device's fabric record for the person's other devices to carry.
 
 use std::io::{Read as _, Write as _};
 use std::sync::{Arc, Mutex};
@@ -76,17 +69,17 @@ pub(crate) struct Unlock {
     questions: Option<Questions>,
     /// This device's fleet key: the sibling boots answer.
     local: [u8; 32],
-    /// The challenges this device issued, the boots it served and the
-    /// requests waiting for it. One session answers as one device.
+    /// The challenges this device issued, the boots it served and the requests waiting for it. One
+    /// session answers as one device.
     sibling: Mutex<UnlockSibling>,
-    /// Serializes what this device publishes about disk unlock: two boots
-    /// answered at once must not overwrite each other's record.
+    /// Serializes what this device publishes about disk unlock: two boots answered at once must not
+    /// overwrite each other's record.
     published: Mutex<()>,
 }
 
 impl Unlock {
-    /// The sibling side for the device whose fleet key is `local`, asking
-    /// `questions` where it needs the person's consent.
+    /// The sibling side for the device whose fleet key is `local` , asking `questions` where it
+    /// needs the person's consent.
     pub(crate) fn new(link: SharedLink, local: [u8; 32], questions: Option<Questions>) -> Self {
         Self {
             link,
@@ -97,8 +90,7 @@ impl Unlock {
         }
     }
 
-    /// Answer one early-boot connection on
-    /// [`tilo_unlock_protocol::UNLOCK_ALPN`].
+    /// Answer one early-boot connection on [`tilo_unlock_protocol::UNLOCK_ALPN`].
     pub(crate) async fn serve(self: Arc<Self>, connection: Connection) {
         let Ok((mut send, mut recv)) = connection.accept_bi().await else {
             return;
@@ -125,9 +117,8 @@ impl Unlock {
             return;
         };
         let now = tilo_clock::unix_now_ns();
-        // The owner's answer to this boot, when their devices kept one, is
-        // the whole exchange: an approval needs the half, a denial needs
-        // nothing loaded.
+        // The owner's answer to this boot, when their devices kept one, is the whole exchange: an
+        // approval needs the half, a denial needs nothing loaded.
         let allowed_before = boot_cert_digest(&hello.boot_cert)
             .and_then(|digest| {
                 decision_for(
@@ -162,21 +153,21 @@ impl Unlock {
             .digest(&hello.boot_cert, &self.local)
             .unwrap_or_default();
         if !write_sibling(&mut send, &frame).await {
-            // The boot is gone before it could read even that: nobody will
-            // wait for a decision on its behalf.
+            // The boot is gone before it could read even that: nobody will wait for a decision on
+            // its behalf.
             self.lock().withdraw(&digest);
             return;
         }
-        // The person is asked here, and the sheet shows nothing more of it
-        // once they answered or the boot went away.
+        // The person is asked here, and the sheet shows nothing more of it once they answered or
+        // the boot went away.
         let asked = self.ask(&hello.boot_cert, &pending, &request);
         let Some(answer) = wait_for_person(asked, &send).await else {
             self.lock().withdraw(&digest);
             return;
         };
         let approved = answer.is_some();
-        // Released only with the person's consent, and only for a boot still
-        // waiting: a decision on a request that went away decides nothing.
+        // Released only with the person's consent, and only for a boot still waiting: a decision on
+        // a request that went away decides nothing.
         if let Some(decided) = self.decide(&custody, &published, &digest, approved).await {
             if let Some(record) = decided.record {
                 self.keep(record);
@@ -214,8 +205,8 @@ impl Unlock {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// The person's secret-sync key, held only where this device may release
-    /// a half: loaded then, never before.
+    /// The person's secret-sync key, held only where this device may release a half: loaded then,
+    /// never before.
     async fn secret_sync(&self, custody: &Custody) -> Option<tilo_seal::SecretKey> {
         if !custody.custodian {
             return None;
@@ -226,8 +217,7 @@ impl Unlock {
             .flatten()
     }
 
-    /// Record the person's decision on the request `digest`, for the boot
-    /// still waiting.
+    /// Record the person's decision on the request `digest` , for the boot still waiting.
     async fn decide(
         &self,
         custody: &Custody,
@@ -281,7 +271,7 @@ impl Unlock {
         )
     }
 
-    /// The name this device's record gives `device`.
+    /// The name this device's record gives `device` .
     fn label_of(&self, device: &[u8; 32]) -> String {
         let key = hex::encode(device);
         self.link
@@ -292,8 +282,8 @@ impl Unlock {
             .map_or_else(|| key, |snapshot| snapshot.presence.label.clone())
     }
 
-    /// The enrolments, auto-approvals and answers the person's fabric holds
-    /// now, under the fleet this device trusts.
+    /// The enrolments, auto-approvals and answers the person's fabric holds now, under the fleet
+    /// this device trusts.
     fn published(&self, custody: &Custody) -> MergedUnlock {
         let fabric = self.link.device_fabric();
         merged_unlock_state(
@@ -303,9 +293,8 @@ impl Unlock {
         )
     }
 
-    /// Serve `tilo-disk-encrypt enrol --sibling`: certify the boot key, seal
-    /// its sibling half, and publish the enrolment to the person's other
-    /// devices.
+    /// Serve `tilo-disk-encrypt enrol --sibling` : certify the boot key, seal its sibling half, and
+    /// publish the enrolment to the person's other devices.
     pub(crate) fn enrol(&self, request: &EnrolRequest) -> EnrolReply {
         match self.try_enrol(request) {
             Ok(response) => EnrolReply::Enrolled(Box::new(response)),
@@ -375,8 +364,7 @@ impl Unlock {
         Ok(EnrolResponse { cert, siblings })
     }
 
-    /// Add `enrolment` to this device's own fabric record, keeping what else
-    /// it published there.
+    /// Add `enrolment` to this device's own fabric record, keeping what else it published there.
     fn publish(&self, enrolment: UnlockEnrolment) {
         self.update_state(|state| {
             state
@@ -386,9 +374,8 @@ impl Unlock {
         });
     }
 
-    /// Keep the owner's answer in this device's own fabric record, so their
-    /// other devices answer the same boot the same way. Answers that no
-    /// longer hold give way to the newest ones.
+    /// Keep the owner's answer in this device's own fabric record, so their other devices answer
+    /// the same boot the same way. Answers that no longer hold give way to the newest ones.
     fn keep(&self, record: UnlockDecisionRecord) {
         let now = tilo_clock::unix_now_ns();
         self.update_state(|state| {
@@ -402,8 +389,8 @@ impl Unlock {
         });
     }
 
-    /// Change what this device publishes about disk unlock: its own record in
-    /// the person's fabric is the only one it may write.
+    /// Change what this device publishes about disk unlock: its own record in the person's fabric
+    /// is the only one it may write.
     fn update_state(&self, change: impl FnOnce(&mut UnlockFabricState)) {
         let _serialized = self
             .published
@@ -439,8 +426,8 @@ impl Unlock {
                 };
                 for stream in listener.incoming().flatten() {
                     if let Err(error) = stream.set_read_timeout(Some(Duration::from_secs(10))) {
-                        // Without it a boot that says nothing holds this
-                        // connection open for as long as it likes.
+                        // Without it a boot that says nothing holds this connection open for as
+                        // long as it likes.
                         tracing::warn!(%error, "an enrolment connection has no read timeout");
                     }
                     let _ = service.answer_enrolment(stream);
@@ -466,8 +453,8 @@ impl Unlock {
     }
 }
 
-/// What the sibling state machine reads: the fleet this device trusts and the
-/// person's fabric as it holds it.
+/// What the sibling state machine reads: the fleet this device trusts and the person's fabric as it
+/// holds it.
 fn view_of<'a>(
     custody: &'a Custody,
     published: &'a MergedUnlock,
@@ -493,8 +480,8 @@ async fn tell(mut send: SendStream, frame: SiblingFrame) {
     }
 }
 
-/// The person's answer to the question `asked`: their decision, or `None`
-/// when the boot stopped waiting before one came.
+/// The person's answer to the question `asked` : their decision, or `None` when the boot stopped
+/// waiting before one came.
 async fn wait_for_person(
     asked: Option<Asked>,
     send: &SendStream,
@@ -506,8 +493,7 @@ async fn wait_for_person(
     let wait = tokio::time::timeout(Duration::from_nanos(APPROVAL_TIMEOUT_NS), async {
         tokio::select! {
             answer = asked => Some(answer),
-            // The boot stopped waiting: its question is taken back rather
-            // than answered for nobody.
+            // The boot stopped waiting: its question is taken back rather than answered for nobody.
             _ = send.stopped() => None,
         }
     })
@@ -525,14 +511,12 @@ fn boot_cert_digest(cert: &BootKeyCert) -> Option<[u8; 32]> {
     cert.signing_digest().ok()
 }
 
-/// The slot as the boot screen names it, and as the person's own record of
-/// their answers keeps it.
+/// The slot as the boot screen names it, and as the person's own record of their answers keeps it.
 pub(crate) fn slot_name(slot: &SlotId) -> String {
     format!("{}:{}", hex::encode(slot.volume_uuid), slot.keyslot)
 }
 
-/// This device's identity, the fleet it is certified by, and whether it holds
-/// the person's root.
+/// This device's identity, the fleet it is certified by, and whether it holds the person's root.
 fn read_custody() -> Option<Custody> {
     let registry = IdentityRegistryStore::from_env()
         .ok()?

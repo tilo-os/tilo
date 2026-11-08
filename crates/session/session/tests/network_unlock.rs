@@ -1,15 +1,11 @@
-//! Another of the person's devices boots early and asks this one for its
-//! disk-unlock half; the person allows it on the session's sheet, and the
-//! half the boot could not read alone is released to it.
-//!
-//! The enrolment is the phone's own, published in its fabric record as the
-//! phone's session publishes it: the desk's session merges it from the
-//! person's fabric, so what happens here is the whole path — the sibling
-//! exchange, the question, and the sealed half.
-//!
-//! An answer is a fact the answering device keeps, so a boot that loses its
-//! stream before reading it hears the same answer when it comes back, with
-//! the half sealed to the key it now holds.
+//! Another of the person's devices boots early and asks this one for its disk-unlock half; the
+//! person allows it on the session's sheet, and the half the boot could not read alone is released
+//! to it.
+//! The enrolment is the phone's own, published in its fabric record as the phone's session
+//! publishes it: the desk's session merges it from the person's fabric, so what happens here is the
+//! whole path — the sibling exchange, the question, and the sealed half.
+//! An answer is a fact the answering device keeps, so a boot that loses its stream before reading
+//! it hears the same answer when it comes back, with the half sealed to the key it now holds.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -55,8 +51,8 @@ const KIND: &str = "network.device-unlock";
 /// The boot asking, the same boot across reconnects.
 const BOOT: BootId = BootId([0x33; 16]);
 
-/// The person's identity in a directory of its own, and the other device
-/// that asks this one for its half.
+/// The person's identity in a directory of its own, and the other device that asks this one for its
+/// half.
 struct Person {
     identity: String,
     user_public_key: [u8; 32],
@@ -125,8 +121,7 @@ fn person() -> Person {
     }
 }
 
-/// The public half of the person's secret-sync key: what a sibling half is
-/// sealed to.
+/// The public half of the person's secret-sync key: what a sibling half is sealed to.
 fn seal_key(person: &Person) -> tilo_seal::PublicKey {
     person
         .store
@@ -146,8 +141,8 @@ struct Devices {
     desk: Rc<Client>,
     phone: Rc<Client>,
     session: Session,
-    /// The person's other device, at its own desk: what it reads of the
-    /// answer is the person's, as it is here.
+    /// The person's other device, at its own desk: what it reads of the answer is the person's, as
+    /// it is here.
     phone_session: Session,
     runtime: tokio::runtime::Runtime,
     boot_endpoint: Endpoint,
@@ -161,8 +156,8 @@ impl Devices {
             volume_uuid: [0x11; 16],
             keyslot: 1,
         };
-        // The phone's boot key, certified by the person's root as enrolment
-        // certifies it. The desk only ever sees the published enrolment.
+        // The phone's boot key, certified by the person's root as enrolment certifies it. The desk
+        // only ever sees the published enrolment.
         let boot_key = ed25519_dalek::SigningKey::from_bytes(&[0x77; 32]);
         let mut cert = BootKeyCert {
             version: PROTOCOL_VERSION,
@@ -212,8 +207,7 @@ impl Devices {
             .expect("this device's endpoint binds"),
         );
         let desk_addr = desk.endpoint_addr();
-        // The phone's session, on its own key, publishing what its record
-        // holds.
+        // The phone's session, on its own key, publishing what its record holds.
         let phone = Rc::new(
             Client::start(
                 Entry {
@@ -248,8 +242,8 @@ impl Devices {
             &[OutputConfig::new("HEADLESS-1", 1280, 720)],
         )
         .expect("session");
-        // The same person on their other device: its own desk, its own
-        // endpoint, and what the person here answered carried to it.
+        // The same person on their other device: its own desk, its own endpoint, and what the
+        // person here answered carried to it.
         let phone_session = Session::headless(
             Options {
                 presentation: ui::headless::fixture_runner_inputs,
@@ -295,8 +289,7 @@ impl Devices {
             .expect("a certified device's session keeps a fabric")
     }
 
-    /// Let both sessions run until `done`: the suite's one wait, whose bound is
-    /// the suite's.
+    /// Let both sessions run until `done` : the suite's one wait, whose bound is the suite's.
     fn carry(&mut self, mut done: impl FnMut(&Self) -> bool) {
         tilo_test_env::wait_until("the devices' sessions carried it", || {
             self.session
@@ -342,8 +335,8 @@ impl Devices {
         found.expect("the request reached the person")
     }
 
-    /// The boot dials the desk and sends its signed request; what it holds to
-    /// read the answer is [`Dial`].
+    /// The boot dials the desk and sends its signed request; what it holds to read the answer is
+    /// [`Dial`].
     fn dial(&self, id: BootId, ephemeral: tilo_seal::SecretKey) -> Dial {
         let endpoint = self.boot_endpoint.clone();
         let desk_addr = self.desk.endpoint_addr();
@@ -429,8 +422,8 @@ fn a_boot_receives_the_half_the_person_allowed() {
     let Some(SiblingFrame::Pending { approval_code }) = boot.read() else {
         panic!("the sibling asks its person");
     };
-    // The person, at the sheet: the six digits the boot screen shows are the
-    // ones the question shows back.
+    // The person, at the sheet: the six digits the boot screen shows are the ones the question
+    // shows back.
     let shown = devices.questioned();
     assert_eq!(shown.details["device"], "The phone");
     assert_eq!(shown.details["approval_code"], approval_code);
@@ -462,8 +455,8 @@ fn a_boot_hears_the_same_denial_without_a_second_question() {
     // The answer never reaches the boot: its stream and connection go away.
     drop(boot);
 
-    // It comes back as the same boot with a key of its own, and hears the
-    // same answer instead of asking the person again.
+    // It comes back as the same boot with a key of its own, and hears the same answer instead of
+    // asking the person again.
     let mut again = devices.dial(BOOT, tilo_seal::SecretKey::generate().expect("a key"));
     assert_eq!(
         again.read(),
@@ -493,8 +486,8 @@ fn a_boot_that_reconnects_gets_the_half_for_the_key_it_now_holds() {
     let unreachable = boot.ephemeral.clone();
     drop(boot);
 
-    // The next attempt draws a new ephemeral key; the half is sealed to that
-    // one, not to the key whose release never arrived.
+    // The next attempt draws a new ephemeral key; the half is sealed to that one, not to the key
+    // whose release never arrived.
     let mut again = devices.dial(BOOT, tilo_seal::SecretKey::generate().expect("a key"));
     let Some(frame) = again.read() else {
         panic!("the person's answer reached the boot again");
@@ -535,9 +528,9 @@ fn a_boot_that_went_away_takes_its_question_with_it() {
     );
 }
 
-/// An answer is the person's own on every device of theirs: the desk answers
-/// the phone's boot, and the phone's own activity history lists that answer —
-/// what was unlocked, by which device, and when.
+/// An answer is the person's own on every device of theirs: the desk answers the phone's boot, and
+/// the phone's own activity history lists that answer — what was unlocked, by which device, and
+/// when.
 #[test]
 fn an_answer_on_one_device_reads_in_the_others_history() {
     let mut devices = Devices::new();
@@ -553,8 +546,8 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
     };
     assert_eq!(boot.open(&frame), half);
 
-    // The answer the desk made, as its own fabric carries it to the phone:
-    // signed by the desk, for the boot that asked.
+    // The answer the desk made, as its own fabric carries it to the phone: signed by the desk, for
+    // the boot that asked.
     let decided = devices
         .desk_link()
         .device_fabric()
@@ -586,8 +579,7 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
             feed_arguments(&wire::FeedQuery::default()),
         )
         .expect("the phone follows its history");
-    // The answer reaches the phone's fabric, as it reaches every device of
-    // the person's.
+    // The answer reaches the phone's fabric, as it reaches every device of the person's.
     devices.carry(|devices| {
         devices.phone.fabric().is_some_and(|link| {
             link.device_fabric()
@@ -596,8 +588,8 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
                 .any(|snapshot| !snapshot.unlock.decisions.is_empty())
         })
     });
-    // The history the phone already follows lists it with nothing asked and
-    // nothing touched: the answer is a change of what it reads.
+    // The history the phone already follows lists it with nothing asked and nothing touched: the
+    // answer is a change of what it reads.
     devices.carry(|_| {
         served::<wire::Feed>(&requests, &feed_follow).is_some_and(|feed| !feed.entries.is_empty())
     });
@@ -625,8 +617,8 @@ fn an_answer_on_one_device_reads_in_the_others_history() {
         i64::try_from(decided.decided_at_ns / 1_000_000_000).expect("seconds") * 1_000
     );
 
-    // The answer's own facts: the boot's id, the slot it asked for and the
-    // outcome, as the person's record keeps them.
+    // The answer's own facts: the boot's id, the slot it asked for and the outcome, as the person's
+    // record keeps them.
     let detail_follow = tilo_actions::InvocationId::new();
     requests
         .follow(
@@ -664,7 +656,7 @@ fn feed_arguments(query: &impl serde::Serialize) -> serde_json::Map<String, serd
         .expect("a query object")
 }
 
-/// What `requests` last read for `invocation`, once it read it.
+/// What `requests` last read for `invocation` , once it read it.
 fn served<T: serde::de::DeserializeOwned>(
     requests: &tilo_desktop_surface::session::ActivityRequests,
     invocation: &tilo_actions::InvocationId,

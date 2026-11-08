@@ -64,8 +64,8 @@ const STRIPPED_ENV: &[&str] = &[
     "TILO_RENDER_SOCKET",
 ];
 
-/// Which service draws the apps of `workspace`: the person's own when
-/// nobody else may read it, and one of its own otherwise.
+/// Which service draws the apps of `workspace` : the person's own when nobody else may read it, and
+/// one of its own otherwise.
 pub(crate) fn render_key(
     tree: &tilo_desktop_model::DesktopTree,
     person: &str,
@@ -117,8 +117,8 @@ struct Live {
 struct Inner {
     desk: Option<Arc<DeskAuthority>>,
     person: String,
-    /// The render node of the GPU the compositor composites on, as the
-    /// session reads it once the backend is up: what every service opens.
+    /// The render node of the GPU the compositor composites on, as the session reads it once the
+    /// backend is up: what every service opens.
     node: Option<PathBuf>,
     exe: PathBuf,
     services: Mutex<HashMap<String, Service>>,
@@ -177,9 +177,9 @@ impl Broker {
             next_connection: AtomicU64::new(1),
             checked: AtomicU64::new(generation),
         });
-        // Warm before the first app asks, where there is a GPU whose
-        // pipelines an app would otherwise wait on: a machine that draws on
-        // the CPU has nothing to build ahead of the first frame.
+        // Warm before the first app asks, where there is a GPU whose pipelines an app would
+        // otherwise wait on: a machine that draws on the CPU has nothing to build ahead of the
+        // first frame.
         if inner.node.is_some() {
             let warm = Arc::clone(&inner);
             std::thread::Builder::new()
@@ -219,9 +219,8 @@ impl Broker {
         Ok(Self { inner })
     }
 
-    /// Move apps whose workspace changed hands between private and shared to
-    /// the right service. Cheap when the desk did not change: call every
-    /// pass.
+    /// Move apps whose workspace changed hands between private and shared to the right service.
+    /// Cheap when the desk did not change: call every pass.
     pub(crate) fn sync_workspaces(&self) {
         let generation = self.inner.desk.as_ref().map_or(0, |desk| desk.generation());
         if self.inner.checked.swap(generation, Ordering::AcqRel) == generation {
@@ -337,7 +336,7 @@ impl Inner {
         Ok((connection, app))
     }
 
-    /// The running, ready service for `key`, started if there is none.
+    /// The running, ready service for `key` , started if there is none.
     fn service(self: &Arc<Self>, key: &str) -> Result<Arc<Channel>, String> {
         let (channel, ready) = {
             let mut services = self.services.lock_recover();
@@ -362,8 +361,7 @@ impl Inner {
         }
     }
 
-    /// Start the service for `key`, waiting out the backoff of one that
-    /// keeps dying.
+    /// Start the service for `key` , waiting out the backoff of one that keeps dying.
     #[allow(
         clippy::disallowed_methods,
         reason = "session helper: each service is watched by a thread of its own"
@@ -392,9 +390,8 @@ impl Inner {
             .env(BROKER_FD_ENV, "3")
             .env(
                 RENDER_NODE_ENV,
-                // Once the compositor gave its GPU up (`ui::gpu::recover`), a
-                // service started after draws on the CPU too, instead of
-                // opening the dead GPU again.
+                // Once the compositor gave its GPU up (`ui::gpu::recover`), a service started after
+                // draws on the CPU too, instead of opening the dead GPU again.
                 self.node
                     .clone()
                     .filter(|_| ui::gpu::software_fallback().is_none())
@@ -448,9 +445,8 @@ impl Inner {
         })
     }
 
-    /// The service for `key` ended: forget it (if it is still the one on the
-    /// books), so the next request starts another, and count the death if it
-    /// died young.
+    /// The service for `key` ended: forget it (if it is still the one on the books), so the next
+    /// request starts another, and count the death if it died young.
     fn ended(&self, key: &str, channel: &Arc<Channel>, lived: Duration) {
         {
             let mut services = self.services.lock_recover();
@@ -515,8 +511,8 @@ impl Watch {
     }
 }
 
-/// How long to wait before starting a service again that last started at
-/// `record.last_start` and died `record.count` times in a row young.
+/// How long to wait before starting a service again that last started at `record.last_start` and
+/// died `record.count` times in a row young.
 fn backoff(record: Crashes) -> Duration {
     match record.last_start {
         Some(started) if started.elapsed() < STABLE_AFTER => Duration::from_millis(

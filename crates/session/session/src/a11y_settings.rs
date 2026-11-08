@@ -1,9 +1,7 @@
 //! The person's accessibility settings, as the compositor takes them.
-//!
-//! The compositor knows nothing of the settings store: it takes an
-//! [`A11y`] and applies it live. This is the one place the stored section
-//! becomes that value, so every part of the session that applies the
-//! settings — on start and on every change — reads them the same way.
+//! The compositor knows nothing of the settings store: it takes an [`A11y`] and applies it live.
+//! This is the one place the stored section becomes that value, so every part of the session that
+//! applies the settings — on start and on every change — reads them the same way.
 
 #![allow(
     dead_code,
@@ -22,11 +20,11 @@ use tilo_compositor::{
     SwitchConfig, SwitchPair, TextEntry,
 };
 
-/// How long a key must be held for slow keys to type it: long enough that a
-/// brush past a key is not a keystroke, short enough to type with.
+/// How long a key must be held for slow keys to type it: long enough that a brush past a key is not
+/// a keystroke, short enough to type with.
 pub const SLOW_KEYS_DELAY: Duration = Duration::from_millis(300);
 
-/// The compositor's accessibility settings for `settings`.
+/// The compositor's accessibility settings for `settings` .
 #[must_use]
 pub fn a11y(settings: &AccessibilitySettings) -> A11y {
     let bounce = settings.bounce_window();
@@ -62,35 +60,31 @@ pub fn apply(compositor: &mut Compositor, a11y: &A11y) -> Result<(), Error> {
     compositor.set_a11y(a11y.clone())
 }
 
-/// Whether the on-screen keyboard belongs on screen: the person's choice of
-/// when it runs, and what the compositor sees of a text field waiting for
-/// typing and of the way they are typing.
+/// Whether the on-screen keyboard belongs on screen: the person's choice of when it runs, and what
+/// the compositor sees of a text field waiting for typing and of the way they are typing.
 #[must_use]
 pub fn keyboard_visible(preference: OnScreenKeyboard, entry: TextEntry) -> bool {
     match preference {
         OnScreenKeyboard::Always => true,
         OnScreenKeyboard::Never => false,
-        // The keyboard arrives with a text field when the person types on the
-        // glass, and stays out of the way of the one they are holding.
+        // The keyboard arrives with a text field when the person types on the glass, and stays out
+        // of the way of the one they are holding.
         OnScreenKeyboard::Auto => entry.wants_typing && entry.on_the_glass,
     }
 }
 
-/// Whether the on-screen keyboard runs at all: an app of the session is
-/// started for it while the person may want it, and the keyboard it draws
-/// comes and goes with [`keyboard_visible`].
-///
-/// It runs while it may be needed rather than only while it shows, because a
-/// field's focus reaches an input method only once one is connected: a
-/// keyboard started on the tap into a field would leave that tap unheard, and
-/// the person tapping again.
+/// Whether the on-screen keyboard runs at all: an app of the session is started for it while the
+/// person may want it, and the keyboard it draws comes and goes with [`keyboard_visible`].
+/// It runs while it may be needed rather than only while it shows, because a field's focus reaches
+/// an input method only once one is connected: a keyboard started on the tap into a field would
+/// leave that tap unheard, and the person tapping again.
 #[must_use]
 pub fn keyboard_runs(preference: OnScreenKeyboard, entry: TextEntry) -> bool {
     match preference {
         OnScreenKeyboard::Always => true,
         OnScreenKeyboard::Never => false,
-        // Once the machine can be typed on by touching it: nothing is
-        // started for a desktop driven by a keyboard and a pointer.
+        // Once the machine can be typed on by touching it: nothing is started for a desktop driven
+        // by a keyboard and a pointer.
         OnScreenKeyboard::Auto => entry.touch_available,
     }
 }
@@ -133,7 +127,7 @@ mod tests {
 
     use super::*;
 
-    /// Settings read from `section`, as the store would hand them over.
+    /// Settings read from `section` , as the store would hand them over.
     fn settings(section: &[(&str, serde_json::Value)]) -> AccessibilitySettings {
         let mut map = Map::new();
         for (name, value) in section {
@@ -335,8 +329,8 @@ mod tests {
     fn the_on_screen_keyboard_runs_wherever_the_glass_can_be_touched() {
         // Automatic: not on a desktop typed on by a keyboard and a pointer.
         assert!(!keyboard_runs(OnScreenKeyboard::Auto, entry(false, false)));
-        // And on one that can be touched, field or no field: the tap into a
-        // field finds a keyboard already serving the seat.
+        // And on one that can be touched, field or no field: the tap into a field finds a keyboard
+        // already serving the seat.
         let touchable = TextEntry {
             touch_available: true,
             ..entry(false, false)

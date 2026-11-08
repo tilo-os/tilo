@@ -27,38 +27,36 @@ pub struct SessionConfig {
     /// How the desktop reads three- and four-finger touchpad gestures;
     /// `None` leaves every gesture to the clients.
     pub gestures: Option<GestureConfig>,
-    /// The layouts the person types with, the one they type in first, and
-    /// the options they chose for them.
+    /// The layouts the person types with, the one they type in first, and the options they chose
+    /// for them.
     pub keyboard: KeyboardLayout,
-    /// The input sources of [`Self::keyboard`] in the person's order: XKB
-    /// layout ids (`de`, `us:intl`) and input-method engines (`ime/rime`).
+    /// The input sources of [`Self::keyboard`] in the person's order: XKB layout ids (`de`,
+    /// `us:intl` ) and input-method engines (`ime/rime`).
     pub keyboard_layouts: Vec<String>,
     /// The source of [`Self::keyboard_layouts`] that types now.
     pub keyboard_active: String,
-    /// When the displays dim, blank, and the session locks and the machine
-    /// sleeps with no input: [`Self::power`]'s timeouts, as the compositor
-    /// runs them.
+    /// When the displays dim, blank, and the session locks and the machine sleeps with no input:
+    /// [`Self::power`]'s timeouts, as the compositor runs them.
     pub idle: IdleConfig,
     /// The machine's power policy, resolved for this machine: what the lid,
     /// the power key and a failing battery do, and whether a sleep locks.
     pub power: tilo_power_mgmt::PowerPolicy,
-    /// The person's accessibility settings: the assists, the pointer's size
-    /// and shape, the colour filter, the magnifier and visual alerts.
+    /// The person's accessibility settings: the assists, the pointer's size and shape, the colour
+    /// filter, the magnifier and visual alerts.
     pub a11y: A11y,
-    /// When the on-screen keyboard runs: never, over a field the person
-    /// touches, or always.
+    /// When the on-screen keyboard runs: never, over a field the person touches, or always.
     pub on_screen_keyboard: OnScreenKeyboard,
-    /// The comforts the login screens start with: the device's copy, which
-    /// the session keeps equal to these (`docs/security/sign-in.md` §3.4).
+    /// The comforts the login screens start with: the device's copy, which the session keeps equal
+    /// to these (`docs/security/sign-in.md` §3.4).
     pub comforts: SignInComforts,
-    /// Whether the person's changes to those comforts apply to the login
-    /// screens too, or only to their own session.
+    /// Whether the person's changes to those comforts apply to the login screens too, or only to
+    /// their own session.
     pub apply_comforts_to_sign_in: bool,
-    /// How warm the night light makes the displays, and whether the switch or
-    /// the day/night schedule shows it.
+    /// How warm the night light makes the displays, and whether the switch or the day/night
+    /// schedule shows it.
     pub night_light: crate::night_light::Preference,
-    /// Whether what the person changes in the session (the night light) is
-    /// kept in their settings: for settings loaded from them.
+    /// Whether what the person changes in the session (the night light) is kept in their settings:
+    /// for settings loaded from them.
     pub kept: bool,
 }
 
@@ -101,8 +99,7 @@ impl SessionConfig {
         settings_store::watch::watch_settings(move || apply(Self::load()))
     }
 
-    /// The settings `input` and `shortcuts` hold, as the session applies
-    /// them.
+    /// The settings `input` and `shortcuts` hold, as the session applies them.
     #[must_use]
     pub fn from_settings(input: &RichInputConfig, shortcuts: ShortcutConfig) -> Self {
         let gestures = input.touchpad_gestures.then(|| GestureConfig {
@@ -119,8 +116,8 @@ impl SessionConfig {
             keyboard: sources.compiled(),
             keyboard_layouts: sources.ids.clone(),
             keyboard_active: sources.active,
-            // Settings not loaded from a person (a test, a screenshot) have no one to walk
-            // away: nothing blanks, locks or sleeps on a wall clock. Locking on request works.
+            // Settings not loaded from a person (a test, a screenshot) have no one to walk away:
+            // nothing blanks, locks or sleeps on a wall clock. Locking on request works.
             idle: IdleConfig::never(),
             power,
             a11y: crate::a11y_settings::a11y(&assists),
@@ -133,15 +130,15 @@ impl SessionConfig {
     }
 }
 
-/// The power policy this machine runs, as the person's settings resolve for
-/// its duty and its power source.
+/// The power policy this machine runs, as the person's settings resolve for its duty and its power
+/// source.
 fn loaded_power() -> tilo_power_mgmt::PowerPolicy {
     tilo_power_mgmt::load_policy_for_profile(None, tilo_power_mgmt::sysfs_on_battery())
 }
 
-/// The login screens' comforts from the person's assists and input, and from
-/// the theme's text scale and contrast where `theme` is read (it is not when
-/// these are the compositor's default, which names none).
+/// The login screens' comforts from the person's assists and input, and from the theme's text scale
+/// and contrast where `theme` is read (it is not when these are the compositor's default, which
+/// names none).
 fn sign_in_comforts(
     accessibility: &AccessibilitySettings,
     input: &RichInputConfig,
@@ -169,8 +166,8 @@ fn sign_in_comforts(
     .clamped()
 }
 
-/// When the displays dim, blank and the session locks and sleeps with no
-/// input, as the person chose it: `None` is their "Never".
+/// When the displays dim, blank and the session locks and sleeps with no input, as the person chose
+/// it: `None` is their "Never".
 fn idle_config(power: &tilo_power_mgmt::PowerPolicy) -> IdleConfig {
     IdleConfig::from_env()
         .with_blank(power.idle_blank)
@@ -178,11 +175,10 @@ fn idle_config(power: &tilo_power_mgmt::PowerPolicy) -> IdleConfig {
         .with_suspend(power.idle_suspend)
 }
 
-/// The person's keyboard input sources, in their order, and the one they
-/// type in.
+/// The person's keyboard input sources, in their order, and the one they type in.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Sources {
-    /// Source ids in the person's order (`de`, `us:intl`, `ime/rime`).
+    /// Source ids in the person's order (`de`, `us:intl` , `ime/rime` ).
     pub ids: Vec<String>,
     /// The source of [`Self::ids`] that types now.
     pub active: String,
@@ -204,7 +200,7 @@ impl Sources {
         }
     }
 
-    /// The sources of `config`.
+    /// The sources of `config` .
     #[must_use]
     pub fn from_config(config: &SessionConfig) -> Self {
         Self {
@@ -215,9 +211,8 @@ impl Sources {
         }
     }
 
-    /// The keymap for the source that types, then the others in the
-    /// person's order: the first group is what a key produces now, and a
-    /// group-toggle option still reaches the rest.
+    /// The keymap for the source that types, then the others in the person's order: the first group
+    /// is what a key produces now, and a group-toggle option still reaches the rest.
     #[must_use]
     pub fn compiled(&self) -> KeyboardLayout {
         let mut order: Vec<&str> = Vec::with_capacity(self.ids.len());

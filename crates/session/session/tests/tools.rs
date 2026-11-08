@@ -1,7 +1,6 @@
-//! The tools service a session serves its apps, and the one launch path
-//! everything that is not the desk starts apps through: an agent's launch
-//! asked of the session's launcher, Files asking for the drives and the apps
-//! it may open, and a tool opened at the folder it was asked for.
+//! The tools service a session serves its apps, and the one launch path everything that is not the
+//! desk starts apps through: an agent's launch asked of the session's launcher, Files asking for
+//! the drives and the apps it may open, and a tool opened at the folder it was asked for.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -44,7 +43,7 @@ const TERMINAL: &str = "so.tilo.terminal";
 /// The app the person's own lists are answered to.
 const FILES: &str = "so.tilo.file-explorer";
 
-/// Install the packages `(id, name)` in `home`'s own app store.
+/// Install the packages `(id, name)` in `home` 's own app store.
 fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
     let store = home.data().join("tilo-apps");
     let mut registry = String::new();
@@ -93,9 +92,8 @@ fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
     home.env().set("TILO_APPS_DATA_DIR", &store);
 }
 
-/// The launcher this session starts packages through: it writes down the
-/// arguments it was started with and the tool context it was handed, then
-/// runs until the test is over.
+/// The launcher this session starts packages through: it writes down the arguments it was started
+/// with and the tool context it was handed, then runs until the test is over.
 fn launcher(home: &tilo_test_env::TestHome, records: &Path) -> tilo_test_env::StandIn {
     tilo_test_env::stand_in(
         home.home().join("tilo-launcher"),
@@ -107,8 +105,7 @@ fn launcher(home: &tilo_test_env::TestHome, records: &Path) -> tilo_test_env::St
     .unwrap()
 }
 
-/// The media a test plugged in: what appeared since the last pass, which is
-/// each of them once.
+/// The media a test plugged in: what appeared since the last pass, which is each of them once.
 struct Plugged(std::cell::RefCell<Vec<Medium>>);
 
 impl Media for Plugged {
@@ -119,7 +116,7 @@ impl Media for Plugged {
     fn eject(&self, _: &Medium) {}
 }
 
-/// A headless session whose packages start through `launcher`.
+/// A headless session whose packages start through `launcher` .
 fn session(
     home: &tilo_test_env::TestHome,
     launcher: &tilo_test_env::StandIn,
@@ -140,8 +137,8 @@ fn session(
             apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
             launch: Some(Rc::clone(&apps)),
             launches: Arc::clone(&opened),
-            // The person's lists as the device reads them, read once: what
-            // the tools service serves Files is that same list.
+            // The person's lists as the device reads them, read once: what the tools service serves
+            // Files is that same list.
             search: SearchOptions {
                 lists: Lists::fixed(AppLists::read()),
                 ..SearchOptions::default()
@@ -173,8 +170,8 @@ fn front(session: &Session) -> Workspace {
         .expect("a workspace in front")
 }
 
-/// The window groups of the workspace in front, each with its tabs' titles in
-/// order: the tabs a person sees.
+/// The window groups of the workspace in front, each with its tabs' titles in order: the tabs a
+/// person sees.
 fn groups(session: &Session) -> Vec<Vec<String>> {
     session.handle().read(|tree| {
         tree.active_workspace().map_or_else(Vec::new, |workspace| {
@@ -209,7 +206,7 @@ fn starts(records: &Path) -> Vec<(String, String, u32)> {
         .collect()
 }
 
-/// The start of `app`, as [`starts`] wrote it down.
+/// The start of `app` , as [`starts`] wrote it down.
 fn started(records: &Path, app: &str) -> (String, String, u32) {
     starts(records)
         .into_iter()
@@ -217,8 +214,8 @@ fn started(records: &Path, app: &str) -> (String, String, u32) {
         .unwrap_or_else(|| panic!("{app} started"))
 }
 
-/// Ask the session's tools service `intent` for `workspace`, as a launched
-/// app does over its socket.
+/// Ask the session's tools service `intent` for `workspace` , as a launched app does over its
+/// socket.
 fn ask(home: &tilo_test_env::TestHome, workspace: &str, intent: ToolIntent) -> ToolReply {
     let socket = home.runtime().join("tilo/services/tools.sock");
     let mut stream = tilo_files::native::socket::connect(&socket).expect("the tools socket");
@@ -247,9 +244,8 @@ fn window(id: u64, app: &str) -> Window {
     }
 }
 
-/// The pid the tools service reads a request's app from: this test's own
-/// process, recorded as the launch of `app` in `workspace`, as the session
-/// records an app it started.
+/// The pid the tools service reads a request's app from: this test's own process, recorded as the
+/// launch of `app` in `workspace` , as the session records an app it started.
 fn launch_as(launches: &Launches, app: &str, workspace: &str) {
     launches.started(std::process::id(), app, workspace, false);
 }
@@ -265,9 +261,8 @@ fn an_agent_opens_notes_in_a_workspace() {
     session.step(Duration::from_millis(1)).unwrap();
     let workspace = front(&session);
 
-    // An agent asks the session's launcher for Notes in the workspace in
-    // front, from a thread that owns no part of the desk: the broker's
-    // launcher seam is the one path such an open takes.
+    // An agent asks the session's launcher for Notes in the workspace in front, from a thread that
+    // owns no part of the desk: the broker's launcher seam is the one path such an open takes.
     let asked = {
         let opened = Arc::clone(&opened);
         let workspace = workspace.clone();
@@ -283,9 +278,8 @@ fn an_agent_opens_notes_in_a_workspace() {
         .expect("the asking thread")
         .expect("the agent's launch is made");
 
-    // The launch is the desk's own path: the app is planned into the
-    // workspace the agent named, by the pass that starts it, and written
-    // down as a launch of this session in that workspace.
+    // The launch is the desk's own path: the app is planned into the workspace the agent named, by
+    // the pass that starts it, and written down as a launch of this session in that workspace.
     let (args, _, pid) = started(&records, NOTES);
     assert!(
         args.contains(&format!("--workspace-id {}", workspace.id())),
@@ -376,8 +370,8 @@ fn open_in_terminal_starts_a_terminal_at_the_folder() {
         directory: Some(folder.display().to_string()),
     };
 
-    // The request waits for the pass that starts it, so it is asked from the
-    // app's own thread while the session's loop runs.
+    // The request waits for the pass that starts it, so it is asked from the app's own thread while
+    // the session's loop runs.
     let asked = {
         let home = home.runtime().to_owned();
         let workspace = workspace.clone();

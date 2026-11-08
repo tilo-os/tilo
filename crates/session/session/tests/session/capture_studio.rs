@@ -13,8 +13,7 @@ use tilo_session::capture::ScreenCapture;
 /// The capture studio's published resource: its actions are the bar's keys.
 const STUDIO: &str = tilo_capture_studio::RESOURCE;
 
-/// A session with the capture studio over it, keeping what it captures in
-/// `pictures`.
+/// A session with the capture studio over it, keeping what it captures in `pictures` .
 fn studio_session(pictures: &std::path::Path) -> Session {
     Session::headless(
         Options {
@@ -27,8 +26,7 @@ fn studio_session(pictures: &std::path::Path) -> Session {
     .expect("session")
 }
 
-/// Invoke one of the studio's actions with `arguments`, as the key that
-/// takes a screenshot does.
+/// Invoke one of the studio's actions with `arguments` , as the key that takes a screenshot does.
 #[track_caller]
 fn ask_studio(session: &mut Session, action: &str, arguments: &serde_json::Value) {
     let arguments = arguments.as_object().cloned().unwrap_or_default();
@@ -51,7 +49,7 @@ fn studio_resource(session: &Session) -> Option<ResourceSpec> {
     find(&session.resources())
 }
 
-/// The files under `directory` ending in `extension`, in name order.
+/// The files under `directory` ending in `extension` , in name order.
 fn kept(directory: &std::path::Path, extension: &str) -> Vec<std::path::PathBuf> {
     let Ok(entries) = std::fs::read_dir(directory) else {
         return Vec::new();
@@ -77,7 +75,7 @@ fn shown_at(frame: &tilo_compositor::Screenshot, x: i32, y: i32) -> [u8; 4] {
     ]
 }
 
-/// Step the session for `time`, so the recorder is fed.
+/// Step the session for `time` , so the recorder is fed.
 fn run_for(session: &mut Session, time: Duration) {
     let until = std::time::Instant::now() + time;
     while std::time::Instant::now() < until {
@@ -92,8 +90,8 @@ fn the_studio_takes_a_screenshot_of_the_display_as_the_compositor_draws_it() {
     let mut session = studio_session(pictures.path());
     settle(&mut session, 4);
 
-    // The bar is down, and its actions are offered anyway: the key takes
-    // the screenshot without the studio coming up.
+    // The bar is down, and its actions are offered anyway: the key takes the screenshot without the
+    // studio coming up.
     let resource = studio_resource(&session).expect("the studio publishes its actions");
     let actions: Vec<&str> = resource
         .actions
@@ -143,8 +141,8 @@ fn print_key(session: &mut Session) -> u32 {
 #[test]
 fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the bar's arrival must change: with the clock
-    // held, a minute turning over cannot pass for it.
+    // The desk is the frame the bar's arrival must change: with the clock held, a minute turning
+    // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
@@ -153,8 +151,8 @@ fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
     let desk = quiet_desk(&mut session, "HEADLESS-1");
 
     tap(&mut session, print);
-    // The studio comes up over the desk, and takes nothing on its own: the
-    // person picks the screen, a window or an area on it.
+    // The studio comes up over the desk, and takes nothing on its own: the person picks the screen,
+    // a window or an area on it.
     bar_up(&mut session, "HEADLESS-1", &desk);
     assert!(
         kept(pictures.path(), "png").is_empty(),
@@ -165,8 +163,8 @@ fn the_print_key_brings_the_studio_up_to_choose_what_it_takes() {
 #[test]
 fn shift_and_the_print_key_take_the_whole_display_at_once() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the card's arrival must change: with the clock
-    // held, a minute turning over cannot pass for it.
+    // The desk is the frame the card's arrival must change: with the clock held, a minute turning
+    // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
@@ -174,8 +172,8 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
     let print = print_key(&mut session);
     assert!(kept(pictures.path(), "png").is_empty(), "nothing yet");
 
-    // The desk as the press leaves it: with the bar down, anything the desk
-    // shows after the press is the shot's own card.
+    // The desk as the press leaves it: with the bar down, anything the desk shows after the press
+    // is the shot's own card.
     let desk = quiet_desk(&mut session, "HEADLESS-1");
 
     // Shift takes the whole display without the studio coming up to ask.
@@ -185,8 +183,8 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
     pump(&mut session, &mut [], |_, _| {
         !kept(pictures.path(), "png").is_empty()
     });
-    // The shot answers at once: its card stands on the floating layer with
-    // the picture it caught, without the studio's bar coming up.
+    // The shot answers at once: its card stands on the floating layer with the picture it caught,
+    // without the studio's bar coming up.
     pump(&mut session, &mut [], |session, _| {
         session
             .compositor()
@@ -209,8 +207,8 @@ fn shift_and_the_print_key_take_the_whole_display_at_once() {
 #[test]
 fn a_shot_answers_after_the_studio_was_up_and_put_away() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the card's arrival must change: with the clock
-    // held, a minute turning over cannot pass for it.
+    // The desk is the frame the card's arrival must change: with the clock held, a minute turning
+    // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
@@ -224,8 +222,8 @@ fn a_shot_answers_after_the_studio_was_up_and_put_away() {
     tap(&mut session, super::keys::ESCAPE);
     bar_down(&mut session, "HEADLESS-1", &desk);
 
-    // A shot from the desk afterwards still answers with its card: the
-    // studio having been up once leaves no bar behind to say it instead.
+    // A shot from the desk afterwards still answers with its card: the studio having been up once
+    // leaves no bar behind to say it instead.
     key(&mut session, super::keys::LEFT_SHIFT, true);
     tap(&mut session, print);
     key(&mut session, super::keys::LEFT_SHIFT, false);
@@ -305,8 +303,7 @@ fn a_region_capture_with_no_selection_is_refused() {
         "screenshot",
         &serde_json::json!({ "source": "region" }),
     );
-    // A recording of a selection is refused before anything is started: the
-    // caller hears why.
+    // A recording of a selection is refused before anything is started: the caller hears why.
     let refused = session.invoke(
         STUDIO,
         "record",
@@ -333,8 +330,7 @@ fn a_region_capture_with_no_selection_is_refused() {
 #[test]
 fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
     let _settled = ui::motion::testing::settled();
-    // Machines whose media stack cannot encode skip this, as the recorder's
-    // own tests do.
+    // Machines whose media stack cannot encode skip this, as the recorder's own tests do.
     if media::gst::init().is_err()
         || tilo_capture_studio::Recorder::new(tilo_capture_studio::Settings::for_size(
             u32::try_from(WIDTH).unwrap(),
@@ -369,8 +365,8 @@ fn the_studio_records_the_display_into_a_file_until_it_is_stopped() {
 #[test]
 fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     let _settled = ui::motion::testing::settled();
-    // The desk is the frame the bar's arrival must change: with the clock
-    // held, a minute turning over cannot pass for it.
+    // The desk is the frame the bar's arrival must change: with the clock held, a minute turning
+    // over cannot pass for it.
     let _clock = held_clock();
     let pictures = tempfile::tempdir().unwrap();
     let mut session = studio_session(pictures.path());
@@ -385,9 +381,8 @@ fn the_studios_open_action_puts_the_bar_over_the_desktop() {
     capture(&mut session, "capture-studio");
 }
 
-/// Two displays side by side with the portal's capture side asking for
-/// screenshots: what the person keeps lands under `pictures`, what an app
-/// asks for under `directory`.
+/// Two displays side by side with the portal's capture side asking for screenshots: what the person
+/// keeps lands under `pictures` , what an app asks for under `directory` .
 fn asking_session(
     pictures: &std::path::Path,
     directory: &std::path::Path,
@@ -424,8 +419,8 @@ fn ask_in_background(
     })
 }
 
-/// Step `session` until the ask answers; its answer. The person takes as
-/// long as they take, so nothing but the answer ends this.
+/// Step `session` until the ask answers; its answer. The person takes as long as they take, so
+/// nothing but the answer ends this.
 #[track_caller]
 #[expect(
     clippy::panic_in_result_fn,
@@ -453,14 +448,13 @@ fn answered(
 /// chrome gone.
 const QUIET_FRAMES: usize = 30;
 
-/// The desk on `display` with nothing of the studio on it and nothing of its
-/// own moving: the frame the bar arriving changes, and the one it must come
-/// back to.
+/// The desk on `display` with nothing of the studio on it and nothing of its own moving: the frame
+/// the bar arriving changes, and the one it must come back to.
 #[track_caller]
 fn quiet_desk(session: &mut Session, display: &str) -> Vec<u8> {
-    // Chrome the desk fades by itself fades on the clock, and the clock here
-    // is the test's: run it past that fade rather than catching the desk
-    // mid-activity, which a loaded machine would have timed differently.
+    // Chrome the desk fades by itself fades on the clock, and the clock here is the test's: run it
+    // past that fade rather than catching the desk mid-activity, which a loaded machine would have
+    // timed differently.
     let mut at = tilo_clock::now();
     for _ in 0..QUIET_FRAMES {
         at += Duration::from_millis(100);
@@ -475,8 +469,7 @@ fn quiet_desk(session: &mut Session, display: &str) -> Vec<u8> {
         .rgba
 }
 
-/// Step `session` until the studio's bar shows on `display`: the frame there
-/// is no longer `desk`.
+/// Step `session` until the studio's bar shows on `display` : the frame there is no longer `desk` .
 #[track_caller]
 fn bar_up(session: &mut Session, display: &str, desk: &[u8]) {
     pump(session, &mut [], |session, _| {
@@ -487,15 +480,14 @@ fn bar_up(session: &mut Session, display: &str, desk: &[u8]) {
     });
 }
 
-/// Step `session` until nothing of the studio is drawn on `display` any
-/// more: the desk shows again as it was before the bar. The test holds its
-/// clock, so the bar's own minute is not a change to wait out.
+/// Step `session` until nothing of the studio is drawn on `display` any more: the desk shows again
+/// as it was before the bar. The test holds its clock, so the bar's own minute is not a change to
+/// wait out.
 #[track_caller]
 fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
-    // What the studio says of the send stays up long enough to be read, and
-    // that time is the clock's: every frame here is read a little later than
-    // the one before, so the wait is the same number of frames on a quiet
-    // machine and on a loaded one.
+    // What the studio says of the send stays up long enough to be read, and that time is the
+    // clock's: every frame here is read a little later than the one before, so the wait is the same
+    // number of frames on a quiet machine and on a loaded one.
     let deadline = tilo_test_env::hang_deadline();
     let mut at = tilo_clock::now();
     loop {
@@ -517,8 +509,7 @@ fn bar_down(session: &mut Session, display: &str, desk: &[u8]) {
     }
 }
 
-/// The person draws from `from` to `to` with the pointer, as they do on the
-/// desk.
+/// The person draws from `from` to `to` with the pointer, as they do on the desk.
 fn draw(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
     for event in [
         InputEvent::PointerMotion {
@@ -567,8 +558,8 @@ fn a_portal_area_request_is_the_rectangle_the_person_draws_on_that_display() {
     let desk = quiet_desk(&mut session, "HDMI-A-1");
     let asking = ask_in_background(&capture, CaptureTarget::Area);
     bar_up(&mut session, "HDMI-A-1", &desk);
-    // A press, a drag and its release: the rectangle the person draws, on
-    // the display they are working on.
+    // A press, a drag and its release: the rectangle the person draws, on the display they are
+    // working on.
     draw(
         &mut session,
         (f64::from(x + 40), f64::from(y + 30)),

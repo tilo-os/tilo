@@ -1,8 +1,7 @@
-//! The Emoji tab's words: the record's actions, how an emoji is removed, and
-//! what the person is told when a picture is not added or an emoji is not
-//! removed. The workspace's emoji are one record, kept by Chat and opened by
-//! every device the way the apps open it; the tab reads and acts on that
-//! record, so nothing here decides anything.
+//! The Emoji tab's words: the record's actions, how an emoji is removed, and what the person is
+//! told when a picture is not added or an emoji is not removed. The workspace's emoji are one
+//! record, kept by Chat and opened by every device the way the apps open it; the tab reads and acts
+//! on that record, so nothing here decides anything.
 
 use crate::i18n::{t, t_args};
 
@@ -13,16 +12,14 @@ pub const REMOVE_OWN: &str = "remove-emoji";
 /// The record's action removing anyone's emoji, as moderation.
 pub const REMOVE_ANY: &str = "remove-any-emoji";
 
-/// How an emoji is removed: one's own by the record's own removal, anyone
-/// else's as moderation.
+/// How an emoji is removed: one's own by the record's own removal, anyone else's as moderation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Removal {
     Own,
     Moderation,
 }
 
-/// Something the person should know about the last add or remove: why it
-/// did not happen.
+/// Something the person should know about the last add or remove: why it did not happen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EmojiNotice {
     pub title: String,
@@ -57,8 +54,7 @@ impl EmojiNotice {
         Self::not_added(file, t("workspace-settings-emoji-no-name"))
     }
 
-    /// The chosen file was not added: the workspace's emoji are not
-    /// available on this device.
+    /// The chosen file was not added: the workspace's emoji are not available on this device.
     #[must_use]
     pub fn unavailable(file: &str) -> Self {
         Self::not_added(file, t("workspace-settings-emoji-unavailable"))
@@ -77,8 +73,7 @@ impl EmojiNotice {
     }
 }
 
-/// Why a chosen picture could not be made one an emoji keeps, as the person
-/// reads it.
+/// Why a chosen picture could not be made one an emoji keeps, as the person reads it.
 #[must_use]
 pub fn small_refusal(small: &ui::workspace_emoji::Small) -> Option<String> {
     use ui::workspace_emoji::Small;

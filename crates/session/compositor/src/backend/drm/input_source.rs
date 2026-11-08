@@ -26,8 +26,8 @@ pub(crate) enum Delivered {
     Pad {
         device: libinput::Device,
         action: PadAction,
-        /// The mode group of the control and the mode it is in (after the
-        /// press, for a button that switches modes).
+        /// The mode group of the control and the mode it is in (after the press, for a button that
+        /// switches modes).
         mode: (u32, u32),
     },
 }
@@ -225,8 +225,7 @@ impl EventSource for Source {
     }
 }
 
-/// Turns a ring's or strip's movement into whole steps of an action (one
-/// scroll notch).
+/// Turns a ring's or strip's movement into whole steps of an action (one scroll notch).
 #[derive(Debug, Default)]
 pub(crate) struct DialSteps {
     /// The last position per control, while a finger is on it.

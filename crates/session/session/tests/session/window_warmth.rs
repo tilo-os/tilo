@@ -1,6 +1,5 @@
-//! Every app window takes the temperature of the workspace it stands in and
-//! the colour of the person at this machine, and is told again when either
-//! changes.
+//! Every app window takes the temperature of the workspace it stands in and the colour of the
+//! person at this machine, and is told again when either changes.
 
 use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixStream;
@@ -16,8 +15,7 @@ use ui::floating_surface::{
 
 use super::*;
 
-/// The person asks the workspace `workspace` to wear `degrees` whatever its
-/// picture gives it.
+/// The person asks the workspace `workspace` to wear `degrees` whatever its picture gives it.
 fn warmed(workspace: WorkspaceSlot, degrees: f64) {
     settings_store::update_section(
         "appearance",
@@ -32,8 +30,8 @@ fn warmed(workspace: WorkspaceSlot, degrees: f64) {
     .expect("the temperature is kept");
 }
 
-/// A window's own shell-ui connection: the end it writes its frames on, and
-/// the end it reads the session's from, with what of a line it read so far.
+/// A window's own shell-ui connection: the end it writes its frames on, and the end it reads the
+/// session's from, with what of a line it read so far.
 pub(super) struct Window {
     to_session: UnixStream,
     from_session: UnixStream,
@@ -41,7 +39,7 @@ pub(super) struct Window {
 }
 
 impl Window {
-    /// The connection of a window of `app`, run by the launch `pid`.
+    /// The connection of a window of `app` , run by the launch `pid` .
     pub(super) fn open(
         launches: &Arc<tilo_session::Launches>,
         app: &str,
@@ -106,8 +104,7 @@ impl Window {
     }
 }
 
-/// Step the session until the window is told something, or it stays silent
-/// for `steps` frames.
+/// Step the session until the window is told something, or it stays silent for `steps` frames.
 pub(super) fn told(
     window: &mut Window,
     session: &mut Session,
@@ -130,9 +127,9 @@ fn appearance(message: &FloatingSurfaceHostMessage) -> WindowAppearance {
         .unwrap_or_else(|| panic!("an appearance, not {message:?}"))
 }
 
-/// A window opens to the temperature of the workspace it stands in and the
-/// colour of the person at this machine, takes another temperature when the
-/// workspace's changes, and is told nothing while neither does.
+/// A window opens to the temperature of the workspace it stands in and the colour of the person at
+/// this machine, takes another temperature when the workspace's changes, and is told nothing while
+/// neither does.
 #[test]
 fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -150,8 +147,7 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     .expect("session");
     session.step(Duration::from_millis(1)).expect("a frame");
 
-    // The app runs in its own workspace, and its window stands in the one in
-    // front.
+    // The app runs in its own workspace, and its window stands in the one in front.
     let mut app_process = std::process::Command::new("sleep")
         .arg("120")
         .spawn_locked()
@@ -188,8 +184,8 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
         opened.corner_radius
     );
 
-    // The workspace is given another light: the window is told, on the pass
-    // that looks at the temperatures again.
+    // The workspace is given another light: the window is told, on the pass that looks at the
+    // temperatures again.
     warmed(workspace, 200.0);
     invoke_with(
         &mut session,

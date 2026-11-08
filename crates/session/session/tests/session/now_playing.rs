@@ -10,12 +10,12 @@ use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 /// The app whose song plays.
 const MUSIC: &str = "so.tilo.music";
 
-/// The song's cover, a small `data:` picture as Music sends it: a picture
-/// that travels in its own address, read without a content store.
+/// The song's cover, a small `data:` picture as Music sends it: a picture that travels in its own
+/// address, read without a content store.
 const COVER: &str = ui::headless::FIXTURE_PICTURE;
 
-/// The bar's height, whole logical pixels: everything above stands in the
-/// bar, everything below is the desk the cards float over.
+/// The bar's height, whole logical pixels: everything above stands in the bar, everything below is
+/// the desk the cards float over.
 const BAR: u32 = 32;
 
 /// The first row under the desk.
@@ -23,8 +23,8 @@ fn desk_bottom() -> u32 {
     u32::try_from(HEIGHT).expect("a display with rows")
 }
 
-/// Where the captures are written: under the build's `target`, so a build
-/// that runs the suite elsewhere hands them back with its artifacts.
+/// Where the captures are written: under the build's `target` , so a build that runs the suite
+/// elsewhere hands them back with its artifacts.
 fn shots_dir() -> std::path::PathBuf {
     std::env::var_os("VISUAL_ACTIVITY_OUT").map_or_else(
         || {
@@ -35,15 +35,15 @@ fn shots_dir() -> std::path::PathBuf {
     )
 }
 
-/// The song Music publishes while it plays, as its activity carries it: the
-/// title, who it is by, the cover, the point the playhead stands at and what
-/// is left of it, and the transport beside them.
+/// The song Music publishes while it plays, as its activity carries it: the title, who it is by,
+/// the cover, the point the playhead stands at and what is left of it, and the transport beside
+/// them.
 fn song(artwork: &str) -> Summary {
     song_with(artwork, true)
 }
 
-/// The same song as `playing` leaves it: the middle control offers to pause a
-/// song that plays and to play one that stands.
+/// The same song as `playing` leaves it: the middle control offers to pause a song that plays and
+/// to play one that stands.
 fn song_with(artwork: &str, playing: bool) -> Summary {
     Summary::new(Kind::Music, "Glasslight", "")
         .with_id("tk_g1")
@@ -68,8 +68,8 @@ fn song_with(artwork: &str, playing: bool) -> Summary {
         .with_progress(0.37)
 }
 
-/// Show `summary` on the session's board as `app` publishes it: the bar names
-/// it, and no card stands over the desk until the person opens it.
+/// Show `summary` on the session's board as `app` publishes it: the bar names it, and no card
+/// stands over the desk until the person opens it.
 fn show(session: &Session, app: &str, summary: Summary) {
     let published = Published::of(summary);
     session.live_activities().show(
@@ -87,7 +87,7 @@ fn shot(session: &mut Session) -> (Vec<u8>, u32) {
     (shot.rgba, shot.width)
 }
 
-/// How many pixels differ between two frames, in the rows `from..to`.
+/// How many pixels differ between two frames, in the rows `from..to` .
 fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize {
     let width = usize::try_from(width).expect("a display with columns");
     let stride = width * 4;
@@ -106,9 +106,9 @@ fn changed(before: &[u8], after: &[u8], width: u32, from: u32, to: u32) -> usize
     count
 }
 
-/// Where the song's pill stands on the bar: the middle of what the song
-/// painted there, found from `before` and `after` so the pill is pressed
-/// wherever its reading puts it, on a wide desk or a phone's.
+/// Where the song's pill stands on the bar: the middle of what the song painted there, found from
+/// `before` and `after` so the pill is pressed wherever its reading puts it, on a wide desk or a
+/// phone's.
 fn pill_x(before: &[u8], after: &[u8], width: u32) -> f64 {
     let columns = usize::try_from(width).expect("a display with columns");
     let rows = usize::try_from(BAR).expect("rows of the bar");
@@ -118,8 +118,8 @@ fn pill_x(before: &[u8], after: &[u8], width: u32) -> f64 {
             before[at..at + 4] != after[at..at + 4]
         })
     };
-    // The pill is the widest thing the song adds to the bar; anything else
-    // that moved beside it (a reading shifted to make room) is narrower.
+    // The pill is the widest thing the song adds to the bar; anything else that moved beside it (a
+    // reading shifted to make room) is narrower.
     let mut widest: Option<(usize, usize)> = None;
     let mut run: Option<(usize, usize)> = None;
     for column in 0..=columns {
@@ -144,7 +144,7 @@ fn pill_x(before: &[u8], after: &[u8], width: u32) -> f64 {
     middle
 }
 
-/// A left click at `(x, y)`.
+/// A left click at `(x, y)` .
 fn click(session: &mut Session, x: f64, y: f64) {
     session
         .compositor()
@@ -166,9 +166,9 @@ fn click_the_pill(session: &mut Session, before: &[u8], after: &[u8], width: u32
     click(session, pill_x(before, after, width), f64::from(BAR / 2));
 }
 
-/// The session draws the song's pill in the bar, and the pill opens as the
-/// song's card over the desk: the pair is written as `{name}-pill.png` and
-/// `{name}-card.png` where `name` asks for a picture.
+/// The session draws the song's pill in the bar, and the pill opens as the song's card over the
+/// desk: the pair is written as `{name}-pill.png` and `{name}-card.png` where `name` asks for a
+/// picture.
 fn pill_and_card(
     session: &mut Session,
     dir: &std::path::Path,
@@ -247,8 +247,8 @@ fn the_song_stands_in_the_bar_and_opens_as_its_card() {
     pill_and_card(&mut session, &dir, Some("u2-dark"), song(COVER));
 }
 
-/// The same song with its player paused: the middle control offers to play
-/// it, so the card is not the one a playing song draws.
+/// The same song with its player paused: the middle control offers to play it, so the card is not
+/// the one a playing song draws.
 #[test]
 fn a_paused_song_offers_to_play_again() {
     let _settled = ui::motion::testing::settled();
@@ -274,8 +274,8 @@ fn a_paused_song_offers_to_play_again() {
     );
 }
 
-/// A song whose player sends no cover: the card draws the song's glyph in the
-/// artwork's place, so the row keeps its shape.
+/// A song whose player sends no cover: the card draws the song's glyph in the artwork's place, so
+/// the row keeps its shape.
 #[test]
 fn a_song_without_a_cover_keeps_the_card_its_shape() {
     let _settled = ui::motion::testing::settled();
@@ -285,8 +285,8 @@ fn a_song_without_a_cover_keeps_the_card_its_shape() {
     pill_and_card(&mut session, &dir, Some("u2-dark-no-art"), song(""));
 }
 
-/// A phone's desk keeps the song in the pill, and expanding it drops the card
-/// full-width from the bar.
+/// A phone's desk keeps the song in the pill, and expanding it drops the card full-width from the
+/// bar.
 #[test]
 fn a_phone_names_the_song_in_the_pill_and_drops_its_card_from_the_bar() {
     let _settled = ui::motion::testing::settled();
@@ -316,8 +316,8 @@ fn the_song_stands_in_the_light_bar_and_opens_as_its_card() {
     pill_and_card(&mut session, &dir, Some("u2-light"), song(COVER));
 }
 
-/// How many pixels of `frame` inside `rect` stand in a colour `look`
-/// accepts: `rect` as `(x, y, width, height)` in logical pixels.
+/// How many pixels of `frame` inside `rect` stand in a colour `look` accepts: `rect` as
+/// `(x, y, width, height)` in logical pixels.
 fn cover_pixels(
     frame: &[u8],
     width: u32,
@@ -345,20 +345,20 @@ fn cover_pixels(
     count
 }
 
-/// The cover's darker half, as both the fixture picture and the picture Music
-/// sends paint it: a purple no part of the desk or the panel's chrome is.
+/// The cover's darker half, as both the fixture picture and the picture Music sends paint it: a
+/// purple no part of the desk or the panel's chrome is.
 fn cover_purple(r: u8, g: u8, b: u8) -> bool {
     r < 120 && g < 85 && b > 125 && u32::from(b) > u32::from(r) + 40
 }
 
-/// The cover's lighter half in the fixture picture: its other colour, so both
-/// ends of the picture prove the picture was painted and not one flat tone.
+/// The cover's lighter half in the fixture picture: its other colour, so both ends of the picture
+/// prove the picture was painted and not one flat tone.
 fn cover_warm(r: u8, g: u8, b: u8) -> bool {
     r > 220 && g > 180 && b < 160
 }
 
-/// Where two frames differ inside `rect`: the box around every pixel that
-/// moved, as `(x, y, width, height)`.
+/// Where two frames differ inside `rect` : the box around every pixel that moved, as
+/// `(x, y, width, height)` .
 fn box_differing(
     before: &[u8],
     after: &[u8],
@@ -394,8 +394,8 @@ fn desk() -> (i32, i32, i32, i32) {
     )
 }
 
-/// The card paints the song's cover: the picture's own two colours stand in
-/// its artwork tile, and nowhere on the desk it covers.
+/// The card paints the song's cover: the picture's own two colours stand in its artwork tile, and
+/// nowhere on the desk it covers.
 #[test]
 fn the_card_paints_the_songs_cover() {
     let _settled = ui::motion::testing::settled();
@@ -426,15 +426,13 @@ fn the_card_paints_the_songs_cover() {
     );
 }
 
-/// The cover the player publishes, as the audio service reads one: its size
-/// and its pixels.
+/// The cover the player publishes, as the audio service reads one: its size and its pixels.
 fn cover() -> serde_json::Value {
     serde_json::json!({"width": 16, "height": 16, "rgba": "Oi6W/0Ezkf9JOIz/UD2I/1hCg/9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/0Ezkf9JOIz/UD2I/1hCg/9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/9JOIz/UD2I/1hCg/9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/UD2I/1hCg/9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/1hCg/9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf9fR37/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/Z0x6/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/25Rdf92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL/92VnD/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/fVts/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm/4VgZ/+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf+MZWL/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf/9sBz/lGpe/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf/9sBz//7UY/5tvWf+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf/9sBz//7UY//+6E/+jdFT/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf/9sBz//7UY//+6E///vw7/qnlQ/7J+S/+5g0b/wYhC/8iNPf/Qkjj/15c0/9+cL//moSr/7qYm//WrIf/9sBz//7UY//+6E///vw7//8QK/w=="})
 }
 
-/// The song a player publishes while it plays, as the audio service publishes
-/// it: its title, who it is by, its cover, where the playhead stands and how
-/// long it is.
+/// The song a player publishes while it plays, as the audio service publishes it: its title, who it
+/// is by, its cover, where the playhead stands and how long it is.
 pub(super) fn playing_song() -> serde_json::Value {
     serde_json::json!({
         "players": [{
@@ -473,8 +471,8 @@ fn song_without_a_cover() -> serde_json::Value {
     song
 }
 
-/// A session whose quick settings panel is the app this repository builds, a
-/// player publishing what `published` holds, and what the panel asked it for.
+/// A session whose quick settings panel is the app this repository builds, a player publishing what
+/// `published` holds, and what the panel asked it for.
 fn panel_session(
     published: &super::lock::Publishing,
 ) -> (
@@ -506,25 +504,23 @@ fn panel_session(
     (session, home, asked)
 }
 
-/// A pixel that carries colour: the panel's own chrome is grey, so colour in
-/// it comes from a picture.
+/// A pixel that carries colour: the panel's own chrome is grey, so colour in it comes from a
+/// picture.
 fn carries_colour(r: u8, g: u8, b: u8) -> bool {
     r.max(g).max(b) - r.min(g).min(b) >= 30
 }
 
-/// A cover-sized square holds at least this much colour once the panel paints
-/// the song's picture: the whole square, less its rounded corners and the
-/// greys the gradient passes through.
+/// A cover-sized square holds at least this much colour once the panel paints the song's picture:
+/// the whole square, less its rounded corners and the greys the gradient passes through.
 const COVER_DRAWN: usize = 800;
 
-/// How far into the panel the row's picture stands: the panel's padding and
-/// the picture's own width.
+/// How far into the panel the row's picture stands: the panel's padding and the picture's own
+/// width.
 const COVER_EDGE: usize = 64;
 
-/// The most colour any cover-sized square at the panel's leading edge holds:
-/// the row puts the player's picture there, so a square filled with colour is
-/// that picture, and a player that sent none leaves every square under this
-/// bar.
+/// The most colour any cover-sized square at the panel's leading edge holds: the row puts the
+/// player's picture there, so a square filled with colour is that picture, and a player that sent
+/// none leaves every square under this bar.
 fn cover_block(frame: &[u8], width: u32, rect: (i32, i32, i32, i32)) -> usize {
     const SIDE: usize = 40;
     let stride = usize::try_from(width).expect("a display with columns") * 4;
@@ -537,8 +533,8 @@ fn cover_block(frame: &[u8], width: u32, rect: (i32, i32, i32, i32)) -> usize {
         usize::try_from(x0).expect("a column of the display"),
         usize::try_from(y0).expect("a row of the display"),
     );
-    // Where the colour stands, summed over every rectangle that starts at the
-    // panel's corner, so a square's colour is four lookups.
+    // Where the colour stands, summed over every rectangle that starts at the panel's corner, so a
+    // square's colour is four lookups.
     let mut summed = vec![0_usize; (down + 1) * (across + 1)];
     for y in 0..down {
         let mut row = 0;
@@ -558,9 +554,8 @@ fn cover_block(frame: &[u8], width: u32, rect: (i32, i32, i32, i32)) -> usize {
         (summed[below + x + SIDE] + summed[above + x])
             .saturating_sub(summed[above + x + SIDE] + summed[below + x])
     };
-    // Only the panel's leading edge is searched: that is where the row puts
-    // the player's picture, and the panel keeps its own colour at its
-    // trailing edge, on the transport a press calls.
+    // Only the panel's leading edge is searched: that is where the row puts the player's picture,
+    // and the panel keeps its own colour at its trailing edge, on the transport a press calls.
     let mut most = 0;
     for y in 0..down.saturating_sub(SIDE - 1) {
         for x in 0..across.saturating_sub(SIDE - 1).min(COVER_EDGE) {
@@ -570,9 +565,9 @@ fn cover_block(frame: &[u8], width: u32, rect: (i32, i32, i32, i32)) -> usize {
     most
 }
 
-/// The panel paints the song's cover (`covered`), or none of it: the picture
-/// stands in the panel's own window, read from the screen, so what is counted
-/// is what the panel drew and not what it says it offers.
+/// The panel paints the song's cover (`covered`), or none of it: the picture stands in the panel's
+/// own window, read from the screen, so what is counted is what the panel drew and not what it says
+/// it offers.
 fn until_cover(
     session: &mut Session,
     width: u32,
@@ -594,7 +589,7 @@ fn until_cover(
     )
 }
 
-/// Ask the panel to run `action`, as a person's press does.
+/// Ask the panel to run `action` , as a person's press does.
 fn ask_the_panel(session: &mut Session, action: &str) {
     let offered = session
         .surfaces()
@@ -612,9 +607,8 @@ fn ask_the_panel(session: &mut Session, action: &str) {
         .expect("the panel is running");
 }
 
-/// The panel draws the song that stands there before it opens, takes a new
-/// reading while it stands, and steers the player through the transport it
-/// shows.
+/// The panel draws the song that stands there before it opens, takes a new reading while it stands,
+/// and steers the player through the transport it shows.
 fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde_json::Value>) {
     let dir = shots_dir();
     let published = super::lock::Publishing::default();
@@ -647,10 +641,9 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
         .filter(|(_, _, across, down)| *across > 200 && *down > 150)
         .unwrap_or(arrived);
 
-    // The row is in the panel's own window: the picture the player sent stands
-    // at its leading edge, and a player that sent none draws the row without
-    // one. Both cases are counted, so the picture cannot be the panel's own
-    // chrome: the run without a cover paints none of its colour.
+    // The row is in the panel's own window: the picture the player sent stands at its leading edge,
+    // and a player that sent none draws the row without one. Both cases are counted, so the picture
+    // cannot be the panel's own chrome: the run without a cover paints none of its colour.
     let without = name.ends_with("no-art");
     let opens_with_cover = then.is_none() && !without;
     let cover = until_cover(&mut session, width, rect, opens_with_cover);
@@ -660,9 +653,8 @@ fn panel_names_the_song(name: &str, first: serde_json::Value, then: Option<serde
         "the panel paints the song's cover when it was sent one and none when it was not: {cover} coloured pixels in its cover square"
     );
 
-    // A player that sends its cover while the panel stands reaches it: the
-    // picture appears in the panel's own window, which the reading the panel
-    // opened with left bare.
+    // A player that sends its cover while the panel stands reaches it: the picture appears in the
+    // panel's own window, which the reading the panel opened with left bare.
     if let Some(then) = then {
         assert!(
             cover <= COVER_DRAWN,
@@ -705,9 +697,8 @@ fn quick_settings_names_the_song_that_plays() {
     );
 }
 
-/// The same song paused when the panel opens, and one whose player has not sent
-/// its cover: the middle control offers to play, and the artwork stands as the
-/// song's glyph.
+/// The same song paused when the panel opens, and one whose player has not sent its cover: the
+/// middle control offers to play, and the artwork stands as the song's glyph.
 #[test]
 fn quick_settings_names_a_paused_song_and_one_without_a_cover() {
     let _settled = ui::motion::testing::settled();
@@ -744,8 +735,7 @@ fn app_capture(
         .to_rgba8()
 }
 
-/// How bright a frame is, of 255: the light theme draws the screen light, the
-/// dark one dark.
+/// How bright a frame is, of 255: the light theme draws the screen light, the dark one dark.
 fn brightness(frame: &[u8]) -> f64 {
     let (sum, count) = frame
         .chunks_exact(4)
@@ -756,8 +746,8 @@ fn brightness(frame: &[u8]) -> f64 {
     sum / count
 }
 
-/// The song Quick Settings names, in the light theme: its card over the
-/// panel's page, beside the same panel with nothing playing.
+/// The song Quick Settings names, in the light theme: its card over the panel's page, beside the
+/// same panel with nothing playing.
 #[test]
 fn quick_settings_names_the_song_in_the_light_theme() {
     let _settled = ui::motion::testing::settled();
@@ -788,8 +778,8 @@ fn quick_settings_names_the_song_in_the_light_theme() {
     .expect("the capture is written");
 }
 
-/// The lock screen as it stands with `song` playing: its card with the cover
-/// and the playhead, drawn by the screen itself.
+/// The lock screen as it stands with `song` playing: its card with the cover and the playhead,
+/// drawn by the screen itself.
 fn lock_frame(
     song: serde_json::Value,
     media: fn(&serde_json::Value) -> bool,
@@ -799,8 +789,7 @@ fn lock_frame(
     locked.plays(Some(song), media, &quiet)
 }
 
-/// The lock screen's card shows the song that plays, its cover and where the
-/// playhead stands.
+/// The lock screen's card shows the song that plays, its cover and where the playhead stands.
 fn lock_card(name: &str, song: serde_json::Value, media: fn(&serde_json::Value) -> bool) {
     let dir = shots_dir();
     let playing = lock_frame(song, media);
@@ -815,9 +804,8 @@ fn lock_card(name: &str, song: serde_json::Value, media: fn(&serde_json::Value) 
     .expect("write the frame");
 }
 
-/// The lock screen draws in the language the person chose: the same screen in
-/// German is another picture than the English one, written beside it for the
-/// words to be read.
+/// The lock screen draws in the language the person chose: the same screen in German is another
+/// picture than the English one, written beside it for the words to be read.
 #[test]
 fn the_lock_screen_reads_in_the_persons_language() {
     let _settled = ui::motion::testing::settled();
@@ -866,8 +854,7 @@ fn the_lock_screen_shows_a_paused_song() {
     });
 }
 
-/// The same song whose player has not sent its cover: the artwork stands as
-/// the song's glyph.
+/// The same song whose player has not sent its cover: the artwork stands as the song's glyph.
 #[test]
 fn the_lock_screen_shows_a_song_without_a_cover() {
     let _settled = ui::motion::testing::settled();
@@ -876,8 +863,8 @@ fn the_lock_screen_shows_a_song_without_a_cover() {
     });
 }
 
-/// The song the lock screen shows, in the light theme: its card beside the
-/// same screen with nothing playing.
+/// The song the lock screen shows, in the light theme: its card beside the same screen with nothing
+/// playing.
 #[test]
 fn the_lock_screen_shows_the_song_in_the_light_theme() {
     let _settled = ui::motion::testing::settled();

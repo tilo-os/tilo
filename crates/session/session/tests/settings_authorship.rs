@@ -27,9 +27,9 @@ const HIGH_CONTRAST: &str = "appearance.high_contrast";
 const FIELD: &str = "high_contrast";
 const SECTION: &str = "settings:settings.appearance";
 
-/// This computer's person: a device of theirs, certified for their own root
-/// key, kept in an identity root of the test's own. Returns the root's
-/// directory — kept alive for the session — and the person's key.
+/// This computer's person: a device of theirs, certified for their own root key, kept in an
+/// identity root of the test's own. Returns the root's directory — kept alive for the session — and
+/// the person's key.
 fn this_computers_person(home: &mut tilo_test_env::TestHome) -> (tempfile::TempDir, [u8; 32]) {
     let root = tempfile::tempdir().expect("a directory for this computer's identity");
     let paths = tilo_user_identity::IdentityPaths::under(root.path());
@@ -56,9 +56,8 @@ fn this_computers_person(home: &mut tilo_test_env::TestHome) -> (tempfile::TempD
     (root, cert.user_public_key)
 }
 
-/// A session hosting the person's settings service, as the session starts
-/// it: the service is made without knowing who sits here, and the session
-/// tells it as it starts it.
+/// A session hosting the person's settings service, as the session starts it: the service is made
+/// without knowing who sits here, and the session tells it as it starts it.
 fn session() -> Session {
     Session::headless(
         Options {
@@ -87,8 +86,8 @@ fn high_contrast(session: &Session) -> bool {
         .expect("the appearance section is published")
 }
 
-/// What the person did after `before`: the changes added to the history
-/// since it was `before` entries long.
+/// What the person did after `before` : the changes added to the history since it was `before`
+/// entries long.
 fn changes_since(before: usize) -> Vec<Value> {
     let mut all = changes();
     all.drain(..before.min(all.len()));
@@ -122,8 +121,7 @@ fn a_setting_changed_in_a_session_is_the_persons_and_their_history_shows_it() {
     );
     assert_eq!(change["action"], json!("settings.appearance/field-edit"));
 
-    // Their own undo finds the step: it is theirs, and taking it back is
-    // theirs to do.
+    // Their own undo finds the step: it is theirs, and taking it back is theirs to do.
     let before = changes().len();
     session
         .invoke(SECTION, "undo", &Map::new())
@@ -146,8 +144,8 @@ fn what_was_changed_before_the_device_knew_them_is_still_theirs_to_take_back() {
     let (_identity, person) = this_computers_person(&mut home);
     let person = hex::encode(person);
 
-    // A session from before this computer had an identity changed the
-    // setting as the placeholder it was started with.
+    // A session from before this computer had an identity changed the setting as the placeholder it
+    // was started with.
     let mut earlier_session = SettingsService::new();
     earlier_session.seated("person", &[]);
     let mut services = tilo_service::Services::default();

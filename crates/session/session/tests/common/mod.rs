@@ -1,9 +1,8 @@
-//! What the headless-session tests share: a private home for a session's sockets, the frames a
-//! test runs until the desk has done what it asked, the shell's laid-out tree read as assistive
+//! What the headless-session tests share: a private home for a session's sockets, the frames a test
+//! runs until the desk has done what it asked, the shell's laid-out tree read as assistive
 //! technology hears it, a press on one of its controls, the REPL's end of the agent door, and the
 //! test-control socket `tilo-control` drives a session over.
-//!
-//! Included by each test binary with `mod common;`, as a directory is not a test target of its
+//! Included by each test binary with `mod common;` , as a directory is not a test target of its
 //! own: the same helpers serve the REPL's test, the shell screen's, the test-control socket's and
 //! the acceptance path's.
 
@@ -37,18 +36,18 @@ use tilolang_tilo::host::Host;
 use tilolang_tilo::records_service::RecordService;
 use tilolang_tilo::runtime::Principal;
 
-/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes
-/// the name the view gives it for a person to read, its own words, rather than the state's name
-/// in the code (`typed`).
+/// The canvas's entry, as assistive technology names it: a field bound to a view's state takes the
+/// name the view gives it for a person to read, its own words, rather than the state's name in the
+/// code (`typed`).
 pub const CANVAS_ENTRY: &str = "Find something, or ask";
-/// The launcher's field, announced the same way: the view's own words for it, not the state's
-/// name in the code (`query`).
+/// The launcher's field, announced the same way: the view's own words for it, not the state's name
+/// in the code (`query`).
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
 /// The overview's field, announced the same way rather than by the state's name in the code
 /// (`query`).
 pub const OVERVIEW_SEARCH: &str = "Search windows across your workspaces";
-/// The workspaces surface's field, announced the same way rather than by the state's name in
-/// the code (`name`).
+/// The workspaces surface's field, announced the same way rather than by the state's name in the
+/// code (`name`).
 pub const WORKSPACE_NAME: &str = "Name a new workspace";
 /// The display every headless session here draws on.
 pub const WIDTH: i32 = 1280;
@@ -96,9 +95,8 @@ pub fn reached(session: &mut Session, mut done: impl FnMut(&mut Session) -> bool
     steps_until(session, |session| done(session).then_some(())).is_some()
 }
 
-/// Step the session's loop until `probe` answers, or the suite's hang bound
-/// runs out: one wait, whose only bound is the bound every other test helper
-/// uses.
+/// Step the session's loop until `probe` answers, or the suite's hang bound runs out: one wait,
+/// whose only bound is the bound every other test helper uses.
 fn steps_until<T>(
     session: &mut Session,
     probe: impl FnMut(&mut Session) -> Option<T>,
@@ -107,10 +105,9 @@ fn steps_until<T>(
 }
 
 /// Step the session's loop until `probe` answers, or `within` runs out.
-///
-/// One slice of a wait a test drives itself: a signal the product carries as
-/// live frames rather than as state it keeps may be shed, so the test asks
-/// again between slices and keeps its own deadline, instead of sampling once.
+/// One slice of a wait a test drives itself: a signal the product carries as live frames rather
+/// than as state it keeps may be shed, so the test asks again between slices and keeps its own
+/// deadline, instead of sampling once.
 pub fn steps_within<T>(
     session: &mut Session,
     within: std::time::Duration,
@@ -132,12 +129,10 @@ pub fn steps_within<T>(
 }
 
 /// Step the session's loop until `probe` answers, and return its answer.
-///
-/// The wait ends the moment the condition holds; its only bound is the suite's
-/// hang bound (`TILO_TEST_HANG_BOUND_SECS`, two minutes by default), so a busy
-/// machine makes the wait longer instead of failing it. A condition that never
-/// holds fails naming `what`, with the shell's refusals and what it shows as the
-/// report: every wait in the session's tests goes through here or
+/// The wait ends the moment the condition holds; its only bound is the suite's hang bound
+/// (`TILO_TEST_HANG_BOUND_SECS`, two minutes by default), so a busy machine makes the wait longer
+/// instead of failing it. A condition that never holds fails naming `what` , with the shell's
+/// refusals and what it shows as the report: every wait in the session's tests goes through here or
 /// [`tilo_test_env::wait_for`], never a frame count or a guessed deadline.
 #[track_caller]
 pub fn wait_for<T>(
@@ -157,9 +152,9 @@ pub fn wait_for<T>(
     }
 }
 
-/// [`wait_for`] without failing: whatever `probe` answers before the suite's
-/// hang bound runs out, for a test that asserts on its own observation (and
-/// says what it saw) rather than taking the helper's message.
+/// [`wait_for`] without failing: whatever `probe` answers before the suite's hang bound runs out,
+/// for a test that asserts on its own observation (and says what it saw) rather than taking the
+/// helper's message.
 #[track_caller]
 pub fn wait_maybe<T>(
     session: &mut Session,
@@ -168,12 +163,11 @@ pub fn wait_maybe<T>(
     steps_until(session, |session| probe(session))
 }
 
-/// [`wait_maybe`] for a wait that spans a step the product itself times out:
-/// `patience` is how long the product allows that step, and the suite's hang
-/// bound is added after it, so a host that takes longer than the suite's bound
-/// but less than the product's patience is not reported as hung — the wait
-/// ends when the product says what became of the step, and its own message is
-/// what the test reports when the wait runs out.
+/// [`wait_maybe`] for a wait that spans a step the product itself times out: `patience` is how long
+/// the product allows that step, and the suite's hang bound is added after it, so a host that takes
+/// longer than the suite's bound but less than the product's patience is not reported as hung — the
+/// wait ends when the product says what became of the step, and its own message is what the test
+/// reports when the wait runs out.
 #[track_caller]
 pub fn wait_maybe_past<T>(
     session: &mut Session,
@@ -236,8 +230,7 @@ pub fn changed(before: &tilo_compositor::Screenshot, after: &tilo_compositor::Sc
         .count()
 }
 
-/// Where the shell's control or region named `name` stands on the standard display, when it
-/// does.
+/// Where the shell's control or region named `name` stands on the standard display, when it does.
 pub fn on_screen(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     on_screen_at(session, name, WIDTH, HEIGHT)
 }
@@ -260,19 +253,18 @@ pub fn on_screen_at(
     })
 }
 
-/// Press the shell's control named `name` on the standard display with the pointer, as the
-/// person does.
+/// Press the shell's control named `name` on the standard display with the pointer, as the person
+/// does.
 pub fn press(session: &mut Session, name: &str) {
     press_at(session, name, WIDTH, HEIGHT);
 }
 
-/// Press the shell's control named `name` on a display `width` by `height` with the pointer, as
-/// the person does.
+/// Press the shell's control named `name` on a display `width` by `height` with the pointer, as the
+/// person does.
 pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
-    // The press lands where the control is drawn once it stood still across
-    // two frames. A surface still arriving moves its controls from one frame
-    // to the next, and a press aimed at a place a control has left misses it:
-    // the person waits for the menu to be there, and so does the test.
+    // The press lands where the control is drawn once it stood still across two frames. A surface
+    // still arriving moves its controls from one frame to the next, and a press aimed at a place a
+    // control has left misses it: the person waits for the menu to be there, and so does the test.
     let (x, y, w, h) = wait_for(
         session,
         format!("the shell's {name} to stand still"),
@@ -307,8 +299,8 @@ pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
     }
 }
 
-/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a
-/// time, as the person does. A question mark is Shift and the slash key.
+/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a time,
+/// as the person does. A question mark is Shift and the slash key.
 pub fn type_text(session: &mut Session, text: &str) {
     const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
     const SPACE: u32 = 57;
@@ -361,9 +353,9 @@ pub fn type_text(session: &mut Session, text: &str) {
     }
 }
 
-/// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows
-/// ("Showing Strips", "Showing Frames", …). Which one it names depends on the desk a test
-/// starts from, so a test asks for the menu rather than for a name.
+/// The desk's preset switch on screen: the bar's menu, named by the preset the desk shows ("Showing
+/// Strips", "Showing Frames", …). Which one it names depends on the desk a test starts from, so a
+/// test asks for the menu rather than for a name.
 pub fn preset_menu(session: &Session) -> Option<String> {
     session
         .accessible_labels()
@@ -371,14 +363,12 @@ pub fn preset_menu(session: &Session) -> Option<String> {
         .find(|label| label.starts_with("Showing ") && on_screen(session, label).is_some())
 }
 
-/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the
-/// preset menu the bar carries and press the preset it offers.
-///
+/// Show `preset` ("Strips", "Frames", "Spaces", "Desktop") from the desk's own bar: open the preset
+/// menu the bar carries and press the preset it offers.
 /// A press that arrives before the menu stands where the desk lays it out dismisses the menu
-/// instead of choosing from it, as it does for a person who presses again to get the row they
-/// aimed at. So the wait presses again — asking the bar for the menu when a press closed it —
-/// until the desk shows the preset, and a desk that never does is reported with what the bar
-/// said instead.
+/// instead of choosing from it, as it does for a person who presses again to get the row they aimed
+/// at. So the wait presses again — asking the bar for the menu when a press closed it — until the
+/// desk shows the preset, and a desk that never does is reported with what the bar said instead.
 pub fn show_preset(session: &mut Session, preset: &str) {
     let shown = format!("Showing {preset}");
     // Turns since the last press: the menu opens on the turn after its own button's press, and
@@ -513,10 +503,10 @@ pub fn app_store() -> &'static Path {
             6,
             "every app of the development session is installed: {installed:?}"
         );
-        // The store the environment names is the one the session's launcher reads, and the one
-        // its connector planning plans from. Pinned for the rest of the process, as the store is:
-        // every later test's session reads the same one, and a scope that names its own for a
-        // test is taken after it and restores it.
+        // The store the environment names is the one the session's launcher reads, and the one its
+        // connector planning plans from. Pinned for the rest of the process, as the store is: every
+        // later test's session reads the same one, and a scope that names its own for a test is
+        // taken after it and restores it.
         tilo_test_env::pin("TILO_APPS_DATA_DIR", &root);
         root
     })
@@ -658,7 +648,7 @@ pub fn strip_of(session: &Session, key: u64) -> Option<tilo_session::arrangement
     strip(session, number(&place.strip))
 }
 
-/// The places of the arrangement that show `resource`.
+/// The places of the arrangement that show `resource` .
 pub fn placed(session: &Session, resource: &str) -> usize {
     places(session)
         .iter()
@@ -682,8 +672,8 @@ pub fn placed_resources(session: &Session) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The REPL's end of the agent door, on a thread of its own so the session runs while it waits:
-/// it sends each request it is handed and hands back the answer to it.
+/// The REPL's end of the agent door, on a thread of its own so the session runs while it waits: it
+/// sends each request it is handed and hands back the answer to it.
 pub struct Repl {
     asks: Sender<Value>,
     answers: Receiver<Value>,
@@ -696,7 +686,7 @@ impl Repl {
         Self::asking(socket, true)
     }
 
-    /// Connect to the door at `socket`, asking to act as the person (`as_person`) or as an agent
+    /// Connect to the door at `socket` , asking to act as the person (`as_person`) or as an agent
     /// of theirs.
     pub fn asking(socket: &Path, as_person: bool) -> Self {
         let socket = socket.to_path_buf();
@@ -765,7 +755,7 @@ impl Repl {
         self.answer(session)
     }
 
-    /// Call the door's tool `name`: its text, and whether it is an error.
+    /// Call the door's tool `name` : its text, and whether it is an error.
     pub fn call(&mut self, session: &mut Session, name: &str, arguments: &Value) -> (String, bool) {
         let reply = self.ask(
             session,
@@ -803,14 +793,14 @@ impl Repl {
             .collect()
     }
 
-    /// Run the program `program` through the door's `tilo` tool: its answer, and whether it is
-    /// an error.
+    /// Run the program `program` through the door's `tilo` tool: its answer, and whether it is an
+    /// error.
     pub fn run(&mut self, session: &mut Session, program: &str) -> (String, bool) {
         self.call(session, "tilo", &json!({"program": program}))
     }
 }
 
-/// Press the portal sheet's `effect`, as its control does.
+/// Press the portal sheet's `effect` , as its control does.
 pub fn press_sheet(session: &mut Session, effect: &str, args: &Value) {
     fn publisher(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -891,8 +881,8 @@ pub fn window_name_of(session: &Session, record: &str) -> String {
         )
 }
 
-/// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and
-/// wait until the place shows the seeded conversation.
+/// Place what "Inbox" finds on the canvas through the door, as the REPL's program does, and wait
+/// until the place shows the seeded conversation.
 pub fn place_the_inbox(session: &mut Session, root: &Path) {
     let mut repl = Repl::connect(&root.join("agent.sock"));
     repl.opened(session);

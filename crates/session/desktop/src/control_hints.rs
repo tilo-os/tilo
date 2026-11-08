@@ -1,13 +1,11 @@
-//! The desktop's control hints: how to open a window from search, move a
-//! window, resize one and move the view, each taught once at the moment it
-//! is useful, beside where it is done ([`ui::control_hints`]).
-//!
-//! The set is data ([`HINTS`]); both hosts drive the same
-//! [`ControlHints`] with what their frame shows ([`HintFrame`]) and draw it
-//! above the windows, as they do the strip navigator. What the person
-//! learns is their own record ([`Learned`]), kept with their personal
-//! settings; the host loads it, writes what [`ControlHints::take_changed`]
-//! hands back, and folds in what arrives from their other devices.
+//! The desktop's control hints: how to open a window from search, move a window, resize one and
+//! move the view, each taught once at the moment it is useful, beside where it is done
+//! ([`ui::control_hints`]).
+//! The set is data ([`HINTS`]); both hosts drive the same [`ControlHints`] with what their frame
+//! shows ([`HintFrame`]) and draw it above the windows, as they do the strip navigator. What the
+//! person learns is their own record ([`Learned`]), kept with their personal settings; the host
+//! loads it, writes what [`ControlHints::take_changed`] hands back, and folds in what arrives from
+//! their other devices.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -56,8 +54,8 @@ pub static HINTS: &[HintSpec<Signal>] = &[
             Cue::Saw(Signal::Did(Performed::HoveredWindowBar)),
             Cue::Saw(Signal::Did(Performed::OpenedWindow)),
         ],
-        // A lone window held by its bar only stretches and springs back:
-        // moving one means carrying it past another.
+        // A lone window held by its bar only stretches and springs back: moving one means carrying
+        // it past another.
         only_while: &[Signal::TwoWindows],
         learned_by: &[Signal::Did(Performed::MovedWindow)],
         gesture: Gesture::MoveWindow,
@@ -111,21 +109,20 @@ pub struct HintFrame {
     pub colour: Option<(u8, u8, u8)>,
     /// Why no hint may begin now, if anything.
     pub quiet: Option<Quiet>,
-    /// The person can see the desktop: its first frame is on screen, past
-    /// any setup. Hints that wait for a while in ([`Cue::After`]) count
-    /// from the first frame that says so.
+    /// The person can see the desktop: its first frame is on screen, past any setup. Hints that
+    /// wait for a while in ([`Cue::After`]) count from the first frame that says so.
     pub presented: bool,
-    /// The person points by touch: the host lays its controls out for a
-    /// finger ([`ui::PointerPrecision::Coarse`]), as it does after a touch
-    /// on the screen. Hints then name what a finger does.
+    /// The person points by touch: the host lays its controls out for a finger
+    /// ([`ui::PointerPrecision::Coarse`]), as it does after a touch on the screen. Hints then name
+    /// what a finger does.
     pub touch: bool,
 }
 
 /// The desktop's control hints on one host.
 pub struct ControlHints {
     layer: HintLayer<Signal>,
-    /// What the hint on screen says to assistive technology, as last
-    /// drawn, for the host's [`HintAnnouncer`].
+    /// What the hint on screen says to assistive technology, as last drawn, for the host's
+    /// [`HintAnnouncer`].
     said: Rc<RefCell<Option<ui::a11y::AccessNode>>>,
     /// The motion it was last drawn with, for the frames between draws.
     motion: EffectiveMotion,
@@ -156,9 +153,9 @@ impl ControlHints {
         self.layer.coach_mut().set_enabled(enabled, now);
     }
 
-    /// Fold in the record as the person's settings now hold it: what their
-    /// other devices learned, or the switch turned in Settings. Hosts call
-    /// this when the record's settings change, never on a schedule.
+    /// Fold in the record as the person's settings now hold it: what their other devices learned,
+    /// or the switch turned in Settings. Hosts call this when the record's settings change, never
+    /// on a schedule.
     pub fn merge(&mut self, other: &Learned, now: Instant) {
         self.layer.coach_mut().merge(other, now);
     }
@@ -168,15 +165,14 @@ impl ControlHints {
         self.layer.coach_mut().take_changed()
     }
 
-    /// The person did `what` somewhere the toolkit's controls do not see
-    /// (opened search, opened a window from it).
+    /// The person did `what` somewhere the toolkit's controls do not see (opened search, opened a
+    /// window from it).
     pub fn observe(&mut self, what: Performed, now: Instant) {
         self.layer.coach_mut().observe(Signal::Did(what), now);
     }
 
-    /// An event the desktop received: a key that types text, or text an
-    /// input method committed, holds new hints back until the person
-    /// pauses. Shortcuts do not count.
+    /// An event the desktop received: a key that types text, or text an input method committed,
+    /// holds new hints back until the person pauses. Shortcuts do not count.
     pub fn heard(&mut self, event: &winit::event::WindowEvent, now: Instant) {
         use winit::event::{ElementState, Ime, WindowEvent};
         let typed = match event {
@@ -195,14 +191,13 @@ impl ControlHints {
         }
     }
 
-    /// Advance to `now` with what `frame` shows; what the toolkit's
-    /// controls saw the person do since the last frame is read here.
+    /// Advance to `now` with what `frame` shows; what the toolkit's controls saw the person do
+    /// since the last frame is read here.
     pub fn update(&mut self, frame: &HintFrame, now: Instant) {
         for what in performed::take() {
             self.observe(what, now);
         }
-        // Not yet seen, no hint's time runs: what the person does is
-        // still heard above.
+        // Not yet seen, no hint's time runs: what the person does is still heard above.
         if !frame.presented {
             return;
         }
@@ -241,8 +236,8 @@ impl ControlHints {
             area: frame.area,
         };
         self.motion = theme.motion();
-        // A damage part of its own: a hint coming, moving or folding into
-        // its dot repaints where it painted, not the page around it.
+        // A damage part of its own: a hint coming, moving or folding into its dot repaints where it
+        // painted, not the page around it.
         let key = ui::scene_parts::PartKey::new("desktop.control-hint", ());
         let layer = &mut self.layer;
         ui::scene_parts::part_drawn(scene, key, |scene| {
@@ -256,14 +251,14 @@ impl ControlHints {
         *self.said.borrow_mut() = self.layer.access_node();
     }
 
-    /// Whether the hint on screen moves at `now`.
+    /// Whether the hint on screen moves at `now` .
     #[must_use]
     pub fn needs_animation_frame(&self, now: Instant) -> bool {
         self.layer.needs_frame(now, self.motion)
     }
 
-    /// When the hints next need a frame: a hint's own schedule, or the
-    /// pause in typing that lets a hint held back by it begin.
+    /// When the hints next need a frame: a hint's own schedule, or the pause in typing that lets a
+    /// hint held back by it begin.
     #[must_use]
     pub fn next_wake_deadline(&self, now: Instant) -> Option<Instant> {
         let pause = self.typing_until.filter(|until| *until > now);
@@ -299,8 +294,7 @@ impl ControlHints {
 }
 
 impl ControlHints {
-    /// Where the host's widget tree tells assistive technology about the
-    /// hint on screen.
+    /// Where the host's widget tree tells assistive technology about the hint on screen.
     #[must_use]
     pub fn announcer(&self) -> HintAnnouncer {
         HintAnnouncer {
@@ -310,9 +304,9 @@ impl ControlHints {
     }
 }
 
-/// The hint on screen in a host's widget tree, for assistive technology: a
-/// polite label with the hint's words and keys while one shows. It draws
-/// nothing and takes no input; the hint itself is drawn above the windows.
+/// The hint on screen in a host's widget tree, for assistive technology: a polite label with the
+/// hint's words and keys while one shows. It draws nothing and takes no input; the hint itself is
+/// drawn above the windows.
 pub struct HintAnnouncer {
     said: Rc<RefCell<Option<ui::a11y::AccessNode>>>,
     rect: Rect,
@@ -358,14 +352,14 @@ impl ui::widget::Widget for HintAnnouncer {
     }
 }
 
-/// How hint `spec` shows over `frame`, if its anchor is on screen.
+/// How hint `spec` shows over `frame` , if its anchor is on screen.
 fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     if frame.area.is_zero_area() {
         return None;
     }
-    // A window being answered asks the person a question of its own: no
-    // hint anchored to it stands over that (one showing leaves, its anchor
-    // gone). The strip's own hints are not the window's to keep.
+    // A window being answered asks the person a question of its own: no hint anchored to it stands
+    // over that (one showing leaves, its anchor gone). The strip's own hints are not the window's
+    // to keep.
     if frame.row.asking && matches!(spec.gesture, Gesture::MoveWindow | Gesture::ResizeEdge) {
         return None;
     }
@@ -376,9 +370,8 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     );
     let row = &frame.row;
     let (anchor, side, edge, keys) = match spec.gesture {
-        // Search comes down at the top of the desktop, at its middle: the
-        // card stands where it will, pointing at nothing, since no control
-        // on screen opens it.
+        // Search comes down at the top of the desktop, at its middle: the card stands where it
+        // will, pointing at nothing, since no control on screen opens it.
         Gesture::OpenFromSearch => (
             Rect::from_points(
                 Point::new(frame.area.center().x, frame.area.y0 + SEARCH_DROP),
@@ -500,9 +493,9 @@ mod tests {
         );
     }
 
-    // The view moves by a sideways scroll on a computer (a touchpad's
-    // fingers, a mouse's sideways wheel) and by a swipe on a touchscreen:
-    // the words and picture name what the person's own hand does.
+    // The view moves by a sideways scroll on a computer (a touchpad's fingers, a mouse's sideways
+    // wheel) and by a swipe on a touchscreen: the words and picture name what the person's own hand
+    // does.
     #[test]
     fn moving_the_view_is_told_in_the_input_the_person_uses() {
         let spec = HINTS
@@ -546,11 +539,10 @@ mod tests {
         }
     }
 
-    // A window asking the person a question has no place for the hints
-    // anchored to it: the one that would stand over the question never
-    // begins, and one already showing leaves with its anchor (the layer's
-    // own rule, `ui::control_hints`). The hints that are not the window's —
-    // moving the view along the strip — are not the question's to keep.
+    // A window asking the person a question has no place for the hints anchored to it: the one that
+    // would stand over the question never begins, and one already showing leaves with its anchor
+    // (the layer's own rule, `ui::control_hints` ). The hints that are not the window's — moving
+    // the view along the strip — are not the question's to keep.
     #[test]
     fn no_hint_points_at_a_window_a_person_is_answering() {
         let mut frame = frame();
@@ -639,9 +631,8 @@ mod tests {
         assert!(hints.is_showing());
     }
 
-    // Writing past a hint's moment holds the hint back without a frame on
-    // every frame: the desktop sleeps until the person pauses, and the
-    // frame then shows the hint.
+    // Writing past a hint's moment holds the hint back without a frame on every frame: the desktop
+    // sleeps until the person pauses, and the frame then shows the hint.
     #[test]
     fn a_hint_held_back_by_typing_waits_for_the_pause_without_frames() {
         let mut hints = ControlHints::new(Learned::default());
@@ -683,10 +674,10 @@ mod tests {
         assert_eq!(learned.showings("move-window"), 1);
     }
 
-    /// A hint asks for frames only while it moves: as it arrives and plays
-    /// its gesture, then not while it rests, and not at all once it went.
-    /// An idle desktop with a hint on it comes to rest; a hint still asking
-    /// for frames would repaint its corner of the page sixty times a second.
+    /// A hint asks for frames only while it moves: as it arrives and plays its gesture, then not
+    /// while it rests, and not at all once it went. An idle desktop with a hint on it comes to
+    /// rest; a hint still asking for frames would repaint its corner of the page sixty times a
+    /// second.
     #[test]
     fn a_hint_asks_for_frames_only_while_it_moves() {
         use ui::control_hints::coach::{IGNORED_AFTER, MIN_GAP};
@@ -700,8 +691,8 @@ mod tests {
         let loops = Beckon::GESTURE_PERIOD
             .mul_f64(f64::from(Beckon::GESTURE_LOOPS - 1) + Beckon::RESTING_PHASE);
         let gone = IGNORED_AFTER + Beckon::leaving_time(EffectiveMotion::default());
-        // A host that draws a frame whenever one is asked for, or a wake
-        // comes due, as the page does.
+        // A host that draws a frame whenever one is asked for, or a wake comes due, as the page
+        // does.
         let mut now = start;
         let mut last_asked = None;
         while now < start + Duration::from_secs(40) {
@@ -735,8 +726,8 @@ mod tests {
         );
     }
 
-    /// A hint coming onto the page repaints where it painted, a part of the
-    /// page's scene of its own, not the page.
+    /// A hint coming onto the page repaints where it painted, a part of the page's scene of its
+    /// own, not the page.
     #[test]
     fn a_moving_hint_repaints_where_it_painted() {
         let mut hints = ControlHints::new(Learned::default());

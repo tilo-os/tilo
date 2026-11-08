@@ -1,7 +1,7 @@
 //! Portable display snapshots and typed chrome requests. No system probing or effects.
 use tilo_desktop_model::DesktopTree;
-/// The machine's link, as the toolkits' surfaces draw it: the bar's status
-/// cluster and the lock screen's footer share the one reading.
+/// The machine's link, as the toolkits' surfaces draw it: the bar's status cluster and the lock
+/// screen's footer share the one reading.
 pub use ui::widget::{LinkKind, LinkStatus};
 use vello::kurbo::Rect;
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -64,8 +64,8 @@ pub struct ClockSnapshot {
     pub date: String,
 }
 impl ClockSnapshot {
-    /// The wall clock now, in the person's time style and locale: what the
-    /// bar shows on every desktop, native or in a page.
+    /// The wall clock now, in the person's time style and locale: what the bar shows on every
+    /// desktop, native or in a page.
     #[must_use]
     pub fn now() -> Self {
         let now = ui::clock::local_now();
@@ -87,27 +87,27 @@ impl Default for ClockSnapshot {
         }
     }
 }
-/// The small piece of the workspace's history passive chrome shows. The history
-/// document stays authoritative.
+/// The small piece of the workspace's history passive chrome shows. The history document stays
+/// authoritative.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityGlance {
     pub headline: Option<String>,
     pub unread: usize,
-    /// Changes whenever a new latest entry is observed, even when the text is
-    /// coincidentally identical, so the bar can restart its brief reveal.
+    /// Changes whenever a new latest entry is observed, even when the text is coincidentally
+    /// identical, so the bar can restart its brief reveal.
     pub pulse: u64,
     pub focus: Option<ActivityFocus>,
 }
 
-/// Intent-addressable destination inside History. Device-local; links from
-/// chrome, search and agents all resolve through the same shape.
+/// Intent-addressable destination inside History. Device-local; links from chrome, search and
+/// agents all resolve through the same shape.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ActivityFocus {
     pub author: Option<String>,
     pub group_id: Option<String>,
     pub entry_id: Option<[u8; 16]>,
-    /// Stable record/resource identity. Paths are deliberately excluded:
-    /// rename and move must not break a Files → Activity hand-off.
+    /// Stable record/resource identity. Paths are deliberately excluded: rename and move must not
+    /// break a Files → Activity hand-off.
     pub resource_id: Option<String>,
     /// App-native immutable version identity, retained for detail renderers.
     pub resource_version: Option<[u8; 16]>,
@@ -125,20 +125,19 @@ pub struct ActiveExposure {
     pub surface: u64,
     pub can_control: bool,
 }
-/// Whether the top bar holds its strip of the screen or shows over the
-/// windows. The person chooses between the first and the other two
-/// (`desktop_controls.hide_top_bar`); the host moves between those two as
-/// the pointer, the keyboard and the bar's own menus ask for it.
+/// Whether the top bar holds its strip of the screen or shows over the windows. The person chooses
+/// between the first and the other two (`desktop_controls.hide_top_bar`); the host moves between
+/// those two as the pointer, the keyboard and the bar's own menus ask for it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum TopBarPresence {
     /// Holds its strip of the screen; the windows start below it.
     #[default]
     Docked,
-    /// Out of the way until reached for: the windows take its strip, and
-    /// the bar neither paints nor takes the pointer.
+    /// Out of the way until reached for: the windows take its strip, and the bar neither paints nor
+    /// takes the pointer.
     Hidden,
-    /// Reached for: drawn over the windows' top edge, in the same place it
-    /// is docked. Nothing under it moves, coming or going.
+    /// Reached for: drawn over the windows' top edge, in the same place it is docked. Nothing under
+    /// it moves, coming or going.
     Shown,
 }
 
@@ -156,40 +155,38 @@ pub struct DesktopChromeSnapshot {
     pub status: SystemStatus,
     pub clock: ClockSnapshot,
     pub overlays: ChromeOverlays,
-    /// A window on this device covers its display: the bar and its strips
-    /// step aside until it gives the display back.
+    /// A window on this device covers its display: the bar and its strips step aside until it gives
+    /// the display back.
     pub fullscreen: bool,
     pub notification_badge: u32,
-    /// Fresh banners are being held (Do Not Disturb, presenting, a focus
-    /// schedule): the bar's status cluster shows a silenced bell.
+    /// Fresh banners are being held (Do Not Disturb, presenting, a focus schedule): the bar's
+    /// status cluster shows a silenced bell.
     pub notifications_quiet: bool,
-    /// The host has no quick settings: the status cluster is the bell that
-    /// opens the notification centre, named and drawn as one, not a
-    /// settings glyph promising settings that are not there.
+    /// The host has no quick settings: the status cluster is the bell that opens the notification
+    /// centre, named and drawn as one, not a settings glyph promising settings that are not there.
     pub notifications_only: bool,
     pub activity_glance: ActivityGlance,
     pub viewport_size: Option<(f64, f64)>,
-    /// The bar's pill: the activity it names and how many others wait
-    /// behind it, ordered once here rather than at every read.
+    /// The bar's pill: the activity it names and how many others wait behind it, ordered once here
+    /// rather than at every read.
     pub activities: ui::floating_layer::Pill,
     pub active_exposures: Vec<ActiveExposure>,
-    /// Pages reading this workspace right now. The bar counts them beside
-    /// the avatars so an audience is never invisible.
+    /// Pages reading this workspace right now. The bar counts them beside the avatars so an
+    /// audience is never invisible.
     pub watching: u32,
-    /// The person at this desktop as everyone here sees them, for the
-    /// bar's own avatar; `None` paints none.
+    /// The person at this desktop as everyone here sees them, for the bar's own avatar; `None`
+    /// paints none.
     pub own: Option<OwnChip>,
-    /// Whether the person may invite others here: the bar keeps its invite
-    /// button beside the faces, however many people are present.
+    /// Whether the person may invite others here: the bar keeps its invite button beside the faces,
+    /// however many people are present.
     pub invite: Invite,
-    /// The last wave at this person: the bar says who waved, for a moment
-    /// after it came.
+    /// The last wave at this person: the bar says who waved, for a moment after it came.
     pub waved: Option<WaveNotice>,
-    /// The person arrived where others are: their faces pulse in the bar
-    /// and a short name slides out of them, for a moment.
+    /// The person arrived where others are: their faces pulse in the bar and a short name slides
+    /// out of them, for a moment.
     pub arrived: Option<ArrivalNotice>,
-    /// Settings asked which screen is which: each display's number and the
-    /// name Settings gives it, said on that display for a moment.
+    /// Settings asked which screen is which: each display's number and the name Settings gives it,
+    /// said on that display for a moment.
     pub identify: Option<crate::display_identify::Ask>,
 }
 
@@ -202,7 +199,7 @@ pub enum Invite {
 }
 
 impl Invite {
-    /// [`Self::Offered`] when `offered`.
+    /// [`Self::Offered`] when `offered` .
     #[must_use]
     pub fn when(offered: bool) -> Self {
         if offered {
@@ -222,28 +219,25 @@ pub struct WaveNotice {
     pub at: ui::time::Instant,
 }
 
-/// The person at this desktop arrived where others are (joined the
-/// workspace, or came back to it with someone new there). The bar says so
-/// on the faces it already shows, never over the windows: those faces pulse
-/// and a short name slides out of them, then goes on its own.
+/// The person at this desktop arrived where others are (joined the workspace, or came back to it
+/// with someone new there). The bar says so on the faces it already shows, never over the windows:
+/// those faces pulse and a short name slides out of them, then goes on its own.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArrivalNotice {
     /// Who is here, by roster id: the faces that pulse.
     pub people: Vec<String>,
     /// Their names, in the roster's order.
     pub names: Vec<String>,
-    /// The first time in a public workspace: what its people see of the
-    /// person, in a few words. Pressing the status opens the person's own
-    /// menu, where they choose otherwise.
+    /// The first time in a public workspace: what its people see of the person, in a few words.
+    /// Pressing the status opens the person's own menu, where they choose otherwise.
     pub seen: Option<String>,
     /// When the person arrived.
     pub at: ui::time::Instant,
 }
 
 impl ArrivalNotice {
-    /// What slides out of the faces: the first person's short name, and
-    /// how many others ("Ada", "Ada and 2 others"), or what the people
-    /// here see of the person when that is told.
+    /// What slides out of the faces: the first person's short name, and how many others ("Ada",
+    /// "Ada and 2 others"), or what the people here see of the person when that is told.
     #[must_use]
     pub fn text(&self) -> String {
         if let Some(seen) = &self.seen {
@@ -285,16 +279,16 @@ pub enum ChromeIntent {
     ToggleQuickSettings,
     ShowQuickSettings,
     ToggleCollaborators,
-    /// Invite someone to this workspace, straight from the bar's invite
-    /// button: the host's own invite flow, in one step.
+    /// Invite someone to this workspace, straight from the bar's invite button: the host's own
+    /// invite flow, in one step.
     Invite,
-    /// Open who is here at this person (their roster id): their row, with
-    /// what they are doing and the wave.
+    /// Open who is here at this person (their roster id): their row, with what they are doing and
+    /// the wave.
     ShowPerson(String),
     /// Open History, at `focus` when the bar names one.
     ShowActivity(Option<ActivityFocus>),
-    /// Bring an activity's card out of the bar's pill: the app that shows
-    /// it and its id, which is only its own app's.
+    /// Bring an activity's card out of the bar's pill: the app that shows it and its id, which is
+    /// only its own app's.
     ExpandActivity {
         app: String,
         activity: String,
@@ -311,34 +305,30 @@ pub enum ChromeIntent {
     AnswerAvatarAsk,
     /// The person put the ask off ("Not now"): it goes.
     PutOffAvatarAsk,
-    /// Show the active workspace's strips to choose from, in the strip
-    /// switcher: a click on the strip's name after the workspace's.
+    /// Show the active workspace's strips to choose from, in the strip switcher: a click on the
+    /// strip's name after the workspace's.
     ShowStrips,
-    /// Open the strip switcher for the keyboard, or close it when it is up:
-    /// its chord does both.
+    /// Open the strip switcher for the keyboard, or close it when it is up: its chord does both.
     ToggleStrips,
     /// Give the active workspace this name.
     RenameWorkspace {
         name: String,
     },
-    /// Take the active workspace off this device's desktop, leaving it to
-    /// the people in it.
+    /// Take the active workspace off this device's desktop, leaving it to the people in it.
     LeaveWorkspace,
-    /// Delete the active workspace, with everything in it: the person
-    /// answers the question first.
+    /// Delete the active workspace, with everything in it: the person answers the question first.
     DeleteWorkspace,
-    /// Delete the active workspace, with everything in it, now: the person
-    /// already answered a question of their own about it.
+    /// Delete the active workspace, with everything in it, now: the person already answered a
+    /// question of their own about it.
     DeleteWorkspaceConfirmed,
     /// Open or close the menu behind the bar's Tilo mark
     /// ([`crate::topbar::TopBarChrome::with_tilo_mark`]), under
     /// [`crate::topbar::TopBarChrome::tilo_mark_rect`].
     ToggleTiloMenu,
     /// Open or close the menu behind the workspace name, under
-    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a
-    /// place on the desk a secondary press named, standing there instead:
-    /// the same menu, offering the desk's own commands and kept inside the
-    /// screen at an edge.
+    /// [`crate::topbar::TopBarChrome::workspace_menu_rect`] — or, `at` a place on the desk a
+    /// secondary press named, standing there instead: the same menu, offering the desk's own
+    /// commands and kept inside the screen at an edge.
     ToggleWorkspaceMenu {
         at: Option<(i32, i32)>,
     },
@@ -378,12 +368,11 @@ pub struct AppTrayItem {
     /// Stable key the host addresses the item by.
     pub key: String,
     pub id: String,
-    /// The application whose connection registered the item, proven from
-    /// its process. `None` when it could not be proven; an item's own id is
-    /// never trusted for this.
+    /// The application whose connection registered the item, proven from its process. `None` when
+    /// it could not be proven; an item's own id is never trusted for this.
     pub owner_app: Option<String>,
-    /// What to call the item: the application's own title for it, else its
-    /// id. Named to the person and to assistive technology, never empty.
+    /// What to call the item: the application's own title for it, else its id. Named to the person
+    /// and to assistive technology, never empty.
     pub title: String,
     pub status: AppTrayStatus,
     pub icon: AppTrayIcon,
@@ -398,17 +387,15 @@ pub enum AppTrayRequest {
     SecondaryActivate { x: i32, y: i32 },
     ContextMenu { x: i32, y: i32 },
 }
-/// An ask about the person themselves (keeping who they are here), put to
-/// them from their own avatar in the top bar. Open, it is a small popover
-/// in the bar's band beside the avatar, so it never covers a window or
-/// takes a click meant for one; clicked away it waits as a dot on the
+/// An ask about the person themselves (keeping who they are here), put to them from their own
+/// avatar in the top bar. Open, it is a small popover in the bar's band beside the avatar, so it
+/// never covers a window or takes a click meant for one; clicked away it waits as a dot on the
 /// avatar, which opens it again.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct AvatarAsk {
     /// The question ("Keep your name and work?").
     pub question: String,
-    /// What answering brings, said where there is room and to assistive
-    /// technology.
+    /// What answering brings, said where there is room and to assistive technology.
     pub detail: String,
     /// The answer's label ("Keep with passkey").
     pub answer: String,
@@ -419,16 +406,16 @@ pub struct AvatarAsk {
 pub trait DesktopChromeSource {
     fn snapshot(&self) -> DesktopChromeSnapshot;
     fn tree(&self) -> DesktopTree;
-    /// Where each display's bar goes. A host that cannot tell its displays
-    /// apart answers none, and the desk carries one full bar across it.
+    /// Where each display's bar goes. A host that cannot tell its displays apart answers none, and
+    /// the desk carries one full bar across it.
     fn bars(&self) -> crate::topbar::Placement {
         crate::topbar::Placement::default()
     }
     /// Returns whether the host accepted the request, never proof of a shared mutation.
     fn intent(&self, intent: ChromeIntent) -> bool;
     fn settings_anchor(&self, _rect: Rect) {}
-    /// The live offer to continue a tab from another of this person's
-    /// devices, as the label the bar shows ("Continue Notes from Laptop").
+    /// The live offer to continue a tab from another of this person's devices, as the label the bar
+    /// shows ("Continue Notes from Laptop").
     fn continuity_offer(&self) -> Option<String> {
         None
     }
@@ -444,9 +431,8 @@ pub trait DesktopChromeSource {
     fn app_tray(&self) -> Vec<AppTrayItem> {
         Vec::new()
     }
-    /// How many unread notifications the application with this verified id
-    /// owns, as its icon says on the bar. Zero when it owns none, or when
-    /// this person turned app badges off.
+    /// How many unread notifications the application with this verified id owns, as its icon says
+    /// on the bar. Zero when it owns none, or when this person turned app badges off.
     fn app_notification_badge(&self, _app_id: &str) -> u32 {
         0
     }

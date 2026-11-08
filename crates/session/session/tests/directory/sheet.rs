@@ -1,7 +1,6 @@
-//! The sheet takes the person's input, whatever window is focused: its field
-//! is typed into rather than the window behind it, Escape and a click outside
-//! close it, a click inside reaches its own controls, and a sheet the session
-//! closed stops being drawn.
+//! The sheet takes the person's input, whatever window is focused: its field is typed into rather
+//! than the window behind it, Escape and a click outside close it, a click inside reaches its own
+//! controls, and a sheet the session closed stops being drawn.
 
 use std::time::Duration;
 
@@ -15,8 +14,7 @@ use crate::{
 };
 use common::window::{Client, KEY_ESCAPE, click, tap_key};
 
-/// The session with the directory's sheet up, and a client window focused
-/// behind it.
+/// The session with the directory's sheet up, and a client window focused behind it.
 fn sheet_over_a_window() -> (Session, Client) {
     let mut env = tilo_test_env::ScopedEnv::new();
     let (responder, page) = site();
@@ -35,8 +33,8 @@ fn sheet_over_a_window() -> (Session, Client) {
     (session, client)
 }
 
-/// With a client window focused behind it, typing reaches the sheet's search
-/// field and never the window: the list narrows to what was typed.
+/// With a client window focused behind it, typing reaches the sheet's search field and never the
+/// window: the list narrows to what was typed.
 #[test]
 fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
     let _settled = ui::motion::testing::settled();
@@ -73,8 +71,8 @@ fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
     );
 }
 
-/// Escape closes the sheet while a client window is focused behind it, and
-/// the window never sees the key.
+/// Escape closes the sheet while a client window is focused behind it, and the window never sees
+/// the key.
 #[test]
 fn escape_closes_the_sheet_and_never_reaches_the_window() {
     let _settled = ui::motion::testing::settled();
@@ -102,15 +100,15 @@ fn escape_closes_the_sheet_and_never_reaches_the_window() {
     assert!(client.seen.keyboard_focused, "the window kept the seat");
 }
 
-/// A press outside the sheet's card is the sheet's, not the window's behind
-/// it: it closes the sheet and the window sees no button.
+/// A press outside the sheet's card is the sheet's, not the window's behind it: it closes the sheet
+/// and the window sees no button.
 #[test]
 fn a_click_outside_the_sheet_never_reaches_the_window() {
     let _settled = ui::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     let buttons_before = client.seen.buttons.clone();
-    // The sheet covers the whole display; a press at its corner is beside
-    // the card and closes the sheet.
+    // The sheet covers the whole display; a press at its corner is beside the card and closes the
+    // sheet.
     click(&mut session, 1.0, 1.0);
     common::until(
         &mut session,
@@ -130,14 +128,14 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
     );
 }
 
-/// A press inside the sheet's card reaches its controls: the search field
-/// takes the caret, and typing after it narrows the list.
+/// A press inside the sheet's card reaches its controls: the search field takes the caret, and
+/// typing after it narrows the list.
 #[test]
 fn a_click_inside_the_sheet_reaches_its_controls() {
     let _settled = ui::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
-    // The sheet publishes its field as the screen reader reads it: the
-    // shared search field, named by the words it stands for.
+    // The sheet publishes its field as the screen reader reads it: the shared search field, named
+    // by the words it stands for.
     let field = common::wait_for(&mut session, "the sheet's search field", |session| {
         session
             .step(Duration::from_millis(16))
@@ -170,9 +168,8 @@ fn a_click_inside_the_sheet_reaches_its_controls() {
     );
 }
 
-/// Where the sheet's control named `name` stands, as the session's own
-/// export publishes it: the window the sheet's app is on, and the node it
-/// names there, in logical pixels.
+/// Where the sheet's control named `name` stands, as the session's own export publishes it: the
+/// window the sheet's app is on, and the node it names there, in logical pixels.
 fn sheet_control(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> {
     for (_, _, tree) in session.a11y_windows() {
         let found = tree.nodes.iter().find_map(|(_, node)| {
@@ -191,8 +188,8 @@ fn sheet_control(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> 
     None
 }
 
-/// Choosing Join closes the sheet once its action has started, leaving the
-/// person where they are rather than a sheet behind.
+/// Choosing Join closes the sheet once its action has started, leaving the person where they are
+/// rather than a sheet behind.
 #[test]
 fn choosing_join_closes_the_sheet() {
     let _settled = ui::motion::testing::settled();
@@ -224,8 +221,7 @@ fn choosing_join_closes_the_sheet() {
     );
 }
 
-/// A sheet the session closed stops being drawn: nothing is left on screen
-/// taking no input.
+/// A sheet the session closed stops being drawn: nothing is left on screen taking no input.
 #[test]
 fn a_sheet_the_session_closed_stops_being_drawn() {
     let _settled = ui::motion::testing::settled();

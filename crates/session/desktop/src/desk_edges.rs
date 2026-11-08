@@ -1,16 +1,12 @@
-//! Where each thing kept at the edges of the screen waits: its edge, its
-//! place in the stack of things sharing that edge, and around the system
-//! activities (a call, a navigation card) already floating there. The desk
-//! widgets and the pinned people overlay both stand here, in the native
-//! shell and the browser alike: dragged and let go, each snaps to the edge
-//! nearest the drop ([`nearest_edge`]) and keeps it in the person's
-//! settings (`settings_store::desk_widgets`).
-//!
-//! Widgets that share an edge stack along it, away from its corner or out
-//! from its middle. A system activity floating over an edge is an occupant
-//! the stack steps past, so a call card and a music widget never sit on
-//! each other: system activities and widgets share the edges, and the
-//! activity wins its place.
+//! Where each thing kept at the edges of the screen waits: its edge, its place in the stack of
+//! things sharing that edge, and around the system activities (a call, a navigation card) already
+//! floating there. The desk widgets and the pinned people overlay both stand here, in the native
+//! shell and the browser alike: dragged and let go, each snaps to the edge nearest the drop
+//! ([`nearest_edge`]) and keeps it in the person's settings (`settings_store::desk_widgets`).
+//! Widgets that share an edge stack along it, away from its corner or out from its middle. A system
+//! activity floating over an edge is an occupant the stack steps past, so a call card and a music
+//! widget never sit on each other: system activities and widgets share the edges, and the activity
+//! wins its place.
 
 #![allow(
     clippy::arithmetic_side_effects,
@@ -23,18 +19,17 @@ pub use ui::desk_widgets::DockEdge;
 
 /// Gap between a widget and the display edge, and between stacked widgets.
 pub const MARGIN: f64 = ui::tokens::Spacing::BASE.s3 as f64;
-/// How far around a glance form a pointer coming to rest still counts as
-/// reaching for it; behind the form the zone runs on to the display edge.
-/// Kept small: inside it, a resting pointer brings the widget, so any wider
-/// and an app control near the edge would bring it when aimed at.
+/// How far around a glance form a pointer coming to rest still counts as reaching for it; behind
+/// the form the zone runs on to the display edge. Kept small: inside it, a resting pointer brings
+/// the widget, so any wider and an app control near the edge would bring it when aimed at.
 pub const REACH_PAD: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 
 /// A press that moves this far becomes a drag to another edge.
 pub const DRAG_SLOP: f64 = ui::tokens::Metrics::BASE.icon_label_gap as f64;
 
-/// A press on something waiting at an edge, and the drag to another edge it
-/// may become. While dragged it is drawn shifted by the pointer's travel
-/// ([`Self::shift`]); let go, it snaps to the edge nearest the pointer.
+/// A press on something waiting at an edge, and the drag to another edge it may become. While
+/// dragged it is drawn shifted by the pointer's travel ([`Self::shift`]); let go, it snaps to the
+/// edge nearest the pointer.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct EdgeDrag<I> {
     pub id: I,
@@ -52,8 +47,7 @@ impl<I: Copy> EdgeDrag<I> {
         }
     }
 
-    /// The pointer moved to `p` while pressed. Returns whether the press is
-    /// a drag now.
+    /// The pointer moved to `p` while pressed. Returns whether the press is a drag now.
     pub fn moved(&mut self, p: Point) -> bool {
         if !self.dragging && (p - self.at).hypot() > DRAG_SLOP {
             self.dragging = true;
@@ -61,22 +55,22 @@ impl<I: Copy> EdgeDrag<I> {
         self.dragging
     }
 
-    /// How far from its slot the dragged thing is drawn with the pointer at
-    /// `p`; `None` while the press is still a click.
+    /// How far from its slot the dragged thing is drawn with the pointer at `p` ; `None` while the
+    /// press is still a click.
     #[must_use]
     pub fn shift(&self, p: Point) -> Option<Vec2> {
         self.dragging.then(|| p - self.at)
     }
 
-    /// Let go at `p` in `area`: the edge it snaps to, or `None` for a press
-    /// that never became a drag (a click on whatever it is on).
+    /// Let go at `p` in `area` : the edge it snaps to, or `None` for a press that never became a
+    /// drag (a click on whatever it is on).
     #[must_use]
     pub fn release(self, area: Rect, p: Point) -> Option<DockEdge> {
         self.dragging.then(|| nearest_edge(area, p))
     }
 }
 
-/// One thing to place, known by `I`.
+/// One thing to place, known by `I` .
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Item<I> {
     pub id: I,
@@ -135,14 +129,14 @@ pub struct Slot<I> {
     pub glance: Rect,
     /// Where its open card sits.
     pub open: Rect,
-    /// Where a pointer reaching for it comes to rest: the glance form and
-    /// the strip of edge behind it.
+    /// Where a pointer reaching for it comes to rest: the glance form and the strip of edge behind
+    /// it.
     pub reach: Rect,
     /// Whether it has anything to show (a player, someone else here).
     pub has_content: bool,
 }
 
-/// The edge nearest to `p`, for a thing dropped there.
+/// The edge nearest to `p` , for a thing dropped there.
 #[must_use]
 pub fn nearest_edge(area: Rect, p: Point) -> DockEdge {
     let third_w = area.width() / 3.0;
@@ -158,7 +152,7 @@ pub fn nearest_edge(area: Rect, p: Point) -> DockEdge {
     }
 }
 
-/// Length of `size` along the stacking direction of `edge`.
+/// Length of `size` along the stacking direction of `edge` .
 fn along(edge: DockEdge, size: Size) -> f64 {
     match edge {
         DockEdge::Left | DockEdge::Right | DockEdge::BottomLeft | DockEdge::BottomRight => {
@@ -168,7 +162,7 @@ fn along(edge: DockEdge, size: Size) -> f64 {
     }
 }
 
-/// How far along the stack `rect` must move to clear `blocker`.
+/// How far along the stack `rect` must move to clear `blocker` .
 fn past(edge: DockEdge, rect: Rect, blocker: Rect) -> f64 {
     let gap = MARGIN;
     match edge {
@@ -181,7 +175,7 @@ fn past(edge: DockEdge, rect: Rect, blocker: Rect) -> f64 {
     .max(1.0)
 }
 
-/// The rect of a widget of `size` at `offset` along `edge`'s stack.
+/// The rect of a widget of `size` at `offset` along `edge` 's stack.
 fn stacked_rect(area: Rect, edge: DockEdge, size: Size, offset: f64) -> Rect {
     let origin = match edge {
         DockEdge::BottomRight => Point::new(
@@ -207,8 +201,8 @@ fn stacked_rect(area: Rect, edge: DockEdge, size: Size, offset: f64) -> Rect {
     Rect::from_origin_size(origin, size)
 }
 
-/// `size` pinned into `slot` at the corner (or edge midpoint) nearest the
-/// display edge, so the open card and its glance share their anchor.
+/// `size` pinned into `slot` at the corner (or edge midpoint) nearest the display edge, so the open
+/// card and its glance share their anchor.
 fn anchor_in(slot: Rect, edge: DockEdge, size: Size) -> Rect {
     let origin = match edge {
         DockEdge::BottomRight => Point::new(slot.x1 - size.width, slot.y1 - size.height),

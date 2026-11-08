@@ -1,6 +1,5 @@
-//! Where a sheet sits: the display the person is working on, the first one
-//! when that display is gone, and above a window that fills the display
-//! without that window keeping the keyboard.
+//! Where a sheet sits: the display the person is working on, the first one when that display is
+//! gone, and above a window that fills the display without that window keeping the keyboard.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -29,7 +28,7 @@ use wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel;
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
 
-/// A session on `outputs`, each `WIDTH` x `HEIGHT` at the place it names.
+/// A session on `outputs` , each `WIDTH` x `HEIGHT` at the place it names.
 fn session_at(outputs: &[OutputConfig]) -> Session {
     let mut session = Session::headless(
         Options {
@@ -44,7 +43,7 @@ fn session_at(outputs: &[OutputConfig]) -> Session {
     session
 }
 
-/// The displays `HEADLESS-1` and further, `WIDTH` x `HEIGHT` at `places`.
+/// The displays `HEADLESS-1` and further, `WIDTH` x `HEIGHT` at `places` .
 fn displays_at(places: &[(i32, i32)]) -> Session {
     let outputs: Vec<OutputConfig> = places
         .iter()
@@ -71,8 +70,8 @@ fn client(session: &mut Session) -> Client {
     client
 }
 
-/// Open toplevel of `app_id` (set up by `before`), drawn at the size it
-/// was configured to, else `fallback`, and wait until it is mapped.
+/// Open toplevel of `app_id` (set up by `before` ), drawn at the size it was configured to, else
+/// `fallback` , and wait until it is mapped.
 fn map(
     session: &mut Session,
     client: &mut Client,
@@ -83,7 +82,7 @@ fn map(
     client.map(session, app_id, fallback, before)
 }
 
-/// The window of `app` and its rectangle `(x, y, w, h)`.
+/// The window of `app` and its rectangle `(x, y, w, h)` .
 fn window(compositor: &Compositor, app: &str) -> Option<(u64, (i32, i32, i32, i32))> {
     window_of(compositor, app)
 }
@@ -122,7 +121,7 @@ fn focuses(session: &mut Session, client: &mut Client, index: usize) {
     }
 }
 
-/// A frame of `output`, once the session has drawn what it has.
+/// A frame of `output` , once the session has drawn what it has.
 fn shot(session: &mut Session, output: &str) -> Screenshot {
     session
         .compositor()
@@ -136,8 +135,8 @@ fn pixel(frame: &Screenshot, x: i32, y: i32) -> [u8; 4] {
     frame.pixel(x, y).expect("a pixel of the frame")
 }
 
-/// The point at the middle of the menu's panel, in its own coordinates, once
-/// the menu has laid the panel out.
+/// The point at the middle of the menu's panel, in its own coordinates, once the menu has laid the
+/// panel out.
 fn panel_centre(session: &mut Session) -> (i32, i32) {
     let panel = common::wait_for(session, "the menu's panel", |session| {
         let panel = session.power_menu().expect("power sheet").panel();
@@ -154,7 +153,7 @@ fn panel_centre(session: &mut Session) -> (i32, i32) {
     centre
 }
 
-/// The rectangle of the display `HEADLESS-2`, the right one of two.
+/// The rectangle of the display `HEADLESS-2` , the right one of two.
 fn right() -> (i32, i32, u32, u32) {
     (
         WIDTH,
@@ -208,8 +207,8 @@ fn a_sheet_opens_on_the_display_in_focus() {
     );
 }
 
-/// A window maximised over the whole display stays under the sheet, and the
-/// sheet, not the window, gets the person's keys while it is up.
+/// A window maximised over the whole display stays under the sheet, and the sheet, not the window,
+/// gets the person's keys while it is up.
 #[test]
 fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
     let _settled = ui::motion::testing::settled();
@@ -224,8 +223,8 @@ fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
     );
     client.toplevel(editor).set_maximized();
 
-    // The compositor hands the client the size it fills, which the client
-    // then draws at: nothing of the display shows around it.
+    // The compositor hands the client the size it fills, which the client then draws at: nothing of
+    // the display shows around it.
     let before = client.seen.toplevels[editor].size;
     client.pump(&mut session, |_, seen| seen.toplevel(editor).size != before);
     if let Some((w, h)) = client.seen.toplevels[editor].size
@@ -298,8 +297,7 @@ fn a_window_filling_the_display_keeps_the_sheet_on_top_and_takes_no_keys() {
         "Escape closed the sheet and never reached the window"
     );
 
-    // The window is still the client with focus, and takes keys again once
-    // the sheet is gone.
+    // The window is still the client with focus, and takes keys again once the sheet is gone.
     assert!(client.seen.keyboard_focused, "the window kept the seat");
     client.tap(&mut session, KEY_A);
     client.pump(&mut session, |_, seen| {

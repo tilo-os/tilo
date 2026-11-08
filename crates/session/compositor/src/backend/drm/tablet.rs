@@ -1,14 +1,13 @@
-//! Drawing tablets shaped by their own settings ([`TabletConfig`], keyed by
-//! device identity): mapped onto the display they are tied to (or the whole
-//! desktop when tied to none or that display is unplugged), letterboxed to
-//! keep their aspect ratio, turned for left-handed use, pressure through
-//! their curve, barrel buttons and the eraser remapped. Buttons mapped to a
-//! shortcut press its chord through [`chord_keycodes`].
+//! Drawing tablets shaped by their own settings ([`TabletConfig`], keyed by device identity):
+//! mapped onto the display they are tied to (or the whole desktop when tied to none or that display
+//! is unplugged), letterboxed to keep their aspect ratio, turned for left-handed use, pressure
+//! through their curve, barrel buttons and the eraser remapped. Buttons mapped to a shortcut press
+//! its chord through [`chord_keycodes`].
 
 use std::collections::{BTreeMap, BTreeSet};
 
-/// Linux button codes (`linux/input-event-codes.h`) a pen reports, or
-/// that its buttons are remapped to in a tablet's settings.
+/// Linux button codes (`linux/input-event-codes.h`) a pen reports, or that its buttons are remapped
+/// to in a tablet's settings.
 pub const BTN_LEFT: u32 = 0x110;
 pub const BTN_RIGHT: u32 = 0x111;
 pub const BTN_MIDDLE: u32 = 0x112;
@@ -68,12 +67,11 @@ pub const LINEAR_PRESSURE: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
 pub struct TabletConfig {
     /// The connector the tablet maps onto; `None` spans the whole desktop.
     pub output: Option<String>,
-    /// Use only the part of the tablet that has the target's shape, so
-    /// strokes are not stretched.
+    /// Use only the part of the tablet that has the target's shape, so strokes are not stretched.
     pub keep_aspect: bool,
     /// Turn the tablet half a turn, for use with its buttons on the right.
     pub left_handed: bool,
-    /// Bézier control points `[x1, y1, x2, y2]`; see [`apply_pressure_curve`].
+    /// Bézier control points `[x1, y1, x2, y2]` ; see [`apply_pressure_curve`].
     pub pressure_curve: [f64; 4],
     /// The barrel button nearest the tip.
     pub lower_button: StylusButtonAction,
@@ -103,9 +101,9 @@ impl Default for TabletConfig {
     }
 }
 
-/// The global rect (`x, y, width, height`) the pen maps onto: the named
-/// output when it is live, otherwise the bounding box of every output.
-/// `outputs` are `(connector name, settings key, position, logical size)`.
+/// The global rect (`x, y, width, height`) the pen maps onto: the named output when it is live,
+/// otherwise the bounding box of every output. `outputs` are
+/// `(connector name, settings key, position, logical size)` .
 pub fn pen_target<'a>(
     outputs: impl Iterator<Item = (&'a str, &'a str, (i32, i32), (u32, u32))> + Clone,
     output: Option<&str>,
@@ -142,14 +140,11 @@ pub fn map_tablet_position(normalised: (f64, f64), target: (f64, f64, f64, f64))
     )
 }
 
-/// Where on the tablet's active surface (`0.0 ..= 1.0` each way) a pen at
-/// `normalised` counts as being, before [`map_tablet_position`] puts it on
-/// `target` (`x, y, width, height`).
-///
-/// With `keep_aspect`, only the centred part of the tablet with the target's
-/// shape is used (the rest letterboxed away), so a circle drawn on the
-/// tablet stays a circle on screen and the whole target stays reachable.
-/// `left_handed` turns the tablet half a turn, buttons on the right.
+/// Where on the tablet's active surface (`0.0 ..= 1.0` each way) a pen at `normalised` counts as
+/// being, before [`map_tablet_position`] puts it on `target` (`x, y, width, height`).
+/// With `keep_aspect` , only the centred part of the tablet with the target's shape is used (the
+/// rest letterboxed away), so a circle drawn on the tablet stays a circle on screen and the whole
+/// target stays reachable. `left_handed` turns the tablet half a turn, buttons on the right.
 pub fn shape_normalised(
     normalised: (f64, f64),
     tablet_mm: Option<(f64, f64)>,
@@ -191,10 +186,9 @@ pub fn shape_normalised(
     (nx, ny)
 }
 
-/// Shape a raw pen pressure (`0.0 ..= 1.0`) through the tablet's pressure
-/// curve: a cubic Bézier from `(0, 0)` to `(1, 1)` with control points
-/// `(x1, y1)` and `(x2, y2)`, the same form GNOME and Wacom's drivers use.
-/// Points above the diagonal feel soft (light pressure already draws
+/// Shape a raw pen pressure (`0.0 ..= 1.0`) through the tablet's pressure curve: a cubic Bézier
+/// from `(0, 0)` to `(1, 1)` with control points `(x1, y1)` and `(x2, y2)` , the same form GNOME
+/// and Wacom's drivers use. Points above the diagonal feel soft (light pressure already draws
 /// heavily); below it, firm.
 pub fn apply_pressure_curve(curve: [f64; 4], pressure: f64) -> f64 {
     let p = if pressure.is_finite() {
@@ -217,8 +211,8 @@ pub fn apply_pressure_curve(curve: [f64; 4], pressure: f64) -> f64 {
         let u = 1.0 - t;
         3.0 * u * u * t * a + 3.0 * u * t * t * b + t * t * t
     };
-    // x(t) is monotonic for control points inside the unit square, so a
-    // bisection finds the t whose x is the pressure.
+    // x(t) is monotonic for control points inside the unit square, so a bisection finds the t whose
+    // x is the pressure.
     let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
     for _ in 0..40 {
         let mid = f64::midpoint(lo, hi);
@@ -268,11 +262,9 @@ pub fn stylus_button(config: &TabletConfig, code: u32) -> ButtonOutcome {
 pub enum EraserRoute {
     /// As an eraser tool: tablet-aware apps erase, others see a pointer.
     Native,
-    /// As a pointer everywhere, touching the surface pressing this button
-    /// code.
+    /// As a pointer everywhere, touching the surface pressing this button code.
     Pointer(u32),
-    /// As a pointer that clicks nothing; touching the surface performs
-    /// this shortcut.
+    /// As a pointer that clicks nothing; touching the surface performs this shortcut.
     Shortcut(KeyChord),
 }
 
@@ -294,10 +286,9 @@ pub fn pad_button(config: &TabletConfig, button: u32) -> Option<&KeyChord> {
     config.pad_buttons.get(&button)
 }
 
-/// evdev keycodes that press `chord`: its modifiers first, then the key.
-/// A pen or pad button mapped to a shortcut presses exactly the chord the
-/// user bound to it, so the one shortcut resolver decides what it does.
-/// `char_keycode` finds a printable key on the active layout.
+/// evdev keycodes that press `chord` : its modifiers first, then the key. A pen or pad button
+/// mapped to a shortcut presses exactly the chord the user bound to it, so the one shortcut
+/// resolver decides what it does. `char_keycode` finds a printable key on the active layout.
 pub fn chord_keycodes(
     chord: &KeyChord,
     char_keycode: impl Fn(char) -> Option<u32>,
@@ -395,8 +386,8 @@ mod tests {
 
     #[test]
     fn keeping_the_aspect_ratio_letterboxes_the_tablet_not_the_screen() {
-        // A 4:3 tablet on a 16:9 display: the top and bottom bands of the
-        // tablet go unused so strokes keep their shape.
+        // A 4:3 tablet on a 16:9 display: the top and bottom bands of the tablet go unused so
+        // strokes keep their shape.
         let tablet = Some((160.0, 120.0));
         let map = |n| on(SECOND, n, tablet, true, false);
         let used = (160.0 / 120.0) / (1920.0 / 1080.0);
@@ -426,8 +417,7 @@ mod tests {
             pen_target(outputs.iter().copied(), None),
             Some((0.0, 0.0, 4480.0, 1600.0))
         );
-        // An unplugged output falls back to the desktop rather than
-        // stranding the pen.
+        // An unplugged output falls back to the desktop rather than stranding the pen.
         assert_eq!(
             pen_target(outputs.iter().copied(), Some("HDMI-A-1")),
             Some((0.0, 0.0, 4480.0, 1600.0))

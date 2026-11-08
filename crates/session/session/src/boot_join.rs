@@ -1,10 +1,8 @@
-//! Joining the workspace a host set this session up for, with nobody sitting
-//! at it: a provider's guest redeems one invitation at startup through the
-//! same join the person's own pasted code takes, and waits for the authority
-//! the host's operator grants it before it serves agents.
-//!
-//! Nothing happens when the host set nothing: the variables are only what an
-//! image that runs a guest session sets.
+//! Joining the workspace a host set this session up for, with nobody sitting at it: a provider's
+//! guest redeems one invitation at startup through the same join the person's own pasted code
+//! takes, and waits for the authority the host's operator grants it before it serves agents.
+//! Nothing happens when the host set nothing: the variables are only what an image that runs a
+//! guest session sets.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -13,28 +11,26 @@ use tilo_desktop_surface::DesktopHandle;
 
 use crate::directory;
 
-/// The variable naming a file that holds one invitation text to redeem at
-/// startup.
+/// The variable naming a file that holds one invitation text to redeem at startup.
 pub const INVITATION_ENV: &str = "TILO_SHELL_JOIN_INVITATION_FILE";
-/// The variable a host sets when its operator makes this session an
-/// administrator of the workspace once it has joined: the session then waits
-/// for that authority before it serves agents, whose first acts may need it.
+/// The variable a host sets when its operator makes this session an administrator of the workspace
+/// once it has joined: the session then waits for that authority before it serves agents, whose
+/// first acts may need it.
 pub const ADMINISTRATOR_ENV: &str = "TILO_SHELL_JOIN_ADMINISTRATOR";
 /// How long the host may take to make this session an administrator.
 const ADMIN_DEADLINE: Duration = Duration::from_secs(60);
 
 /// The join a session starts with, and the authority it waits for.
 pub(crate) struct BootJoin {
-    /// The workspace the invitation joins; `None` when there was no
-    /// invitation, or it was not one for this computer.
+    /// The workspace the invitation joins; `None` when there was no invitation, or it was not one
+    /// for this computer.
     workspace: Option<String>,
     grant: Grant,
 }
 
 /// Whether this session may serve agents yet.
 enum Grant {
-    /// The host asked for no authority here: agents are served from the
-    /// first pass.
+    /// The host asked for no authority here: agents are served from the first pass.
     NotAsked,
     /// Waiting for the authority, at most until then.
     Waiting { until: Instant },
@@ -43,9 +39,8 @@ enum Grant {
 }
 
 impl crate::Shared {
-    /// A session the host started for one workspace joins it on its own, and
-    /// withholds its agents until the host's operator makes it an
-    /// administrator of that workspace.
+    /// A session the host started for one workspace joins it on its own, and withholds its agents
+    /// until the host's operator makes it an administrator of that workspace.
     pub(crate) fn follow_boot_join(&self) {
         self.boot_join
             .borrow_mut()
@@ -54,8 +49,8 @@ impl crate::Shared {
 }
 
 impl BootJoin {
-    /// What this session was started to join, as [`Self::start`] takes it
-    /// from the desk the login opens on.
+    /// What this session was started to join, as [`Self::start`] takes it from the desk the login
+    /// opens on.
     pub(crate) fn at_boot(directory: &directory::Store, handle: &DesktopHandle) -> Self {
         Self::start(directory, Instant::now(), |workspace| {
             handle.read(|tree| {
@@ -66,8 +61,8 @@ impl BootJoin {
         })
     }
 
-    /// [`Self::follow`] against this session's desk: whether it may administer
-    /// the workspace it joined.
+    /// [`Self::follow`] against this session's desk: whether it may administer the workspace it
+    /// joined.
     pub(crate) fn follow_session(&mut self, handle: &DesktopHandle, person: &str) {
         let now = tilo_clock::unix_now();
         self.follow(Instant::now(), |workspace| {
@@ -84,12 +79,10 @@ impl BootJoin {
         });
     }
 
-    /// What this session was started to join: the invitation in
-    /// [`INVITATION_ENV`], handed to `directory` to redeem as the person's own
-    /// pasted code is, and whether [`ADMINISTRATOR_ENV`] has it wait.
-    /// `held` answers whether the desk already holds the workspace — a
-    /// desktop that restarts keeps its membership, so its invitation is not
-    /// redeemed again.
+    /// What this session was started to join: the invitation in [`INVITATION_ENV`], handed to
+    /// `directory` to redeem as the person's own pasted code is, and whether [`ADMINISTRATOR_ENV`]
+    /// has it wait. `held` answers whether the desk already holds the workspace — a desktop that
+    /// restarts keeps its membership, so its invitation is not redeemed again.
     pub(crate) fn start(
         directory: &directory::Store,
         now: Instant,
@@ -106,9 +99,8 @@ impl BootJoin {
                 return Self::none();
             }
         };
-        // A short link carries where its invitation waits, not what it
-        // grants: it is redeemed like a pasted one, and the workspace it
-        // joins is learned from what the site answers with.
+        // A short link carries where its invitation waits, not what it grants: it is redeemed like
+        // a pasted one, and the workspace it joins is learned from what the site answers with.
         let sealed = tilo_workspace_join::sealed::parse_link(&text).is_some();
         let workspace = if sealed {
             None
@@ -139,9 +131,9 @@ impl BootJoin {
             },
             None => {}
         }
-        // A short link's workspace is known only once its site answers, but
-        // the host asked all the same: the wait starts, and asks about the
-        // workspace as soon as the join names it ([`Self::joined`]).
+        // A short link's workspace is known only once its site answers, but the host asked all the
+        // same: the wait starts, and asks about the workspace as soon as the join names it
+        // ([`Self::joined`]).
         let administrator =
             std::env::var_os(ADMINISTRATOR_ENV).is_some() && (workspace.is_some() || sealed);
         Self {
@@ -164,29 +156,28 @@ impl BootJoin {
         }
     }
 
-    /// Whether the session withholds agents while the authority it waits for
-    /// is on its way.
+    /// Whether the session withholds agents while the authority it waits for is on its way.
     pub(crate) fn waiting(&self) -> bool {
         matches!(self.grant, Grant::Waiting { .. })
     }
 
-    /// The workspace the invitation joined, once the join names it: a short
-    /// link's invitation is fetched at startup, so what it grants arrives
-    /// after the session has started waiting for the host's authority.
+    /// The workspace the invitation joined, once the join names it: a short link's invitation is
+    /// fetched at startup, so what it grants arrives after the session has started waiting for the
+    /// host's authority.
     pub(crate) fn joined(&mut self, workspace: &str) {
         if self.workspace.is_none() {
             self.workspace = Some(workspace.to_owned());
         }
     }
 
-    /// Whether this session may administer its workspace now, and with that
-    /// serve its agents: `may_administer` answers whether it may.
+    /// Whether this session may administer its workspace now, and with that serve its agents:
+    /// `may_administer` answers whether it may.
     pub(crate) fn follow(&mut self, now: Instant, may_administer: impl FnOnce(&str) -> bool) {
         let Grant::Waiting { until } = self.grant else {
             return;
         };
-        // Nothing to ask about until the join names its workspace: a host's
-        // authority is waited for, no longer than it is asked of any join.
+        // Nothing to ask about until the join names its workspace: a host's authority is waited
+        // for, no longer than it is asked of any join.
         let Some(workspace) = self.workspace.clone() else {
             if now >= until {
                 tracing::warn!("boot join: the join named no workspace to administer");
@@ -252,8 +243,8 @@ mod tests {
     #[test]
     fn a_short_links_workspace_is_asked_about_once_the_join_names_it() {
         let now = Instant::now();
-        // The link carries where its invitation waits, not what it grants:
-        // the session waits without a workspace to ask about.
+        // The link carries where its invitation waits, not what it grants: the session waits
+        // without a workspace to ask about.
         let mut join = BootJoin {
             workspace: None,
             grant: Grant::Waiting {

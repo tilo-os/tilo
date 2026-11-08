@@ -34,8 +34,7 @@ impl DesktopHandle {
         true
     }
 
-    /// The artwork `window` brought of its own, as the compositor's id for it
-    /// last said.
+    /// The artwork `window` brought of its own, as the compositor's id for it last said.
     #[must_use]
     pub fn window_artwork(&self, window: u64) -> Option<ui::icons::AppImage> {
         self.shared.borrow().artwork.get(&window).cloned()
@@ -43,9 +42,8 @@ impl DesktopHandle {
 }
 
 impl DesktopSurface {
-    /// Paint each window's own artwork in its tab, and only there: a window
-    /// whose program set an icon shows it, one that set none shows its app's
-    /// kind. Whether that changed a tab.
+    /// Paint each window's own artwork in its tab, and only there: a window whose program set an
+    /// icon shows it, one that set none shows its app's kind. Whether that changed a tab.
     pub(super) fn sync_window_artwork(&mut self) -> bool {
         let wanted: std::collections::HashMap<TabId, ui::icons::AppImage> = {
             let shared = self.shared.borrow();

@@ -1,5 +1,5 @@
-//! What the surfaces read of the player: the song, the player in front, and
-//! whether there is anything to steer at all.
+//! What the surfaces read of the player: the song, the player in front, and whether there is
+//! anything to steer at all.
 
 use std::time::Instant;
 
@@ -67,8 +67,7 @@ fn a_song_says_how_far_into_it_it_is_only_when_its_length_is_known() {
     );
 }
 
-/// The labels beside the song's bar count from where it plays, and add up to
-/// how long it is.
+/// The labels beside the song's bar count from where it plays, and add up to how long it is.
 #[test]
 fn the_songs_times_round_to_seconds_and_add_up_to_its_length() {
     let mut playing = NowPlaying {

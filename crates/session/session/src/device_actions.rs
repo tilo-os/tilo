@@ -1,15 +1,12 @@
-//! This device's actions between the person's devices: what another of
-//! their devices asks this one for, and what an app here asks of them.
-//!
+//! This device's actions between the person's devices: what another of their devices asks this one
+//! for, and what an app here asks of them.
 //! The session's collaboration endpoint serves
-//! [`ActionPlane`](tilo_peer_state::actions::ActionPlane): a request another
-//! device of one of this person's workspaces sends is checked against that
-//! workspace's roster as it stands, and the action it names runs here through
-//! the broker's door as any other caller's would. The other way round, an
-//! application names another of the person's devices and one of its own
-//! actions; [`OwnDeviceActions`] sends it there as an ordinary invocation of
-//! that action and follows it until that device answers, so the app observes
-//! it like an invocation of its own.
+//! [`ActionPlane`](tilo_peer_state::actions::ActionPlane): a request another device of one of this
+//! person's workspaces sends is checked against that workspace's roster as it stands, and the
+//! action it names runs here through the broker's door as any other caller's would. The other way
+//! round, an application names another of the person's devices and one of its own actions;
+//! [`OwnDeviceActions`] sends it there as an ordinary invocation of that action and follows it
+//! until that device answers, so the app observes it like an invocation of its own.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -37,8 +34,8 @@ use tilo_runtime::offload::{PlanePeers, offer_offload, own_offering};
 use crate::engine::Engine;
 use neighbour_wire::offer::{Answer, Query};
 
-/// This device's action plane, as the session serves it and reaches the
-/// person's other devices through it.
+/// This device's action plane, as the session serves it and reaches the person's other devices
+/// through it.
 #[derive(Clone)]
 pub(crate) struct DeviceActions(Arc<Inner>);
 
@@ -47,27 +44,24 @@ struct Inner {
     /// The endpoint the plane asks from, as this device.
     endpoint: Endpoint,
     /// Where this session was told each of the person's devices is
-    /// ([`crate::sync::Client::connect`]), by its endpoint. A device it was
-    /// told of is one it reaches now.
+    /// ([`crate::sync::Client::connect`]), by its endpoint. A device it was told of is one it
+    /// reaches now.
     addresses: Mutex<BTreeMap<EndpointId, EndpointAddr>>,
-    /// The devices of each workspace this session reaches now, as its topic
-    /// and its hosts say ([`Self::here`]): the ones an offer round asks.
+    /// The devices of each workspace this session reaches now, as its topic and its hosts say
+    /// ([`Self::here`]): the ones an offer round asks.
     here: Mutex<BTreeMap<String, BTreeSet<[u8; 32]>>>,
     /// What answers a request that arrived here.
     dispatch: DeviceDispatch,
-    /// What this session says of itself when another of the person's devices
-    /// offers it work.
+    /// What this session says of itself when another of the person's devices offers it work.
     offering: SessionOffering,
-    /// The runtime the plane answers on, where its asks and runs are carried
-    /// out.
+    /// The runtime the plane answers on, where its asks and runs are carried out.
     runtime: tokio::runtime::Handle,
 }
 
 impl DeviceActions {
-    /// This device's plane on the session's `endpoint`, authorizing against
-    /// the workspaces `engine` holds, answering through the dispatcher the
-    /// session installs once its broker serves, and offering work with what it
-    /// keeps.
+    /// This device's plane on the session's `endpoint` , authorizing against the workspaces
+    /// `engine` holds, answering through the dispatcher the session installs once its broker
+    /// serves, and offering work with what it keeps.
     pub(crate) fn start(
         identity: &tilo_network_actor::HostIdentity,
         endpoint: Endpoint,
@@ -79,8 +73,8 @@ impl DeviceActions {
             Arc::new(dispatch.clone()),
             Arc::new(HeldWorkspaces(engine)),
         );
-        // Another of the person's devices may ask which of them would run a
-        // piece of work: this one answers with what it knows of itself.
+        // Another of the person's devices may ask which of them would run a piece of work: this one
+        // answers with what it knows of itself.
         let offering = SessionOffering::default();
         plane.offering(offering.clone());
         Self(Arc::new(Inner {
@@ -99,16 +93,14 @@ impl DeviceActions {
         self.0.plane.clone()
     }
 
-    /// Answer arriving requests through `host` from now on: the broker's
-    /// own door, once it serves.
+    /// Answer arriving requests through `host` from now on: the broker's own door, once it serves.
     pub(crate) fn install(&self, host: Arc<dyn ActionHost + Send + Sync>) {
         self.0.dispatch.install(host);
     }
 
-    /// Hold this machine awake through `power`, the holds its idle timer
-    /// reads, while another of the person's devices uses it: requests from
-    /// there renew a suspend-only lease, so the machine does not fall asleep
-    /// mid-task while the screen still blanks, the session still locks, and
+    /// Hold this machine awake through `power` , the holds its idle timer reads, while another of
+    /// the person's devices uses it: requests from there renew a suspend-only lease, so the machine
+    /// does not fall asleep mid-task while the screen still blanks, the session still locks, and
     /// lid close and critical battery still suspend.
     pub(crate) fn attach_power(&self, power: tilo_session_power::PowerLink) {
         self.0.dispatch.attach_power(power);
@@ -119,9 +111,8 @@ impl DeviceActions {
         self.0.addresses.lock_recover().insert(addr.id, addr);
     }
 
-    /// The devices of `workspace` this session reaches now, replacing what it
-    /// knew: those heard on the workspace's topic and its hosts, never this
-    /// device.
+    /// The devices of `workspace` this session reaches now, replacing what it knew: those heard on
+    /// the workspace's topic and its hosts, never this device.
     pub(crate) fn here(&self, workspace: &str, devices: BTreeSet<[u8; 32]>) {
         self.0
             .here
@@ -129,10 +120,9 @@ impl DeviceActions {
             .insert(workspace.to_owned(), devices);
     }
 
-    /// Whether this session reaches the device `device` of `workspace` now:
-    /// the workspace's topic or its hosts reported it connected here. A device
-    /// that is away is not asked to run work, and the round does not wait for
-    /// it, however well this session knows where it lives.
+    /// Whether this session reaches the device `device` of `workspace` now: the workspace's topic
+    /// or its hosts reported it connected here. A device that is away is not asked to run work, and
+    /// the round does not wait for it, however well this session knows where it lives.
     pub(crate) fn reachable(&self, workspace: &str, device: [u8; 32]) -> bool {
         self.0
             .here
@@ -141,18 +131,16 @@ impl DeviceActions {
             .is_some_and(|devices| devices.contains(&device))
     }
 
-    /// The content this session keeps, as its offer says: another device
-    /// weighs a job whose inputs are already here as moving nothing.
+    /// The content this session keeps, as its offer says: another device weighs a job whose inputs
+    /// are already here as moving nothing.
     pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
         self.0.offering.holding(content);
     }
 
-    /// The route an offloadable invocation takes where a device of its
-    /// workspace would run it sooner: the round asks them through this
-    /// plane, the invocation runs on the device that wins, and the content it
-    /// produced is kept in `content` — the store the app that invoked it
-    /// reads its output from. `None` when offload is turned off on this
-    /// device.
+    /// The route an offloadable invocation takes where a device of its workspace would run it
+    /// sooner: the round asks them through this plane, the invocation runs on the device that wins,
+    /// and the content it produced is kept in `content` — the store the app that invoked it reads
+    /// its output from. `None` when offload is turned off on this device.
     pub(crate) fn offload_route(
         &self,
         content: Arc<crate::content::Plane>,
@@ -172,8 +160,8 @@ impl DeviceActions {
         offer_offload(media, Arc::new(peers))
     }
 
-    /// Where `id` of the person's devices is reached: the address this
-    /// session was told, else the endpoint's own discovery of its key.
+    /// Where `id` of the person's devices is reached: the address this session was told, else the
+    /// endpoint's own discovery of its key.
     fn addr(&self, id: EndpointId) -> EndpointAddr {
         self.0
             .addresses
@@ -203,9 +191,8 @@ impl OwnDeviceActions for DeviceActions {
         checked: &own_device::Checked,
         request: &InvokeRequest,
     ) -> Result<Pending<OwnDeviceOutcome>, ActionHostError> {
-        // The workspace the two devices are to share: the one the app acts
-        // in, which is where the other device decides whether this one may
-        // act at all.
+        // The workspace the two devices are to share: the one the app acts in, which is where the
+        // other device decides whether this one may act at all.
         let Some(workspace) = caller.workspace() else {
             return Err(ActionHostError::NotPermitted);
         };
@@ -225,17 +212,17 @@ impl OwnDeviceActions for DeviceActions {
         _caller: &Caller,
         _question: &ConfirmationQuestion,
     ) -> Result<Pending<Result<Confirmation, ActionHostError>>, ActionHostError> {
-        // A person's own word is asked of them where they are, by the device
-        // in front of them. Reaching another of their devices to ask there is
-        // no part of this plane: nothing carries a question to it.
+        // A person's own word is asked of them where they are, by the device in front of them.
+        // Reaching another of their devices to ask there is no part of this plane: nothing carries
+        // a question to it.
         Err(ActionHostError::Unavailable {
             reason: "this device does not ask the person on another of their devices".into(),
         })
     }
 }
 
-/// What the other device's answer comes to: the outcome the app on this
-/// device observes as its own invocation's.
+/// What the other device's answer comes to: the outcome the app on this device observes as its own
+/// invocation's.
 fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnDeviceOutcome {
     let failure = |code: &str, message: String| {
         Box::new(ActionFailure {
@@ -252,8 +239,7 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
             "cancelled",
             message.unwrap_or_else(|| "the action was cancelled on that device".into()),
         )),
-        // Following ends on a terminal update: anything else is a device
-        // answering out of turn.
+        // Following ends on a terminal update: anything else is a device answering out of turn.
         Some(Ok(update)) => Err(failure(
             "unsettled",
             format!("the action on that device did not settle: {update:?}"),
@@ -266,24 +252,23 @@ fn outcome_of(answer: Option<Result<InvocationUpdate, ActionHostError>>) -> OwnD
     }
 }
 
-/// How long one request from another of the person's devices keeps this
-/// machine from idle-suspending.
+/// How long one request from another of the person's devices keeps this machine from
+/// idle-suspending.
 const REMOTE_USE_LEASE: Duration = Duration::from_secs(600);
 
-/// The one place a request that arrived on this device is handed to: the
-/// broker's door, once it serves. Until then a request is answered as
-/// unavailable rather than left waiting, and so after the broker retires.
-///
-/// It also counts the requests from the person's other devices as use of
-/// this one, holding the machine awake for a lease after each.
+/// The one place a request that arrived on this device is handed to: the broker's door, once it
+/// serves. Until then a request is answered as unavailable rather than left waiting, and so after
+/// the broker retires.
+/// It also counts the requests from the person's other devices as use of this one, holding the
+/// machine awake for a lease after each.
 #[derive(Clone)]
 struct DeviceDispatch(Arc<DispatchInner>);
 
 struct DispatchInner {
     /// What answers a request that arrived here.
     host: Mutex<Option<Arc<dyn ActionHost + Send + Sync>>>,
-    /// The person this device belongs to: what arrives from another of their
-    /// devices is them using this one.
+    /// The person this device belongs to: what arrives from another of their devices is them using
+    /// this one.
     user: [u8; 32],
     /// This machine's holds, once the session's power link serves.
     power: Mutex<Option<tilo_session_power::PowerLink>>,
@@ -319,9 +304,9 @@ impl DeviceDispatch {
             })
     }
 
-    /// A request from another of the person's own devices is use of this one:
-    /// renew the suspend-only lease. The reason names what holds the machine
-    /// in quick settings and in logind's inhibitor list.
+    /// A request from another of the person's own devices is use of this one: renew the
+    /// suspend-only lease. The reason names what holds the machine in quick settings and in
+    /// logind's inhibitor list.
     fn note_remote_use(&self, caller: &Caller) {
         if caller.is_foreign_device()
             || caller.user_public_key() != Some(&self.0.user)
@@ -401,9 +386,9 @@ impl ActionHost for DeviceDispatch {
     }
 }
 
-/// The workspaces this device holds, as the plane reads them: this session's
-/// own store, asked when a request names one, so who may act there is what
-/// holds at that moment rather than as it was when the session started.
+/// The workspaces this device holds, as the plane reads them: this session's own store, asked when
+/// a request names one, so who may act there is what holds at that moment rather than as it was
+/// when the session started.
 struct HeldWorkspaces(Option<Arc<Engine>>);
 
 impl Workspaces for HeldWorkspaces {
@@ -415,8 +400,8 @@ impl Workspaces for HeldWorkspaces {
         let (Some(engine), Some(workspace_id)) = (&self.0, WorkspaceId::parse(workspace)) else {
             return Box::pin(std::future::ready(false));
         };
-        // This session's workspace is its own store: the read takes the
-        // engine's lock for as long as it runs, never across an await.
+        // This session's workspace is its own store: the read takes the engine's lock for as long
+        // as it runs, never across an await.
         Box::pin(async move {
             engine
                 .owner()
@@ -429,19 +414,17 @@ impl Workspaces for HeldWorkspaces {
     }
 }
 
-/// What this session says of itself when another of the person's devices
-/// offers it work: whether it has the app, how it is powered, how much work it
-/// already has in hand, and which of the job's inputs it keeps — a device that
-/// has them is not weighed as receiving them, and one that keeps no content
-/// weighs every input as moving here.
+/// What this session says of itself when another of the person's devices offers it work: whether it
+/// has the app, how it is powered, how much work it already has in hand, and which of the job's
+/// inputs it keeps — a device that has them is not weighed as receiving them, and one that keeps no
+/// content weighs every input as moving here.
 #[derive(Clone, Default)]
 struct SessionOffering {
     content: Arc<Mutex<Option<Arc<crate::content::Plane>>>>,
 }
 
 impl SessionOffering {
-    /// The content this session keeps, from now on: what its answer reports
-    /// holding.
+    /// The content this session keeps, from now on: what its answer reports holding.
     fn holding(&self, content: Arc<crate::content::Plane>) {
         *self.content.lock_recover() = Some(content);
     }
@@ -465,11 +448,10 @@ impl Offering for SessionOffering {
 
 #[cfg(test)]
 mod tests {
-    //! Two of the person's devices on this machine's loopback: an action an
-    //! app invokes for the other device runs there through the session's own
-    //! plane and answers here, a device the workspace does not hold is
-    //! refused, a piece of work runs on the device that offers and holds its
-    //! inputs, and one nobody offers for runs here.
+    //! Two of the person's devices on this machine's loopback: an action an app invokes for the
+    //! other device runs there through the session's own plane and answers here, a device the
+    //! workspace does not hold is refused, a piece of work runs on the device that offers and holds
+    //! its inputs, and one nobody offers for runs here.
 
     tilo_automerge_isolate::test_worker!();
 
@@ -504,9 +486,9 @@ mod tests {
     /// The package whose transform a test's action declares.
     const PACKAGE: &str = "so.tilo.images";
     const ENTRYPOINT: &str = "thumbnail";
-    /// How long the transform last took on the device that asked: longer than
-    /// moving its photograph to another device takes, so a device that holds
-    /// the photograph is one that would run it sooner.
+    /// How long the transform last took on the device that asked: longer than moving its photograph
+    /// to another device takes, so a device that holds the photograph is one that would run it
+    /// sooner.
     const LOCAL_RUN: Duration = Duration::from_millis(500);
 
     /// A device key certified by `root` as one of its person's devices.
@@ -526,8 +508,7 @@ mod tests {
         }
     }
 
-    /// A loopback endpoint whose identity is the device `key`, as the
-    /// session's own endpoint is.
+    /// A loopback endpoint whose identity is the device `key` , as the session's own endpoint is.
     async fn endpoint(key: &SigningKey) -> Endpoint {
         Endpoint::builder(presets::Minimal)
             .relay_mode(RelayMode::Disabled)
@@ -548,9 +529,8 @@ mod tests {
         EndpointAddr::new(endpoint.id()).with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
     }
 
-    /// The session of the device `key` that answers requests, holding the
-    /// workspace the person's device `asking` is in too, and answering through
-    /// `host`.
+    /// The session of the device `key` that answers requests, holding the workspace the person's
+    /// device `asking` is in too, and answering through `host` .
     async fn answering(
         key: &SigningKey,
         cert: &DeviceCert,
@@ -563,9 +543,8 @@ mod tests {
             Engine::open(id.clone(), Some(directory.path()), std::iter::empty())
                 .expect("this device's engine opens"),
         );
-        // This device makes the workspace, and the other device of the person
-        // joins it: the device certified in the workspace is the one that
-        // acts.
+        // This device makes the workspace, and the other device of the person joins it: the device
+        // certified in the workspace is the one that acts.
         let governor = TestGovernor::empty_interactive(cert.clone(), key.clone(), WORKSPACE)
             .expect("this device governs its workspace");
         let governor = testing::enroll_into(governor, engine.owner(), key, cert)
@@ -576,9 +555,8 @@ mod tests {
                 .expect("the other device's owner opens");
             let governor = testing::enroll_into(governor, &other, &asking.0, &asking.1)
                 .expect("the workspace admits the other device");
-            // What the workspace's admission of the other device changed
-            // reaches this device's own copy of the workspace, as it would
-            // over the person's devices.
+            // What the workspace's admission of the other device changed reaches this device's own
+            // copy of the workspace, as it would over the person's devices.
             let workspace_id = WorkspaceId::parse(WORKSPACE).expect("a workspace");
             let now = std::time::SystemTime::now();
             for (bytes, _) in governor.outgoing() {
@@ -605,8 +583,8 @@ mod tests {
         (endpoint, router, actions)
     }
 
-    /// The session of the device `key` that asks: its own plane, nothing to
-    /// answer, and where the other device is.
+    /// The session of the device `key` that asks: its own plane, nothing to answer, and where the
+    /// other device is.
     async fn asking(
         key: &SigningKey,
         cert: &DeviceCert,
@@ -618,8 +596,7 @@ mod tests {
         (endpoint, actions)
     }
 
-    /// What an app on this device asks: `action` of its own on `device`, in
-    /// `WORKSPACE`.
+    /// What an app on this device asks: `action` of its own on `device` , in `WORKSPACE` .
     fn invocation(device: [u8; 32], action: &str) -> (own_device::Checked, InvokeRequest) {
         let argument = own_device::Invocation {
             device: hex::encode(device),
@@ -649,8 +626,8 @@ mod tests {
         )
     }
 
-    /// The outcome `actions` observes for `request`, once the other device
-    /// answers: `None` when it never does.
+    /// The outcome `actions` observes for `request` , once the other device answers: `None` when it
+    /// never does.
     fn answered(
         actions: &DeviceActions,
         caller: &Caller,
@@ -676,8 +653,7 @@ mod tests {
                 .in_workspace(WORKSPACE);
         let (checked, request) = invocation(there.1.device_public_key, "insert");
 
-        // The other device runs the app's action and this one hears its
-        // outcome as its own.
+        // The other device runs the app's action and this one hears its outcome as its own.
         let outcome = answered(&actions, &caller, &checked, &request)
             .expect("the other device answers within the patience");
         assert!(
@@ -743,8 +719,8 @@ mod tests {
         .expect("the round completes");
 
         assert_eq!(choice.considered.len(), 1, "the one device asked: {choice}");
-        // It answered with what it knows of itself: only a device that never
-        // answered is declined for being away.
+        // It answered with what it knows of itself: only a device that never answered is declined
+        // for being away.
         assert_eq!(
             choice.considered[0].verdict,
             Err(Decline::AppNotInstalled),
@@ -791,8 +767,8 @@ mod tests {
         stranger_endpoint.close().await;
     }
 
-    /// A device's content, and what it said about it, waiting to be carried to
-    /// the other device as the workspace's hosts carry it.
+    /// A device's content, and what it said about it, waiting to be carried to the other device as
+    /// the workspace's hosts carry it.
     struct Content {
         plane: Arc<crate::content::Plane>,
         address: EndpointId,
@@ -800,8 +776,8 @@ mod tests {
     }
 
     impl Content {
-        /// The content plane of the session whose endpoint is `key`'s, as the
-        /// workspace's topic names it.
+        /// The content plane of the session whose endpoint is `key` 's, as the workspace's topic
+        /// names it.
         fn open(key: &SigningKey) -> Self {
             let address = SecretKey::from_bytes(&key.to_bytes()).public();
             let plane = crate::content::Plane::open(None);
@@ -814,7 +790,7 @@ mod tests {
             }
         }
 
-        /// The bytes an app keeps as `app`'s content in `WORKSPACE`.
+        /// The bytes an app keeps as `app` 's content in `WORKSPACE` .
         fn keep(&self, app: &str, bytes: &[u8]) -> String {
             let hash = hash_bytes(bytes);
             self.plane
@@ -825,9 +801,8 @@ mod tests {
         }
     }
 
-    /// Hand what `said` about content to `to`, stamped with the device it came
-    /// from: a want on the workspace's topic, and an answer to the one device
-    /// that asked.
+    /// Hand what `said` about content to `to` , stamped with the device it came from: a want on the
+    /// workspace's topic, and an answer to the one device that asked.
     fn carry(
         from: EndpointId,
         said: &mut tokio::sync::mpsc::UnboundedReceiver<Outgoing>,
@@ -846,8 +821,8 @@ mod tests {
         }
     }
 
-    /// The photograph the transform reads: large enough that moving it to
-    /// another device takes longer than the run here did.
+    /// The photograph the transform reads: large enough that moving it to another device takes
+    /// longer than the run here did.
     fn photograph() -> Vec<u8> {
         (0..8 * 1024 * 1024_u32)
             .map(|index| u8::try_from(index % 251).expect("a byte"))
@@ -861,8 +836,8 @@ mod tests {
             .collect()
     }
 
-    /// An offloadable invocation of `APP`'s action, reading `inputs`: the
-    /// request the door weighs, and the invocation the app made.
+    /// An offloadable invocation of `APP` 's action, reading `inputs` : the request the door
+    /// weighs, and the invocation the app made.
     fn offloadable(inputs: Vec<String>) -> (OffloadRequest, InvokeRequest) {
         let request = OffloadRequest {
             workspace: WORKSPACE.into(),
@@ -892,10 +867,9 @@ mod tests {
         (request, sent)
     }
 
-    /// The session's own answer, for a device that has the app installed and
-    /// is on mains power: what one of the person's devices that would take the
-    /// work says, without a test depending on what this machine has installed
-    /// or how it is powered.
+    /// The session's own answer, for a device that has the app installed and is on mains power:
+    /// what one of the person's devices that would take the work says, without a test depending on
+    /// what this machine has installed or how it is powered.
     struct Willing(SessionOffering);
 
     impl Offering for Willing {
@@ -909,9 +883,8 @@ mod tests {
         }
     }
 
-    /// What each of two devices' content says, carried to the other as the
-    /// workspace's hosts carry it, until the returned task is aborted: the two
-    /// planes back, for the test to read.
+    /// What each of two devices' content says, carried to the other as the workspace's hosts carry
+    /// it, until the returned task is aborted: the two planes back, for the test to read.
     fn carrying(
         here: Content,
         there: Content,
@@ -938,9 +911,8 @@ mod tests {
         let root = SigningKey::from_bytes(&[0x71; 32]);
         let here = device(&root, 0x72, "This device");
         let there = device(&root, 0x73, "The other device");
-        // What the transform makes of the photograph, and where the device
-        // that ran it keeps it: on that device's own content, in the app's
-        // scope in the workspace, as a run there leaves it.
+        // What the transform makes of the photograph, and where the device that ran it keeps it: on
+        // that device's own content, in the app's scope in the workspace, as a run there leaves it.
         let produced = thumbnail();
         let made = hash_bytes(&produced);
         let there_content = Content::open(&there.0);
@@ -960,8 +932,8 @@ mod tests {
         let host = Arc::new(TestHost::new().completing(written));
         let (there_endpoint, there_router, there_actions) =
             answering(&there.0, &there.1, Some(&here), Arc::clone(&host)).await;
-        // What that device says when offered the work: it has the app, and the
-        // photograph is content it already keeps.
+        // What that device says when offered the work: it has the app, and the photograph is
+        // content it already keeps.
         let offering = SessionOffering::default();
         offering.holding(Arc::clone(&there_content.plane));
         there_actions.plane().offering(Willing(offering));
@@ -969,29 +941,28 @@ mod tests {
         let (here_endpoint, here_router, actions) =
             answering(&here.0, &here.1, Some(&there), Arc::new(TestHost::new())).await;
         actions.learn(addr(&there_endpoint));
-        // The workspace's topic reports the other device connected here: it
-        // is one of the devices the round asks.
+        // The workspace's topic reports the other device connected here: it is one of the devices
+        // the round asks.
         actions.here(
             WORKSPACE,
             std::collections::BTreeSet::from([there.1.device_public_key]),
         );
         let here_content = Content::open(&here.0);
-        // The app's photograph is here, and on the other device too: what the
-        // round weighs as moving nothing.
+        // The app's photograph is here, and on the other device too: what the round weighs as
+        // moving nothing.
         let photograph = photograph();
         let input = here_content.keep(APP, &photograph);
         there_content.keep(APP, &photograph);
 
-        // The two devices' content hears what the other says, as the
-        // workspace's hosts carry it.
+        // The two devices' content hears what the other says, as the workspace's hosts carry it.
         let (here_plane, _, pump) = carrying(here_content, there_content);
 
         let door = actions
             .offload_route(Arc::clone(&here_plane))
             .expect("offload is on");
 
-        // Nothing has measured how long the transform takes here, so nothing
-        // is quicker than running it here: the app's own handler runs it.
+        // Nothing has measured how long the transform takes here, so nothing is quicker than
+        // running it here: the app's own handler runs it.
         let (request, sent) = offloadable(vec![input.clone()]);
         let placed = door.offload_invocation(request.clone(), sent).await;
         assert!(
@@ -1000,9 +971,8 @@ mod tests {
         );
         door.ran_here(&request, LOCAL_RUN);
 
-        // The other device has the app and already keeps the photograph, and
-        // the run here took longer than moving it: it offers, and the round
-        // picks it.
+        // The other device has the app and already keeps the photograph, and the run here took
+        // longer than moving it: it offers, and the round picks it.
         let (request, sent) = offloadable(vec![input]);
         let placed = tokio::time::timeout(PATIENCE, door.offload_invocation(request, sent.clone()))
             .await
@@ -1016,8 +986,7 @@ mod tests {
             "the device that offered and holds the photograph"
         );
 
-        // It ran there, as the invocation the app made, in the workspace both
-        // devices are in.
+        // It ran there, as the invocation the app made, in the workspace both devices are in.
         let asked = host.asked();
         assert_eq!(asked.len(), 1, "one invocation reached the other device");
         assert_eq!(
@@ -1036,8 +1005,8 @@ mod tests {
             "the device that invoked it, not the one that ran it"
         );
 
-        // What the other device produced is content here, read back by the
-        // address the run returned, exactly as a run here would leave it.
+        // What the other device produced is content here, read back by the address the run
+        // returned, exactly as a run here would leave it.
         assert_eq!(
             output.resources,
             vec![format!("{CONTENT_RESOURCE_KIND}:{made}")]
@@ -1124,8 +1093,8 @@ mod tests {
             .expect("the app's photograph is kept here");
         let door = actions.offload_route(content).expect("offload is on");
 
-        // The app's own handler runs it here, and how long that took is what
-        // another device would have to beat.
+        // The app's own handler runs it here, and how long that took is what another device would
+        // have to beat.
         let (request, sent) = offloadable(vec![input.clone()]);
         let placed = door.offload_invocation(request.clone(), sent).await;
         assert!(
@@ -1134,8 +1103,7 @@ mod tests {
         );
         door.ran_here(&request, LOCAL_RUN);
 
-        // Nobody is in the workspace to offer, so it runs here again, and
-        // says why.
+        // Nobody is in the workspace to offer, so it runs here again, and says why.
         let (request, sent) = offloadable(vec![input]);
         let placed = door.offload_invocation(request, sent).await;
         let Offloaded::RunHere { reason } = placed else {
@@ -1150,8 +1118,8 @@ mod tests {
         now.checked_add(REMOTE_USE_LEASE).expect("a lease deadline")
     }
 
-    /// A request from another of the person's own devices is them using this
-    /// machine: suspend is held off for a lease after it, nothing else is.
+    /// A request from another of the person's own devices is them using this machine: suspend is
+    /// held off for a lease after it, nothing else is.
     #[test]
     fn a_request_from_another_of_the_persons_devices_holds_suspend_off() {
         use tilo_actions::remote::PendingPoll;
@@ -1214,8 +1182,8 @@ mod tests {
             "the renewal counts from the later request"
         );
 
-        // Someone else's device, a foreign device, or a caller admitted here
-        // is not the person using this machine from elsewhere.
+        // Someone else's device, a foreign device, or a caller admitted here is not the person
+        // using this machine from elsewhere.
         let nobody = DeviceDispatch::for_user(user);
         let power = tilo_session_power::PowerLink::default();
         nobody.attach_power(power.clone());

@@ -1,7 +1,6 @@
-//! Inviting people from the invite sheet into the workspace in front: the bar
-//! offers it to the person the workspace lets invite, the sheet makes a link
-//! at the part they pick, and a second person's own device joins with what was
-//! handed to them.
+//! Inviting people from the invite sheet into the workspace in front: the bar offers it to the
+//! person the workspace lets invite, the sheet makes a link at the part they pick, and a second
+//! person's own device joins with what was handed to them.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -35,14 +34,14 @@ use ui::a11y::Action as A11yAction;
 
 use common::{HEIGHT, WIDTH};
 
-// An engine admits a workspace's records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// An engine admits a workspace's records through an Automerge worker: this binary is that worker,
+// as it is the session's own.
 tilo_automerge_isolate::test_worker!();
 
 /// The workspace this computer holds and the person invites into.
 const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 
-/// `key`'s certificate as a device of the person whose root key is `root`.
+/// `key` 's certificate as a device of the person whose root key is `root` .
 fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
@@ -57,8 +56,8 @@ fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
     cert
 }
 
-/// This computer's person: a device of theirs, certified for their own root
-/// key, kept in an identity root of the test's own.
+/// This computer's person: a device of theirs, certified for their own root key, kept in an
+/// identity root of the test's own.
 fn this_computer(
     env: &mut tilo_test_env::ScopedEnv,
 ) -> (tempfile::TempDir, SigningKey, DeviceCert) {
@@ -77,8 +76,8 @@ fn this_computer(
     (root, device, cert)
 }
 
-/// The identity of `cert`'s device, with no identity root of its own: what
-/// redeems a link is a device, and this one joins only what it is handed.
+/// The identity of `cert` 's device, with no identity root of its own: what redeems a link is a
+/// device, and this one joins only what it is handed.
 fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     HostIdentity {
         device_cert: cert.clone(),
@@ -89,9 +88,9 @@ fn identity(cert: &DeviceCert, key: &SigningKey) -> HostIdentity {
     }
 }
 
-/// This computer's copy of the workspace `workspace` under `state`, held as
-/// `cert`'s device in a workspace the same device governs: the state a session
-/// started on this directory finds waiting for it.
+/// This computer's copy of the workspace `workspace` under `state` , held as `cert` 's device in a
+/// workspace the same device governs: the state a session started on this directory finds waiting
+/// for it.
 fn workspace_held_here(state: &Path, workspace: WorkspaceId, cert: &DeviceCert, key: &SigningKey) {
     let record = state.join("tilo").join("rooms.json");
     std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
@@ -141,8 +140,8 @@ fn desk(root: &[u8; 32]) -> DesktopTree {
     }
 }
 
-/// A session of this computer taking part in the collaboration plane, keeping
-/// what it holds under `state`, on the desk showing the workspace.
+/// A session of this computer taking part in the collaboration plane, keeping what it holds under
+/// `state` , on the desk showing the workspace.
 fn hosted_session(state: &Path, root: &[u8; 32]) -> Session {
     let mut session = Session::headless(
         Options {
@@ -168,8 +167,7 @@ fn settle(session: &mut Session) {
     }
 }
 
-/// Who `owner`'s copy of `workspace` has in it, by person, in the part each
-/// holds.
+/// Who `owner` 's copy of `workspace` has in it, by person, in the part each holds.
 fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String, MemberRole)> {
     owner
         .with_current(workspace, |view| {
@@ -185,8 +183,8 @@ fn members(owner: &NativeWorkspaceOwner, workspace: WorkspaceId) -> Vec<(String,
         .expect("the workspace's people are readable")
 }
 
-/// Redeem `link` as `cert`'s device over this machine's own transport, and
-/// answer with the copy of the workspace it left here.
+/// Redeem `link` as `cert` 's device over this machine's own transport, and answer with the copy of
+/// the workspace it left here.
 fn joins_with(
     link: &str,
     workspace: WorkspaceId,
@@ -211,8 +209,8 @@ fn joins_with(
             tilo_relay_session::workspace_join::WorkspaceJoinClient::new(endpoint),
             identity(cert, key),
             workspace_topic_id(workspace),
-            // Her owner holds no copy of the workspace yet: the enrollment
-            // makes its own slot for it.
+            // Her owner holds no copy of the workspace yet: the enrollment makes its own slot for
+            // it.
             None,
             link.to_owned(),
             owner.clone(),
@@ -232,7 +230,7 @@ fn bar_control(session: &Session) -> Option<(f64, f64, f64, f64)> {
         .map(|(_, rect)| rect)
 }
 
-/// A press at the centre of `rect`, through the compositor's own input.
+/// A press at the centre of `rect` , through the compositor's own input.
 fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     session
         .compositor()
@@ -253,8 +251,8 @@ fn press(session: &mut Session, (x, y, width, height): (f64, f64, f64, f64)) {
     }
 }
 
-/// Write what the sheet shows where a person can look at it, when the run
-/// asked for shots: `TILO_SURFACE_SHOTS` names where they go.
+/// Write what the sheet shows where a person can look at it, when the run asked for shots:
+/// `TILO_SURFACE_SHOTS` names where they go.
 fn capture(app: &mut HeadlessApp<InviteApp>, name: &str) {
     let Some(directory) = std::env::var_os("TILO_SURFACE_SHOTS").map(std::path::PathBuf::from)
     else {
@@ -284,10 +282,9 @@ fn invitations_at_the_desk(session: &mut Session) -> Vec<serde_json::Value> {
     serde_json::from_value(listed).expect("a list of invitations")
 }
 
-/// What a QR scanner reads from the sheet's code, `code`, drawn as the sheet
-/// draws it — at the width it gives a payload of that size — and read by a
-/// decoder that knows nothing of the widget. The version the decoder found
-/// comes back with the bytes.
+/// What a QR scanner reads from the sheet's code, `code` , drawn as the sheet draws it — at the
+/// width it gives a payload of that size — and read by a decoder that knows nothing of the widget.
+/// The version the decoder found comes back with the bytes.
 fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     use ui::widget::QrWidget;
 
@@ -304,8 +301,8 @@ fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     if modules == 0 {
         return Err("the code draws nothing".to_owned());
     }
-    // The code is drawn at the width the sheet draws it: a scanner reads it
-    // there or it is unreadable on the screen.
+    // The code is drawn at the width the sheet draws it: a scanner reads it there or it is
+    // unreadable on the screen.
     let scale = usize::try_from(px).map_err(|_| "no module width".to_owned())?;
     let side = u32::try_from(widget.total_modules().saturating_mul(scale))
         .map_err(|_| "the code is too wide to draw".to_owned())?;
@@ -338,9 +335,8 @@ fn scanned(code: &[u8]) -> Result<(Vec<u8>, usize), String> {
     Ok((read, meta.version.0))
 }
 
-/// The sheet's code for the link it made carries what the person hands over:
-/// the invitation's own text, or the short link that names it. A scanner
-/// reads it back byte for byte.
+/// The sheet's code for the link it made carries what the person hands over: the invitation's own
+/// text, or the short link that names it. A scanner reads it back byte for byte.
 fn scanned_back(created: &tilo_sheets::invite::Created) -> Result<Vec<u8>, String> {
     let handed_over = if tilo_workspace_join::sealed::parse_link(&created.link).is_some() {
         created.link.clone().into_bytes()
@@ -353,9 +349,8 @@ fn scanned_back(created: &tilo_sheets::invite::Created) -> Result<Vec<u8>, Strin
     scanned(&created.code).map(|(read, _)| read)
 }
 
-/// A session on a desk that holds [`WORKSPACE`], with the invite sheet up as
-/// the person who may invite there sees it: everything either test does
-/// before it can make a link.
+/// A session on a desk that holds [`WORKSPACE`], with the invite sheet up as the person who may
+/// invite there sees it: everything either test does before it can make a link.
 struct Hosted {
     /// The identity root and the state directory the session reads from.
     _kept: Vec<tempfile::TempDir>,
@@ -405,7 +400,7 @@ fn hosted(home: &mut tilo_test_env::TestHome) -> Hosted {
     }
 }
 
-/// The sheet for `seat`, drawn on a screen.
+/// The sheet for `seat` , drawn on a screen.
 fn sheet_app(seat: &tilo_sheets::invite::InviteSeat) -> HeadlessApp<InviteApp> {
     let mut app = HeadlessApp::<InviteApp>::for_person_with_lent("person", seat.clone())
         .expect("the sheet draws");
@@ -416,8 +411,8 @@ fn sheet_app(seat: &tilo_sheets::invite::InviteSeat) -> HeadlessApp<InviteApp> {
     app
 }
 
-/// Press the sheet's create button, and answer with the link it shows once
-/// the session has it: a short link is shown when its site has kept it.
+/// Press the sheet's create button, and answer with the link it shows once the session has it: a
+/// short link is shown when its site has kept it.
 fn press_create(app: &mut HeadlessApp<InviteApp>, session: &mut Session) -> String {
     app.harness()
         .perform_named("invite-create", &A11yAction::Activate)
@@ -445,8 +440,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let _settled = ui::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    // This computer knows no community site, so the sheet hands over the
-    // invitation's own text: the long form, as every build has.
+    // This computer knows no community site, so the sheet hands over the invitation's own text: the
+    // long form, as every build has.
     let community = home.config().join("community.toml");
     std::fs::write(&community, "site = \"\"\n").expect("a config naming no site");
     home.env().set("TILO_COMMUNITY_CONFIG", &community);
@@ -459,8 +454,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     } = hosted(&mut home);
     let person = hex::encode(cert.user_public_key);
 
-    // They make a link at the part the sheet opens on: the sheet asks, the
-    // session makes it through the desk, and the sheet shows the link back.
+    // They make a link at the part the sheet opens on: the sheet asks, the session makes it through
+    // the desk, and the sheet shows the link back.
     let mut app = sheet_app(&seat);
     let link = press_create(&mut app, &mut session);
     assert!(
@@ -474,8 +469,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     );
     capture(&mut app, "invite-sheet");
 
-    // The link is shown as a code to scan, and the code is the invitation
-    // itself: a scanner reads back exactly what the person hands over.
+    // The link is shown as a code to scan, and the code is the invitation itself: a scanner reads
+    // back exactly what the person hands over.
     let made = session
         .invite_sheet()
         .and_then(|seat| seat.invite().created)
@@ -485,8 +480,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
         Ok(made.code.clone()),
         "the code is the invitation, read back out of the QR the sheet draws"
     );
-    // Every part the sheet offers makes a link of its own, and every link's
-    // code is that invitation the same way.
+    // Every part the sheet offers makes a link of its own, and every link's code is that invitation
+    // the same way.
     for part in 0..seat.invite().roles.len() {
         app.harness()
             .perform_named(
@@ -518,8 +513,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     let hers = joins_with(&link, workspace, &her, &her_key)
         .expect("the link admits her device into the workspace");
 
-    // The workspace she took in has this computer's person in it already, and
-    // her in the part the link grants.
+    // The workspace she took in has this computer's person in it already, and her in the part the
+    // link grants.
     let people = members(&hers, workspace);
     assert!(
         people.iter().any(|(who, _)| who == &person),
@@ -535,8 +530,8 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
     );
 }
 
-/// A community site's shelf on this machine: it keeps the sealed invitations
-/// it is left, under the handle the request names, and answers them back.
+/// A community site's shelf on this machine: it keeps the sealed invitations it is left, under the
+/// handle the request names, and answers them back.
 fn shelf() -> (test_http::Responder, Arc<Mutex<HashMap<String, String>>>) {
     let kept = Arc::new(Mutex::new(HashMap::<String, String>::new()));
     let serving = Arc::clone(&kept);
@@ -577,8 +572,8 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
 
-    // This computer's community site is a shelf on this machine, and the
-    // sheet is configured with it: what it makes goes there, sealed.
+    // This computer's community site is a shelf on this machine, and the sheet is configured with
+    // it: what it makes goes there, sealed.
     let (responder, kept) = shelf();
     let community = home.config().join("community.toml");
     std::fs::write(&community, format!("site = \"{}/\"\n", responder.url()))
@@ -591,9 +586,8 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
         ..
     } = hosted(&mut home);
 
-    // They make a link at the part the sheet opens on. What the sheet hands
-    // over is where the invitation waits and the key that opens it — not a
-    // kilobyte of signed invitation.
+    // They make a link at the part the sheet opens on. What the sheet hands over is where the
+    // invitation waits and the key that opens it — not a kilobyte of signed invitation.
     let mut app = sheet_app(&seat);
     let link = press_create(&mut app, &mut session);
     assert!(
@@ -620,9 +614,9 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
         "the fragment is the key"
     );
 
-    // The code the sheet draws carries exactly that link, and a scanner
-    // reads it back: forty-one modules, a version 6 code at medium error
-    // correction, not the version 39 the invitation's own kilobytes need.
+    // The code the sheet draws carries exactly that link, and a scanner reads it back: forty-one
+    // modules, a version 6 code at medium error correction, not the version 39 the invitation's own
+    // kilobytes need.
     let made = seat.invite().created.expect("the link the sheet made");
     assert_eq!(
         made.code,
@@ -637,8 +631,8 @@ fn a_link_left_on_the_community_site_is_short_and_the_site_never_sees_its_key() 
         "a short link fits a version 6 code, and this one is version {version}"
     );
 
-    // The site was left the invitation sealed: it holds ciphertext, and the
-    // key the link carries never reached it.
+    // The site was left the invitation sealed: it holds ciphertext, and the key the link carries
+    // never reached it.
     let requests = responder.drain_requests();
     let post = requests
         .iter()

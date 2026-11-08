@@ -42,8 +42,8 @@ enum Change {
     /// A change Settings staged, waiting in its settings.
     Settings {
         id: u64,
-        /// When the previous layout comes back without an answer, in
-        /// milliseconds since the Unix epoch.
+        /// When the previous layout comes back without an answer, in milliseconds since the Unix
+        /// epoch.
         deadline: Option<u64>,
     },
 }
@@ -87,8 +87,8 @@ impl Confirmation {
     fn hear(&mut self, event: DisplayEvent, notices: &DesktopNotifications) {
         match event {
             DisplayEvent::Confirm { id, tool, within } => {
-                // The same clock the compositor asked on, so the countdown
-                // reads back the time it waited there.
+                // The same clock the compositor asked on, so the countdown reads back the time it
+                // waited there.
                 let now = tilo_clock::now();
                 self.asked = Some(Asked {
                     change: Change::Tool {
@@ -105,9 +105,9 @@ impl Confirmation {
                 }
             }
             DisplayEvent::Kept { .. } => {
-                // A safe change is kept without asking, and a tool may make
-                // one while another change's question stands: only a change
-                // kept in answer to this question takes it down.
+                // A safe change is kept without asking, and a tool may make one while another
+                // change's question stands: only a change kept in answer to this question takes it
+                // down.
                 if self.asked.as_ref().is_some_and(|asked| {
                     asked.answering && matches!(asked.change, Change::Tool { .. })
                 }) {
@@ -121,16 +121,16 @@ impl Confirmation {
         }
     }
 
-    /// Whether the question standing asks about the tool's change `id`.
+    /// Whether the question standing asks about the tool's change `id` .
     fn asks_about_tool(&self, id: u64) -> bool {
         self.asked.as_ref().is_some_and(
             |asked| matches!(asked.change, Change::Tool { id: open, .. } if open == id),
         )
     }
 
-    /// Ask about the change Settings staged while nothing else is asked, and
-    /// take the question down once that change stopped waiting: answered
-    /// elsewhere, or its time ran out and the previous layout came back.
+    /// Ask about the change Settings staged while nothing else is asked, and take the question down
+    /// once that change stopped waiting: answered elsewhere, or its time ran out and the previous
+    /// layout came back.
     fn follow_settings(&mut self, displays: &Displays) {
         let waiting = displays.awaiting_confirmation();
         let mut stopped = false;
@@ -188,8 +188,8 @@ impl Confirmation {
                 Change::Settings { id, .. } => match displays.answer(*id, keep) {
                     Ok(recorded) => recorded,
                     Err(error) => {
-                        // The answer did not stick: the question stays until
-                        // the change's own time puts the previous layout back.
+                        // The answer did not stick: the question stays until the change's own time
+                        // puts the previous layout back.
                         tracing::warn!(%error, "the display answer was not kept");
                         false
                     }
@@ -203,9 +203,9 @@ impl Confirmation {
         }
     }
 
-    /// Say the question, or take it down. The countdown is read from the
-    /// change's deadline here, on every pass: it is the loop's own wait that
-    /// brings the next reading, never a clock the question runs.
+    /// Say the question, or take it down. The countdown is read from the change's deadline here, on
+    /// every pass: it is the loop's own wait that brings the next reading, never a clock the
+    /// question runs.
     fn tell(&self, seat: &ConfirmSeat) {
         let presentation = seat.presentation();
         let Some(asked) = &self.asked else {
@@ -240,8 +240,7 @@ impl Confirmation {
     }
 }
 
-/// Whole seconds in `left`, rounded up so the last second is shown as one
-/// rather than as none.
+/// Whole seconds in `left` , rounded up so the last second is shown as one rather than as none.
 fn seconds_left(left: Duration) -> u64 {
     left.as_millis()
         .div_ceil(1000)
@@ -249,9 +248,8 @@ fn seconds_left(left: Duration) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
-/// The person keeps this tool's changes from now on: remembered in their
-/// settings and given to the compositor before the change is kept, so the
-/// next one is not asked about.
+/// The person keeps this tool's changes from now on: remembered in their settings and given to the
+/// compositor before the change is kept, so the next one is not asked about.
 fn trust(tool: Option<&DisplayTool>, compositor: &mut Compositor) {
     let Some(tool) = tool else {
         return;
@@ -262,8 +260,8 @@ fn trust(tool: Option<&DisplayTool>, compositor: &mut Compositor) {
     compositor.set_trusted_display_tools(display_settings::trusted_tools());
 }
 
-/// Tell the person `tool` put back a layout they had just reverted, and was
-/// refused instead of being asked again.
+/// Tell the person `tool` put back a layout they had just reverted, and was refused instead of
+/// being asked again.
 fn report_refused(tool: Option<&DisplayTool>, notices: &DesktopNotifications) {
     let title = tool.map_or_else(
         || t("display-tool-reapply-refused-unknown"),

@@ -1,15 +1,12 @@
-//! The one menu behind the top bar's workspace name, and the menu a
-//! secondary press on the desk opens where the pointer is: everything about
-//! where the person is, in one place. Which workspace (the others, to switch
-//! to), where it is hosted, joining or leaving one, renaming it, the overview
-//! and a new strip — and, opened on the desk, what the desk itself offers
+//! The one menu behind the top bar's workspace name, and the menu a secondary press on the desk
+//! opens where the pointer is: everything about where the person is, in one place. Which workspace
+//! (the others, to switch to), where it is hosted, joining or leaving one, renaming it, the
+//! overview and a new strip — and, opened on the desk, what the desk itself offers
 //! ([`WorkspaceMenuModel::desk`]).
-//!
-//! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the
-//! menu is a [`ContextMenu`] of it, and what the person chose comes back as a
-//! [`WorkspaceMenuChoice`] for the host to carry out. Joining and leaving are
-//! the host's own flows: it lists them as [`WorkspaceMenuModel::actions`]
-//! and receives [`WorkspaceMenuChoice::Action`] by id.
+//! [`WorkspaceMenuModel`] is what the host knows when the menu opens; the menu is a [`ContextMenu`]
+//! of it, and what the person chose comes back as a [`WorkspaceMenuChoice`] for the host to carry
+//! out. Joining and leaving are the host's own flows: it lists them as
+//! [`WorkspaceMenuModel::actions`] and receives [`WorkspaceMenuChoice::Action`] by id.
 
 use std::collections::HashMap;
 
@@ -27,13 +24,12 @@ use crate::i18n::{t, t_args};
 pub struct WorkspaceChoice {
     pub key: String,
     pub name: String,
-    /// The workspace shown now: listed with a check, choosing it does
-    /// nothing.
+    /// The workspace shown now: listed with a check, choosing it does nothing.
     pub current: bool,
 }
 
-/// A command the host offers about workspaces (join one, leave this one, a
-/// new one), carried out by the host when chosen.
+/// A command the host offers about workspaces (join one, leave this one, a new one), carried out by
+/// the host when chosen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WorkspaceAction {
     pub id: String,
@@ -63,17 +59,16 @@ impl WorkspaceAction {
 /// Where a press opened the menu: the bar's workspace name, or the desk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MenuPlace {
-    /// Behind the bar's workspace name: everything about where the person
-    /// is, in one list.
+    /// Behind the bar's workspace name: everything about where the person is, in one list.
     #[default]
     Bar,
-    /// A secondary press on the desk: what the place itself offers, and the
-    /// workspace's own commands in a submenu of their own.
+    /// A secondary press on the desk: what the place itself offers, and the workspace's own
+    /// commands in a submenu of their own.
     Desk,
 }
 
-/// How many of the desk's own verbs a menu offers before it stops being
-/// about the place the person pressed.
+/// How many of the desk's own verbs a menu offers before it stops being about the place the person
+/// pressed.
 const DESK_ROWS: usize = 6;
 
 /// What the menu shows, as the host knows it when it opens.
@@ -81,20 +76,20 @@ const DESK_ROWS: usize = 6;
 pub struct WorkspaceMenuModel {
     /// Where the press that opened it landed: the bar, or the desk.
     pub place: MenuPlace,
-    /// What the place a press opened the menu on offers: the desk's own
-    /// verbs, at most [`DESK_ROWS`] of them. Empty for the bar's menu, which
-    /// stands on the workspace name rather than on the desk.
+    /// What the place a press opened the menu on offers: the desk's own verbs, at most
+    /// [`DESK_ROWS`] of them. Empty for the bar's menu, which stands on the workspace name rather
+    /// than on the desk.
     pub desk: Vec<WorkspaceAction>,
     pub workspaces: Vec<WorkspaceChoice>,
-    /// The site the workspace is hosted by, as the person reached it
-    /// ("tilo.coffee"); `None` on the person's own computer.
+    /// The site the workspace is hosted by, as the person reached it ("tilo.coffee"); `None` on the
+    /// person's own computer.
     pub host: Option<String>,
     /// Join a workspace, leave this one, start a new one.
     pub actions: Vec<WorkspaceAction>,
     pub can_rename: bool,
     pub can_add_strip: bool,
-    /// Deleting the workspace shown: the person owns it and this computer is
-    /// the only one holding it, so nothing of it is left anywhere.
+    /// Deleting the workspace shown: the person owns it and this computer is the only one holding
+    /// it, so nothing of it is left anywhere.
     pub can_delete: bool,
 }
 
@@ -110,8 +105,8 @@ pub enum WorkspaceMenuChoice {
     Action(String),
 }
 
-/// A row `model` makes: what it shows, what choosing it means, and — for a
-/// row that opens a submenu — what each of the submenu's rows means.
+/// A row `model` makes: what it shows, what choosing it means, and — for a row that opens a submenu
+/// — what each of the submenu's rows means.
 struct Row {
     item: MenuItem,
     choice: Option<WorkspaceMenuChoice>,
@@ -149,17 +144,15 @@ impl Row {
     }
 }
 
-/// The menu behind the bar's workspace name, and the one a press on the desk
-/// opens: one list of the place's commands, or of everything where the
-/// person is.
+/// The menu behind the bar's workspace name, and the one a press on the desk opens: one list of the
+/// place's commands, or of everything where the person is.
 #[derive(Default)]
 pub struct WorkspaceMenu {
     menu: ContextMenu,
-    /// What each row of `menu` stands for, `None` for separators and
-    /// captions.
+    /// What each row of `menu` stands for, `None` for separators and captions.
     rows: Vec<Option<WorkspaceMenuChoice>>,
-    /// What the rows of each submenu stand for, aligned with `rows`: empty
-    /// where the row opens no submenu.
+    /// What the rows of each submenu stand for, aligned with `rows` : empty where the row opens no
+    /// submenu.
     nested: Vec<Vec<Option<WorkspaceMenuChoice>>>,
     chosen: Option<WorkspaceMenuChoice>,
     rect: Rect,
@@ -178,8 +171,8 @@ impl WorkspaceMenu {
         }
     }
 
-    /// What the bar's menu offers: the workspaces, where the person is
-    /// hosted, the workspace's commands, and what changes them.
+    /// What the bar's menu offers: the workspaces, where the person is hosted, the workspace's
+    /// commands, and what changes them.
     fn bar_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         for workspace in &model.workspaces {
@@ -215,10 +208,9 @@ impl WorkspaceMenu {
         rows
     }
 
-    /// What a press on the desk offers: the place's own commands, then what
-    /// makes the place, and the workspace's own commands in a submenu beside
-    /// it. Nothing here names the workspace the person is already in: a menu
-    /// on the desk says what the desk does, not where they are.
+    /// What a press on the desk offers: the place's own commands, then what makes the place, and
+    /// the workspace's own commands in a submenu beside it. Nothing here names the workspace the
+    /// person is already in: a menu on the desk says what the desk does, not where they are.
     fn desk_rows(model: &WorkspaceMenuModel) -> Vec<Row> {
         let mut rows: Vec<Row> = Vec::new();
         for action in model.desk.iter().take(DESK_ROWS) {
@@ -247,8 +239,8 @@ impl WorkspaceMenu {
         }
         let host = model.host.as_ref().map(|host| Self::hosted_by(host));
         workspace.extend(host);
-        // Losing the workspace goes last, apart from what joins or renames
-        // it: a row a slip of the pointer must not land on.
+        // Losing the workspace goes last, apart from what joins or renames it: a row a slip of the
+        // pointer must not land on.
         let (leaving, staying): (Vec<&WorkspaceAction>, Vec<&WorkspaceAction>) =
             model.actions.iter().partition(|action| action.destructive);
         if !staying.is_empty() {
@@ -319,8 +311,7 @@ impl WorkspaceMenu {
         )
     }
 
-    /// Deleting the workspace stands last and apart: nothing else is
-    /// reached for on the way to it.
+    /// Deleting the workspace stands last and apart: nothing else is reached for on the way to it.
     fn delete() -> Row {
         Row::new(
             MenuItem::destructive_selection(t("workspace-menu-delete")).with_icon(Icon::Trash2),
@@ -330,8 +321,8 @@ impl WorkspaceMenu {
         )
     }
 
-    /// Open the menu for `model` under `anchor` (the workspace name) within
-    /// `viewport`, or close it when it is open.
+    /// Open the menu for `model` under `anchor` (the workspace name) within `viewport` , or close
+    /// it when it is open.
     pub fn toggle(&mut self, model: &WorkspaceMenuModel, anchor: Rect, viewport: Rect) {
         if self.menu.is_open() {
             self.close();
@@ -340,9 +331,8 @@ impl WorkspaceMenu {
         self.show(model, anchor, viewport);
     }
 
-    /// Open the menu for `model` with its first row at `at` (a secondary
-    /// press on the desk) within `viewport`, or close it when it is open:
-    /// the same menu, standing where the person pressed.
+    /// Open the menu for `model` with its first row at `at` (a secondary press on the desk) within
+    /// `viewport` , or close it when it is open: the same menu, standing where the person pressed.
     pub fn open_at(&mut self, model: &WorkspaceMenuModel, at: Point, viewport: Rect) {
         if self.menu.is_open() {
             self.close();
@@ -351,8 +341,8 @@ impl WorkspaceMenu {
         self.show(model, Rect::new(at.x, at.y, at.x, at.y), viewport);
     }
 
-    /// Draw the rows `model` makes, anchored `anchor`, kept inside `viewport`
-    /// (the [`ContextMenu`] flips it above or left at an edge).
+    /// Draw the rows `model` makes, anchored `anchor` , kept inside `viewport` (the [`ContextMenu`]
+    /// flips it above or left at an edge).
     fn show(&mut self, model: &WorkspaceMenuModel, anchor: Rect, viewport: Rect) {
         let mut items = Vec::new();
         let mut rows = Vec::new();
@@ -377,13 +367,13 @@ impl WorkspaceMenu {
         self.menu.is_open()
     }
 
-    /// Where the panel stands while it is open: as big as its rows, which no
-    /// anchor says, so a press that misses it can close it.
+    /// Where the panel stands while it is open: as big as its rows, which no anchor says, so a
+    /// press that misses it can close it.
     pub fn panel_rect(&self) -> Option<Rect> {
         self.menu.is_open().then(|| self.menu.get_rect())
     }
 
-    /// The labels of the rows shown, in order (separators as `None`).
+    /// The labels of the rows shown, in order (separators as `None` ).
     pub fn labels(&self) -> Vec<Option<String>> {
         self.menu
             .items()
@@ -392,7 +382,7 @@ impl WorkspaceMenu {
             .collect()
     }
 
-    /// Choose the row labelled `label`, as a click on it would.
+    /// Choose the row labelled `label` , as a click on it would.
     pub fn choose(&mut self, label: &str) -> bool {
         let Some(index) = self
             .menu
@@ -407,8 +397,7 @@ impl WorkspaceMenu {
         true
     }
 
-    /// Choose the row `child` of the submenu `label` opens, as a click on it
-    /// does.
+    /// Choose the row `child` of the submenu `label` opens, as a click on it does.
     pub fn choose_in(&mut self, label: &str, child: &str) -> bool {
         let Some(row) = self
             .menu
@@ -661,8 +650,8 @@ mod tests {
         assert!(!menu.is_open());
     }
 
-    /// The menu a press on the desk opens: the place's own verbs, a new
-    /// strip, the overview, and the workspace's commands beside them.
+    /// The menu a press on the desk opens: the place's own verbs, a new strip, the overview, and
+    /// the workspace's commands beside them.
     fn desk_model() -> WorkspaceMenuModel {
         WorkspaceMenuModel {
             place: MenuPlace::Desk,

@@ -1,6 +1,5 @@
-//! Touchpad gestures the desktop takes: a four-finger swipe moves between
-//! workspaces and a pinch in opens the overview, both as the person's
-//! setting says.
+//! Touchpad gestures the desktop takes: a four-finger swipe moves between workspaces and a pinch in
+//! opens the overview, both as the person's setting says.
 
 use tilo_compositor::GestureEvent;
 
@@ -25,8 +24,8 @@ fn touchpad_gestures_the_desktop_takes_switch_workspaces_and_open_the_overview()
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
     let second = active_workspace(&session);
     assert_ne!(first, second, "a new workspace opened");
-    // Four fingers down go to the workspace before, under natural
-    // scrolling (the default): the workspaces follow the fingers.
+    // Four fingers down go to the workspace before, under natural scrolling (the default): the
+    // workspaces follow the fingers.
     gesture(
         &mut session,
         &[

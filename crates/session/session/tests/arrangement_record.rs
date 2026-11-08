@@ -35,7 +35,7 @@ fn session() -> Session {
     session_in(None)
 }
 
-/// A session of `person`'s, on a device with no state of its own.
+/// A session of `person` 's, on a device with no state of its own.
 fn session_as(person: &str) -> Session {
     Session::headless(
         Options {
@@ -112,10 +112,9 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
     open_window_called(session, app, app)
 }
 
-/// A window of `app` on the desk calling itself `title`, its tab's id.
+/// A window of `app` on the desk calling itself `title` , its tab's id.
 fn open_window_called(session: &mut Session, app: &str, title: &str) -> u64 {
-    // A table's window, opened the way the launcher opens one: a tab of the
-    // strip in front.
+    // A table's window, opened the way the launcher opens one: a tab of the strip in front.
     let handle = session.handle().clone();
     let mut tree = handle.read(Clone::clone);
     let tab = handle.mint_id();
@@ -223,7 +222,7 @@ fn the_persons_drag_is_in_their_record_attributed_and_undone() {
     );
 }
 
-/// The action that moves `place` to the row `row`.
+/// The action that moves `place` to the row `row` .
 fn move_to(place: u64, row: u64) -> tilo_session::arrangement::ArrangementAction {
     tilo_session::arrangement::ArrangementAction::Move {
         place,
@@ -250,16 +249,15 @@ fn snap_back(place: u64) -> tilo_session::arrangement::ArrangementAction {
     }
 }
 
-/// The strip holding `place`, as the arrangement reads it.
+/// The strip holding `place` , as the arrangement reads it.
 fn strip_reading_of(session: &Session, place: u64) -> tilo_session::arrangement::StripReading {
     let strip = strip_of(session, place).expect("it has a strip");
     strip_at(session, strip).expect("the strip is in the record")
 }
 
-// (6) A window let go outside its strip floats above the desk, where every
-// member of the workspace sees it: one step of the person's record, taken
-// back by undo, and snapping it back with no target returns it exactly where
-// it was.
+// (6) A window let go outside its strip floats above the desk, where every member of the workspace
+// sees it: one step of the person's record, taken back by undo, and snapping it back with no target
+// returns it exactly where it was.
 #[test]
 fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     let _settled = ui::motion::testing::settled();
@@ -356,9 +354,9 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
     );
 }
 
-// (7) A float is the workspace's, not the device's: it is in the desk the
-// workspace shares, so the next start shows it floating — and so does every
-// other member of the workspace, who reads the same record.
+// (7) A float is the workspace's, not the device's: it is in the desk the workspace shares, so the
+// next start shows it floating — and so does every other member of the workspace, who reads the
+// same record.
 #[test]
 fn a_float_is_in_the_shared_desk_so_every_member_sees_it() {
     let _settled = ui::motion::testing::settled();
@@ -453,8 +451,7 @@ fn strip_resource(key: u64) -> String {
     tilo_session::arrangement::Item::Strip.resource(&key.to_string())
 }
 
-// (2) An agent moves a window through the published action, attributed to
-// the agent and undoable.
+// (2) An agent moves a window through the published action, attributed to the agent and undoable.
 #[test]
 fn an_agents_move_through_the_action_is_attributed_and_undone() {
     let _settled = ui::motion::testing::settled();
@@ -466,8 +463,8 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     let from = strip_of(&session, window).map(|strip| row_of(&session, strip));
     let from = from.expect("it has a strip");
 
-    // The place's own resource publishes the actions a press names it by, so the
-    // catalogue, tilo-control and an agent see them.
+    // The place's own resource publishes the actions a press names it by, so the catalogue,
+    // tilo-control and an agent see them.
     let mut shown = Vec::new();
     for resource in session.resources() {
         published_actions(&resource, &mut shown);
@@ -509,9 +506,8 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
     );
 }
 
-// (3) One record answers what the arrangement is: the desk's own, which the
-// workspace shares. Nothing is kept beside it, and another member of the
-// workspace reads none of it.
+// (3) One record answers what the arrangement is: the desk's own, which the workspace shares.
+// Nothing is kept beside it, and another member of the workspace reads none of it.
 #[test]
 fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     let _settled = ui::motion::testing::settled();
@@ -534,8 +530,8 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     );
     drop(here);
 
-    // The desk's one document is what keeps it: no record of the arrangement's
-    // own is written beside it.
+    // The desk's one document is what keeps it: no record of the arrangement's own is written
+    // beside it.
     assert!(
         state.join("tilo").join("desk.automerge").exists(),
         "the desk's document keeps the arrangement"
@@ -545,8 +541,8 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
         "no second record of the arrangement is kept"
     );
 
-    // Another member of the workspace runs a desk of their own: nothing of this
-    // one's arrangement is theirs.
+    // Another member of the workspace runs a desk of their own: nothing of this one's arrangement
+    // is theirs.
     let mut theirs = session_as(BO);
     step(&mut theirs);
     assert!(
@@ -555,8 +551,8 @@ fn the_arrangement_is_the_desks_own_and_no_record_beside_it() {
     );
 }
 
-// (5) What a place shows and whether it is pinned are the window's own, so
-// they survive a restart with the desk — and nothing is kept beside it.
+// (5) What a place shows and whether it is pinned are the window's own, so they survive a restart
+// with the desk — and nothing is kept beside it.
 #[test]
 fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
     let _settled = ui::motion::testing::settled();
@@ -615,9 +611,8 @@ fn a_places_view_and_pin_are_kept_with_the_desk_across_a_restart() {
     assert!(back.pinned, "the place is still pinned");
 }
 
-// A place a launch left on the desk and no window came for is not a window
-// the person had open: the next start does not bring it back, and the desk is
-// exactly what was open.
+// A place a launch left on the desk and no window came for is not a window the person had open: the
+// next start does not bring it back, and the desk is exactly what was open.
 #[test]
 fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     let _settled = ui::motion::testing::settled();
@@ -685,17 +680,16 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
     );
 }
 
-// (6) The arrangement a build before this one kept beside the desk comes into
-// the desk once: the windows it held are open on the desk again, and the file
-// it was kept in is gone. A window it kept as a live surface comes back as the
-// app it showed, as every window of the desk does.
+// (6) The arrangement a build before this one kept beside the desk comes into the desk once: the
+// windows it held are open on the desk again, and the file it was kept in is gone. A window it kept
+// as a live surface comes back as the app it showed, as every window of the desk does.
 #[test]
 fn the_record_a_build_before_this_one_kept_comes_into_the_desk_once() {
     let _settled = ui::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
     let state = home.state().to_path_buf();
-    // The desk this device had before the build that keeps the arrangement in
-    // it: where its workspace's windows stand.
+    // The desk this device had before the build that keeps the arrangement in it: where its
+    // workspace's windows stand.
     let (workspace, row) = {
         let mut session = session_in(Some(state.clone()));
         step(&mut session);
@@ -744,10 +738,9 @@ fn the_record_a_build_before_this_one_kept_comes_into_the_desk_once() {
     assert!(!file.exists(), "the record it came from is gone");
 }
 
-/// The arrangement a build before this one kept beside the desk under
-/// `state`, as it wrote it: a workspace, a row, a strip and a place, each an
-/// entry of the document under its own id. The place shows Notes through its
-/// `editor` view, pinned, with a live window of it.
+/// The arrangement a build before this one kept beside the desk under `state` , as it wrote it: a
+/// workspace, a row, a strip and a place, each an entry of the document under its own id. The place
+/// shows Notes through its `editor` view, pinned, with a live window of it.
 fn kept_arrangement(
     state: &std::path::Path,
     workspace: u64,
@@ -808,8 +801,8 @@ fn kept_arrangement(
     file
 }
 
-// (4) While the person types or drags, an agent's move waits, not drops, and
-// applies after the gesture ends (shell.md §1).
+// (4) While the person types or drags, an agent's move waits, not drops, and applies after the
+// gesture ends (shell.md §1).
 #[test]
 fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     let _settled = ui::motion::testing::settled();
@@ -879,8 +872,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
     assert_eq!(who, "agent-task:reading", "still attributed to the agent");
 }
 
-// An agent's arrangement leaves a place the person pinned where it is
-// (shell.md §5's default).
+// An agent's arrangement leaves a place the person pinned where it is (shell.md §5's default).
 #[test]
 fn a_pinned_place_stays_where_the_person_put_it() {
     let _settled = ui::motion::testing::settled();
@@ -958,8 +950,8 @@ fn the_arrangement_reads_out_by_key_for_the_shells_views() {
     );
 }
 
-// A place reads out named the way every surface shows it: the window's own title and its app's
-// own name, never an app id, and the app's name alone for a window that has no title.
+// A place reads out named the way every surface shows it: the window's own title and its app's own
+// name, never an app id, and the app's name alone for a window that has no title.
 #[test]
 fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
     let _settled = ui::motion::testing::settled();
@@ -997,9 +989,9 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
     );
 }
 
-// Moving a place to another row through the published action is a place the reading then shows
-// in that row, and undo puts it back — the same both ways. Moving a place into another row's
-// empty strip makes a strip there; undo takes the place back to the strip it came from.
+// Moving a place to another row through the published action is a place the reading then shows in
+// that row, and undo puts it back — the same both ways. Moving a place into another row's empty
+// strip makes a strip there; undo takes the place back to the strip it came from.
 #[test]
 fn a_move_the_reading_shows_is_undone_to_where_it_was() {
     let _settled = ui::motion::testing::settled();
@@ -1126,8 +1118,8 @@ fn maximizing_a_window_is_one_step_and_undone() {
     );
 }
 
-/// A session on a device whose salt is the top of an id's high bits: every place, strip and
-/// row here is above `i64::MAX`, so no id fits the integer an id-shaped verb would take.
+/// A session on a device whose salt is the top of an id's high bits: every place, strip and row
+/// here is above `i64::MAX` , so no id fits the integer an id-shaped verb would take.
 fn salted_session() -> Session {
     Session::headless(
         Options {
@@ -1143,9 +1135,9 @@ fn salted_session() -> Session {
     .expect("session")
 }
 
-// Every arranging press names the place, strip or row it presses, so on a device whose ids do
-// not fit an integer each of them still reaches the record's own entry: pin, close, move to a
-// row and a strip's width all land on the thing they name, and on nothing else.
+// Every arranging press names the place, strip or row it presses, so on a device whose ids do not
+// fit an integer each of them still reaches the record's own entry: pin, close, move to a row and a
+// strip's width all land on the thing they name, and on nothing else.
 #[test]
 fn every_arranging_press_reaches_the_record_on_a_salted_device() {
     let _settled = ui::motion::testing::settled();
@@ -1163,8 +1155,8 @@ fn every_arranging_press_reaches_the_record_on_a_salted_device() {
     let other_strip = strip_of(&session, other).expect("the other place is in a strip");
     assert_ne!(strip, other_strip, "each place has its own strip");
 
-    // Each press names its own resource, by the whole of the id: pin reaches this place, and
-    // the other place stands unpinned.
+    // Each press names its own resource, by the whole of the id: pin reaches this place, and the
+    // other place stands unpinned.
     invoke_as(
         &mut session,
         &place_resource(window),

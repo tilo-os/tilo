@@ -71,25 +71,24 @@ const BTN_LEFT: u32 = 0x110;
 pub(crate) struct Dnd {
     /// The drag the pointer is carrying, while a grab runs it.
     drag: Option<Drag>,
-    /// What a compositor-started drag serves Wayland clients, kept past
-    /// the drop until the client finished reading.
+    /// What a compositor-started drag serves Wayland clients, kept past the drop until the client
+    /// finished reading.
     served: Option<Served>,
     /// An X11 client's drag that reached the proxy.
     incoming: Option<Incoming>,
     /// The data our drag serves the X11 window it was dropped on.
     x_served: Option<XServed>,
-    /// The XDND connections, one per workspace display with an X11 window
-    /// to drop on.
+    /// The XDND connections, one per workspace display with an X11 window to drop on.
     bridged: Vec<Bridged>,
     /// Bytes read off the loop, for the loop.
     deliveries: Option<Sender<Delivery>>,
-    /// The drag grab of an X11 client's drag ended: Xwayland must see the
-    /// button come up (done once the pointer call returns).
+    /// The drag grab of an X11 client's drag ended: Xwayland must see the button come up (done once
+    /// the pointer call returns).
     release_x11_source: bool,
     /// What the drag shows under the pointer or finger.
     icon: Option<DragIcon>,
-    /// A Wayland source whose drop a hosted surface or an X11 window took:
-    /// told `dnd_finished` once the target has the data.
+    /// A Wayland source whose drop a hosted surface or an X11 window took: told `dnd_finished` once
+    /// the target has the data.
     finishing: Option<WlDataSource>,
     /// Where the drag is, in the logical layout.
     at: Point<f64, Logical>,
@@ -97,8 +96,8 @@ pub(crate) struct Dnd {
 
 /// A drag's icon.
 pub(crate) enum DragIcon {
-    /// A client's icon surface, offset from the drag's point by what its
-    /// commits moved it (`wl_surface.offset`).
+    /// A client's icon surface, offset from the drag's point by what its commits moved it
+    /// (`wl_surface.offset`).
     Surface {
         surface: WlSurface,
         offset: Point<i32, Logical>,
@@ -116,12 +115,11 @@ struct Drag {
     mimes: Vec<String>,
     actions: DndAction,
     target: Target,
-    /// How the drop went: set by our own drop (hosted and X11 targets) or
-    /// by smithay's grab (Wayland targets).
+    /// How the drop went: set by our own drop (hosted and X11 targets) or by smithay's grab
+    /// (Wayland targets).
     outcome: Option<bool>,
-    /// The action a hosted or X11 target takes it with: the source's
-    /// preferred one, or what an X11 window accepted (a move deletes the
-    /// item at the source once the target has it).
+    /// The action a hosted or X11 target takes it with: the source's preferred one, or what an X11
+    /// window accepted (a move deletes the item at the source once the target has it).
     chosen: Action,
 }
 
@@ -149,7 +147,7 @@ enum Target {
         index: usize,
         mime: Option<String>,
     },
-    /// An X11 window of `xwm`'s display; `aware` when it takes XDND drops.
+    /// An X11 window of `xwm` 's display; `aware` when it takes XDND drops.
     X11 {
         xwm: XwmId,
         window: u32,
@@ -158,7 +156,7 @@ enum Target {
 }
 
 impl Target {
-    /// Whether the drag stays on the same target over `under`.
+    /// Whether the drag stays on the same target over `under` .
     fn is(&self, under: &Under) -> bool {
         match (self, under) {
             (Self::Nothing, Under::Nothing) | (Self::Client, Under::Client(..)) => true,
@@ -186,7 +184,7 @@ enum Under {
 /// What a compositor-started Wayland drag serves.
 enum Served {
     Host(Arc<BTreeMap<String, Vec<u8>>>),
-    /// The X11 drag's types, read through the bridge of `xwm`'s display.
+    /// The X11 drag's types, read through the bridge of `xwm` 's display.
     X11 {
         xwm: XwmId,
         types: Vec<String>,
@@ -229,7 +227,7 @@ struct Bridged {
 }
 
 impl Dnd {
-    /// The XDND connection of `xwm`'s display.
+    /// The XDND connection of `xwm` 's display.
     fn bridged(&self, xwm: XwmId) -> Option<&Bridged> {
         self.bridged.iter().find(|bridged| bridged.xwm == xwm)
     }
@@ -329,8 +327,7 @@ impl State {
         u32::try_from(i32::from(start.slot)).ok()
     }
 
-    /// The finger carrying a drag moved: find the target and move the
-    /// grab.
+    /// The finger carrying a drag moved: find the target and move the grab.
     pub(crate) fn drag_touch_motion(&mut self, slot: u32, at: Point<f64, Logical>, time: u32) {
         let Some(drag) = &self.dnd.drag else {
             return;
@@ -393,8 +390,7 @@ impl State {
         }
     }
 
-    /// The drag icon's elements on `output`, front first; none without a
-    /// drag or an icon.
+    /// The drag icon's elements on `output` , front first; none without a drag or an icon.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "smithay geometry: logical and physical positions on outputs, far from i32 limits"
@@ -450,8 +446,7 @@ impl State {
         }
     }
 
-    /// A client committed `surface`: when it is the drag icon, follow what
-    /// the commit moved it by.
+    /// A client committed `surface` : when it is the drag icon, follow what the commit moved it by.
     #[allow(
         clippy::arithmetic_side_effects,
         reason = "smithay geometry: logical and physical positions on outputs, far from i32 limits"
@@ -480,8 +475,8 @@ impl State {
         }
     }
 
-    /// What is under `at` for a drag; X11 windows are no target of an X11
-    /// client's drag that left them.
+    /// What is under `at` for a drag; X11 windows are no target of an X11 client's drag that left
+    /// them.
     fn drag_under(&self, at: Point<f64, Logical>, x11_source: bool) -> Under {
         if self.locked() {
             return Under::Nothing;
@@ -505,8 +500,8 @@ impl State {
         }
     }
 
-    /// The pointer moved while a drag grab runs: find the target and
-    /// move the grab. False when no drag grab runs.
+    /// The pointer moved while a drag grab runs: find the target and move the grab. False when no
+    /// drag grab runs.
     pub(crate) fn drag_motion(
         &mut self,
         location: Point<f64, Logical>,
@@ -599,8 +594,8 @@ impl State {
         }
     }
 
-    /// Tell a Wayland source whether the target takes it (smithay does
-    /// for Wayland targets; this is for hosted and X11 ones).
+    /// Tell a Wayland source whether the target takes it (smithay does for Wayland targets; this is
+    /// for hosted and X11 ones).
     fn source_feedback(&self, mime: Option<&str>, action: Action) {
         let Some(Drag {
             source: Source::Client(source),
@@ -619,8 +614,8 @@ impl State {
         }
     }
 
-    /// A button while a drag grab runs: a release drops on the target.
-    /// False when no drag grab runs.
+    /// A button while a drag grab runs: a release drops on the target. False when no drag grab
+    /// runs.
     pub(crate) fn drag_button(
         &mut self,
         button: u32,
@@ -662,8 +657,8 @@ impl State {
         true
     }
 
-    /// The grab ended: tell the hosted app that started the drag, let an
-    /// X11 source see its button come up, and route the pointer anew.
+    /// The grab ended: tell the hosted app that started the drag, let an X11 source see its button
+    /// come up, and route the pointer anew.
     fn drag_ended(&mut self, drag: &Drag, button: u32) {
         self.dnd.icon = None;
         if let Source::Host { origin, .. } = drag.source
@@ -682,8 +677,8 @@ impl State {
         }
     }
 
-    /// The target of a Wayland source's drop has the data: the source may
-    /// finish (and delete the item after a move).
+    /// The target of a Wayland source's drop has the data: the source may finish (and delete the
+    /// item after a move).
     fn finish_source(&mut self) {
         if let Some(source) = self.dnd.finishing.take()
             && source.is_alive()
@@ -699,8 +694,8 @@ impl State {
         self.pointer_motion(self.pointer, SERIAL_COUNTER.next_serial(), time);
     }
 
-    /// The button came up over a hosted surface or an X11 window: hand it
-    /// the drop before the grab tells the source.
+    /// The button came up over a hosted surface or an X11 window: hand it the drop before the grab
+    /// tells the source.
     fn drop_on_target(&mut self) {
         let Some(drag) = &self.dnd.drag else {
             return;
@@ -756,7 +751,7 @@ impl State {
         }
     }
 
-    /// Read the X11 drag's `mime` for hosted surface `index`.
+    /// Read the X11 drag's `mime` for hosted surface `index` .
     fn read_x11_for_host(&mut self, index: usize, mime: &str, finish_x11: bool) {
         let Some(target) = self
             .dnd
@@ -776,8 +771,8 @@ impl State {
         }
     }
 
-    /// Read what `request` writes into a pipe, off the loop, then hand it
-    /// to hosted surface `index`.
+    /// Read what `request` writes into a pipe, off the loop, then hand it to hosted surface `index`
+    /// .
     fn read_for_host(
         &mut self,
         index: usize,
@@ -794,8 +789,8 @@ impl State {
         });
     }
 
-    /// Hand `request` a pipe's writing end and read the other off the
-    /// loop, up to [`MAX_SELECTION_BYTES`]; `deliver` makes the message.
+    /// Hand `request` a pipe's writing end and read the other off the loop, up to
+    /// [`MAX_SELECTION_BYTES`]; `deliver` makes the message.
     fn read_off_loop(
         &mut self,
         request: impl FnOnce(OwnedFd),
@@ -876,8 +871,8 @@ impl State {
         self.x11_dnd_events();
     }
 
-    /// Drop on the X11 window of `xwm`'s display under the drag: what it may
-    /// ask for is read ahead (a Wayland source) or at hand (a hosted one).
+    /// Drop on the X11 window of `xwm` 's display under the drag: what it may ask for is read ahead
+    /// (a Wayland source) or at hand (a hosted one).
     fn drop_on_x11(&mut self, xwm: XwmId) -> bool {
         let Some(drag) = &self.dnd.drag else {
             return false;
@@ -926,7 +921,7 @@ impl State {
             .is_some_and(|bridged| bridged.bridge.source_drop())
     }
 
-    /// Answer an X11 window of `xwm`'s display asking for our drag's data.
+    /// Answer an X11 window of `xwm` 's display asking for our drag's data.
     fn answer_x11(&mut self, xwm: XwmId, request: Request) {
         let answer: Option<Vec<u8>> = match self
             .dnd
@@ -944,8 +939,7 @@ impl State {
                     .collect();
                 match xdnd::pick_format(&request.target, &available) {
                     Some(mime) if served.loading.contains(&mime) => {
-                        // The bytes are still being read: answered when they
-                        // arrive.
+                        // The bytes are still being read: answered when they arrive.
                         served.waiting.push(request);
                         return;
                     }
@@ -961,7 +955,7 @@ impl State {
 
     // X11 clients' drags.
 
-    /// Connect an XDND bridge to the display of `xwm`'s server.
+    /// Connect an XDND bridge to the display of `xwm` 's server.
     pub(crate) fn start_xdnd(&mut self, display: u32, xwm: XwmId) {
         let bridge = match XdndBridge::connect(display) {
             Ok(bridge) => bridge,
@@ -992,8 +986,8 @@ impl State {
         });
     }
 
-    /// Whether `surface` is the proxy of `xwm`'s display; the window manager
-    /// keeps it out of the scene.
+    /// Whether `surface` is the proxy of `xwm` 's display; the window manager keeps it out of the
+    /// scene.
     pub(crate) fn dnd_proxy(&mut self, xwm: XwmId, surface: &X11Surface) -> bool {
         let proxy = self
             .dnd
@@ -1005,8 +999,8 @@ impl State {
         proxy
     }
 
-    /// The display whose X11 window holds the pointer's press or a finger
-    /// (Xwayland runs any X11 drag under either).
+    /// The display whose X11 window holds the pointer's press or a finger (Xwayland runs any X11
+    /// drag under either).
     fn x11_held(&self) -> Option<XwmId> {
         let xwm_of = |surface: &WlSurface| {
             self.space
@@ -1030,9 +1024,8 @@ impl State {
         })
     }
 
-    /// Raise the proxy of the display an X11 client may be dragging from —
-    /// under the pointer or a finger — over something that is not an X11
-    /// window; take the other proxies down.
+    /// Raise the proxy of the display an X11 client may be dragging from — under the pointer or a
+    /// finger — over something that is not an X11 window; take the other proxies down.
     pub(crate) fn x11_drag_motion(&mut self, at: Point<f64, Logical>) {
         let held = self.x11_held();
         let over_x11 = matches!(self.drag_under(at, false), Under::X11 { .. });
@@ -1164,9 +1157,8 @@ impl State {
         }
     }
 
-    /// The X11 drag reached a Wayland surface: a compositor drag carries
-    /// it on, so Wayland clients get it from the data device. Xwayland
-    /// loses the pointer until the drop.
+    /// The X11 drag reached a Wayland surface: a compositor drag carries it on, so Wayland clients
+    /// get it from the data device. Xwayland loses the pointer until the drop.
     fn take_over_x11_drag(
         &mut self,
         surface: WlSurface,
@@ -1246,8 +1238,8 @@ impl State {
         }
     }
 
-    /// Tell the X11 source its drop is done and route the pointer anew
-    /// (it was on the proxy if a compositor drag took over).
+    /// Tell the X11 source its drop is done and route the pointer anew (it was on the proxy if a
+    /// compositor drag took over).
     fn finish_incoming(&mut self, success: bool) {
         let Some(incoming) = self.dnd.incoming.take() else {
             return;
@@ -1260,9 +1252,9 @@ impl State {
         }
     }
 
-    /// The compositor drag that carried an X11 drag ended: put the pointer
-    /// on the proxy so Xwayland sees the button up (it releases every
-    /// button a returning pointer holds) and the source drops there.
+    /// The compositor drag that carried an X11 drag ended: put the pointer on the proxy so Xwayland
+    /// sees the button up (it releases every button a returning pointer holds) and the source drops
+    /// there.
     fn release_x11_source(&mut self) {
         let Some(xwm) = self.dnd.incoming.as_ref().map(|incoming| incoming.xwm) else {
             self.finish_incoming(false);
@@ -1293,8 +1285,8 @@ impl State {
         pointer.frame(self);
     }
 
-    /// The display of `xwm`'s server is gone: its bridge, its windows'
-    /// drags and what they served go with it.
+    /// The display of `xwm` 's server is gone: its bridge, its windows' drags and what they served
+    /// go with it.
     pub(crate) fn forget_x11_dnd(&mut self, xwm: XwmId) {
         self.dnd.bridged.retain(|bridged| bridged.xwm != xwm);
         if self
@@ -1358,9 +1350,8 @@ impl ClientDndGrabHandler for State {
         });
     }
 
-    /// A hosted surface or an X11 window took the drop (handed it before
-    /// the button reached the grab): the source hears it was performed
-    /// with the action taken, not that it was cancelled.
+    /// A hosted surface or an X11 window took the drop (handed it before the button reached the
+    /// grab): the source hears it was performed with the action taken, not that it was cancelled.
     fn drop_target_action(&mut self, _seat: &Seat<Self>) -> Option<DndAction> {
         let drag = self.dnd.drag.as_ref()?;
         let Source::Client(source) = &drag.source else {

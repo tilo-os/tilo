@@ -39,8 +39,8 @@ pub fn install(
     Ok(())
 }
 
-/// One profile's pinned destination and durable approved outbox. The draft
-/// component uses its own ephemeral store and is never a workspace record.
+/// One profile's pinned destination and durable approved outbox. The draft component uses its own
+/// ephemeral store and is never a workspace record.
 pub struct PrivateFeedback {
     services: FeedbackServices,
 }
@@ -85,17 +85,16 @@ impl PrivateFeedback {
         feedback_composer::prepare(Some(self.services.clone()), device, author, instance)
     }
 
-    /// The services a composer's preparation borrows, for a host that has
-    /// the composer's code from elsewhere than [`Self::prepare`] (the browser
-    /// desktop fetches it the first time Feedback opens).
+    /// The services a composer's preparation borrows, for a host that has the composer's code from
+    /// elsewhere than [`Self::prepare`] (the browser desktop fetches it the first time Feedback
+    /// opens).
     #[must_use]
     pub fn services(&self) -> FeedbackServices {
         self.services.clone()
     }
 
-    /// Name the window the next report is about. The desktop chooses it from
-    /// where the person asked for Feedback; nothing about it is read until
-    /// the person includes context in a review.
+    /// Name the window the next report is about. The desktop chooses it from where the person asked
+    /// for Feedback; nothing about it is read until the person includes context in a review.
     pub fn about(&self, subject: Option<Subject>) -> Result<(), Error> {
         self.services.about(subject)
     }
@@ -140,9 +139,8 @@ pub enum Focused {
     App(Subject),
 }
 
-/// The window in front of `tree`. `name` is an app's own display name by
-/// id, where the host knows one; a tile's label is not used, since it can be
-/// a window title, which may be private.
+/// The window in front of `tree` . `name` is an app's own display name by id, where the host knows
+/// one; a tile's label is not used, since it can be a window title, which may be private.
 pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Focused {
     match front_tab(tree).map(|tab| &tab.tile) {
         None => Focused::Nothing,
@@ -151,9 +149,9 @@ pub fn focused(tree: &DesktopTree, name: impl Fn(&str) -> Option<String>) -> Foc
     }
 }
 
-/// What a report about the parts picked in `draft` is about, for a
-/// recording of its window: the window in front (`front`), when every pick
-/// is in its app; otherwise no window, so none is recorded.
+/// What a report about the parts picked in `draft` is about, for a recording of its window: the
+/// window in front (`front`), when every pick is in its app; otherwise no window, so none is
+/// recorded.
 pub fn picked_subject(draft: &tilo_app::feedback::ReportDraft, front: Focused) -> Option<Subject> {
     let Focused::App(subject) = front else {
         return None;
@@ -162,7 +160,7 @@ pub fn picked_subject(draft: &tilo_app::feedback::ReportDraft, front: Focused) -
         .then_some(subject)
 }
 
-/// The window in front of `tree`, by its tab.
+/// The window in front of `tree` , by its tab.
 pub fn focused_tab(tree: &DesktopTree) -> Option<TabId> {
     front_tab(tree).map(|tab| tab.id)
 }
@@ -181,8 +179,8 @@ fn front_tab(tree: &DesktopTree) -> Option<&tilo_desktop_model::Tab> {
         .and_then(|group| group.tabs.iter().find(|tab| tab.id == group.active_tab))
 }
 
-/// The app the window `tab` shows, as a report names it; `None` for a tab
-/// that is not in `tree` or shows no app.
+/// The app the window `tab` shows, as a report names it; `None` for a tab that is not in `tree` or
+/// shows no app.
 pub fn tab_subject(
     tree: &DesktopTree,
     tab: TabId,
@@ -292,9 +290,8 @@ mod install_tests {
         Startup::new(enrollment, Box::new(session), Box::new(NoCapture)).unwrap()
     }
 
-    /// The profile holds one custody: its composer mounts with the private
-    /// report controls, and a second startup cannot replace the authority
-    /// reports already go under.
+    /// The profile holds one custody: its composer mounts with the private report controls, and a
+    /// second startup cannot replace the authority reports already go under.
     #[test]
     fn a_profile_keeps_one_custody_and_its_composer_mounts_protected() {
         let store: Rc<dyn DurableStore> = Rc::new(MemoryStore::new());
@@ -395,8 +392,8 @@ mod focus_tests {
         );
     }
 
-    /// Picked parts are about the window in front only when every one is
-    /// in its app: a recording never records a window nothing was picked in.
+    /// Picked parts are about the window in front only when every one is in its app: a recording
+    /// never records a window nothing was picked in.
     #[test]
     fn picked_parts_are_about_the_window_in_front_only_when_all_are_in_it() {
         use tilo_app::feedback::report::{Pick, ReportDraft};

@@ -41,8 +41,8 @@ use tilo_session::mount::apps::Apps;
 use tilo_session::{ActionPlane, AppActions, Launches, Options, Session};
 use tilo_user_identity::{DeviceCert, IdentityPaths};
 
-// A host admits its members' records through an Automerge worker: this
-// binary is that worker, as it is the session's own.
+// A host admits its members' records through an Automerge worker: this binary is that worker, as it
+// is the session's own.
 tilo_automerge_isolate::test_worker!();
 
 const WIDTH: i32 = 1280;
@@ -54,15 +54,14 @@ const WORKSPACE: &str = "0b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5c";
 /// The line a person writes into the palette.
 const LINE: &str = "Call the landlord fri 10am";
 
-/// This device's identity and the workspace it hosts, where the session reads
-/// them.
+/// This device's identity and the workspace it hosts, where the session reads them.
 struct Fixture {
     device: ed25519_dalek::SigningKey,
     cert: DeviceCert,
     /// The state directory the session keeps its workspaces under.
     state: PathBuf,
-    // The identity's environment and files, restored and removed last: the
-    // session and the app read them while they run.
+    // The identity's environment and files, restored and removed last: the session and the app read
+    // them while they run.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
 }
@@ -100,8 +99,8 @@ fn fixture() -> Fixture {
     }
 }
 
-/// The workspace's owner, as this device holds it in `state`: what the session
-/// opens when it starts, with this device the one governing the workspace.
+/// The workspace's owner, as this device holds it in `state` : what the session opens when it
+/// starts, with this device the one governing the workspace.
 fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &DeviceCert) {
     let record = state.join("tilo").join("rooms.json");
     std::fs::create_dir_all(record.parent().expect("the state's workspace directory"))
@@ -111,8 +110,8 @@ fn hold_workspace(state: &Path, device: &ed25519_dalek::SigningKey, cert: &Devic
     let workspace = WorkspaceId::parse(WORKSPACE).expect("a workspace id");
     let governor = testing::enroll_interactive_governor_in(&owner, device, cert, WORKSPACE)
         .expect("this device governs the workspace it hosts");
-    // The governor's checkpoint now names this device: the host admits it as
-    // the publication a host's own workspace makes.
+    // The governor's checkpoint now names this device: the host admits it as the publication a
+    // host's own workspace makes.
     let host = governor.workspace_host().device_public_key;
     let frames: Vec<Vec<u8>> = governor
         .outgoing()
@@ -154,8 +153,8 @@ fn desk(fixture: &Fixture) -> DesktopTree {
     }
 }
 
-/// What the app presents to join the workspace's channel: the certificate, and
-/// the device's proof that it is the certificate's.
+/// What the app presents to join the workspace's channel: the certificate, and the device's proof
+/// that it is the certificate's.
 fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8> {
     runtime_collab::CertifiedJoinIdentity {
         workspace_id: WORKSPACE.to_owned(),
@@ -171,8 +170,7 @@ fn presentation(device: &ed25519_dalek::SigningKey, cert: &DeviceCert) -> Vec<u8
     .expect("a presentation encodes")
 }
 
-/// A connection to the session's plane as `app` in the workspace, as the
-/// launcher hands an app one.
+/// A connection to the session's plane as `app` in the workspace, as the launcher hands an app one.
 fn connect(socket: &Path) -> CollabClient {
     let mut stream = std::os::unix::net::UnixStream::connect(socket).expect("the plane's socket");
     launcher::services::write_collab_handoff(&mut stream, TASKS, WORKSPACE)
@@ -192,13 +190,12 @@ fn channel() -> String {
     tilo_action_broker::route::CrdtRoute::app(TASKS, WORKSPACE).channel_key()
 }
 
-/// The session serving the apps it starts on `socket`, holding the fixture's
-/// workspace from its state and showing its desk: the session an installed
-/// session is, with the apps it launches started through.
+/// The session serving the apps it starts on `socket` , holding the fixture's workspace from its
+/// state and showing its desk: the session an installed session is, with the apps it launches
+/// started through.
 fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
-    // The app speaks from this test's own process, so the launch the session
-    // would have recorded for it names that process: what the broker admits
-    // the connection by.
+    // The app speaks from this test's own process, so the launch the session would have recorded
+    // for it names that process: what the broker admits the connection by.
     let launches = Arc::new(Launches::default());
     launches.started(std::process::id(), TASKS, WORKSPACE, true);
     let apps = Rc::new(Apps::new(
@@ -227,8 +224,8 @@ fn session(socket: &Path, fixture: &Fixture) -> (Session, Rc<Apps>) {
     (session, apps)
 }
 
-/// Tasks' capture, as the app publishes it: its root, with the one action that
-/// takes the line a person types (`title` is that parameter).
+/// Tasks' capture, as the app publishes it: its root, with the one action that takes the line a
+/// person types (`title` is that parameter).
 fn capture() -> Vec<ResourceSpec> {
     let capture = tilo_actions::ActionSpec::prompted_param(
         "quick_add",
@@ -245,8 +242,8 @@ fn capture() -> Vec<ResourceSpec> {
     vec![ResourceSpec::new("tasks", "tl.Tasks.tasks", "Tasks").with_action(capture)]
 }
 
-/// What the app publishes: the capture as it crosses the wire, which carries
-/// no execution locus of its own.
+/// What the app publishes: the capture as it crosses the wire, which carries no execution locus of
+/// its own.
 fn surface() -> Vec<runtime_collab::ExportedAction> {
     tilo_actions::door::survey(&capture())
         .iter()
@@ -254,8 +251,8 @@ fn surface() -> Vec<runtime_collab::ExportedAction> {
         .collect()
 }
 
-/// The app's side: join the workspace as Tasks, publish its capture, and hand
-/// back the first invocation the session addresses to it.
+/// The app's side: join the workspace as Tasks, publish its capture, and hand back the first
+/// invocation the session addresses to it.
 fn tasks(
     socket: &Path,
     device: &ed25519_dalek::SigningKey,
@@ -313,8 +310,8 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
         .unwrap_or_else(|error| panic!("{resource} {action}: {error:?}"));
 }
 
-/// A line typed into the palette with no Tasks window open runs Tasks'
-/// capture: the row is the app's action, and the sentence is its line.
+/// A line typed into the palette with no Tasks window open runs Tasks' capture: the row is the
+/// app's action, and the sentence is its line.
 #[test]
 fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     let _settled = ui::motion::testing::settled();
@@ -326,8 +323,8 @@ fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
     let app = std::thread::spawn(move || {
         tasks(&socket, &fixture.device, &fixture.cert, &seen);
     });
-    // Tasks is up and has published its capture: the session's action host
-    // lists what the app offers, read from the broker the app published on.
+    // Tasks is up and has published its capture: the session's action host lists what the app
+    // offers, read from the broker the app published on.
     common::wait_for(&mut session, "Tasks publishes its capture", |_| {
         apps.published(WORKSPACE)
             .iter()

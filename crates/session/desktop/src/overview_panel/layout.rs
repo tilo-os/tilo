@@ -1,8 +1,7 @@
-//! Where everything in the overview stands: the panel of workspaces, the
-//! picture of the workspace you are in, and what a point lands on.
-//!
-//! Paint, hit-testing and the semantic tree all read these, so nothing is
-//! drawn in one place and pressed in another.
+//! Where everything in the overview stands: the panel of workspaces, the picture of the workspace
+//! you are in, and what a point lands on.
+//! Paint, hit-testing and the semantic tree all read these, so nothing is drawn in one place and
+//! pressed in another.
 
 use std::collections::HashMap;
 
@@ -18,25 +17,23 @@ use crate::overview::WorkspaceCard;
 use crate::overview_picture::{GridMetrics, StripPlace, band_height, layout_strips};
 use crate::window_switcher::{PreviewSource, SwitcherWindow, WindowAddress};
 
-/// Most share rows drawn before the rest collapse into "and N more": the
-/// panel says whether things leave this workspace, the permissions pane has the
-/// full list.
+/// Most share rows drawn before the rest collapse into "and N more": the panel says whether things
+/// leave this workspace, the permissions pane has the full list.
 pub(super) const SHARES_MAX_ROWS: usize = 4;
 
 /// Width to height of a window's tab that is not in front, beside it.
 const BEHIND_TAB_ASPECT: f64 = 0.75;
 
-/// How far the panel rises as it opens, matching the workspace-settings
-/// modal so the desktop's floating surfaces arrive the same way.
+/// How far the panel rises as it opens, matching the workspace-settings modal so the desktop's
+/// floating surfaces arrive the same way.
 pub const PANEL_RISE_PX: f64 = 20.0;
 
 /// The scale the panel settles from as it opens.
 pub const PANEL_START_SCALE: f64 = 0.97;
 
-/// `(alpha, dy, scale)` for the panel of workspaces at the overview's
-/// `progress` (already on the zoom's spring, so the exit is the same motion
-/// reversed): it rises the last 20px and settles from 0.97 as the windows
-/// arrive in the picture beside it.
+/// `(alpha, dy, scale)` for the panel of workspaces at the overview's `progress` (already on the
+/// zoom's spring, so the exit is the same motion reversed): it rises the last 20px and settles from
+/// 0.97 as the windows arrive in the picture beside it.
 pub fn panel_curve(progress: f32) -> (f32, f64, f64) {
     let o = f64::from(progress.clamp(0.0, 1.0));
     let alpha = f32_of_f64(o);
@@ -45,16 +42,14 @@ pub fn panel_curve(progress: f32) -> (f32, f64, f64) {
     (alpha, dy, scale)
 }
 
-/// The overview's density, resolved from the theme once per layout pass so
-/// hit-testing (which has no theme in hand) reads the numbers paint does.
-///
-/// Every vertical extent is a line height at the size the text is drawn
-/// with, plus spacing steps: larger text grows the panel instead of
-/// putting its lines on top of one another.
+/// The overview's density, resolved from the theme once per layout pass so hit-testing (which has
+/// no theme in hand) reads the numbers paint does.
+/// Every vertical extent is a line height at the size the text is drawn with, plus spacing steps:
+/// larger text grows the panel instead of putting its lines on top of one another.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Metrics {
-    /// Inset from the display's edge, and the smallest gap the panel keeps
-    /// from its top and bottom (`s12`).
+    /// Inset from the display's edge, and the smallest gap the panel keeps from its top and bottom
+    /// (`s12`).
     pub margin: f64,
     /// Widest the panel gets alone: the readable width.
     pub panel_width: f64,
@@ -70,8 +65,7 @@ pub(super) struct Metrics {
     pub row_radius: f64,
     /// Line height of the current workspace's name; faces centre on it.
     pub name_lh: f64,
-    /// The "you are here" block: the name line, `s1`, the access line and
-    /// `s6` of air.
+    /// The "you are here" block: the name line, `s1` , the access line and `s6` of air.
     pub here_h: f64,
     pub caption_h: f64,
     pub caption_text_dy: f64,
@@ -82,8 +76,7 @@ pub(super) struct Metrics {
     pub chip_h: f64,
     /// Gutter above the picture inside the panel (`s3`).
     pub window_gap: f64,
-    /// The air closing the "you are here" block (`s6`); the picture takes
-    /// its place.
+    /// The air closing the "you are here" block (`s6`); the picture takes its place.
     pub here_air: f64,
     pub s1: f64,
     pub s2: f64,
@@ -109,8 +102,8 @@ impl Metrics {
         Self {
             margin: f64::from(spacing.s12),
             panel_width: f64::from(tokens.metrics.readable_width),
-            // The column and the picture keep the base density's widths:
-            // larger text grows rows, not the split of the display.
+            // The column and the picture keep the base density's widths: larger text grows rows,
+            // not the split of the display.
             column_width: f64::from(ui::tokens::Metrics::BASE.overview_panel_width),
             min_picture_width: f64::from(ui::tokens::Metrics::BASE.overview_picture_min_width),
             sheet_floor: f64::from(tokens.metrics.panel_width_sheet),
@@ -156,8 +149,7 @@ pub(super) struct PictureStrip {
     pub renamable: bool,
     /// The strip with focus.
     pub focused: bool,
-    /// Every tab of every window, left to right, each window's tabs
-    /// together.
+    /// Every tab of every window, left to right, each window's tabs together.
     pub windows: Vec<SwitcherWindow>,
     /// Each one's size on the display.
     pub sizes: Vec<Size>,
@@ -177,8 +169,7 @@ pub(super) struct Picture {
 }
 
 impl Picture {
-    /// Every pictured window in reading order, with its strip's index and
-    /// its index in the strip.
+    /// Every pictured window in reading order, with its strip's index and its index in the strip.
     pub fn windows(&self) -> impl Iterator<Item = (usize, usize, &SwitcherWindow)> {
         self.strips.iter().enumerate().flat_map(|(si, strip)| {
             strip
@@ -195,7 +186,7 @@ impl Picture {
         Some(place.wells.get(wi)?.union(*place.titles.get(wi)?))
     }
 
-    /// Strip `si`'s window whose tab is `tab`.
+    /// Strip `si` 's window whose tab is `tab` .
     pub fn find(&self, tab: TabId) -> Option<(usize, usize, &SwitcherWindow)> {
         self.windows()
             .find(|(_, _, window)| window.address.tab == tab)
@@ -237,8 +228,7 @@ impl StripControl {
 }
 
 impl OverviewPanel {
-    /// Take the theme's density, and keep the scroll and the selection
-    /// valid for it.
+    /// Take the theme's density, and keep the scroll and the selection valid for it.
     pub(super) fn resolve_layout(&mut self, theme: &Theme) {
         let metrics = Metrics::for_theme(theme);
         let grid = GridMetrics::for_theme(theme);
@@ -266,8 +256,8 @@ impl OverviewPanel {
         self.desk.cards.iter().find(|card| card.is_current)
     }
 
-    /// How many share rows the "shared out of here" list draws: none when
-    /// the workspace shares nothing.
+    /// How many share rows the "shared out of here" list draws: none when the workspace shares
+    /// nothing.
     pub(super) fn share_rows(card: &WorkspaceCard) -> usize {
         let shown = card.shares.len().min(SHARES_MAX_ROWS);
         shown.saturating_add(usize::from(card.shares.len() > shown))
@@ -286,8 +276,8 @@ impl OverviewPanel {
         self.metrics.here_h + self.windows_row_height() + self.shares_height()
     }
 
-    /// Rows of the "go to" list: every workspace but the one you are in, then
-    /// "New workspace" and "Join a workspace…".
+    /// Rows of the "go to" list: every workspace but the one you are in, then "New workspace" and
+    /// "Join a workspace…".
     pub(super) fn list_slots(&self) -> usize {
         let workspaces = self
             .desk
@@ -306,14 +296,13 @@ impl OverviewPanel {
         (k * (m.workspace_row_h + m.workspace_row_gap) - m.workspace_row_gap).max(0.0)
     }
 
-    /// The display is too small for a floating panel: the overview is a
-    /// page filling it.
+    /// The display is too small for a floating panel: the overview is a page filling it.
     pub(super) fn uses_full_window(&self) -> bool {
         self.rect.width().min(self.rect.height()) < self.metrics.sheet_floor
     }
 
-    /// The picture sits beside the panel of workspaces: the display is wide
-    /// enough for both. Otherwise the panel holds it.
+    /// The picture sits beside the panel of workspaces: the display is wide enough for both.
+    /// Otherwise the panel holds it.
     pub(super) fn beside_picture(&self) -> bool {
         let m = self.metrics;
         !self.uses_full_window()
@@ -332,8 +321,8 @@ impl OverviewPanel {
         }
     }
 
-    /// On a constrained display the whole body scrolls: a pinned header
-    /// must never take the list's last reachable row.
+    /// On a constrained display the whole body scrolls: a pinned header must never take the list's
+    /// last reachable row.
     pub(super) fn scrolls_whole_panel(&self) -> bool {
         let m = self.metrics;
         self.uses_full_window()
@@ -350,8 +339,8 @@ impl OverviewPanel {
             }
     }
 
-    /// The panel: centred alone, at the display's trailing edge beside the
-    /// picture, sized to what it has to say and never off screen.
+    /// The panel: centred alone, at the display's trailing edge beside the picture, sized to what
+    /// it has to say and never off screen.
     pub(super) fn panel_rect(&self) -> Rect {
         let m = self.metrics;
         let area = self.rect;
@@ -379,8 +368,8 @@ impl OverviewPanel {
         self.panel_rect().inset(-self.metrics.pad)
     }
 
-    /// The "you are here" block: the current workspace's identity, access and
-    /// people, and its picture when the panel holds it.
+    /// The "you are here" block: the current workspace's identity, access and people, and its
+    /// picture when the panel holds it.
     pub(super) fn here_rect(&self) -> Rect {
         let c = self.content_rect();
         let top = self.content_top();
@@ -436,7 +425,7 @@ impl OverviewPanel {
         (header + self.content_height() - self.viewport_height()).max(0.0)
     }
 
-    /// List slot `slot`, panned by the scroll.
+    /// List slot `slot` , panned by the scroll.
     pub(super) fn list_slot_rect(&self, slot: usize) -> Rect {
         let c = self.content_rect();
         let m = self.metrics;
@@ -450,8 +439,8 @@ impl OverviewPanel {
         Rect::new(c.x0, y0, c.x1, y0 + m.workspace_row_h)
     }
 
-    /// The list slot workspace `idx` occupies: the workspace you are in has none (it
-    /// is the block at the top), every other keeps its order.
+    /// The list slot workspace `idx` occupies: the workspace you are in has none (it is the block
+    /// at the top), every other keeps its order.
     pub(super) fn slot_of(&self, idx: usize) -> Option<usize> {
         match self.here_index() {
             Some(here) if here == idx => None,
@@ -460,8 +449,8 @@ impl OverviewPanel {
         }
     }
 
-    /// Workspace `idx`: the "you are here" block for the workspace you are in, its
-    /// list row for any other.
+    /// Workspace `idx` : the "you are here" block for the workspace you are in, its list row for
+    /// any other.
     pub fn row_rect(&self, idx: usize) -> Rect {
         match self.slot_of(idx) {
             None => self.here_rect(),
@@ -512,8 +501,8 @@ impl OverviewPanel {
         self.join_rect().and_then(|rect| self.in_band(rect))
     }
 
-    /// The Leave control on workspace `idx` when it is a site's workspace, at
-    /// its row's trailing edge.
+    /// The Leave control on workspace `idx` when it is a site's workspace, at its row's trailing
+    /// edge.
     pub(super) fn leave_rect(&self, idx: usize) -> Option<Rect> {
         let card = self.desk.cards.get(idx)?;
         if !self.desk.leavable.contains(&card.id) {
@@ -577,9 +566,8 @@ impl OverviewPanel {
         self.scroll_y = y.clamp(0.0, self.max_scroll_y());
     }
 
-    /// The workspace at `p`, by its place among the cards. A row panned out of
-    /// the list's band cannot be hit: a click never lands on a workspace nobody
-    /// can see.
+    /// The workspace at `p` , by its place among the cards. A row panned out of the list's band
+    /// cannot be hit: a click never lands on a workspace nobody can see.
     pub fn hit_workspace(&self, p: Point) -> Option<usize> {
         if !self.content_rect().contains(p) {
             return None;
@@ -595,14 +583,12 @@ impl OverviewPanel {
 
     // ---- The picture of the workspace you are in ----
 
-    /// Whether the overview pictures this workspace: it has strips and the
-    /// host shows its windows.
+    /// Whether the overview pictures this workspace: it has strips and the host shows its windows.
     pub(super) fn shows_windows(&self) -> bool {
         !self.desk.hide_windows && self.here_card().is_some_and(|card| !card.strips.is_empty())
     }
 
-    /// Height the picture adds to the "here" block when the panel holds
-    /// it; nothing beside it.
+    /// Height the picture adds to the "here" block when the panel holds it; nothing beside it.
     pub(super) fn windows_row_height(&self) -> f64 {
         if self.beside_picture() || !self.shows_windows() {
             return 0.0;
@@ -611,8 +597,8 @@ impl OverviewPanel {
         self.metrics.window_gap + band_height(strips, &self.grid, self.grid.band)
     }
 
-    /// Where the picture lies: beside the panel, or in the "here" block
-    /// inside it (panned with the panel's scroll).
+    /// Where the picture lies: beside the panel, or in the "here" block inside it (panned with the
+    /// panel's scroll).
     fn grid_area(&self, strips: usize) -> Rect {
         let m = self.metrics;
         if self.beside_picture() {
@@ -646,8 +632,7 @@ impl OverviewPanel {
             .find(|strip| strip.is_current)
             .or_else(|| card.strips.first())
             .map(|strip| strip.id);
-        // A window not laid out on the host stands at its share of the
-        // display.
+        // A window not laid out on the host stands at its share of the display.
         let display = self.rect.size();
         card.strips
             .iter()
@@ -677,8 +662,8 @@ impl OverviewPanel {
                             };
                             Size::new(display.width * share, display.height * 0.9)
                         });
-                    // A window's other tabs stand beside it, narrower: they
-                    // are the same window, not windows of their own.
+                    // A window's other tabs stand beside it, narrower: they are the same window,
+                    // not windows of their own.
                     let behind = Size::new(
                         (size.height * BEHIND_TAB_ASPECT).min(size.width),
                         size.height,
@@ -744,8 +729,8 @@ impl OverviewPanel {
         Picture { strips, places }
     }
 
-    /// Where pictured windows can be seen and pressed: the display beside
-    /// the panel, the panel's band when it holds them.
+    /// Where pictured windows can be seen and pressed: the display beside the panel, the panel's
+    /// band when it holds them.
     pub(super) fn grid_clip(&self) -> Rect {
         if self.beside_picture() {
             self.rect
@@ -774,7 +759,7 @@ impl OverviewPanel {
             .collect()
     }
 
-    /// Bounds of the `index`th pictured window in reading order.
+    /// Bounds of the `index` th pictured window in reading order.
     #[cfg(test)]
     pub(super) fn window_tile_rect(&self, index: usize) -> Rect {
         let picture = self.picture();
@@ -793,7 +778,7 @@ impl OverviewPanel {
             .reduce(|all, tile| all.union(tile))
     }
 
-    /// The pictured window under `p`.
+    /// The pictured window under `p` .
     pub fn window_at(&self, p: Point) -> Option<TabId> {
         if !self.grid_clip().contains(p) {
             return None;
@@ -805,7 +790,7 @@ impl OverviewPanel {
             .map(|(_, _, window)| window.address.tab)
     }
 
-    /// The strip of the picture whose place holds `p`.
+    /// The strip of the picture whose place holds `p` .
     pub(super) fn strip_at(&self, picture: &Picture, p: Point) -> Option<StripId> {
         if !self.grid_clip().contains(p) {
             return None;
@@ -818,8 +803,8 @@ impl OverviewPanel {
             .map(|strip| strip.id)
     }
 
-    /// The workspace a carried window would land in: any workspace but the one you
-    /// are in, under the pointer or finger.
+    /// The workspace a carried window would land in: any workspace but the one you are in, under
+    /// the pointer or finger.
     pub(super) fn drop_target(&self) -> Option<usize> {
         let press = self
             .press
@@ -828,16 +813,15 @@ impl OverviewPanel {
             .filter(|index| Some(*index) != self.here_index())
     }
 
-    /// The strip the keyboard is in: the selected window's, else the strip
-    /// with focus.
+    /// The strip the keyboard is in: the selected window's, else the strip with focus.
     pub(super) fn keyboard_strip(&self, picture: &Picture) -> Option<usize> {
         self.window_selection
             .and_then(|tab| picture.find(tab).map(|(si, _, _)| si))
             .or_else(|| picture.strips.iter().position(|strip| strip.focused))
     }
 
-    /// The icon buttons at the end of strip `si`'s name line: renaming and
-    /// moving are for strips this machine names.
+    /// The icon buttons at the end of strip `si` 's name line: renaming and moving are for strips
+    /// this machine names.
     pub(super) fn strip_controls(&self, picture: &Picture, si: usize) -> Vec<(StripControl, Rect)> {
         let (Some(strip), Some(place)) = (picture.strips.get(si), picture.places.get(si)) else {
             return Vec::new();
@@ -869,8 +853,8 @@ impl OverviewPanel {
         placed
     }
 
-    /// Whether strip `si`'s controls show: the pointer is over the strip
-    /// or the keyboard is in it, and its name is not being typed.
+    /// Whether strip `si` 's controls show: the pointer is over the strip or the keyboard is in it,
+    /// and its name is not being typed.
     pub(super) fn strip_controls_shown(&self, picture: &Picture, si: usize) -> bool {
         let hovered = self.cursor.is_some_and(|p| {
             picture
@@ -888,8 +872,8 @@ impl OverviewPanel {
         (hovered || keyboard) && !naming
     }
 
-    /// Where strip `si`'s name field is while its name is typed: its name
-    /// line, short of the controls.
+    /// Where strip `si` 's name field is while its name is typed: its name line, short of the
+    /// controls.
     pub(super) fn naming_field(&self, picture: &Picture, si: usize) -> Option<Rect> {
         let place = picture.places.get(si)?;
         let g = self.grid;

@@ -1,13 +1,10 @@
-//! This device's MLS vault: the master key the platform secret store keeps
-//! for collaboration, and the state root it seals.
-//!
-//! The vault hands the channel encryption service ([`super::Channels`]) one
-//! key derived from the master key and the directory where sealed channel
-//! state lives. MLS group membership follows the workspace's access policy
-//! through that service's participants; nothing here writes membership.
-//!
-//! The layout is the one earlier sessions wrote, byte for byte: a device that
-//! kept its sealed channel state has it opened here, never replaced.
+//! This device's MLS vault: the master key the platform secret store keeps for collaboration, and
+//! the state root it seals.
+//! The vault hands the channel encryption service ([`super::Channels`]) one key derived from the
+//! master key and the directory where sealed channel state lives. MLS group membership follows the
+//! workspace's access policy through that service's participants; nothing here writes membership.
+//! The layout is the one earlier sessions wrote, byte for byte: a device that kept its sealed
+//! channel state has it opened here, never replaced.
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use std::collections::BTreeMap;
@@ -20,15 +17,13 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use zeroize::Zeroizing;
 
-/// `registry.postcard` in the layout earlier builds wrote. Its presence marks
-/// a vault whose master key must already be in the secret store, so the file
-/// stays. Its entries named group, key-package and snapshot-receipt records of
-/// a retired MLS lifecycle authority; nothing reads them, and
+/// `registry.postcard` in the layout earlier builds wrote. Its presence marks a vault whose master
+/// key must already be in the secret store, so the file stays. Its entries named group, key-package
+/// and snapshot-receipt records of a retired MLS lifecycle authority; nothing reads them, and
 /// [`MlsVault::open`] clears them.
-///
-/// Postcard is not self-describing: the field order and wire types here must
-/// not change, or an existing file stops decoding and the vault stops opening.
-/// The 32-byte keys were transparent handle newtypes, which encode the same.
+/// Postcard is not self-describing: the field order and wire types here must not change, or an
+/// existing file stops decoding and the vault stops opening. The 32-byte keys were transparent
+/// handle newtypes, which encode the same.
 #[derive(Default, Serialize, Deserialize)]
 struct RetiredRegistry {
     groups: BTreeMap<[u8; 32], RetiredGroupRecord>,
@@ -59,9 +54,8 @@ struct RetiredSnapshotRecord {
     envelope_file: String,
 }
 
-/// This device's vault: the master key the platform secret store keeps for
-/// collaboration, and the state root it seals. Only ciphertext is written to
-/// disk.
+/// This device's vault: the master key the platform secret store keeps for collaboration, and the
+/// state root it seals. Only ciphertext is written to disk.
 pub(crate) struct MlsVault {
     root: PathBuf,
     master_key: Zeroizing<[u8; 32]>,
@@ -85,14 +79,14 @@ impl MlsVault {
         self.root.join("channels")
     }
 
-    /// The key sealing this device's channel state, derived from the master
-    /// key under its own domain so it seals nothing else.
+    /// The key sealing this device's channel state, derived from the master key under its own
+    /// domain so it seals nothing else.
     pub(crate) fn channel_state_key(&self) -> channel_crypto::VaultKey {
         channel_crypto::VaultKey::new(self.channel_state_key_bytes())
     }
 
-    /// The bytes of [`Self::channel_state_key`]. Every device's sealed
-    /// channel state depends on this derivation staying byte-identical.
+    /// The bytes of [`Self::channel_state_key`]. Every device's sealed channel state depends on
+    /// this derivation staying byte-identical.
     fn channel_state_key_bytes(&self) -> [u8; 32] {
         let mut hash = Sha256::new();
         hash.update(b"tilo.channel-state-key.v1");
@@ -143,7 +137,7 @@ impl MlsVault {
     }
 }
 
-/// Where the secret store keeps the master key of the vault at `root`.
+/// Where the secret store keeps the master key of the vault at `root` .
 fn master_key_locator(root: &Path) -> String {
     format!(
         "mls-master-{}",
@@ -151,9 +145,9 @@ fn master_key_locator(root: &Path) -> String {
     )
 }
 
-/// Rewrite `registry.postcard` without the retired records, keeping the file
-/// as the marker [`MlsVault::open`] checks. Best-effort: the records are
-/// unread, so failing to drop them costs only their bytes.
+/// Rewrite `registry.postcard` without the retired records, keeping the file as the marker
+/// [`MlsVault::open`] checks. Best-effort: the records are unread, so failing to drop them costs
+/// only their bytes.
 fn clear_retired_registry(path: &Path) {
     let cleared = postcard::to_allocvec(&RetiredRegistry::default())
         .map_err(|error| error.to_string())
@@ -163,12 +157,11 @@ fn clear_retired_registry(path: &Path) {
     }
 }
 
-/// Remove what the retired MLS lifecycle authority and its snapshot receipts
-/// left in `root`: the authority's ledger directory, every compaction
-/// envelope copied to `snapshot-*.op`, and the `group-*.mls` and
-/// `key-package-*.mls` files its registry named. Nothing reads them. Sealed
-/// channel state lives under `channels/` and is untouched. Best-effort, so a
-/// file that cannot be removed never keeps the vault from opening.
+/// Remove what the retired MLS lifecycle authority and its snapshot receipts left in `root` : the
+/// authority's ledger directory, every compaction envelope copied to `snapshot-*.op` , and the
+/// `group-*.mls` and `key-package-*.mls` files its registry named. Nothing reads them. Sealed
+/// channel state lives under `channels/` and is untouched. Best-effort, so a file that cannot be
+/// removed never keeps the vault from opening.
 fn remove_retired_files(root: &Path) {
     let authority = root.join("authority");
     if fs::symlink_metadata(&authority).is_ok()
@@ -221,9 +214,8 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 /// The secret-store namespace holding the MLS vault master keys.
 const MLS_SECRETS_APP: &str = "so.tilo.collaboration.mls";
 
-/// The platform secret store: the Secret Service on Linux, the login Keychain
-/// on macOS, or the sealed file store a headless machine names with
-/// `TILO_SECRETS_DIR`.
+/// The platform secret store: the Secret Service on Linux, the login Keychain on macOS, or the
+/// sealed file store a headless machine names with `TILO_SECRETS_DIR` .
 fn mls_secrets() -> tilo_secrets::SecretStore {
     tilo_secrets::SecretStore::for_app(MLS_SECRETS_APP)
 }
@@ -256,9 +248,8 @@ fn secret_service_load(locator: &str) -> Result<Zeroizing<[u8; 32]>, String> {
     Ok(Zeroizing::new(key))
 }
 
-/// A key stored by earlier builds through `secret-tool` under their own
-/// attributes; `None` when there is none (or no `secret-tool`). The caller
-/// moves it into the platform store.
+/// A key stored by earlier builds through `secret-tool` under their own attributes; `None` when
+/// there is none (or no `secret-tool` ). The caller moves it into the platform store.
 fn legacy_secret_tool_load(locator: &str) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
     let Ok(output) = bounded_command::run(
         "secret-tool",
@@ -294,9 +285,8 @@ mod tests {
         hex::decode(text.trim()).expect("the fixture is hex")
     }
 
-    /// Keep this thread's secrets in memory and give the vault at `root` a
-    /// known master key, so `open` neither reaches the user's secret store
-    /// nor generates a fresh key.
+    /// Keep this thread's secrets in memory and give the vault at `root` a known master key, so
+    /// `open` neither reaches the user's secret store nor generates a fresh key.
     fn seed_master_key(root: &Path, key: [u8; 32]) -> tilo_secrets::SecretsScope {
         let scope = tilo_secrets::scope_thread(tilo_secrets::memory_backend());
         secret_service_store(&master_key_locator(root), &key).expect("the master key");

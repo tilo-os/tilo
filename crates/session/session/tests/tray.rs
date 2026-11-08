@@ -1,7 +1,6 @@
-//! A running application's status-notifier item, as the session shows it: an
-//! application registers over the session bus, the bar names its icon to
-//! assistive technology, and choosing one of its menu entries reaches the
-//! application.
+//! A running application's status-notifier item, as the session shows it: an application registers
+//! over the session bus, the bar names its icon to assistive technology, and choosing one of its
+//! menu entries reaches the application.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -42,8 +41,8 @@ const LOCK_ENTRY: i32 = 1;
 /// What the fake application heard from the desktop, oldest first.
 type Calls = Arc<Mutex<Vec<String>>>;
 
-/// A status-notifier item as an application publishes one: its name, an
-/// icon it sends itself, and the object path of its menu.
+/// A status-notifier item as an application publishes one: its name, an icon it sends itself, and
+/// the object path of its menu.
 struct FakeItem {
     calls: Calls,
 }
@@ -149,15 +148,15 @@ impl FakeMenu {
     }
 }
 
-/// Step `session` until `asked` answers: what it waits for is a bus
-/// conversation on another runtime, which a busy builder can take many steps
-/// to land, so it waits for the condition itself rather than for a while.
+/// Step `session` until `asked` answers: what it waits for is a bus conversation on another
+/// runtime, which a busy builder can take many steps to land, so it waits for the condition itself
+/// rather than for a while.
 #[track_caller]
 fn until<T>(session: &mut Session, what: &str, mut asked: impl FnMut(&Session) -> Option<T>) -> T {
     common::wait_for(session, what, |session| asked(session))
 }
 
-/// The resource published for the tray menu entry labelled `label`.
+/// The resource published for the tray menu entry labelled `label` .
 fn entry_resource(resources: &[ResourceSpec], label: &str) -> Option<String> {
     resources.iter().find_map(|resource| {
         if resource.kind == tilo_tray_host::service::ENTRY_KIND && resource.label == label {
@@ -168,8 +167,8 @@ fn entry_resource(resources: &[ResourceSpec], label: &str) -> Option<String> {
     })
 }
 
-/// A headless session whose desktop services serve a session bus of their
-/// own, with the services kept alive.
+/// A headless session whose desktop services serve a session bus of their own, with the services
+/// kept alive.
 fn session_on(bus: &PrivateBus) -> (Session, Rc<DesktopServices>) {
     let wake = tilo_service::LoopWake::default();
     let (side, link) = tilo_session::portal_link::channel(wake.handle());
@@ -205,9 +204,8 @@ fn session_on(bus: &PrivateBus) -> (Session, Rc<DesktopServices>) {
     (session, desktop)
 }
 
-/// An application registered with the watcher on `bus`: its item and menu
-/// served on its own connection, which stays open while the returned
-/// connection lives.
+/// An application registered with the watcher on `bus` : its item and menu served on its own
+/// connection, which stays open while the returned connection lives.
 fn register_item(desktop: &DesktopServices, bus: &PrivateBus, calls: &Calls) -> zbus::Connection {
     desktop.runtime().block_on(async {
         let app = zbus::connection::Builder::address(bus.address())
@@ -245,8 +243,8 @@ fn register_item(desktop: &DesktopServices, bus: &PrivateBus, calls: &Calls) -> 
     })
 }
 
-/// A running application's item appears on the bar named to assistive
-/// technology, and choosing one of its menu entries reaches the application.
+/// A running application's item appears on the bar named to assistive technology, and choosing one
+/// of its menu entries reaches the application.
 #[test]
 fn an_indicator_appears_in_the_bar_and_its_menu_item_runs_its_action() {
     let _settled = ui::motion::testing::settled();
@@ -273,8 +271,8 @@ fn an_indicator_appears_in_the_bar_and_its_menu_item_runs_its_action() {
     });
     assert_eq!(named, "KeePassXC", "the bar names the application's item");
 
-    // Its menu is published beside every other action, and choosing an entry
-    // reaches the application.
+    // Its menu is published beside every other action, and choosing an entry reaches the
+    // application.
     let lock = until(&mut session, "the item's menu", |session| {
         entry_resource(&session.resources(), "Lock database")
     });

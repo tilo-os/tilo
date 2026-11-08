@@ -1,14 +1,11 @@
-//! Which screen is which: each display says its number and name in a corner
-//! of itself for a moment after the person presses Identify in Settings.
-//!
-//! Settings numbers the displays on its arrangement canvas; the same numbers
-//! and names stand on the physical screens, so "2" on the canvas is the "2"
-//! the person is looking at. The card keeps out of the way of the arranging:
-//! it stands in a display's bottom-left corner, never over its centre, and it
-//! goes on its own after [`HOLD`], fading out on the standard confirmation's
-//! exit. Nothing counts down on a timer of its own: the card is up while the
-//! desk's clock says so, and asks for the frame that takes it away
-//! ([`DisplayIdentify::next_wake_deadline`]).
+//! Which screen is which: each display says its number and name in a corner of itself for a moment
+//! after the person presses Identify in Settings.
+//! Settings numbers the displays on its arrangement canvas; the same numbers and names stand on the
+//! physical screens, so "2" on the canvas is the "2" the person is looking at. The card keeps out
+//! of the way of the arranging: it stands in a display's bottom-left corner, never over its centre,
+//! and it goes on its own after [`HOLD`], fading out on the standard confirmation's exit. Nothing
+//! counts down on a timer of its own: the card is up while the desk's clock says so, and asks for
+//! the frame that takes it away ([`DisplayIdentify::next_wake_deadline`]).
 
 use ui::a11y::{AccessNode, Politeness, Role};
 use ui::motion::Transient;
@@ -19,12 +16,11 @@ use ui::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-/// How long each display says which one it is: long enough to look from the
-/// canvas to the screens, short enough not to be in the way.
+/// How long each display says which one it is: long enough to look from the canvas to the screens,
+/// short enough not to be in the way.
 pub const HOLD: Duration = Duration::from_secs(3);
 
-/// One display's card: the number Settings shows it by, and the name Settings
-/// calls it.
+/// One display's card: the number Settings shows it by, and the name Settings calls it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Label {
     /// The display, by its monitor as the desktop names it.
@@ -35,12 +31,11 @@ pub struct Label {
     pub name: String,
 }
 
-/// What Settings asked for: which request it is (asking again shows the cards
-/// again) and each display's card.
+/// What Settings asked for: which request it is (asking again shows the cards again) and each
+/// display's card.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ask {
-    /// The request's stamp: the moment it was written, which changes with
-    /// every press of Identify.
+    /// The request's stamp: the moment it was written, which changes with every press of Identify.
     pub id: u64,
     /// One per display the session shows something on.
     pub labels: Vec<Label>,
@@ -69,15 +64,13 @@ pub struct DisplayIdentify {
     labels: Vec<Label>,
     /// When the cards begin to fade, as the theme read at the last paint says.
     fade_from: Option<Instant>,
-    /// The cards as painted, for assistive technology; empty while there are
-    /// none.
+    /// The cards as painted, for assistive technology; empty while there are none.
     cards: Vec<Card>,
 }
 
 impl DisplayIdentify {
-    /// Answer `ask`, once per request: asking again (a second press of
-    /// Identify) shows the cards afresh with the labels of that moment, and
-    /// no ask at all takes them away.
+    /// Answer `ask` , once per request: asking again (a second press of Identify) shows the cards
+    /// afresh with the labels of that moment, and no ask at all takes them away.
     pub fn follow(&mut self, ask: Option<Ask>, now: Instant) {
         let answering = match &ask {
             Some(ask) => self.up.is_none_or(|(id, _)| id != ask.id),
@@ -85,8 +78,8 @@ impl DisplayIdentify {
             None => self.up.is_some(),
         };
         if !answering {
-            // The request answered already stands: its cards do not start
-            // over on every pass, and no ask leaves what is up alone.
+            // The request answered already stands: its cards do not start over on every pass, and
+            // no ask leaves what is up alone.
             return;
         }
         if let Some(ask) = ask {
@@ -100,13 +93,13 @@ impl DisplayIdentify {
         self.cards.clear();
     }
 
-    /// Whether a card stands anywhere at `now`.
+    /// Whether a card stands anywhere at `now` .
     #[must_use]
     pub fn is_up(&self, now: Instant) -> bool {
         self.gone(now).is_some() && !self.labels.is_empty()
     }
 
-    /// When the cards go, while they stand at `now`.
+    /// When the cards go, while they stand at `now` .
     fn gone(&self, now: Instant) -> Option<Instant> {
         let (_, at) = self.up?;
         let gone = at.checked_add(HOLD)?;
@@ -119,14 +112,14 @@ impl DisplayIdentify {
         &self.cards
     }
 
-    /// Whether a frame is owed at `now`: the cards stand, or the last ones
-    /// still stand in the scene and must be taken away.
+    /// Whether a frame is owed at `now` : the cards stand, or the last ones still stand in the
+    /// scene and must be taken away.
     #[must_use]
     pub fn needs_redraw(&self, now: Instant) -> bool {
         self.is_up(now) || !self.cards.is_empty()
     }
 
-    /// Whether the cards fade at `now`, so the frame clock owes frames.
+    /// Whether the cards fade at `now` , so the frame clock owes frames.
     #[must_use]
     pub fn is_moving(&self, now: Instant) -> bool {
         self.is_up(now)
@@ -146,7 +139,7 @@ impl DisplayIdentify {
         })
     }
 
-    /// What the cards say to assistive technology, while they stand at `now`.
+    /// What the cards say to assistive technology, while they stand at `now` .
     #[must_use]
     pub fn accessibility(&self, now: Instant) -> Option<AccessNode> {
         if !self.is_up(now) {
@@ -171,9 +164,8 @@ impl DisplayIdentify {
         )
     }
 
-    /// Paint each display's number and name, if the cards are still up.
-    /// `displays` are the displays the desk shows, each with its rectangle in
-    /// the desk's coordinates.
+    /// Paint each display's number and name, if the cards are still up. `displays` are the displays
+    /// the desk shows, each with its rectangle in the desk's coordinates.
     pub fn draw(
         &mut self,
         displays: &[(String, Rect)],
@@ -225,8 +217,8 @@ impl DisplayIdentify {
     }
 }
 
-/// Where one display's card stands: its bottom-left corner, inset from the
-/// edges, its number and name inside the theme's padding.
+/// Where one display's card stands: its bottom-left corner, inset from the edges, its number and
+/// name inside the theme's padding.
 fn card_rect(
     display: Rect,
     number: usize,
@@ -256,8 +248,7 @@ fn card_rect(
     }
 }
 
-/// Paint one card: the panel, then the number in the accent and the name
-/// beside it.
+/// Paint one card: the panel, then the number in the accent and the name beside it.
 fn paint_card(
     card: &Card,
     label: &Label,
@@ -312,8 +303,7 @@ fn paint_card(
     }
 }
 
-/// The width a card's name wraps at, from where it starts to the card's
-/// padding.
+/// The width a card's name wraps at, from where it starts to the card's padding.
 fn name_width(card: Rect, name_x: f64, pad_x: f64) -> f32 {
     #[allow(
         clippy::cast_possible_truncation,

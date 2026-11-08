@@ -1,6 +1,6 @@
-//! The machine's first boot: which binary the unit starts, what that binary
-//! does with the flag it is given, and what it settles about the identity the
-//! machine already holds before it opens a desk.
+//! The machine's first boot: which binary the unit starts, what that binary does with the flag it
+//! is given, and what it settles about the identity the machine already holds before it opens a
+//! desk.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -52,8 +52,8 @@ fn the_machines_first_boot_sets_up_and_stops_in_the_new_session() {
         Ok(Some(OneShot::SetupOnly)),
         "setup, then the process exits: this unit is not a session"
     );
-    // The live installer's boots are disposable and must not consume the
-    // one-shot marker of the machine it installs onto.
+    // The live installer's boots are disposable and must not consume the one-shot marker of the
+    // machine it installs onto.
     assert!(
         UNIT.lines()
             .any(|line| line == "ConditionKernelCommandLine=!tilo.install"),
@@ -61,11 +61,10 @@ fn the_machines_first_boot_sets_up_and_stops_in_the_new_session() {
     );
 }
 
-/// A machine with an identity of its own: the person's trees, this device's
-/// enrolled key and certificate, and nothing else on it.
+/// A machine with an identity of its own: the person's trees, this device's enrolled key and
+/// certificate, and nothing else on it.
 struct Machine {
-    // The environment the identity lives in, restored before the directories
-    // it names are removed.
+    // The environment the identity lives in, restored before the directories it names are removed.
     _env: tilo_test_env::ScopedEnv,
     _root: tempfile::TempDir,
     home: PathBuf,
@@ -82,8 +81,8 @@ impl Machine {
     }
 }
 
-/// The record the session resolves for this account: what it reads before it
-/// decides whether the desk opens.
+/// The record the session resolves for this account: what it reads before it decides whether the
+/// desk opens.
 fn record() -> PathBuf {
     tilo_onboarding_host::identity_provisioning::DiskIdentityStore::from_env()
         .expect("the identity store")
@@ -91,8 +90,8 @@ fn record() -> PathBuf {
         .to_path_buf()
 }
 
-/// A machine whose person enrolled this device: an identity provisioned the
-/// way the installer and the host package provision one.
+/// A machine whose person enrolled this device: an identity provisioned the way the installer and
+/// the host package provision one.
 fn machine() -> Machine {
     let root = tempfile::tempdir().expect("a directory for this machine");
     let config = root.path().join("config");
@@ -124,7 +123,7 @@ fn machine() -> Machine {
     }
 }
 
-/// The resource publishing `action`, while the session publishes it at all.
+/// The resource publishing `action` , while the session publishes it at all.
 fn publisher(session: &Session, action: &str) -> Option<String> {
     fn find(resources: &[tilo_actions::ResourceSpec], action: &str) -> Option<String> {
         resources.iter().find_map(|resource| {
@@ -144,9 +143,9 @@ fn a_verified_identity_opens_the_desk() {
     assert_eq!(startup::identity(), Identity::Desk);
 }
 
-/// Date this device's certificate `ahead` from now, signed by the person's
-/// own root as the identity's issuer dates one: the machine's clock is the
-/// only thing that is off. Returns the instant the certificate becomes valid.
+/// Date this device's certificate `ahead` from now, signed by the person's own root as the
+/// identity's issuer dates one: the machine's clock is the only thing that is off. Returns the
+/// instant the certificate becomes valid.
 fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
     let issued_at_ns = tilo_clock::unix_now_ns()
         .saturating_add(u64::try_from(ahead.as_nanos()).expect("a wait in nanoseconds"));
@@ -164,9 +163,9 @@ fn certificate_dated_ahead(machine: &Machine, ahead: Duration) -> u64 {
     issued_at_ns
 }
 
-/// A certificate the clock reads as not yet valid leaves the identity intact:
-/// startup answers at once and hands the session the wait for the clock, which
-/// opens in front of the desk instead of the desk.
+/// A certificate the clock reads as not yet valid leaves the identity intact: startup answers at
+/// once and hands the session the wait for the clock, which opens in front of the desk instead of
+/// the desk.
 #[test]
 fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
     let machine = machine();
@@ -181,8 +180,8 @@ fn a_certificate_the_clock_reads_as_not_yet_valid_waits_for_the_clock() {
     assert_eq!(refusal.valid_at_ns(), Some(issued_at_ns));
 }
 
-/// The waiting screen stands in front of the desk while the clock is behind
-/// the certificate, says so, and goes away by itself once the clock passes.
+/// The waiting screen stands in front of the desk while the clock is behind the certificate, says
+/// so, and goes away by itself once the clock passes.
 #[test]
 fn the_wait_for_the_clock_shows_until_the_desk_can_open() {
     let machine = machine();
@@ -262,8 +261,8 @@ fn a_chain_that_does_not_verify_opens_trusted_recovery_and_is_never_replaced() {
     markers
         .remove(IDENTITY_RECOVERY_ENV)
         .remove(IdentityProblem::RECOVERY_ENV);
-    // A certificate whose signature does not hold: the record and every key
-    // are this person's, and the copy of the identity is what is damaged.
+    // A certificate whose signature does not hold: the record and every key are this person's, and
+    // the copy of the identity is what is damaged.
     let mut cert =
         persist::read_device_cert(&machine.paths.device_cert).expect("this device's certificate");
     cert.signature[0] ^= 0xff;
@@ -323,9 +322,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
     let machine = machine();
-    // A node's session, certified when the node was installed: a member
-    // certificate its person signed, this device's key, no root beside it and
-    // no record of the person yet.
+    // A node's session, certified when the node was installed: a member certificate its person
+    // signed, this device's key, no root beside it and no record of the person yet.
     let person = SigningKey::from_bytes(&[7; 32]);
     let (device, _) =
         persist::load_or_create_device_key(&machine.paths).expect("this device's key");
@@ -340,8 +338,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         signature: [0; 64],
     };
     sign_device_cert(&mut cert, &person).expect("the person's signature");
-    // The node was enrolled from the factory, never set up here: no root and
-    // no key of an identity of its own beside the device key the imager left.
+    // The node was enrolled from the factory, never set up here: no root and no key of an identity
+    // of its own beside the device key the imager left.
     for path in [
         &machine.paths.user_privkey,
         &machine.paths.user_pubkey,
@@ -361,9 +359,8 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
         "a login that holds its person's enrollment opens that person's desk"
     );
 
-    // The record the login took up is the person's, selected as the one this
-    // session acts as, and nothing minted a root or a second identity beside
-    // it.
+    // The record the login took up is the person's, selected as the one this session acts as, and
+    // nothing minted a root or a second identity beside it.
     let active = std::fs::read_to_string(personal.join("active"))
         .expect("the login selected the record it took up");
     let taken_up = personal.join(format!("{}.json", active.trim()));
@@ -393,10 +390,10 @@ fn an_enrolled_device_takes_up_its_persons_identity_at_login() {
     );
 }
 
-/// The session binary's answer to `flags` on `machine`, as the login runs it.
+/// The session binary's answer to `flags` on `machine` , as the login runs it.
 fn run_session(machine: &Machine, flags: &[&str]) -> std::process::Output {
-    // Started under the environment lock, which closes this test's scope while
-    // the child copies the environment.
+    // Started under the environment lock, which closes this test's scope while the child copies the
+    // environment.
     use tilo_test_env::SpawnUnderEnvLock;
     std::process::Command::new(tilo_test_env::package_binary!("tilo-session"))
         .args(flags)
@@ -444,8 +441,8 @@ fn the_session_binary_provisions_and_verifies_the_machines_identity() {
         "Tilo collaboration identity verified"
     );
 
-    // A second provisioning proves the identity that is there, and leaves it
-    // as it is: nobody is minted a second identity onto a used machine.
+    // A second provisioning proves the identity that is there, and leaves it as it is: nobody is
+    // minted a second identity onto a used machine.
     let record_before = std::fs::read(&record_path).expect("the identity record");
     let certificate_before = machine.certificate();
     let again = run_session(&machine, &["--host-desktop", "--provision-identity"]);

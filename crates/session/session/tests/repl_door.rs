@@ -41,8 +41,8 @@ fn notebook() -> (RecordService, String) {
     (service, notes.into_iter().next().expect("a note"))
 }
 
-/// The headless session with the shell as the screen, the notebook published, its agent door
-/// at `root`, admitting the programs `admit_repl` to act as the person.
+/// The headless session with the shell as the screen, the notebook published, its agent door at
+/// `root` , admitting the programs `admit_repl` to act as the person.
 fn session(
     root: &std::path::Path,
     questions: &Questions,
@@ -53,8 +53,7 @@ fn session(
     (session, note)
 }
 
-/// An action read as a value, rather than called: what it says of how it is
-/// called.
+/// An action read as a value, rather than called: what it says of how it is called.
 fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Repl) {
     let (named, failed) = repl.call(session, "tilo", &json!({"program": "session.overview"}));
     assert!(failed, "{named}");
@@ -64,8 +63,8 @@ fn reading_an_action_says_how_it_is_called(session: &mut Session, repl: &mut Rep
     );
 }
 
-/// Lists the apps, places the note through a `tilo` program, sees it on the shell's screen as
-/// the person's step, and takes it back with `undo`.
+/// Lists the apps, places the note through a `tilo` program, sees it on the shell's screen as the
+/// person's step, and takes it back with `undo` .
 fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &str) {
     let tools = repl.opened(session);
     assert!(
@@ -73,7 +72,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         "the door runs programs: {tools:?}"
     );
 
-    // `ls`: the apps, the session's own resources among them.
+    // `ls` : the apps, the session's own resources among them.
     let (apps, failed) = repl.call(session, "tilo_ls", &json!({}));
     assert!(!failed, "{apps}");
     assert!(
@@ -87,9 +86,9 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         "the arrangement is among the session's resources: {desk}"
     );
 
-    // `ls` lists each action as a program calls it, what it may go without included. The
-    // chrome by its key: a window's control reads under the window's name, and the desk's
-    // window is another `Desktop`.
+    // `ls` lists each action as a program calls it, what it may go without included. The chrome by
+    // its key: a window's control reads under the window's name, and the desk's window is another
+    // `Desktop` .
     let (chrome, failed) = repl.call(
         session,
         "tilo_ls",
@@ -113,8 +112,8 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         place.contains("resource: host.Resource") && place.contains("x: Option<Int> = .none"),
         "it takes the resource as a value, and may go without the rest: {place}"
     );
-    // A resource that is a value goes by a reference, as an answer's do.
-    // The notebook by its key: the launchpad's Notes card is another resource of that name.
+    // A resource that is a value goes by a reference, as an answer's do. The notebook by its key:
+    // the launchpad's Notes card is another resource of that name.
     let book = note
         .split('/')
         .next()
@@ -126,9 +125,8 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Repl, note: &s
         &json!({"path": format!("session/{book}")}),
     );
     assert!(!failed, "{notebook}");
-    // The note's own line: a reference, then the name it goes by. The
-    // listing's first line is the path as it resolves, which names the
-    // notebook by the title it shares with its note.
+    // The note's own line: a reference, then the name it goes by. The listing's first line is the
+    // path as it resolves, which names the notebook by the title it shares with its note.
     let reference = notebook
         .lines()
         .find_map(|line| {
@@ -268,9 +266,9 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
     assert!(tools.iter().any(|tool| tool == "tilo"), "{tools:?}");
 }
 
-/// What the session's services publish (the seeded apps' records) is listed through the door
-/// past the first page of the session's rows, page by page as its cursor reads on, and a note
-/// is found by its title.
+/// What the session's services publish (the seeded apps' records) is listed through the door past
+/// the first page of the session's rows, page by page as its cursor reads on, and a note is found
+/// by its title.
 #[test]
 fn a_record_the_sessions_services_publish_is_found_through_the_door() {
     let _settled = ui::motion::testing::settled();
@@ -322,7 +320,7 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         cursor = next;
     }
     // The session's records are listed, each row naming its type the way a program types it
-    // (`tasks.Tasks`, `chat.Conversations`): the name this listing is for, and the name a path
+    // (`tasks.Tasks`, `chat.Conversations` ): the name this listing is for, and the name a path
     // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
     // program writes.
     let row_of = |listed: &str, form: &str| -> String {
@@ -342,8 +340,8 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
             .filter(|name| !name.is_empty())
             .unwrap_or_else(|| panic!("the row names its record: {row}"))
     };
-    // No record is named by the kind its app publishes it under (`tl.<app>.<Type>`): a row's
-    // type column is a program form. An app's own row names the app itself (`Chat
+    // No record is named by the kind its app publishes it under (`tl.<app>.<Type>`): a row's type
+    // column is a program form. An app's own row names the app itself (`Chat
     // tl.so.tilo.lang.chat`), an id whose last part is no capitalised type.
     assert!(
         !listed.lines().any(|line| {
@@ -416,7 +414,7 @@ fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
     found
 }
 
-/// The resources `session` publishes under `label`, at any depth, as its action model holds them.
+/// The resources `session` publishes under `label` , at any depth, as its action model holds them.
 fn labelled(session: &Session, label: &str) -> Vec<tilo_actions::ResourceSpec> {
     everything(session)
         .into_iter()
@@ -469,8 +467,8 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         "the notes app's actions say what they do in German: {offered:?}"
     );
 
-    // Search matches the reader's words: the German plural finds the notebook on the desk, and
-    // the English one finds nothing, because the desk's words are German.
+    // Search matches the reader's words: the German plural finds the notebook on the desk, and the
+    // English one finds nothing, because the desk's words are German.
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
     let (answer, failed) = repl.call(
@@ -489,9 +487,9 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         },
     );
     let placed_by_german = noted(&session);
-    // The English word finds nothing, because the desk's words are German: it
-    // is a sentence to the agent rather than a found resource, so it places no
-    // second notebook — it asks (shell.md §8.1, "Asking from the canvas").
+    // The English word finds nothing, because the desk's words are German: it is a sentence to the
+    // agent rather than a found resource, so it places no second notebook — it asks (shell.md §8.1,
+    // "Asking from the canvas").
     let (answer, failed) = repl.call(
         &mut session,
         "tilo",
@@ -599,9 +597,8 @@ fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
 }
 
 /// What the seeded apps keep, placed through the door, is drawn on the canvas by its own app's
-/// view, its content and not its title alone: a note found by its title shows its text. And a
-/// text finds the resource it names even where many actions name it too: "Inbox" places the
-/// inbox.
+/// view, its content and not its title alone: a note found by its title shows its text. And a text
+/// finds the resource it names even where many actions name it too: "Inbox" places the inbox.
 #[test]
 fn a_placed_record_is_drawn_through_its_own_apps_view() {
     let _settled = ui::motion::testing::settled();
@@ -679,9 +676,9 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
     );
 }
 
-/// A text naming what something is, not what it is called, places the one that kind means:
-/// "my mails" is mail's Inbox, its mailboxes' declared primary, though no word of it says
-/// "Inbox" and "my" names nothing.
+/// A text naming what something is, not what it is called, places the one that kind means: "my
+/// mails" is mail's Inbox, its mailboxes' declared primary, though no word of it says "Inbox" and
+/// "my" names nothing.
 #[test]
 fn my_mails_on_the_canvas_places_mails_root() {
     let _settled = ui::motion::testing::settled();
@@ -749,8 +746,8 @@ fn my_mails_on_the_canvas_places_mails_root() {
     );
 }
 
-/// How many pixels of `shot` in the logical rectangle `(x, y, w, h)` (scale 1) differ from
-/// the colour most of it is: what is drawn there over its background, in either theme.
+/// How many pixels of `shot` in the logical rectangle `(x, y, w, h)` (scale 1) differ from the
+/// colour most of it is: what is drawn there over its background, in either theme.
 #[allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -780,9 +777,9 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
     pixels.iter().filter(|pixel| far(**pixel, *ground)).count()
 }
 
-/// The seeded inbox placed through the door stands on the canvas as the mail app's own view
-/// of it: a seeded conversation's subject is laid out in it, and drawn where it is laid out in
-/// the snapshot `tilo-control` takes. Mail's package is loaded because the place shows it.
+/// The seeded inbox placed through the door stands on the canvas as the mail app's own view of it:
+/// a seeded conversation's subject is laid out in it, and drawn where it is laid out in the
+/// snapshot `tilo-control` takes. Mail's package is loaded because the place shows it.
 #[test]
 fn the_seeded_inbox_placed_through_the_door_is_drawn_as_mails_inbox() {
     let _settled = ui::motion::testing::settled();
@@ -855,7 +852,7 @@ fn an_app_no_place_shows_is_unloaded() {
     );
 }
 
-/// The resource of the seeded mail of the type `ty` whose label is `label`.
+/// The resource of the seeded mail of the type `ty` whose label is `label` .
 fn seeded(session: &Session, ty: &str, label: &str) -> tilo_actions::ResourceSpec {
     fn find(
         resources: &[tilo_actions::ResourceSpec],
@@ -874,8 +871,8 @@ fn seeded(session: &Session, ty: &str, label: &str) -> tilo_actions::ResourceSpe
         .unwrap_or_else(|| panic!("the seeded {ty} {label:?}"))
 }
 
-/// A change to one conversation the inbox shows reads that conversation's reading again, and
-/// no other: not the mailbox, the mail's root, its account or the other conversations.
+/// A change to one conversation the inbox shows reads that conversation's reading again, and no
+/// other: not the mailbox, the mail's root, its account or the other conversations.
 #[test]
 fn a_change_to_one_thread_rereads_only_that_threads_reading() {
     let _settled = ui::motion::testing::settled();
@@ -920,9 +917,9 @@ fn a_change_to_one_thread_rereads_only_that_threads_reading() {
     );
 }
 
-/// The start of the minute the test runs in, as the session's clock reads it: what a test
-/// watching a session at rest holds the wall clock at, so the bar's time cannot turn over
-/// inside the window it watches.
+/// The start of the minute the test runs in, as the session's clock reads it: what a test watching
+/// a session at rest holds the wall clock at, so the bar's time cannot turn over inside the window
+/// it watches.
 fn this_minute() -> ui::time::SystemTime {
     ui::time::wall()
         .checked_sub(Duration::from_secs(
@@ -932,15 +929,15 @@ fn this_minute() -> ui::time::SystemTime {
         .expect("the minute the test runs in")
 }
 
-/// A placed inbox settles: once its conversations are drawn, a session left alone runs the
-/// shell's views no more and draws no frame. A list's rows asked of the shell's own runtime go
-/// out on the turn they are asked, rather than the list taking frames until they would.
+/// A placed inbox settles: once its conversations are drawn, a session left alone runs the shell's
+/// views no more and draws no frame. A list's rows asked of the shell's own runtime go out on the
+/// turn they are asked, rather than the list taking frames until they would.
 #[test]
 fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
     let _settled = ui::motion::testing::settled();
-    // The bar draws the time, and a minute turning over is a change, not idle work: the test
-    // holds the clock at the minute it runs in, as a capture does, so what it watches at rest
-    // is the shell and nothing else.
+    // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
+    // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
+    // shell and nothing else.
     ui::time::testing::with_wall(this_minute(), || {
         let root = private_home();
         let mut session = seeded_session(root.path());
@@ -961,10 +958,9 @@ fn a_placed_inbox_settles_and_draws_nothing_while_idle() {
     });
 }
 
-/// The inbox's conversations come in together: the session reads what one run of the views
-/// read in one turn, so a placed inbox fills in as many turns as its views reach records deep
-/// (the mailbox, the mail's root, its account, the conversations), however many conversations
-/// it lists.
+/// The inbox's conversations come in together: the session reads what one run of the views read in
+/// one turn, so a placed inbox fills in as many turns as its views reach records deep (the mailbox,
+/// the mail's root, its account, the conversations), however many conversations it lists.
 #[test]
 fn a_placed_inbox_fills_in_a_turn_per_level_not_per_conversation() {
     let _settled = ui::motion::testing::settled();
@@ -1002,9 +998,9 @@ fn seeded_thread(session: &Session, id: &str) -> bool {
     find(&session.resources(), id, &format!("tl.{MAIL}.Thread"))
 }
 
-/// A service publishing the seeded apps' records, but withholding the readings of every
-/// resource of the kind `withheld` (the app that publishes it never does, or the session's
-/// watch has not seen it): what a place whose data never arrives meets.
+/// A service publishing the seeded apps' records, but withholding the readings of every resource of
+/// the kind `withheld` (the app that publishes it never does, or the session's watch has not seen
+/// it): what a place whose data never arrives meets.
 struct Withholding {
     inner: RecordService,
     withheld: &'static str,
@@ -1094,8 +1090,8 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
             collab: false,
             services: vec![Box::new(Withholding {
                 inner: apps,
-                // Every task's reading never comes: the window of the one placed has no
-                // record to draw.
+                // Every task's reading never comes: the window of the one placed has no record to
+                // draw.
                 withheld: "tl.so.tilo.lang.tasks.Task",
                 ids: std::cell::RefCell::new(None),
             })],
@@ -1143,8 +1139,7 @@ fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
         session.shell_says(NOTE_TITLE)
     });
 
-    // And the overview opens and closes, as it does on a screen all of whose places have
-    // arrived.
+    // And the overview opens and closes, as it does on a screen all of whose places have arrived.
     then_the_overview_opens_and_closes(&mut session, &mut repl);
 }
 
@@ -1170,11 +1165,10 @@ fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Repl) {
     });
 }
 
-/// The REPL's `find` is the agent's `tilo_find`, and answers by the one search the palette and
-/// text typed on the canvas run: over the same sources, with the same ranking. A text naming
-/// what something is ("my mails"), what it is called, or both, finds there what
-/// `session.place_found` places — never a second ranking that knows a note's title but not
-/// Mail's inbox.
+/// The REPL's `find` is the agent's `tilo_find` , and answers by the one search the palette and
+/// text typed on the canvas run: over the same sources, with the same ranking. A text naming what
+/// something is ("my mails"), what it is called, or both, finds there what `session.place_found`
+/// places — never a second ranking that knows a note's title but not Mail's inbox.
 #[test]
 fn the_repl_finds_what_place_found_places() {
     let _settled = ui::motion::testing::settled();
@@ -1205,8 +1199,7 @@ fn the_repl_finds_what_place_found_places() {
     let mut repl = Repl::connect(&root.path().join("agent.sock"));
     repl.opened(&mut session);
 
-    // Each text, and a word the resource it names must carry (its kind, or
-    // the app it belongs to).
+    // Each text, and a word the resource it names must carry (its kind, or the app it belongs to).
     for (text, wanted) in [
         ("my mails", "mail.Mail"),
         ("notes", "notes."),
@@ -1234,11 +1227,10 @@ fn the_repl_finds_what_place_found_places() {
             "{text:?} places a {placed_kind}, not a {wanted}: {shown:?}"
         );
 
-        // And `find` names the same rows the one search ranks, each by a
-        // path `tilo_ls` reads: the row of the place the desk just made leads
-        // where the search puts it, and a row of the kind the search sought
-        // stands among them. `find` walks the containers it can read, so a
-        // record placed out of a notebook is reached through its notebook.
+        // And `find` names the same rows the one search ranks, each by a path `tilo_ls` reads: the
+        // row of the place the desk just made leads where the search puts it, and a row of the kind
+        // the search sought stands among them. `find` walks the containers it can read, so a record
+        // placed out of a notebook is reached through its notebook.
         let (found, failed) = repl.call(&mut session, "tilo_find", &json!({"query": text}));
         assert!(!failed, "{text:?} answers: {found}");
         let rows: Vec<&str> = found
@@ -1274,8 +1266,8 @@ fn the_repl_finds_what_place_found_places() {
             "{text:?}: find names a row of a {wanted}, {shown:?}: {found}"
         );
 
-        // Each `place_found` is a step of the person's: take it back, so the
-        // next text places on its own.
+        // Each `place_found` is a step of the person's: take it back, so the next text places on
+        // its own.
         let (undone, failed) = repl.call(&mut session, "tilo", &json!({"program": "undo"}));
         assert!(!failed, "{undone}");
         until(&mut session, "the canvas cleared", |session| {

@@ -28,18 +28,17 @@ use tilo_runtime::remote_door::{
 };
 use tilo_service::Wake;
 
-/// What the session's agent door hears from the person's other devices, and
-/// how it reaches theirs.
+/// What the session's agent door hears from the person's other devices, and how it reaches theirs.
 pub(crate) struct Remote {
     /// Connections the door opened, waiting for the agent door's pass.
     arrivals: Mutex<Vec<Arrival>>,
     /// Wakes the session's loop when one arrives.
     wake: Wake,
-    /// Whether the session's agent door takes what arrives: a session that
-    /// serves no door refuses them at once.
+    /// Whether the session's agent door takes what arrives: a session that serves no door refuses
+    /// them at once.
     serving: AtomicBool,
-    /// The person's other devices' doors, once this device's endpoint has
-    /// bound and its store is open.
+    /// The person's other devices' doors, once this device's endpoint has bound and its store is
+    /// open.
     doors: OnceLock<Arc<Doors>>,
 }
 
@@ -85,8 +84,8 @@ impl Remote {
         std::mem::take(&mut *self.arrivals.lock_recover())
     }
 
-    /// Carry `stream`, whose client asked for `forward`, to that device's
-    /// door. Blocks the calling thread for as long as the connection lasts.
+    /// Carry `stream` , whose client asked for `forward` , to that device's door. Blocks the
+    /// calling thread for as long as the connection lasts.
     pub(crate) fn forward(&self, stream: UnixStream, forward: &Forward) {
         match self.doors.get() {
             Some(doors) => doors.serve_forward(stream, forward),
@@ -99,8 +98,8 @@ impl Remote {
         }
     }
 
-    /// Whether the person lets an agent from another of their devices in
-    /// without asking here, as this device's settings say now.
+    /// Whether the person lets an agent from another of their devices in without asking here, as
+    /// this device's settings say now.
     pub(crate) fn accepts_own_devices() -> bool {
         settings_store::agent_door::accepts_own_devices(&settings_store::load())
     }

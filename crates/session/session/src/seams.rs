@@ -33,12 +33,11 @@ use tilo_action_broker::services::{
 pub(crate) enum Seam<T> {
     /// Served for every app this session admits.
     Served(T),
-    /// Served where this run has what it carries: a session on no device
-    /// fabric carries no speaker groups, and one that keeps no state keeps no
-    /// shortcuts on disk.
+    /// Served where this run has what it carries: a session on no device fabric carries no speaker
+    /// groups, and one that keeps no state keeps no shortcuts on disk.
     When(Option<T>),
-    /// Not served, and why: said at session start, so a seam an app found
-    /// missing can be found here with its reason.
+    /// Not served, and why: said at session start, so a seam an app found missing can be found here
+    /// with its reason.
     NotServed(&'static str),
 }
 
@@ -173,9 +172,8 @@ impl Seams {
         }
     }
 
-    /// Each seam this session decides, in the order the broker's
-    /// [`HostServices`] names them: its name, and why it is not served
-    /// (`None` when it is).
+    /// Each seam this session decides, in the order the broker's [`HostServices`] names them: its
+    /// name, and why it is not served (`None` when it is).
     pub(crate) fn decisions(&self) -> Vec<(&'static str, Option<&'static str>)> {
         vec![
             ("approved_checks", self.approved_checks.decision()),
@@ -231,9 +229,8 @@ impl Seams {
     }
 }
 
-/// What each installed app declared it may do on the action door, read from
-/// the lists search keeps: a ceiling the broker decides an app's calls
-/// against, never a grant.
+/// What each installed app declared it may do on the action door, read from the lists search keeps:
+/// a ceiling the broker decides an app's calls against, never a grant.
 pub(crate) fn declared_access(
     lists: crate::lists::Lists,
 ) -> tilo_action_broker::app_actions::AppActionAccessResolver {
@@ -247,16 +244,15 @@ pub(crate) fn declared_access(
     })
 }
 
-/// What every app that connects to this session calls, whatever it is: the
-/// resources it reads and invokes, the settings it keeps, and the launch its
-/// connection is admitted by. Serving none of these refuses every app at its
-/// first call.
+/// What every app that connects to this session calls, whatever it is: the resources it reads and
+/// invokes, the settings it keeps, and the launch its connection is admitted by. Serving none of
+/// these refuses every app at its first call.
 #[cfg(test)]
 pub(crate) const EVERY_APP: &[&str] = &["published", "settings", "launcher"];
 
-/// How a shipped app's source reaches a seam of the action door: a marker in
-/// its code, and the seam that answers the call. A marker here is a call, so
-/// an app that starts calling a seam it did not is found by the guard.
+/// How a shipped app's source reaches a seam of the action door: a marker in its code, and the seam
+/// that answers the call. A marker here is a call, so an app that starts calling a seam it did not
+/// is found by the guard.
 #[cfg(test)]
 pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
     (
@@ -280,10 +276,9 @@ pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
     ("NearbyTransferCommand", "nearby_transfer"),
 ];
 
-/// The seams shipped apps still call that this session serves nothing of: a
-/// list that only shrinks, each entry a call that does not work yet. Serving
-/// one, or moving the app off it, removes its line; a call to a seam this
-/// session leaves unserved and this list does not name fails the guard.
+/// The seams shipped apps still call that this session serves nothing of: a list that only shrinks,
+/// each entry a call that does not work yet. Serving one, or moving the app off it, removes its
+/// line; a call to a seam this session leaves unserved and this list does not name fails the guard.
 #[cfg(test)]
 pub(crate) const UNSERVED_BUT_CALLED: &[&str] = &[];
 
@@ -311,9 +306,9 @@ mod tests {
         );
     }
 
-    /// The action door's ceiling comes from the installed apps' signed
-    /// manifests, read with the lists search keeps: an app Tilo cannot find
-    /// declared nothing, and never more than its manifest says.
+    /// The action door's ceiling comes from the installed apps' signed manifests, read with the
+    /// lists search keeps: an app Tilo cannot find declared nothing, and never more than its
+    /// manifest says.
     #[test]
     fn an_apps_declared_access_is_what_its_manifest_says() {
         use tilo_action_broker::app_actions::AppActionAccess;

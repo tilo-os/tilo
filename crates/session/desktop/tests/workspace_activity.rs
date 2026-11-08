@@ -4,8 +4,8 @@ use tilo_desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
 use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
 
-// Removing causal replay or writing to the admitted document while reviewing
-// must fail this regression. The root schema is a real admitted workspace document.
+// Removing causal replay or writing to the admitted document while reviewing must fail this
+// regression. The root schema is a real admitted workspace document.
 #[test]
 fn workspace_activity_review_keeps_live_heads() {
     let workspace = Workspace::new(WorkspaceSlot(1), "Design");
@@ -47,10 +47,9 @@ fn workspace_activity_review_keeps_live_heads() {
     assert_eq!(tree.doc.get_heads(), before);
 }
 
-// A local desktop's workspace document, in the `contents` schema: its bookkeeping
-// (the id counter, the record index) listed as a change, a window opened
-// left out of History, or any storage key shown as a row's words, must fail
-// this regression.
+// A local desktop's workspace document, in the `contents` schema: its bookkeeping (the id counter,
+// the record index) listed as a change, a window opened left out of History, or any storage key
+// shown as a row's words, must fail this regression.
 #[test]
 fn workspace_activity_names_workspace_events_and_leaves_bookkeeping_out() {
     use automerge::{ObjType, transaction::CommitOptions};
@@ -231,8 +230,8 @@ fn workspace_activity_detached_record_origins_do_not_collide() {
     assert_eq!(apps, ["app-a", "app-b"]);
 }
 
-// Listing a read marker, or offering a filter for a participant no row can
-// be attributed to, must fail this regression.
+// Listing a read marker, or offering a filter for a participant no row can be attributed to, must
+// fail this regression.
 #[test]
 fn workspace_activity_lists_content_and_filters_by_the_people_it_names() {
     use automerge::{ActorId, transaction::CommitOptions};
@@ -370,8 +369,8 @@ fn workspace_activity_unsettled_refresh_retains_only_current_admission_rows() {
     );
 }
 
-// Replay serving the workspace's first changes, made before the workspace stood
-// in it, as checkpoints with nothing to show must fail this regression.
+// Replay serving the workspace's first changes, made before the workspace stood in it, as
+// checkpoints with nothing to show must fail this regression.
 #[test]
 fn workspace_activity_replay_starts_where_the_workspace_does() {
     use automerge::transaction::CommitOptions;
@@ -386,8 +385,7 @@ fn workspace_activity_replay_starts_where_the_workspace_does() {
         .unwrap();
     stamp(&mut doc, 0);
     doc.put(ROOT, "name", "Planning").unwrap();
-    // Then a device lays the workspace out in its layout record, a window at
-    // a time.
+    // Then a device lays the workspace out in its layout record, a window at a time.
     let mut layout = Workspace::in_workspace(workspace.slot, workspace.id(), "Planning");
     let mut strip = Strip::new(StripId::from((1 << 48) | 3), "Planning");
     for (at, group, tab, title) in [

@@ -1,28 +1,20 @@
 //! What stands over the desktop's windows, and in what order.
-//!
-//! A menu, a picker, a panel that hangs under the bar: each is a surface, and
-//! a surface is described once — its kind, where it stands, who may use it and
-//! where it is in its life — and everything else follows from that
-//! description. `docs/architecture/surfaces.md` is the contract; this module
-//! carries it into the session as one [`Overlays`] handle.
-//!
-//! The stack answers the questions every overlay otherwise answers for
-//! itself: which surface the keyboard goes to, what closing the top one
-//! restores, where a surface hangs on its display, and what a press outside
-//! it closes.
-//!
-//! Stacking is [`Slot::ALL`] order, topmost first: input is offered to the
-//! open surfaces in it, assistive technology reads them in it, and Escape
-//! closes the first open one. It is not derived from kinds — a display
-//! question answered above onboarding is a fact about the session, not about
+//! A menu, a picker, a panel that hangs under the bar: each is a surface, and a surface is
+//! described once — its kind, where it stands, who may use it and where it is in its life — and
+//! everything else follows from that description. `docs/architecture/surfaces.md` is the contract;
+//! this module carries it into the session as one [`Overlays`] handle.
+//! The stack answers the questions every overlay otherwise answers for itself: which surface the
+//! keyboard goes to, what closing the top one restores, where a surface hangs on its display, and
+//! what a press outside it closes.
+//! Stacking is [`Slot::ALL`] order, topmost first: input is offered to the open surfaces in it,
+//! assistive technology reads them in it, and Escape closes the first open one. It is not derived
+//! from kinds — a display question answered above onboarding is a fact about the session, not about
 //! either one's modality.
-//!
-//! The slots the desktop's own chrome still draws (`Slot::is_chrome`) are
-//! mirrored from the widgets that own their state; a press outside one closes
-//! it here where the widget says where it stands, and through the widget that
-//! holds the press when the press is the chrome's. The two the session puts up
-//! itself (the window menu and quick settings) declare
-//! [`Slot::session_closes`] and are closed by the session's own verbs.
+//! The slots the desktop's own chrome still draws (`Slot::is_chrome`) are mirrored from the widgets
+//! that own their state; a press outside one closes it here where the widget says where it stands,
+//! and through the widget that holds the press when the press is the chrome's. The two the session
+//! puts up itself (the window menu and quick settings) declare [`Slot::session_closes`] and are
+//! closed by the session's own verbs.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -33,14 +25,12 @@ use ui::kurbo::{Point, Rect};
 use crate::topbar::TOPBAR_HEIGHT_PX;
 
 /// Every overlay the session puts above the windows, topmost first.
-///
-/// Declaration order *is* the stacking order, as it was for the shell's
-/// layers: input is offered to open surfaces in it, assistive technology
-/// reads them in it, and Escape closes the first open one.
+/// Declaration order *is* the stacking order, as it was for the shell's layers: input is offered to
+/// open surfaces in it, assistive technology reads them in it, and Escape closes the first open
+/// one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Slot {
-    /// The search palette: over everything, the window it was opened from
-    /// under it.
+    /// The search palette: over everything, the window it was opened from under it.
     Search,
     /// The emoji picker.
     Emoji,
@@ -52,11 +42,10 @@ pub enum Slot {
     TiloMenu,
     /// The workspace overview.
     Overview,
-    /// The strip ribbon and rail: which strip of the workspace, which window
-    /// of the strip.
+    /// The strip ribbon and rail: which strip of the workspace, which window of the strip.
     Strips,
-    /// Quick settings: the devices, the sound and the notifications, under
-    /// the bar's trailing end or at the caret that asked for it.
+    /// Quick settings: the devices, the sound and the notifications, under the bar's trailing end
+    /// or at the caret that asked for it.
     QuickSettings,
 }
 
@@ -106,9 +95,9 @@ impl Slot {
         }
     }
 
-    /// Who may work the surface while it is open: a surface that takes the
-    /// keyboard holds it against everything behind it, and a press outside
-    /// it closes it rather than reaching what it covers.
+    /// Who may work the surface while it is open: a surface that takes the keyboard holds it
+    /// against everything behind it, and a press outside it closes it rather than reaching what it
+    /// covers.
     #[must_use]
     pub const fn modality(self) -> Modality {
         Modality::WindowModal
@@ -120,10 +109,9 @@ impl Slot {
         Owner::Shell
     }
 
-    /// Whether the surface stands over the desk beside others: a menu, a
-    /// popover, the strip labels, the search, quick settings — one at a time.
-    /// The overview is the desk itself, the surface everything else stands
-    /// over, so it is not one of them.
+    /// Whether the surface stands over the desk beside others: a menu, a popover, the strip labels,
+    /// the search, quick settings — one at a time. The overview is the desk itself, the surface
+    /// everything else stands over, so it is not one of them.
     #[must_use]
     pub const fn stands_beside(self) -> bool {
         !matches!(self, Self::Overview)
@@ -141,8 +129,8 @@ impl Slot {
         }
     }
 
-    /// How much of the display the surface takes: `None` where it is as wide
-    /// or as tall as its anchor leaves room for.
+    /// How much of the display the surface takes: `None` where it is as wide or as tall as its
+    /// anchor leaves room for.
     #[must_use]
     pub const fn size(self) -> Size {
         match self {
@@ -157,25 +145,23 @@ impl Slot {
         }
     }
 
-    /// Whether the desktop's chrome draws and answers this slot itself, as it
-    /// still does for its menus, the picker, the overview and the strip
-    /// ribbon. Each leaves this set as its own view takes it over.
+    /// Whether the desktop's chrome draws and answers this slot itself, as it still does for its
+    /// menus, the picker, the overview and the strip ribbon. Each leaves this set as its own view
+    /// takes it over.
     #[must_use]
     pub const fn is_chrome(self) -> bool {
         !matches!(self, Self::WindowMenu | Self::QuickSettings)
     }
 
-    /// Whether the session's own verbs open and close this slot: the window
-    /// menu and quick settings are the session's, while the chrome's slots
-    /// close through the widgets that keep their state.
+    /// Whether the session's own verbs open and close this slot: the window menu and quick settings
+    /// are the session's, while the chrome's slots close through the widgets that keep their state.
     #[must_use]
     pub const fn session_closes(self) -> bool {
         !self.is_chrome()
     }
 }
 
-/// How much of its display a surface covers. `None` stands for as far as the
-/// anchor leaves room.
+/// How much of its display a surface covers. `None` stands for as far as the anchor leaves room.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Size {
     pub width: Option<f64>,
@@ -185,30 +171,28 @@ pub struct Size {
 /// The width of a popover hanging under the bar, logical pixels.
 pub const POPOVER_WIDTH: f64 = 380.0;
 
-/// The height of a popover hanging under the bar: its footprint, which no
-/// page it shows moves. What a page has beyond it scrolls inside it.
+/// The height of a popover hanging under the bar: its footprint, which no page it shows moves. What
+/// a page has beyond it scrolls inside it.
 pub const POPOVER_HEIGHT: f64 = 640.0;
 
 /// The gap between a popover and the edges of its display.
 pub const POPOVER_MARGIN: f64 = 8.0;
 
-/// The kind of thing a surface is: what the person sees standing over the
-/// desktop. The kind fixes how Escape and a press outside it answer, how
-/// assistive technology hears it and whether it covers the whole display.
+/// The kind of thing a surface is: what the person sees standing over the desktop. The kind fixes
+/// how Escape and a press outside it answer, how assistive technology hears it and whether it
+/// covers the whole display.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Role {
     /// A menu, flyout or context menu hanging beside the thing it acts on.
     Popup,
-    /// A picker or mode the person is held in until they answer it: the emoji
-    /// picker, the overview.
+    /// A picker or mode the person is held in until they answer it: the emoji picker, the overview.
     Overlay,
     /// A sheet a person asked for and works in.
     Dialog,
-    /// A picker on another process's behalf, asked through the portal; the
-    /// app that asked is waiting on the answer.
+    /// A picker on another process's behalf, asked through the portal; the app that asked is
+    /// waiting on the answer.
     Picker,
-    /// A question that *is* the grant: it asks the person, who alone may
-    /// answer it.
+    /// A question that *is* the grant: it asks the person, who alone may answer it.
     Consent,
     /// A short, self-dismissing message. It takes no input.
     Toast,
@@ -236,17 +220,16 @@ impl Role {
         matches!(self, Self::Popup | Self::Dialog | Self::Picker)
     }
 
-    /// Whether a press outside a surface of this kind closes it. A popup
-    /// does; an overlay, a sheet, a picker and a consent question stay until
-    /// they are answered.
+    /// Whether a press outside a surface of this kind closes it. A popup does; an overlay, a sheet,
+    /// a picker and a consent question stay until they are answered.
     #[must_use]
     pub const fn closes_on_press_outside(self) -> bool {
         matches!(self, Self::Popup)
     }
 }
 
-/// Where a surface is placed: the display, and the edge or point it hangs
-/// against within that display.
+/// Where a surface is placed: the display, and the edge or point it hangs against within that
+/// display.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Anchor {
     /// Centred on the display, inset from every display edge.
@@ -255,9 +238,9 @@ pub enum Anchor {
     TopTrailing(f64),
     /// Hanging from the display's top bar, against its leading edge.
     TopLeading(f64),
-    /// Bottom centre, unless that would cover `caret`.
+    /// Bottom centre, unless that would cover `caret` .
     BottomCenter(Option<Rect>),
-    /// Beside `at`: `gap` clear of it, on the side with room.
+    /// Beside `at` : `gap` clear of it, on the side with room.
     Beside { at: Rect, gap: f64 },
     /// Over the thing it acts on. The surface's own view places itself.
     At(Point),
@@ -266,9 +249,8 @@ pub enum Anchor {
 }
 
 impl Anchor {
-    /// The rect this anchor chooses a display by: the control, the caret or
-    /// the pointer it was opened from; `None` for a surface that takes the
-    /// display the person works on.
+    /// The rect this anchor chooses a display by: the control, the caret or the pointer it was
+    /// opened from; `None` for a surface that takes the display the person works on.
     #[must_use]
     pub const fn display_of(&self) -> Option<Rect> {
         match *self {
@@ -310,8 +292,7 @@ impl Anchor {
         }
     }
 
-    /// The anchor `text` spells, as [`Self::as_str`] writes it; `None` when
-    /// it is no anchor.
+    /// The anchor `text` spells, as [`Self::as_str`] writes it; `None` when it is no anchor.
     #[must_use]
     pub fn parse(text: &str) -> Option<Self> {
         fn numbers(rest: &str) -> Option<Vec<f64>> {
@@ -354,14 +335,14 @@ impl Anchor {
 /// Who may work a surface while it is open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Modality {
-    /// Shares the desktop with everything else; what it does not use goes on
-    /// to what is below. It never takes the keyboard.
+    /// Shares the desktop with everything else; what it does not use goes on to what is below. It
+    /// never takes the keyboard.
     Passive,
-    /// Everything behind it is inert while it is up, and it takes the
-    /// keyboard: a menu, a picker, a panel a press outside closes.
+    /// Everything behind it is inert while it is up, and it takes the keyboard: a menu, a picker, a
+    /// panel a press outside closes.
     WindowModal,
-    /// Nothing behind it is reachable at all, and the person cannot leave the
-    /// surface by accident: a consent question, first-use setup.
+    /// Nothing behind it is reachable at all, and the person cannot leave the surface by accident:
+    /// a consent question, first-use setup.
     SystemModal,
 }
 
@@ -376,23 +357,22 @@ impl Modality {
         }
     }
 
-    /// Whether a surface this modal takes the keyboard from what is behind
-    /// it. A passive surface never does.
+    /// Whether a surface this modal takes the keyboard from what is behind it. A passive surface
+    /// never does.
     #[must_use]
     pub const fn takes_keyboard(self) -> bool {
         !matches!(self, Self::Passive)
     }
 }
 
-/// Whose surface it is: who is told about its outcome, and whose frame it is
-/// counted in.
+/// Whose surface it is: who is told about its outcome, and whose frame it is counted in.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Owner {
     /// The compositor's own chrome: its menus, quick settings.
     Shell,
     /// One app's surface, which is that app's public way of asking.
     App(String),
-    /// A portal request from `caller`, which waits for the answer.
+    /// A portal request from `caller` , which waits for the answer.
     Portal(String),
 }
 
@@ -422,8 +402,8 @@ pub enum Lifecycle {
 }
 
 impl Lifecycle {
-    /// The state of a surface that is open or not; the stack keeps no exit
-    /// motion and no consent that waits to be told.
+    /// The state of a surface that is open or not; the stack keeps no exit motion and no consent
+    /// that waits to be told.
     #[must_use]
     pub const fn of(open: bool) -> Self {
         if open { Self::Shown } else { Self::Closed }
@@ -486,8 +466,8 @@ pub struct Entry {
     pub modality: Modality,
     pub owner: Owner,
     pub lifecycle: Lifecycle,
-    /// The rect the host places it at, when the anchor and its size settle
-    /// one. A surface its own view places has none.
+    /// The rect the host places it at, when the anchor and its size settle one. A surface its own
+    /// view places has none.
     pub place: Option<Rect>,
 }
 
@@ -495,37 +475,34 @@ pub struct Entry {
 #[derive(Clone, Debug, Default)]
 struct SlotState {
     open: bool,
-    /// Where this opening put it; the slot's own anchor while the verb named
-    /// none.
+    /// Where this opening put it; the slot's own anchor while the verb named none.
     anchor: Option<Anchor>,
-    /// Where the widget drawing it says it stands, while it is up: a menu is
-    /// as big as its rows, which the slot's anchor cannot say.
+    /// Where the widget drawing it says it stands, while it is up: a menu is as big as its rows,
+    /// which the slot's anchor cannot say.
     stands: Option<Rect>,
-    /// Whether a press outside last closed it: it does not open again for
-    /// that press, which is still being delivered.
+    /// Whether a press outside last closed it: it does not open again for that press, which is
+    /// still being delivered.
     dismissed: bool,
-    /// Whether the stack took it down and the widget drawing it has yet to
-    /// follow: while it has not, the widget's own open state is the one being
-    /// left behind, not a new opening to put back up. The widget's
-    /// [`Overlays::close`] is how it follows.
+    /// Whether the stack took it down and the widget drawing it has yet to follow: while it has
+    /// not, the widget's own open state is the one being left behind, not a new opening to put back
+    /// up. The widget's [`Overlays::close`] is how it follows.
     awaiting_close: bool,
 }
 
-/// The displays surfaces are placed on: every output's rect, and the one the
-/// person works on.
+/// The displays surfaces are placed on: every output's rect, and the one the person works on.
 #[derive(Clone, Debug, Default)]
 struct Displays {
     outputs: Vec<Rect>,
     focused: Option<Rect>,
-    /// Where the person types, when a field holds the caret: the place a
-    /// surface a key opens for the text stands against.
+    /// Where the person types, when a field holds the caret: the place a surface a key opens for
+    /// the text stands against.
     caret: Option<Rect>,
 }
 
 impl Displays {
-    /// The display a surface opens on: the one holding `anchor`, else the one
-    /// the person works on, else the first. Never the whole desktop while
-    /// there are displays: across two of them it straddles the seam.
+    /// The display a surface opens on: the one holding `anchor` , else the one the person works on,
+    /// else the first. Never the whole desktop while there are displays: across two of them it
+    /// straddles the seam.
     fn display_for(&self, anchor: Option<Rect>) -> Option<Rect> {
         anchor
             .and_then(|anchor| {
@@ -539,9 +516,8 @@ impl Displays {
     }
 }
 
-/// Where a surface stands on `display`, from its anchor and the room its size
-/// leaves; `None` for a surface its own view places, or one whose size and
-/// anchor do not settle a rect.
+/// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
+/// surface its own view places, or one whose size and anchor do not settle a rect.
 fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
     // The bar hangs above a surface anchored to the top edge.
     let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
@@ -585,8 +561,8 @@ fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
             let y1 = display.y1 - margin;
             Rect::new(center - width / 2.0, y1 - height, center + width / 2.0, y1)
         }
-        // Beside the rect it was opened on: the side with room wins, and the
-        // surface never overlaps it.
+        // Beside the rect it was opened on: the side with room wins, and the surface never overlaps
+        // it.
         Anchor::Beside { at, gap } => {
             let x0 = if at.x1 + gap + width <= display.x1 - margin {
                 at.x1 + gap
@@ -606,8 +582,8 @@ fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
     Some(rect)
 }
 
-/// The overlays over the windows, shared between the session's loop, the keys
-/// it answers and the chrome that draws some of them.
+/// The overlays over the windows, shared between the session's loop, the keys it answers and the
+/// chrome that draws some of them.
 #[derive(Clone, Debug, Default)]
 pub struct Overlays(Rc<RefCell<Stack>>);
 
@@ -617,10 +593,9 @@ impl Overlays {
         Self::default()
     }
 
-    /// Ask for the next pass of whatever draws what the stack holds, set by
-    /// the host that draws it: a surface the stack takes down is one the
-    /// widget showing it has to take up a pass to close, and nothing else
-    /// tells it the press went down.
+    /// Ask for the next pass of whatever draws what the stack holds, set by the host that draws it:
+    /// a surface the stack takes down is one the widget showing it has to take up a pass to close,
+    /// and nothing else tells it the press went down.
     pub fn wake_with(&self, wake: Rc<std::cell::Cell<bool>>) {
         *self.0.borrow_mut().wake.borrow_mut() = Some(wake);
     }
@@ -632,8 +607,7 @@ impl Overlays {
         }
     }
 
-    /// The displays surfaces are placed on: every output, and the one the
-    /// person works on.
+    /// The displays surfaces are placed on: every output, and the one the person works on.
     pub fn set_displays(&self, outputs: &[Rect], focused: Option<Rect>) {
         let mut stack = self.0.borrow_mut();
         if stack.displays.outputs.as_slice() == outputs && stack.displays.focused == focused {
@@ -643,25 +617,22 @@ impl Overlays {
         stack.displays.focused = focused;
     }
 
-    /// The caret of the field the person types into, as the desktop last saw
-    /// it: what a surface a key opens for the text stands beside.
+    /// The caret of the field the person types into, as the desktop last saw it: what a surface a
+    /// key opens for the text stands beside.
     pub fn set_caret(&self, caret: Option<Rect>) {
         self.0.borrow_mut().displays.caret = caret;
     }
 
-    /// The caret a surface a key opens for the text stands beside, when a
-    /// field holds one.
+    /// The caret a surface a key opens for the text stands beside, when a field holds one.
     #[must_use]
     pub fn caret(&self) -> Option<Rect> {
         self.0.borrow().displays.caret
     }
 
-    /// Put `slot` up, standing at `anchor` or where the slot stands by
-    /// itself.
-    ///
-    /// One anchored surface at a time: the person looks at the one they just
-    /// opened, so the others go down with it. Their widgets follow the stack
-    /// ([`Self::is_open`]), which is how the chrome learns to close them.
+    /// Put `slot` up, standing at `anchor` or where the slot stands by itself.
+    /// One anchored surface at a time: the person looks at the one they just opened, so the others
+    /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome
+    /// learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
         {
             let mut stack = self.0.borrow_mut();
@@ -686,9 +657,8 @@ impl Overlays {
         self.woke();
     }
 
-    /// Take `slot` down, as the widget drawing it does once the stack has:
-    /// what the stack took down is settled by this, and a slot that is
-    /// already down moved nothing.
+    /// Take `slot` down, as the widget drawing it does once the stack has: what the stack took down
+    /// is settled by this, and a slot that is already down moved nothing.
     pub fn close(&self, slot: Slot) {
         {
             let mut stack = self.0.borrow_mut();
@@ -719,8 +689,8 @@ impl Overlays {
         }
     }
 
-    /// A press outside `slot` closed it: it stays down for that press, which
-    /// is still being delivered.
+    /// A press outside `slot` closed it: it stays down for that press, which is still being
+    /// delivered.
     pub fn dismiss(&self, slot: Slot) {
         {
             let mut stack = self.0.borrow_mut();
@@ -732,16 +702,14 @@ impl Overlays {
         self.woke();
     }
 
-    /// The button that press came from is up: the press is over. What it
-    /// closed stays down until the asks it raised have been carried out
-    /// ([`Self::settle_press`]), because a quick click delivers its release
-    /// before them.
+    /// The button that press came from is up: the press is over. What it closed stays down until
+    /// the asks it raised have been carried out ([`Self::settle_press`]), because a quick click
+    /// delivers its release before them.
     pub fn press_ended(&self) {
         self.0.borrow_mut().press_over = true;
     }
 
-    /// What the press asked has been carried out: what it closed may be
-    /// raised again.
+    /// What the press asked has been carried out: what it closed may be raised again.
     pub fn settle_press(&self) {
         let mut stack = self.0.borrow_mut();
         if !std::mem::take(&mut stack.press_over) {
@@ -752,8 +720,8 @@ impl Overlays {
         }
     }
 
-    /// Whether `slot` was dismissed by a press outside that is still being
-    /// delivered, so nothing that press raised may put it back up.
+    /// Whether `slot` was dismissed by a press outside that is still being delivered, so nothing
+    /// that press raised may put it back up.
     #[must_use]
     pub fn dismissed_recently(&self, slot: Slot) -> bool {
         self.0
@@ -763,9 +731,8 @@ impl Overlays {
             .is_some_and(|state| state.dismissed)
     }
 
-    /// Whether `slot` was taken down by the stack and the widget drawing it
-    /// has yet to follow: its open state is the one being left behind, not a
-    /// new opening to put back up.
+    /// Whether `slot` was taken down by the stack and the widget drawing it has yet to follow: its
+    /// open state is the one being left behind, not a new opening to put back up.
     #[must_use]
     pub fn awaiting_close(&self, slot: Slot) -> bool {
         self.0
@@ -785,9 +752,9 @@ impl Overlays {
             .is_some_and(|state| state.open)
     }
 
-    /// What holds the keyboard: the topmost open surface that takes it, else
-    /// the window in front. Closing a surface derives this again, which is
-    /// how the one it covered takes the keyboard back.
+    /// What holds the keyboard: the topmost open surface that takes it, else the window in front.
+    /// Closing a surface derives this again, which is how the one it covered takes the keyboard
+    /// back.
     #[must_use]
     pub fn target(&self) -> Target {
         let stack = self.0.borrow();
@@ -797,8 +764,7 @@ impl Overlays {
             .map_or(Target::Window, Target::Surface)
     }
 
-    /// Where `slot` stands now, if its anchor and size settle a rect the host
-    /// can place it at.
+    /// Where `slot` stands now, if its anchor and size settle a rect the host can place it at.
     #[must_use]
     pub fn place(&self, slot: Slot) -> Option<Rect> {
         self.0.borrow().entry(slot).and_then(|entry| entry.place)
@@ -814,8 +780,8 @@ impl Overlays {
             .collect()
     }
 
-    /// The surface Escape closes, by the dismissal table: the topmost one
-    /// whose kind answers Escape and that the session may close.
+    /// The surface Escape closes, by the dismissal table: the topmost one whose kind answers Escape
+    /// and that the session may close.
     #[must_use]
     pub fn escape(&self) -> Option<Slot> {
         let stack = self.0.borrow();
@@ -824,11 +790,10 @@ impl Overlays {
         })
     }
 
-    /// The surface a press at this point closes, by the dismissal table: the
-    /// topmost popup standing where the point is not. What the session placed
-    /// is judged by the rect its anchor settles; a surface its own widget
-    /// draws says where it stands, and one that says neither is its view's to
-    /// close.
+    /// The surface a press at this point closes, by the dismissal table: the topmost popup standing
+    /// where the point is not. What the session placed is judged by the rect its anchor settles; a
+    /// surface its own widget draws says where it stands, and one that says neither is its view's
+    /// to close.
     #[must_use]
     pub fn press_outside(&self, x: f64, y: f64) -> Option<Slot> {
         let stack = self.0.borrow();
@@ -857,8 +822,8 @@ struct Stack {
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
-    /// What draws the surfaces the stack holds, asked for its next pass
-    /// whenever the stack changes under it ([`Overlays::wake_with`]).
+    /// What draws the surfaces the stack holds, asked for its next pass whenever the stack changes
+    /// under it ([`Overlays::wake_with`]).
     wake: std::cell::RefCell<Option<Rc<std::cell::Cell<bool>>>>,
 }
 
@@ -915,8 +880,8 @@ mod tests {
             );
             assert_eq!(slot.owner(), Owner::Shell, "{slot:?}");
             assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
-            // A surface that takes the keyboard is one a press outside may
-            // close; one that never takes it is not.
+            // A surface that takes the keyboard is one a press outside may close; one that never
+            // takes it is not.
             assert!(
                 !role.closes_on_press_outside() || slot.modality().takes_keyboard(),
                 "{slot:?}: a flyout takes the keyboard while it stands"
@@ -1034,8 +999,8 @@ mod tests {
         let overlays = overlays();
         let caret = Rect::new(600.0, 300.0, 602.0, 320.0);
         overlays.set_caret(Some(caret));
-        // The outputs came and went while the person typed: where they type
-        // is still where the surface a key opens for the text stands.
+        // The outputs came and went while the person typed: where they type is still where the
+        // surface a key opens for the text stands.
         overlays.set_displays(&[Rect::new(0.0, 0.0, 1000.0, 700.0)], Some(DISPLAY));
         assert_eq!(overlays.caret(), Some(caret));
         overlays.open(
@@ -1061,8 +1026,7 @@ mod tests {
         let right = Rect::new(1280.0, 0.0, 3840.0, 1440.0);
         let overlays = Overlays::new();
         overlays.set_displays(&[left, right], Some(left));
-        // On the right display's trailing edge, though the person works on
-        // the left one.
+        // On the right display's trailing edge, though the person works on the left one.
         overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
         let place = overlays.place(Slot::QuickSettings).expect("placed");
         assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
@@ -1130,8 +1094,8 @@ mod tests {
             !overlays.is_open(Slot::QuickSettings),
             "the panel goes down for the menu the person just opened"
         );
-        // And it stands where its own view draws it: nothing the session can
-        // judge, so nothing it closes.
+        // And it stands where its own view draws it: nothing the session can judge, so nothing it
+        // closes.
         assert_eq!(overlays.place(Slot::WindowMenu), None);
         assert_eq!(overlays.escape(), Some(Slot::WindowMenu));
         assert_eq!(
@@ -1155,9 +1119,8 @@ mod tests {
             asked.replace(false),
             "a press outside took it down: the widget has to close it"
         );
-        // The widget closing it follows the stack, which hears that: what the
-        // widget shows next is a surface of its own again, not the state the
-        // stack took down.
+        // The widget closing it follows the stack, which hears that: what the widget shows next is
+        // a surface of its own again, not the state the stack took down.
         overlays.close(Slot::WorkspaceMenu);
         assert!(
             !overlays.awaiting_close(Slot::WorkspaceMenu),

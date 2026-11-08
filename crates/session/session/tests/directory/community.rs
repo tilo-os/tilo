@@ -1,12 +1,10 @@
-//! The community a computer is set up for (`community.toml`), joined as its
-//! session starts: nobody opens a directory, and the site's door is asked
-//! once, through the same join the sheet's Join asks.
-//!
-//! What the person decided is theirs, and is kept with their workspaces: a
-//! later session here, and every other computer of theirs, joins nothing on
-//! its own once they joined the community — or joined it and left. A seat
-//! that could not be reached is asked once more when the machine's network
-//! comes back, and never in a loop.
+//! The community a computer is set up for (`community.toml`), joined as its session starts: nobody
+//! opens a directory, and the site's door is asked once, through the same join the sheet's Join
+//! asks.
+//! What the person decided is theirs, and is kept with their workspaces: a later session here, and
+//! every other computer of theirs, joins nothing on its own once they joined the community — or
+//! joined it and left. A seat that could not be reached is asked once more when the machine's
+//! network comes back, and never in a loop.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -24,9 +22,8 @@ use crate::{
     this_computer, wait_until,
 };
 
-/// A computer's session, keeping the desk it is left with beside `state`: the
-/// same session that starts where the last one ended, beside what the person
-/// decided there.
+/// A computer's session, keeping the desk it is left with beside `state` : the same session that
+/// starts where the last one ended, beside what the person decided there.
 fn session_keeping(state: &std::path::Path) -> Session {
     Session::headless(
         Options {
@@ -40,8 +37,8 @@ fn session_keeping(state: &std::path::Path) -> Session {
     .expect("session")
 }
 
-/// Let the session run `turns` turns: what a session has had the chance to do
-/// by, and what shows a thing it never does.
+/// Let the session run `turns` turns: what a session has had the chance to do by, and what shows a
+/// thing it never does.
 fn run_turns(session: &mut Session, turns: u32) {
     for _ in 0..turns {
         session
@@ -50,8 +47,8 @@ fn run_turns(session: &mut Session, turns: u32) {
     }
 }
 
-/// The community's workspace on this computer's desk, under the name its site
-/// calls it, when it is there.
+/// The community's workspace on this computer's desk, under the name its site calls it, when it is
+/// there.
 fn community_here(session: &Session) -> Option<String> {
     held(session)
         .into_iter()
@@ -59,8 +56,8 @@ fn community_here(session: &Session) -> Option<String> {
         .map(|(_, name, _)| name)
 }
 
-/// What it takes for the person's decisions to be on disk: a session writes
-/// them out as it goes, and one that ends here stands for the session ending.
+/// What it takes for the person's decisions to be on disk: a session writes them out as it goes,
+/// and one that ends here stands for the session ending.
 fn written() {
     tilo_durable_writer::global().flush();
 }
@@ -106,12 +103,11 @@ fn community_lounge(
     })
 }
 
-/// The connection this machine is on, as the connectivity service reports it:
-/// what the test plugs in.
+/// The connection this machine is on, as the connectivity service reports it: what the test plugs
+/// in.
 struct Cable {
     network: Rc<RefCell<tilo_connectivity_service::model::Network>>,
-    /// Whether the next turn brings news of it, as the service publishes a
-    /// connection that changed.
+    /// Whether the next turn brings news of it, as the service publishes a connection that changed.
     news: Rc<Cell<bool>>,
 }
 
@@ -178,17 +174,16 @@ impl tilo_session::Service for Cable {
     }
 }
 
-/// The person `person`'s other computer: another device of theirs, certified
-/// for the same person and in use from here on. Returns the root's directory.
+/// The person `person` 's other computer: another device of theirs, certified for the same person
+/// and in use from here on. Returns the root's directory.
 fn their_other_computer(env: &mut tilo_test_env::ScopedEnv) -> tempfile::TempDir {
     let person = ed25519_dalek::SigningKey::from_bytes(&[0x21; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[0x24; 32]);
     a_device(env, &person, &device, "The desktop")
 }
 
-/// A computer set up for a community joins it as its session starts, with
-/// nobody opening a directory: the same door, and the same verified
-/// invitation, the sheet's Join asks.
+/// A computer set up for a community joins it as its session starts, with nobody opening a
+/// directory: the same door, and the same verified invitation, the sheet's Join asks.
 #[test]
 fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     let _settled = ui::motion::testing::settled();
@@ -241,9 +236,8 @@ fn a_computer_set_up_for_a_community_joins_it_as_its_session_starts() {
     );
 }
 
-/// What the person decided is theirs, kept beside their workspaces: a later
-/// session on the same computer joins nothing again, and neither does it put
-/// back a community they left.
+/// What the person decided is theirs, kept beside their workspaces: a later session on the same
+/// computer joins nothing again, and neither does it put back a community they left.
 #[test]
 fn a_community_that_was_left_is_not_joined_again() {
     let _settled = ui::motion::testing::settled();
@@ -298,8 +292,8 @@ fn a_community_that_was_left_is_not_joined_again() {
     );
 }
 
-/// A person's other computer holds what they decided, as their devices hold
-/// their workspaces: it does not ask the community's door for them again.
+/// A person's other computer holds what they decided, as their devices hold their workspaces: it
+/// does not ask the community's door for them again.
 #[test]
 fn a_persons_other_computer_does_not_join_their_community_again() {
     let _settled = ui::motion::testing::settled();
@@ -322,8 +316,8 @@ fn a_persons_other_computer_does_not_join_their_community_again() {
     );
     written();
     drop(session);
-    // Their desktop: another device of theirs, holding the list their laptop
-    // agreed with them, as their devices hand each other their workspaces.
+    // Their desktop: another device of theirs, holding the list their laptop agreed with them, as
+    // their devices hand each other their workspaces.
     let _root = their_other_computer(&mut env);
     let elsewhere = tempfile::tempdir().expect("a directory for their other computer's state");
     std::fs::create_dir_all(elsewhere.path().join("tilo")).expect("the state's directory");
@@ -352,8 +346,8 @@ fn a_persons_other_computer_does_not_join_their_community_again() {
     );
 }
 
-/// A computer whose administrator names no community asks nobody: an empty
-/// site is a decision not to have one.
+/// A computer whose administrator names no community asks nobody: an empty site is a decision not
+/// to have one.
 #[test]
 fn a_computer_whose_administrator_names_no_community_joins_nothing() {
     let _settled = ui::motion::testing::settled();
@@ -370,9 +364,8 @@ fn a_computer_whose_administrator_names_no_community_joins_nothing() {
     );
 }
 
-/// A seat that cannot be reached is not hammered: the join is asked once, and
-/// once more when the machine's network comes back, which is when a join that
-/// never reached its site can land.
+/// A seat that cannot be reached is not hammered: the join is asked once, and once more when the
+/// machine's network comes back, which is when a join that never reached its site can land.
 #[test]
 fn a_community_that_could_not_be_reached_is_asked_again_when_a_network_comes_back() {
     let _settled = ui::motion::testing::settled();

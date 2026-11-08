@@ -1,11 +1,9 @@
-//! `zwlr_output_manager_v1`: display configuration for external tools
-//! (`wlr-randr`, `kanshi`, `way-displays`).
-//!
-//! The global changes what every display shows, so only clients the session
-//! trusts see it (as with session lock). Each bound manager gets a head per
-//! output and a mode object per mode; [`OutputManagement::publish`] keeps
-//! them current after every change. A tool's `apply` (or `test`) becomes a
-//! list of [`OutputChange`]s the backend validates and applies
+//! `zwlr_output_manager_v1` : display configuration for external tools (`wlr-randr`, `kanshi` ,
+//! `way-displays` ).
+//! The global changes what every display shows, so only clients the session trusts see it (as with
+//! session lock). Each bound manager gets a head per output and a mode object per mode;
+//! [`OutputManagement::publish`] keeps them current after every change. A tool's `apply` (or `test`
+//! ) becomes a list of [`OutputChange`]s the backend validates and applies
 //! ([`crate::Backend::configure`]); the configuration then succeeds or fails.
 
 use std::collections::HashMap;
@@ -109,8 +107,7 @@ pub struct ModeData {
     mode: Mode,
 }
 
-/// A configuration under construction: the serial it was made against and
-/// the heads it names.
+/// A configuration under construction: the serial it was made against and the heads it names.
 pub struct ConfigurationData {
     serial: u32,
     changes: Mutex<Option<Vec<OutputChange>>>,
@@ -171,7 +168,7 @@ impl OutputManagement {
     }
 }
 
-/// Bring one manager's heads in line with `heads`, then send `done`.
+/// Bring one manager's heads in line with `heads` , then send `done` .
 fn sync_manager(display: &DisplayHandle, bound: &mut BoundManager, heads: &[Head], serial: u32) {
     let gone: Vec<String> = bound
         .heads
@@ -488,8 +485,7 @@ impl Dispatch<ZwlrOutputConfigurationV1, ConfigurationData> for State {
     }
 }
 
-/// The program behind a client's connection, which the person trusts or
-/// not as a display tool.
+/// The program behind a client's connection, which the person trusts or not as a display tool.
 fn executable_of(client: &Client, display: &DisplayHandle) -> Option<std::path::PathBuf> {
     let credentials = client.get_credentials(display).ok()?;
     std::fs::read_link(format!("/proc/{}/exe", credentials.pid)).ok()
