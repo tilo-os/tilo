@@ -2234,7 +2234,7 @@ impl PeerDocuments {
 /// What admission takes in from another device is handed to this device's apps
 /// through `documents`, so a record an app holds shows what everyone wrote.
 fn heard(
-    identity: Option<HostIdentity>,
+    holds_custody: bool,
     arrivals: std::sync::mpsc::Sender<NetEvent>,
     wake: Arc<dyn Fn() + Send + Sync>,
     link: Option<Arc<ChannelLink>>,
@@ -2244,13 +2244,12 @@ fn heard(
     tokio::task::JoinHandle<()>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
-    let (admissions, attending) = match identity {
-        Some(_) => {
-            let (say, hear) = tokio::sync::mpsc::unbounded_channel();
-            let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
-            (Some(say), Some(attending))
-        }
-        None => (None, None),
+    let (admissions, attending) = if holds_custody {
+        let (say, hear) = tokio::sync::mpsc::unbounded_channel();
+        let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
+        (Some(say), Some(attending))
+    } else {
+        (None, None)
     };
     let (events, mut heard) = tokio::sync::mpsc::channel::<NetEvent>(256);
     let carrying = tokio::spawn(async move {

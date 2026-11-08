@@ -364,7 +364,7 @@ async fn listening(
         reachability.clone(),
         served,
     );
-    let (events, carrying, attending) = heard(identity.cloned(), arrivals, wake, link, documents);
+    let (events, carrying, attending) = heard(identity.is_some(), arrivals, wake, link, documents);
     if ready.send(Ok((publisher, addr, reachability))).is_err() {
         return None;
     }
