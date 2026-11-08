@@ -1332,7 +1332,7 @@ mod tests {
             )
             .expect("the window lies out for a finger");
         let before = reminded(&staged, &app);
-        open_reminder_form(&mut staged);
+        open_reminder_form(&mut staged, &packages);
         staged.harness_mut().type_text("tomorrow 9:30");
         staged.freshen().expect("the window comes to rest");
         let confirm = {
