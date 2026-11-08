@@ -2399,7 +2399,9 @@ impl Widget for Button {
             self.last_theme = Some(key);
         }
         let interact = Interaction {
-            hovered: self.is_hovered,
+            // A hover face is the pointer's answer, so a surface with none never paints one —
+            // however the hover was recorded (a pointer replayed where a control was rebuilt).
+            hovered: self.is_hovered && self.interaction.supports_hover(),
             pressed: self.press.is_held(),
             focused: self.focus_visible(),
             disabled: !self.effectively_enabled(),
