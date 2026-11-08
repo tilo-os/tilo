@@ -9,13 +9,16 @@ workflow text the way the rest of tools/tests does, rather than through a YAML
 parser, so a comment or a blank line cannot change what a test believes.
 
 Coverage is what the window model (the `supersede` job and
-tools/ci/push_window.py) has to preserve. A newer push makes an older waiting
-run skip, and the window head cancels the older runs that never started, so the
-window must plan from the newest earlier run whose window really ran rather than
-from its own `before` commit. The decisions are unit-tested here on the records
-the Forgejo API returns.
+tools/ci/push_window.py) has to preserve. Only one run holds a window at a time,
+every other push in the meantime skips its jobs, and the window head cancels the
+older runs that never started, so the window must plan from the newest earlier
+run whose window really ran rather than from its own `before` commit. The
+decisions are unit-tested here on the records the Forgejo API returns, and
+simulated against a steady stream of pushes, which is what main is.
 """
 from pathlib import Path
+import datetime
+import heapq
 import importlib.util
 import unittest
 
@@ -66,35 +69,42 @@ class MainIsNotGated(unittest.TestCase):
                 self.assertNotIn("pull_request", on)
                 self.assertRegex(on, r"(?m)^  workflow_dispatch:")
 
-    def test_lint_replaces_a_waiting_run_and_finishes_the_running_one(self):
-        # Lint checks the whole tree, so a run waiting behind a newer push of
-        # the same ref is replaced by it. The running one finishes: cancelling
-        # it left main with no verdict while pushes came faster than a run.
-        concurrency = block(workflow("lint.yml"), "concurrency")
-        self.assertIn("group: lint-${{ github.event_name }}-${{ github.ref }}",
-                      concurrency)
-        self.assertIn("cancel-in-progress: false", concurrency)
+    def test_both_gates_hand_their_one_verdict_out_the_same_way(self):
+        # A whole-tree lint at a later commit says everything an earlier one
+        # could, and one window of checks at a time is what the runners carry.
+        # Both workflows decide who runs with tools/ci/push_window.py rather
+        # than the forge's `concurrency:`, which cancelled the waiting runs
+        # instead of letting one of them start.
+        for name, marker in (("check.yml", "select"), ("lint.yml", "policy")):
+            with self.subTest(workflow=name):
+                text = workflow(name)
+                self.assertNotIn("\nconcurrency:\n", text)
+                supersede = block(text, "supersede", 2)
+                self.assertIn("tools/ci/push_window.py", supersede)
+                self.assertIn(f"WORKFLOW: {name}", supersede)
+                self.assertIn(f"MARKER_JOB: {marker}", supersede)
+                self.assertIn("superseded: ${{ steps.window.outputs.superseded }}",
+                              supersede)
+                for job in ("policy", "lints") if name == "lint.yml" else ("builder", "select"):
+                    with self.subTest(job=job):
+                        body = block(text, job, 2)
+                        self.assertIn("needs: [supersede]", body)
+                        self.assertIn("if: needs.supersede.outputs.superseded != 'true'",
+                                      body)
 
-    def test_a_newer_push_skips_an_older_waiting_run(self):
+    def test_a_push_that_cannot_open_the_window_skips_its_jobs(self):
         # A run that never reached a runner is superseded by skipping its jobs:
         # cancelling it from here would also cancel runs that are already
         # testing, which main's pushes every few minutes would do to every run.
         check = workflow("check.yml")
         supersede = block(check, "supersede", 2)
-        self.assertIn("superseded: ${{ steps.window.outputs.superseded }}", supersede)
         self.assertIn("base: ${{ steps.window.outputs.base }}", supersede)
-        self.assertIn("tools/ci/push_window.py", supersede)
-        # The decision never asks for a large runner: it can wait 45 minutes
-        # for an executing window, and large slots are the scarce resource.
+        # The decision reads the queue once and answers, so it needs no large
+        # slot: those are what a window's checks wait for.
         self.assertIn("runs-on: runner\n", supersede)
         self.assertNotIn("runner-large", supersede)
-        # Every expensive job sits behind that decision, and the aggregate job
-        # does not turn a superseded run red.
-        for job in ("builder", "select"):
-            with self.subTest(job=job):
-                body = block(check, job, 2)
-                self.assertIn("needs: [supersede]", body)
-                self.assertIn("if: needs.supersede.outputs.superseded != 'true'", body)
+        self.assertNotIn("WAIT_SECONDS", supersede)
+        # The aggregate job does not turn a superseded run red.
         self.assertIn("needs.supersede.outputs.superseded != 'true'", block(check, "checks", 2))
 
     def test_the_plan_starts_where_the_last_window_that_ran_ended(self):
@@ -144,115 +154,139 @@ class PushWindowTests(unittest.TestCase):
 
     ME = 20
 
-    def record(self, index, status):
-        return {
+    def record(self, index, status, started=None):
+        record = {
             "index_in_repo": index,
             "id": index + 1000,
             "status": status,
             "commit_sha": f"{index:040x}",
         }
+        if started:
+            record["started"] = started
+        return record
 
-    def decide(self, runs, jobs_state):
-        """`jobs_state` maps a run number to (select status, whether it started)."""
+    def queued(self):
+        """A run that has not started a single job: it only holds a place in line."""
+        return [{"name": "supersede", "status": "waiting"},
+                {"name": "select", "status": "waiting"}]
+
+    def deciding(self):
+        """A run whose decision job is running: it may be claiming the window."""
+        return [{"name": "supersede", "status": "running"},
+                {"name": "select", "status": "waiting"}]
+
+    def window(self, marker="running", builder="success"):
+        """A run that decided to run, with the plan job only a window run starts."""
+        return [{"name": "supersede", "status": "success"},
+                {"name": "select", "status": marker},
+                {"name": "builder", "status": builder}]
+
+    def decide(self, runs, jobs):
+        """The decision for run 20; `jobs` maps a run number to its job list."""
 
         def jobs_of(run):
-            select, started = jobs_state.get(run["index_in_repo"], (None, True))
-            jobs = [{"name": "builder", "status": "success" if started else "waiting"}]
-            if select is not None:
-                jobs.append({"name": "select", "status": select})
-            return jobs
+            return jobs.get(run["index_in_repo"], self.queued())
 
         return push_window.decide(runs, jobs_of, self.ME)
 
-    def test_the_newest_earlier_finished_window_is_the_base(self):
+    def test_the_newest_earlier_measured_window_is_the_base(self):
         runs = [self.record(20, "running"), self.record(19, "success"),
                 self.record(18, "failure")]
-        superseding, base, executing, cancelling = self.decide(
-            runs, {19: ("success", True), 18: ("success", True)})
+        superseding, base, holding, cancelling = self.decide(
+            runs, {19: self.window("success"), 18: self.window("success")})
         self.assertEqual(superseding, 0)
         self.assertEqual(base, self.record(19, "success")["commit_sha"])
-        self.assertEqual(executing, [])
+        self.assertEqual(holding, 0)
         self.assertEqual(cancelling, [])
 
     def test_a_run_that_never_started_is_cancelled_and_the_plan_reaches_below_it(self):
         # The reason cancelling is safe: this run's plan starts at the newest
         # window that ran, which is below the cancelled run's commits.
-        runs = [self.record(20, "waiting"), self.record(19, "waiting"),
+        runs = [self.record(20, "running"), self.record(19, "running"),
                 self.record(18, "success")]
-        superseding, base, executing, cancelling = self.decide(
-            runs, {19: (None, False), 18: ("success", True)})
+        superseding, base, holding, cancelling = self.decide(
+            runs, {18: self.window("success")})
         self.assertEqual(superseding, 0)
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
-        self.assertEqual(executing, [])
+        self.assertEqual(holding, 0)
         self.assertEqual(cancelling, [19])
 
     def test_every_run_that_never_started_is_cancelled(self):
-        runs = [self.record(20, "waiting"), self.record(19, "waiting"),
-                self.record(18, "waiting"), self.record(17, "success")]
-        _, base, executing, cancelling = self.decide(
-            runs, {19: (None, False), 18: (None, False), 17: ("success", True)})
+        runs = [self.record(20, "running"), self.record(19, "running"),
+                self.record(18, "running"), self.record(17, "success")]
+        _, base, _, cancelling = self.decide(runs, {17: self.window("success")})
         self.assertEqual(base, self.record(17, "success")["commit_sha"])
-        self.assertEqual(executing, [])
         self.assertEqual(cancelling, [19, 18])
 
     def test_dropping_runs_moves_the_plan_below_the_oldest_of_them(self):
         # A newer window may have run above the run this one drops, so "the
         # newest window that ran" is not below its commits: the base goes to the
         # newest window below the oldest run this one drops.
-        runs = [self.record(20, "waiting"), self.record(19, "success"),
-                self.record(18, "waiting"), self.record(17, "success")]
-        _, base, executing, cancelling = self.decide(
-            runs, {19: ("success", True), 18: (None, False), 17: ("success", True)})
+        runs = [self.record(20, "running"), self.record(19, "success"),
+                self.record(18, "running"), self.record(17, "success")]
+        _, base, _, cancelling = self.decide(
+            runs, {19: self.window("success"), 17: self.window("success")})
         self.assertEqual(cancelling, [18])
-        self.assertEqual(executing, [])
         self.assertEqual(base, self.record(17, "success")["commit_sha"])
 
     def test_a_run_stopped_before_the_newest_window_ran_does_not_pull_it_back(self):
         # The window that came after it planned below it, so its commits are
         # already measured: only a run this one drops moves the base.
-        runs = [self.record(20, "waiting"), self.record(19, "success"),
+        runs = [self.record(20, "running"), self.record(19, "success"),
                 self.record(18, "cancelled"), self.record(17, "success")]
         _, base, _, cancelling = self.decide(
-            runs, {19: ("success", True), 17: ("success", True)})
+            runs, {19: self.window("success"), 17: self.window("success")})
         self.assertEqual(cancelling, [])
         self.assertEqual(base, self.record(19, "success")["commit_sha"])
 
-    def test_an_executing_run_is_waited_for_and_never_cancelled(self):
-        # It is holding a runner or queued for one with its window half planned:
-        # dropping it would throw that window away, so it is waited for.
-        runs = [self.record(20, "waiting"), self.record(19, "waiting"),
+    def test_a_window_in_progress_holds_it_for_every_run_behind_it(self):
+        # Its plan and this run's are the same next window, so this run skips
+        # instead of opening a second one beside it.
+        runs = [self.record(20, "running"), self.record(19, "running"),
                 self.record(18, "success")]
-        superseding, base, executing, cancelling = self.decide(
-            runs, {19: ("success", True), 18: ("success", True)})
+        superseding, _, holding, cancelling = self.decide(
+            runs, {19: self.window(), 18: self.window("success")})
         self.assertEqual(superseding, 0)
-        self.assertEqual(executing, [19])
+        self.assertEqual(holding, 19)
         self.assertEqual(cancelling, [])
-        # A window that has not finished is not a base: this run's plan starts
-        # at the last one that did.
-        self.assertEqual(base, self.record(18, "success")["commit_sha"])
 
-    def test_a_running_job_is_never_cancelled(self):
+    def test_a_run_that_has_not_decided_yet_also_holds_the_window(self):
+        # It may claim the window when its decision lands; starting beside it
+        # would put two windows on the same commits.
         runs = [self.record(20, "running"), self.record(19, "running")]
-        _, _, executing, cancelling = self.decide(runs, {19: ("running", True)})
-        self.assertEqual(executing, [19])
+        _, _, holding, cancelling = self.decide(runs, {19: self.deciding()})
+        self.assertEqual(holding, 19)
         self.assertEqual(cancelling, [])
-        self.assertNotIn(self.ME, executing + cancelling)
+
+    def test_a_window_that_never_finishes_stops_holding(self):
+        # Every job of a window has its own timeout, so a run that has been
+        # going longer than that is broken: it must not leave main without the
+        # next window for good.
+        four_hours_ago = "2026-11-07T12:00:00Z"
+        runs = [self.record(20, "running", started="2026-11-07T15:30:00Z"),
+                self.record(19, "running", started=four_hours_ago)]
+        _, _, holding, _ = push_window.decide(
+            runs, lambda run: self.window(), self.ME,
+            now=datetime.datetime(2026, 11, 7, 16, 0,
+                                  tzinfo=datetime.timezone.utc).timestamp())
+        self.assertEqual(holding, 0)
 
     def test_a_superseded_run_is_not_a_base(self):
         # Run 19 skipped, so its commits belong to run 20: the base is run 18's
         # head, and 18..20 is planned here instead of 19..20.
         runs = [self.record(20, "running"), self.record(19, "success"),
                 self.record(18, "success")]
-        _, base, _, _ = self.decide(runs, {19: ("skipped", True), 18: ("success", True)})
+        _, base, _, _ = self.decide(
+            runs, {19: self.window("skipped"), 18: self.window("success")})
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
 
     def test_a_run_that_broke_while_planning_is_not_a_base(self):
         runs = [self.record(20, "running"), self.record(19, "failure"),
                 self.record(18, "success")]
-        _, base, executing, cancelling = self.decide(
-            runs, {19: ("failure", True), 18: ("success", True)})
+        _, base, holding, cancelling = self.decide(
+            runs, {19: self.window("failure"), 18: self.window("success")})
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
-        self.assertEqual(executing, [])
+        self.assertEqual(holding, 0)
         self.assertEqual(cancelling, [])
 
     def test_a_run_whose_builder_failed_is_not_a_base(self):
@@ -261,60 +295,200 @@ class PushWindowTests(unittest.TestCase):
         # again instead of being passed over.
         runs = [self.record(20, "running"), self.record(19, "failure"),
                 self.record(18, "success")]
-
-        def jobs_of(run):
-            index = run["index_in_repo"]
-            if index == 19:
-                return [{"name": "builder", "status": "failure"},
-                        {"name": "select", "status": "success"},
-                        {"name": "clippy", "status": "skipped"}]
-            return [{"name": "builder", "status": "success"},
-                    {"name": "select", "status": "success"}]
-
-        _, base, executing, cancelling = push_window.decide(runs, jobs_of, self.ME)
+        _, base, _, _ = self.decide(
+            runs, {19: self.window("success", builder="failure"),
+                   18: self.window("success")})
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
-        self.assertEqual(executing, [])
-        self.assertEqual(cancelling, [])
 
-    def test_a_run_blocked_behind_a_failed_decision_is_not_waited_for(self):
+    def test_a_run_blocked_behind_a_failed_decision_holds_nothing(self):
         # Its planning job failed, so every other job waits behind it and the
-        # run never finishes: waiting for it would stall main's windows.
-        runs = [self.record(20, "waiting"), self.record(19, "blocked"),
+        # run never finishes: deferring to it would stall main's windows.
+        runs = [self.record(20, "running"), self.record(19, "blocked"),
                 self.record(18, "success")]
-        _, base, executing, cancelling = self.decide(
-            runs, {19: (None, True), 18: ("success", True)})
-        self.assertEqual(executing, [])
+        _, base, holding, cancelling = self.decide(
+            runs, {19: self.deciding(), 18: self.window("success")})
+        self.assertEqual(holding, 0)
         self.assertEqual(cancelling, [])
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
 
     def test_a_run_cancelled_part_way_through_is_not_a_base(self):
         # Its window was measured only in part, so the next run plans it again.
-        runs = [self.record(20, "waiting"), self.record(19, "cancelled"),
+        runs = [self.record(20, "running"), self.record(19, "cancelled"),
                 self.record(18, "success")]
-        _, base, executing, cancelling = self.decide(
-            runs, {19: ("success", True), 18: ("success", True)})
+        _, base, _, _ = self.decide(
+            runs, {19: self.window("success"), 18: self.window("success")})
         self.assertEqual(base, self.record(18, "success")["commit_sha"])
-        self.assertEqual(executing, [])
+
+    def test_a_newer_run_that_holds_the_window_covers_this_one(self):
+        runs = [self.record(21, "running"), self.record(20, "running"),
+                self.record(19, "success")]
+        superseding, _, _, cancelling = self.decide(
+            runs, {21: self.window(), 19: self.window("success")})
+        self.assertEqual(superseding, 21)
         self.assertEqual(cancelling, [])
 
-    def test_a_newer_run_supersedes_this_one(self):
-        runs = [self.record(21, "waiting"), self.record(20, "waiting"),
-                self.record(19, "success")]
-        superseding, _, _, _ = self.decide(
-            runs, {19: ("success", True), 20: (None, False), 21: (None, False)})
-        self.assertEqual(superseding, 21)
+    def test_a_newer_run_that_is_still_deciding_does_not_supersede_this_one(self):
+        # The reason main used to get no window at all: every run is newer than
+        # the one it arrived behind, so a run that defers to a newer run which
+        # has not decided yet defers to a run that defers in turn. A newer run
+        # counts only once it holds the window.
+        runs = [self.record(22, "running"), self.record(21, "running"),
+                self.record(20, "running"), self.record(19, "success")]
+        superseding, base, holding, _ = self.decide(
+            runs, {22: self.deciding(), 21: self.deciding(),
+                   19: self.window("success")})
+        self.assertEqual(superseding, 0)
+        self.assertEqual(holding, 0)
+        self.assertEqual(base, self.record(19, "success")["commit_sha"])
 
-    def test_a_cancelled_newer_run_leaves_this_one_to_run(self):
-        runs = [self.record(21, "cancelled"), self.record(20, "waiting"),
+    def test_a_newer_run_that_gave_its_commits_away_does_not_supersede(self):
+        runs = [self.record(21, "success"), self.record(20, "running"),
                 self.record(19, "success")]
-        superseding, base, executing, _ = self.decide(
-            runs, {19: ("success", True), 21: ("success", True)})
+        superseding, base, _, _ = self.decide(
+            runs, {21: self.window("skipped"), 19: self.window("success")})
         self.assertEqual(superseding, 0)
         self.assertEqual(base, self.record(19, "success")["commit_sha"])
-        self.assertEqual(executing, [])
 
     def test_a_dispatch_is_not_superseded(self):
         self.assertIn('os.environ.get("EVENT_NAME") != "push"', MODULE_PATH.read_text())
+
+
+class ReadDepth(unittest.TestCase):
+    """The read reaches back far enough to find the previous window's run.
+
+    Reading one page was enough while the queue was short. Under a stream of
+    pushes the run that measured the previous window is hundreds of runs back,
+    so a plan that read one page found no base and measured only its own push.
+    """
+
+    def setUp(self):
+        self.now = datetime.datetime.now(datetime.timezone.utc)
+
+    def api(self, ages):
+        """An API whose push runs were created `ages` seconds before now, newest first."""
+        runs = [{"index_in_repo": 1000 - index, "id": 1000 - index,
+                 "commit_sha": f"{1000 - index:040x}",
+                 "created": (self.now - datetime.timedelta(seconds=age)).strftime(
+                     "%Y-%m-%dT%H:%M:%SZ")}
+                for index, age in enumerate(ages)]
+        requests = []
+
+        class Api:
+            def get(_, path):
+                requests.append(path)
+                page = int(path.rsplit("page=", 1)[1])
+                start = (page - 1) * push_window.PAGE_SIZE
+                return {"workflow_runs": runs[start:start + push_window.PAGE_SIZE]}
+
+        return Api(), requests
+
+    def test_a_deep_queue_is_read_to_its_oldest_run(self):
+        api, requests = self.api(range(push_window.PAGE_SIZE * 3 - 20))
+        self.assertEqual(len(push_window.read_window(api)),
+                         push_window.PAGE_SIZE * 3 - 20)
+        self.assertEqual(len(requests), 3)
+
+    def test_the_read_stops_where_no_window_can_be_older(self):
+        # A run created before the longest a window can last cannot be the
+        # window that measured the previous one, so the page it is on ends the
+        # read: the decision does not page through main's whole history.
+        limit = push_window.WINDOW_LIMIT_SECONDS
+        api, requests = self.api([0] * push_window.PAGE_SIZE
+                                 + [limit + 60] * (push_window.PAGE_SIZE * 3))
+        runs = push_window.read_window(api)
+        self.assertEqual(len(requests), 2)
+        self.assertEqual(len(runs), push_window.PAGE_SIZE * 2)
+
+
+class SteadyPushRate(unittest.TestCase):
+    """Main opens a window at any push rate, not only when the pushes pause.
+
+    The model is the forge's: a push creates a run whose decision job answers
+    `decision` seconds later, a run that takes the window runs its checks for
+    `duration` seconds, and a run that skips finishes at once. A window that is
+    open holds every push behind it, so a window runs only when a push arriving
+    after it takes the next one -- which is what has to happen however fast the
+    pushes come.
+    """
+
+    HORIZON = 4 * 60 * 60
+    DURATION = 45 * 60
+
+    def simulate(self, interval, decision):
+        """The windows a stream of pushes one every `interval` seconds opened."""
+        epoch = datetime.datetime(2026, 11, 7, 8, tzinfo=datetime.timezone.utc).timestamp()
+        runs, windows, events = [], [], []
+        for index in range(1, self.HORIZON // interval + 2):
+            heapq.heappush(events, ((index - 1) * interval, "push", index))
+
+        def jobs_of(run):
+            decided, marker = run["state"]
+            plan = "success" if decided == "success" and marker == "success" else "waiting"
+            return [{"name": "supersede", "status": decided},
+                    {"name": "select", "status": marker},
+                    {"name": "builder", "status": plan}]
+
+        def readable(at):
+            """The runs a decision at `at` reads: what tools/ci/push_window.py fetches."""
+            cutoff = epoch + at - push_window.WINDOW_LIMIT_SECONDS
+            visible = [run for run in runs
+                       if (push_window.timestamp(run["created"]) or 0) >= cutoff]
+            return visible[-push_window.PAGE_SIZE * push_window.PAGES:]
+
+        while events:
+            at, kind, payload = heapq.heappop(events)
+            if kind == "push":
+                created = datetime.datetime.fromtimestamp(
+                    epoch + at, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                run = {"index_in_repo": payload, "id": payload,
+                       "commit_sha": f"{payload:040x}", "status": "running",
+                       # A decision that never runs is a run that never started;
+                       # these answer, so the queue never has to be dropped.
+                       "created": created, "started": created,
+                       "state": ["running", "waiting"]}
+                runs.append(run)
+                heapq.heappush(events, (at + decision, "decide", run))
+                continue
+            if kind == "end":
+                payload["status"] = "success"
+                payload["state"] = ["success", "success"]
+                continue
+            superseding, base, holding, _ = push_window.decide(
+                readable(at), jobs_of, payload["index_in_repo"], now=epoch + at)
+            if superseding or holding:
+                payload["status"] = "success"
+                payload["state"] = ["success", "skipped"]
+                continue
+            payload["state"] = ["success", "running"]
+            windows.append((payload["index_in_repo"], at, at + self.DURATION, base))
+            heapq.heappush(events, (at + self.DURATION, "end", payload))
+        return windows
+
+    def check(self, interval, decision):
+        windows = self.simulate(interval, decision)
+        # Main is never without a window for longer than the decision that follows
+        # one, and never runs two windows at once.
+        self.assertGreaterEqual(len(windows), self.HORIZON // (self.DURATION + 3 * decision))
+        for (_, _, end, _), (_, next_start, _, _) in zip(windows, windows[1:]):
+            self.assertGreaterEqual(next_start, end)
+            self.assertLessEqual(next_start - end, interval + 2 * decision)
+        # Each window plans from the head of the one before it, so the chain
+        # leaves no commit unmeasured, and its plan reaches the newest push it
+        # could have seen when it started.
+        for (previous, _, _, _), (_, start, _, base) in zip(windows, windows[1:]):
+            self.assertEqual(base, f"{previous:040x}")
+        for number, start, _, _ in windows:
+            newest = (start // interval) + 1
+            self.assertLessEqual(newest - number, decision // interval + 1)
+        return windows
+
+    def test_a_push_every_minute_opens_windows(self):
+        self.check(interval=60, decision=60)
+
+    def test_pushes_faster_than_a_decision_open_windows(self):
+        # Faster than a run can decide: the case where every run used to defer to
+        # the newer run behind it and no window was ever opened.
+        self.check(interval=15, decision=60)
 
 
 class OnlyStablePublishes(unittest.TestCase):
