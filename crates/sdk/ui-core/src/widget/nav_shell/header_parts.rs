@@ -27,10 +27,19 @@ pub(super) struct HeaderTitle {
     /// The content shows this same title in a heading of its own, on screen right now: the
     /// header keeps its place in the row but draws nothing, so one title is never twice.
     pub(super) covered: bool,
+    /// The content edits the page's title in a field and shows no heading of it: the sheet draws
+    /// the title once — the field the person types in — and the header's heading stands where
+    /// the field does, saying the words the field holds, so the page keeps its name.
+    pub(super) edited: Option<super::TitleShown>,
     theme: Theme,
     rect: Rect,
-    /// The title, count and cover the last measure saw; a change needs another.
-    measured: Option<(Option<String>, Option<usize>, bool)>,
+    /// The title, count, cover and edited place the last measure saw; a change needs another.
+    measured: Option<(
+        Option<String>,
+        Option<usize>,
+        bool,
+        Option<super::TitleShown>,
+    )>,
     /// The title, count, place and cover the last draw painted; a change needs
     /// another. `None` until drawn in the current theme.
     painted: Option<(Option<String>, Option<usize>, Rect, bool)>,
@@ -43,6 +52,7 @@ impl HeaderTitle {
             count: None,
             repeated_by_sidebar: false,
             covered: false,
+            edited: None,
             theme: Theme::dark(),
             rect: Rect::ZERO,
             measured: None,
@@ -63,6 +73,13 @@ impl HeaderTitle {
     /// either way: it is the shell's, not the title's.
     pub(super) fn set_covered(&mut self, covered: bool) {
         self.covered = covered;
+    }
+
+    /// Where the field that edits the page's title stands and what it says, while the page shows
+    /// the title in a field and no heading of it: the header draws nothing there, and its heading
+    /// node stands where the field does, saying the field's words, so the page keeps its name.
+    pub(super) fn set_edited(&mut self, edited: Option<super::TitleShown>) {
+        self.edited = edited;
     }
 
     /// The count the header draws: none while the place beside it already shows it, and none
@@ -98,7 +115,7 @@ impl Widget for HeaderTitle {
         text: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let count = self.shown_count();
-        self.measured = Some((self.title.clone(), count, self.covered));
+        self.measured = Some((self.title.clone(), count, self.covered, self.edited.clone()));
         let Some(title) = self.title.as_deref() else {
             return taffy::Size::ZERO;
         };
@@ -164,15 +181,29 @@ impl Widget for HeaderTitle {
         let count = self.shown_count();
         self.measured
             .as_ref()
-            .is_none_or(|(title, measured, covered)| {
-                *title != self.title || *measured != count || *covered != self.covered
+            .is_none_or(|(title, measured, covered, edited)| {
+                *title != self.title
+                    || *measured != count
+                    || *covered != self.covered
+                    || *edited != self.edited
             })
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
-        if self.covered {
+        // The page shows a heading of its own with these words: that heading is the page's name,
+        // and this one would repeat it.
+        if self.covered && self.edited.is_none() {
             return None;
+        }
+        // The page edits its title in a field, which names itself rather than the page: this
+        // heading says the words the field holds and stands where the field does, so the page
+        // keeps its name — and the title stands on screen once.
+        if let Some(shown) = &self.edited {
+            let node = AccessNode::new(Role::Heading { level: 2 })
+                .with_name(shown.words.clone())
+                .with_bounds(shown.rect);
+            return Some(node);
         }
         let title = self.title.clone()?;
         let mut node = AccessNode::new(Role::Heading { level: 2 }).with_name(title);

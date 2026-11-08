@@ -448,6 +448,8 @@ decorator_trait! {
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
+        fn own_page_title() -> Option<String>;
+        fn page_title_is_heading() -> bool;
         fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;

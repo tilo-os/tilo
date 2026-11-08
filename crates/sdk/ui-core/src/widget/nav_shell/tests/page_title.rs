@@ -21,6 +21,14 @@ fn heading(words: &str, role: crate::TextRole) -> Element {
     Box::new(Text::new(words).with_role(role))
 }
 
+/// The accessible names the frame exports, in tree order: what a page is called, and by what.
+fn outcomes(h: &FrameHarness) -> Vec<String> {
+    h.a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect()
+}
+
 #[test]
 fn the_bar_leaves_the_title_to_the_pages_own_heading() {
     let theme = Theme::dark();
@@ -111,5 +119,67 @@ fn the_bar_takes_the_title_back_once_the_heading_scrolls_away() {
         geometry(&h).body(Column::Content),
         body,
         "and the body stayed where it stood"
+    );
+}
+
+/// A page that edits its title in a field shows one title, the field's; the page still has a
+/// name, though: the bar's heading stands where the field does, so assistive technology reads
+/// the page's title as it reads it from a heading the page sets itself.
+#[test]
+fn a_page_that_edits_its_title_in_a_field_still_names_itself() {
+    let words = "Call the landlord about the boiler";
+    let field = Box::new(
+        crate::widget::Column::new().push(Box::new(
+            crate::widget::TextInput::local()
+                .with_initial_value(words)
+                .with_text_role(crate::TextRole::LargeTitle),
+        )),
+    ) as Element;
+    let mut h = harness(page(words, field), 390, 844, Theme::dark());
+    settle(&mut h, 390, 844);
+    // One title is drawn: the bar's own is given no room.
+    assert_eq!(
+        title_rect(&h).width(),
+        0.0,
+        "the page's field shows the title, so the bar draws none"
+    );
+    // And the page keeps its name: a heading says the words, and it stands where the field
+    // does, inside the page.
+    let named = h
+        .a11y_node_named(words)
+        .unwrap_or_else(|| panic!("the page's title stands as its name: {:?}", outcomes(&h)));
+    let bounds = h
+        .a11y_nodes()
+        .into_iter()
+        .find(|(id, _)| *id == named)
+        .and_then(|(_, node)| node.bounds())
+        .expect("the page's name stands where the field does");
+    let body = geometry(&h).body(Column::Content);
+    assert!(
+        bounds.x0 >= body.x0 - 1.0 && bounds.y0 >= body.y0 - 1.0,
+        "the page's name stands inside the page: {bounds:?} in {body:?}"
+    );
+}
+
+/// A page that shows its title as a heading of its own names itself by that heading, and the
+/// bar's heading goes: one name, not two.
+#[test]
+fn a_page_that_shows_its_title_as_its_heading_names_itself_once() {
+    let words = "Call the landlord about the boiler";
+    let content =
+        Box::new(crate::widget::Column::new().push(heading(words, crate::TextRole::LargeTitle)))
+            as Element;
+    let mut h = harness(page(words, content), 390, 844, Theme::dark());
+    settle(&mut h, 390, 844);
+    let headings = h
+        .a11y_nodes()
+        .into_iter()
+        .filter(|(_, node)| node.label() == Some(words))
+        .count();
+    assert_eq!(
+        headings,
+        1,
+        "the page's heading is the one name it has: {:?}",
+        outcomes(&h)
     );
 }

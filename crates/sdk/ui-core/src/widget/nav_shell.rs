@@ -2588,23 +2588,48 @@ impl NavShell {
     /// Give each column's title back to the content while the content shows the same words as
     /// its page's own heading: one title on screen, and the one the page sets in the body. The
     /// bar takes it again once the heading scrolls out of the column's body.
+    ///
+    /// A page may also edit its title in a field, which is not a heading: a field names itself
+    /// rather than the page, so the bar keeps its heading node, standing where the field does and
+    /// saying the words the field holds. That is the page's name, and the one title on screen.
     fn mirror_own_page_titles(&mut self) -> bool {
         let mut covered = [false; 4];
+        let mut edited: [Option<TitleShown>; 4] = [None, None, None, None];
         for column in Column::ALL {
-            let Some(title) = self.headers[column.index()].title.title.clone() else {
-                continue;
-            };
             let Some(body) = self.part(Part::Body(column)) else {
                 continue;
             };
-            covered[column.index()] = page_heading_shown(body, self.geometry.body(column), &title);
+            let Some(shown) = page_title_shown(body, self.geometry.body(column)) else {
+                continue;
+            };
+            // A heading repeats the bar's title only when it says the same words; a field names
+            // itself rather than the page, so its words are the page's name whatever the bar says.
+            let repeats = self.headers[column.index()]
+                .title
+                .title
+                .as_deref()
+                .is_some_and(|bar| same_words(bar, &shown.words));
+            if shown.heading && !repeats {
+                continue;
+            }
+            covered[column.index()] = true;
+            // The words the page shows, when they are a field's rather than a heading's: the bar
+            // names the page by them, where the field stands.
+            if !shown.heading {
+                edited[column.index()] = Some(shown);
+            }
         }
         let mut changed = false;
         for column in Column::ALL {
             let title = &mut self.headers[column.index()].title;
             let covered = covered[column.index()];
+            let edited = edited[column.index()].clone();
             if title.is_covered() != covered {
                 title.set_covered(covered);
+                changed = true;
+            }
+            if title.edited != edited {
+                title.set_edited(edited);
                 changed = true;
             }
         }
@@ -4519,27 +4544,47 @@ fn is_app_search(action: &dyn Widget) -> bool {
 /// Whether `body` shows, inside `region`, a text of its own that is the page's title and says
 /// `title`: what a bar naming the page would repeat. Only what the region and the body's own
 /// clips leave on screen counts, so a heading scrolled out of its column frees the bar's title.
-fn page_heading_shown(body: &dyn Widget, region: Rect, title: &str) -> bool {
-    fn walk(widget: &dyn Widget, clip: Rect, title: &str) -> bool {
+///
+/// Where the words stand in a field the person types them in, they are no heading: the field
+/// names itself (its prompt), not the page. The bar still gives its own title up — one title is
+/// on screen, the field's — and keeps a heading of the words the field holds, standing where the
+/// field does, so the page keeps the name a screen reader reads.
+fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
+    fn walk(widget: &dyn Widget, clip: Rect) -> Option<TitleShown> {
         let clip = widget
             .child_clip_rect()
             .map_or(clip, |child_clip| clip.intersect(child_clip));
-        if widget
-            .own_page_title()
-            .is_some_and(|own| same_words(&own, title))
-        {
-            let shown = widget.get_rect().intersect(clip);
+        if let Some(own) = widget.own_page_title() {
+            let rect = widget.get_rect();
+            let shown = rect.intersect(clip);
+            // What stands on screen counts: a title scrolled out of its column frees the bar's.
             if shown.width() > 0.0 && shown.height() > 0.0 {
-                return true;
+                return Some(TitleShown {
+                    rect,
+                    words: own,
+                    heading: widget.page_title_is_heading(),
+                });
             }
         }
-        let mut found = false;
+        let mut found = None;
         widget.for_each_child(&mut |child| {
-            found = found || walk(child, clip, title);
+            if found.is_none() {
+                found = walk(child, clip);
+            }
         });
         found
     }
-    walk(body, region, title)
+    walk(body, region)
+}
+
+/// The page's own title as the content shows it: where it stands, the words it says, and whether
+/// it is a heading assistive technology reads as the page's name or only the field the person
+/// edits it in.
+#[derive(Clone, Debug, PartialEq)]
+pub(super) struct TitleShown {
+    pub(super) rect: Rect,
+    pub(super) words: String,
+    pub(super) heading: bool,
 }
 
 /// Whether two titles say the same words, however their spacing or case was set.
