@@ -321,14 +321,77 @@ fn a_record_the_sessions_services_publish_is_found_through_the_door() {
         };
         cursor = next;
     }
-    for kind in [
-        "tl.so.tilo.lang.tasks.",
-        "tl.so.tilo.lang.chat.",
-        "tl.so.tilo.lang.mail.",
+    // The session's records are listed, each row naming its type the way a program types it
+    // (`tasks.Tasks`, `chat.Conversations`): the name this listing is for, and the name a path
+    // walks back by. Never the kind the app publishes it under (`tl.<app>.<Type>`), which no
+    // program writes.
+    let row_of = |listed: &str, form: &str| -> String {
+        listed
+            .lines()
+            .find(|line| line.split("  ").any(|column| column.trim() == form))
+            .unwrap_or_else(|| panic!("the listing names {form}: {listed}"))
+            .to_owned()
+    };
+    // A row's columns are two spaces apart: the reference a program passes it by, the name,
+    // then the type.
+    let name_of = |row: &str| -> String {
+        row.split("  ")
+            .map(str::trim)
+            .nth(1)
+            .map(|name| name.trim_end_matches('/').to_owned())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| panic!("the row names its record: {row}"))
+    };
+    // No record is named by the kind its app publishes it under (`tl.<app>.<Type>`): a row's
+    // type column is a program form. An app's own row names the app itself (`Chat
+    // tl.so.tilo.lang.chat`), an id whose last part is no capitalised type.
+    assert!(
+        !listed.lines().any(|line| {
+            line.split("  ").map(str::trim).any(|column| {
+                column
+                    .strip_prefix("tl.")
+                    .and_then(|rest| rest.rsplit_once('.'))
+                    .is_some_and(|(_, ty)| ty.starts_with(|c: char| c.is_ascii_uppercase()))
+            })
+        }),
+        "no record is named by its published kind: {listed}"
+    );
+    // The app's own record, at the session's top level, named by its type as a program types it.
+    let tasks = name_of(&row_of(&listed, "tasks.Tasks"));
+    // A record of the app's, a level down: listed the same way, and its name walks back to it.
+    let (inside, failed) = repl.call(
+        &mut session,
+        "tilo_ls",
+        &json!({"path": format!("session/{tasks}")}),
+    );
+    assert!(!failed, "tasks at session/{tasks}: {inside}");
+    let task = name_of(&row_of(&inside, "tasks.Task"));
+    let task_at_path = format!("session/{tasks}/{task}");
+    let (task_at, failed) = repl.call(&mut session, "tilo_ls", &json!({"path": task_at_path}));
+    assert!(!failed, "tasks.Task at {task_at_path}: {task_at}");
+    assert!(
+        task_at
+            .lines()
+            .next()
+            .is_some_and(|header| header.ends_with("(tasks.Task)")),
+        "the row's own name reads back as its type: {task_at}"
+    );
+    // The type name itself reads the records of that kind: a note, a channel and a mailbox,
+    // each under its app's record, resolve by what the listing prints.
+    for (form, under) in [
+        ("notes.Note", "notes.Notebook"),
+        ("chat.TextChannel", "chat.Conversations"),
+        ("mail.Mailbox", "mail.Mail"),
     ] {
+        let root = name_of(&row_of(&listed, under));
+        let (record, failed) = repl.call(
+            &mut session,
+            "tilo_ls",
+            &json!({"path": format!("session/{root}/{form}")}),
+        );
         assert!(
-            listed.contains(kind),
-            "the session lists the seeded {kind} records: {listed}"
+            !failed || !record.contains(&format!("no {form} in")),
+            "a type name read off a row resolves in a path: {record}"
         );
     }
 

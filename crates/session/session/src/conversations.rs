@@ -341,14 +341,17 @@ impl Conversations {
         agent: &str,
         text: &str,
     ) -> Option<String> {
-        let (chat, part) = self.opened_with(
+        let Some((chat, part)) = self.opened_with(
             &WorkspaceFacts {
                 workspace: workspace.to_owned(),
                 policy: policy.clone(),
             },
             person,
             true,
-        )?;
+        ) else {
+            tracing::warn!(%workspace, "the ask opened no Chat record");
+            return None;
+        };
         // The conversation is the person's and the agent's, by their keys: a
         // participant key is what a conversation is with
         // (`Conversation::participants`), and the agent's answers the

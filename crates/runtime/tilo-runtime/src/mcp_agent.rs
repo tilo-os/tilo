@@ -35,7 +35,7 @@ use tilo::actions_note;
 /// A person's own line in a run's conversation, run in the task's host as they are
 /// (shell.md §8.1): what the door's `person_line` hands on.
 pub use tilo::{PersonStep, literals_in};
-pub(super) use tilo::{Programs, TaskLink};
+pub(super) use tilo::{ProgramForms, Programs, TaskLink};
 pub use tilo::{TaskHosts, TaskProgram};
 
 /// Resource rows one directory level reads at most, across its pages.
@@ -487,12 +487,37 @@ fn level_of(rows: &[CatalogueRow], parent: &str) -> Level {
     level
 }
 
+/// Whether `segment`, a segment of a path, is written the way a program types a type
+/// (`tasks.Task`): a package's alias, a dot, and a name that begins with a capital letter.
+/// Nothing else is asked of the task's programs: a title, a key or a kind (`notes.notebook`)
+/// is never a program form, so a path that reads one does not start a task's host.
+fn is_program_form(segment: &str) -> bool {
+    segment.rsplit_once('.').is_some_and(|(alias, name)| {
+        !alias.is_empty() && name.starts_with(|c: char| c.is_ascii_uppercase())
+    })
+}
+
+/// How well `name`, a segment of a path, names `node`: [`Node::answers_to`]'s rank, and a type
+/// named the way a program types it (`tasks.Task`) is rank 2 too, as its kind is: a listing
+/// names a resource by that program form, so a name read off a row walks back to the resource.
+fn rank(name: &str, node: &Node, forms: Option<&ProgramForms>) -> Option<u8> {
+    node.answers_to(name).or_else(|| {
+        forms
+            .is_some_and(|forms| forms.answers(name, &node.kind))
+            .then_some(2)
+    })
+}
+
 /// Pick the node `name` means among `nodes`: the best-ranked one, when one
 /// is. Several equally good is an error naming them.
-fn pick<'a>(name: &str, nodes: &'a [Node]) -> Result<Option<&'a Node>, String> {
+fn pick<'a>(
+    name: &str,
+    nodes: &'a [Node],
+    forms: Option<&ProgramForms>,
+) -> Result<Option<&'a Node>, String> {
     let ranked: Vec<(u8, &Node)> = nodes
         .iter()
-        .filter_map(|node| Some((node.answers_to(name)?, node)))
+        .filter_map(|node| Some((rank(name, node, forms)?, node)))
         .collect();
     let Some(best) = ranked.iter().map(|(rank, _)| *rank).min() else {
         return Ok(None);
@@ -1690,6 +1715,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         parent: Option<&Node>,
         segment: &str,
         levels: &mut Levels,
+        forms: Option<&ProgramForms>,
     ) -> Result<(Node, Level), String> {
         let asked = match parent {
             Some(owner) if !levels.contains_key(&owner.id) => {
@@ -1712,10 +1738,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(owner) => self.level(provider, &owner.id, levels).await?,
             None => self.app_children(provider, levels).await?,
         };
-        let found = match pick(segment, &here.children)? {
+        let found = match pick(segment, &here.children, forms)? {
             Some(node) => node.clone(),
             None => self
-                .deep(provider, segment, parent, levels)
+                .deep(provider, segment, parent, levels, forms)
                 .await?
                 .ok_or_else(|| {
                     format!(
@@ -1743,6 +1769,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         name: &str,
         within: Option<&Node>,
         levels: &mut Levels,
+        forms: Option<&ProgramForms>,
     ) -> Result<Option<Node>, String> {
         for _ in 0..=DEEP_READS {
             let pool: Vec<Node> = levels
@@ -1751,11 +1778,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 .filter(|node| {
                     within.is_none_or(|owner| {
                         node.key.contains(owner.token()) || Self::below(node, owner, levels)
-                    }) && node.answers_to(name).is_some()
+                    }) && rank(name, node, forms).is_some()
                 })
                 .cloned()
                 .collect();
-            if let Some(found) = pick(name, &pool)? {
+            if let Some(found) = pick(name, &pool, forms)? {
                 return Ok(Some(found.clone()));
             }
             let unread = levels
@@ -1794,18 +1821,54 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         false
     }
 
-    /// Resolve a whole path.
-    async fn resolve(&self, parsed: &ParsedPath) -> Result<Result<Resolved, String>, String> {
+    /// Resolve a whole path. A segment written the way a program types a type (`tasks.Task`)
+    /// is read as that type first: it names the resource whose published kind the listing
+    /// prints that name for. Only a segment written that way is asked of the task's programs,
+    /// so a path of titles (`notes/Todo`) does not start a task's host to read a name already
+    /// said; a form no app declares falls back to the plain reading, where it may be a title.
+    ///
+    /// With the resolution come the forms it was read by (`None` when it was read plainly), so
+    /// a caller that shows what it found names the type the same way without asking again.
+    async fn resolve(
+        &self,
+        parsed: &ParsedPath,
+    ) -> Result<(Result<Resolved, String>, Option<ProgramForms>), String> {
+        if parsed
+            .segments
+            .iter()
+            .any(|segment| is_program_form(segment))
+            && let Some(forms) = self.program_forms().await
+        {
+            let by_type = self.resolve_with(parsed, Some(&forms)).await?;
+            // A path of segments resolves to a resource only when it walked every one: an
+            // empty chain is a name no resource answered.
+            if by_type.as_ref().is_ok_and(|found| !found.chain.is_empty()) {
+                return Ok((by_type, Some(forms)));
+            }
+        }
+        Ok((self.resolve_with(parsed, None).await?, None))
+    }
+
+    /// [`Self::resolve`] reading the names a path segment may go by as `forms` says they are
+    /// written: a segment names a type by the name a listing prints for it (`tasks.Task`),
+    /// which `forms` reads back as its kind.
+    async fn resolve_with(
+        &self,
+        parsed: &ParsedPath,
+        forms: Option<&ProgramForms>,
+    ) -> Result<Result<Resolved, String>, String> {
         match self.app_ref(&parsed.app).await? {
             AppRef::Running {
                 app_id,
                 provider,
                 pinned: true,
-            } => Ok(Ok(self.resolve_in(parsed, app_id, provider, true).await?)),
+            } => Ok(Ok(self
+                .resolve_in(parsed, app_id, provider, true, forms)
+                .await?)),
             AppRef::Running {
                 app_id, provider, ..
             } => Ok(Ok(self
-                .resolve_published(parsed, app_id, provider, true)
+                .resolve_published(parsed, app_id, provider, true, forms)
                 .await?)),
             AppRef::Installed { opens, .. } => Ok(Err(Self::not_running_note(&parsed.app, opens))),
         }
@@ -1823,12 +1886,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         app_id: String,
         newest: String,
         list: bool,
+        forms: Option<&ProgramForms>,
     ) -> Result<Resolved, String> {
         let published = |found: &Resolved| {
             !found.chain.is_empty() || !found.actions.is_empty() || !found.children.is_empty()
         };
         let first = self
-            .resolve_in(parsed, app_id.clone(), newest.clone(), list)
+            .resolve_in(parsed, app_id.clone(), newest.clone(), list, forms)
             .await;
         if first.as_ref().is_ok_and(published) {
             return first;
@@ -1846,7 +1910,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .collect();
         for provider in older {
             let resolved = self
-                .resolve_in(parsed, app_id.clone(), provider, list)
+                .resolve_in(parsed, app_id.clone(), provider, list, forms)
                 .await;
             if resolved.as_ref().is_ok_and(published) {
                 return resolved;
@@ -1858,13 +1922,16 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// Resolve the segments of `parsed` in the running app `app_id`, whose
     /// instance is `provider`. With `list`, what the target holds and the
     /// actions on it are read too; without, a resource on the path is only
-    /// found (an action named on it is resolved by its address).
+    /// found (an action named on it is resolved by its address). `forms` is how
+    /// a path segment may name a type the way a program types it
+    /// (`tasks.Task`), as a listing names it.
     async fn resolve_in(
         &self,
         parsed: &ParsedPath,
         app_id: String,
         provider: String,
         list: bool,
+        forms: Option<&ProgramForms>,
     ) -> Result<Resolved, String> {
         let app = parsed.app.to_lowercase();
         let mut levels = Levels::new();
@@ -1875,7 +1942,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         let mut revision = String::new();
         for segment in &parsed.segments {
             let (found, siblings) = self
-                .step(&provider, &app, chain.last(), segment, &mut levels)
+                .step(&provider, &app, chain.last(), segment, &mut levels, forms)
                 .await?;
             chain.push(found);
             among.push(siblings.children);
@@ -2078,12 +2145,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             return self.list_apps(offset, limit).await;
         }
         let parsed = parse_path(path)?;
-        let resolved = match self.resolve(&parsed).await? {
+        // How a program writes what this lists: the listing is the one a program reads, and a
+        // path names what it lists the same way, so the path is resolved by it too.
+        let forms = self.program_forms().await.unwrap_or_default();
+        let resolved = match self.resolve_with(&parsed, Some(&forms)).await? {
             Ok(resolved) => resolved,
             Err(note) => return Ok(Reply::ok(note)),
         };
-        // How a program writes what this lists: the listing is the one a program reads.
-        let forms = self.program_forms().await.unwrap_or_default();
         let called = |action: &ActionDescriptor| forms.called(action, &resolved.app_id);
         if let Some(action) = &parsed.action {
             let (named_at, found) = self.pick_action_in(action, &resolved).await?;
@@ -2103,12 +2171,11 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 if child.container {
                     line.push('/');
                 }
-                // What the resource is, by the kind its app publishes it under: the name a
-                // path resolves by (`session/Task`), a read answers, and a search hit prints.
-                // Never a program's type name for it (`tasks.Task`): that word names a type
-                // in a program and addresses nothing in a listing, so a row that said it
-                // could not be walked to (a listing's header says the published kind too).
-                let _ = write!(line, "  {}", child.kind);
+                // What the resource is, by the name a program types its type with
+                // (`tasks.Task`): the one name a listing prints and a path resolves by, so a
+                // row read off the listing walks back to this very resource. Never the
+                // published kind (`tl.<app>.<Type>`), which no program writes.
+                let _ = write!(line, "  {}", forms.kind(&child.kind).unwrap_or(&child.kind));
                 if !child.actions.is_empty() {
                     let _ = write!(line, "  {}", actions_note(&child.actions, &called));
                 }
@@ -2125,8 +2192,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         let total = lines.len();
         let mut text = resolved.path.clone();
+        // What this is, by the same name its own row here would give it.
         if let Some(node) = &resolved.node {
-            let _ = write!(text, "  ({})", node.kind);
+            let _ = write!(text, "  ({})", forms.kind(&node.kind).unwrap_or(&node.kind));
         } else {
             let _ = write!(text, "  ({})", resolved.app_id);
         }
@@ -2228,9 +2296,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());
         }
-        let mut resolved = match self.resolve(&parsed).await? {
-            Ok(resolved) => resolved,
-            Err(note) => return Ok(Reply::ok(note)),
+        let (mut resolved, forms) = match self.resolve(&parsed).await? {
+            (Ok(resolved), forms) => (resolved, forms),
+            (Err(note), _) => return Ok(Reply::ok(note)),
         };
         let provider = resolved.provider.clone();
         let mut levels = std::mem::take(&mut resolved.levels);
@@ -2279,10 +2347,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .pointer("/update/output/value")
             .cloned()
             .unwrap_or_default();
-        let read = ResourceRead::of(&output).at(
+        let mut read = ResourceRead::of(&output).at(
             &resolved.path,
             resolved.node.as_ref().map(|node| node.kind.as_str()),
         );
+        // A program reads what a listing showed, so the type it reads is the one the listing
+        // named (`tasks.Task`), whether the app's own answer gave it or the node's kind did.
+        if let (Some(forms), Some(kind)) = (forms.as_ref(), read.kind.clone())
+            && let Some(form) = forms.kind(&kind)
+        {
+            read.kind = Some(form.to_owned());
+        }
         if structured {
             // Typed, and paged by the app alone: the characters a text read
             // is cut at mean nothing to a program.
@@ -2427,12 +2502,46 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 pinned,
             } => (app_id, provider, pinned),
         };
-        let mut resolved = if pinned {
-            self.resolve_in(&parsed, app_id, provider, false).await?
+        // A path names a type the way a listing does (`tasks.Task`), so an action is found on
+        // the resource a listing showed: such a segment is read by the program form first, and
+        // a form no app declares is read plainly, as a title may be.
+        let forms = if parsed
+            .segments
+            .iter()
+            .any(|segment| is_program_form(segment))
+        {
+            self.program_forms().await
         } else {
-            self.resolve_published(&parsed, app_id, provider, false)
-                .await?
+            None
         };
+        let mut resolved = if pinned {
+            self.resolve_in(
+                &parsed,
+                app_id.clone(),
+                provider.clone(),
+                false,
+                forms.as_ref(),
+            )
+            .await?
+        } else {
+            self.resolve_published(
+                &parsed,
+                app_id.clone(),
+                provider.clone(),
+                false,
+                forms.as_ref(),
+            )
+            .await?
+        };
+        if forms.is_some() && resolved.chain.is_empty() {
+            resolved = if pinned {
+                self.resolve_in(&parsed, app_id, provider, false, None)
+                    .await?
+            } else {
+                self.resolve_published(&parsed, app_id, provider, false, None)
+                    .await?
+            };
+        }
         let (named_at, descriptor) =
             if let Some(descriptor) = self.action_named(&resolved, &action).await? {
                 (resolved.path.clone(), descriptor)
