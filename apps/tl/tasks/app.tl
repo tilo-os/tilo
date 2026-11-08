@@ -608,17 +608,13 @@ view home(t: Tasks) {
                         std.add_entry(entry_placeholder, add)
                     }
                 }
-                ui.Scroll {
-                    page {
-                        if all_done {
-                            ui.EmptyState(
-                                phrase("tilolang-all-done"),
-                                icon: .list_checks,
-                                inline: true,
-                            )
-                        } else if shown.is_empty() {
-                            ui.EmptyState("No tasks here", icon: .list_checks)
-                        } else {
+                if all_done {
+                    ui.EmptyState(phrase("tilolang-all-done"), icon: .list_checks, inline: true)
+                } else if shown.is_empty() {
+                    ui.EmptyState("No tasks here", icon: .list_checks)
+                } else {
+                    ui.Scroll {
+                        page {
                             task_list(shown, kids, by_day, done_place, folds, opened, .day)
                         }
                     }
@@ -718,11 +714,11 @@ view project_list(p: Project) {
                         std.add_entry("New task in {p.name}", new_task(tasks, p: p))
                     }
                 }
-                ui.Scroll {
-                    page {
-                        if listed.is_empty() {
-                            ui.EmptyState("No tasks yet", icon: .folder)
-                        } else {
+                if listed.is_empty() {
+                    ui.EmptyState("No tasks yet", icon: .folder)
+                } else {
+                    ui.Scroll {
+                        page {
                             task_list(listed, kids, false, false, false, opened, .project)
                         }
                     }
