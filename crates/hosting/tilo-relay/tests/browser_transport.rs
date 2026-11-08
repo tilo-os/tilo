@@ -10,21 +10,13 @@
 )]
 use crate::common::TestUser;
 use iroh::{Endpoint, RelayMap, RelayMode, endpoint::presets};
-use iroh_base::{EndpointAddr, RelayUrl};
-use iroh_relay::server::{RelayConfig as PacketConfig, Server, ServerConfig};
+use iroh_base::EndpointAddr;
 use std::net::Ipv4Addr;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn certified_clients_use_only_the_injected_packet_relay() {
-    let mut packet_config = ServerConfig::default();
-    packet_config.relay = Some(PacketConfig::new((Ipv4Addr::LOCALHOST, 0)));
-    let packet = Server::spawn(packet_config).await.unwrap();
-    let url: RelayUrl = format!("http://{}", packet.http_addr().unwrap())
-        .parse()
-        .unwrap();
-    let mode = RelayMode::Custom(RelayMap::from(url.clone()));
     let user = TestUser::fresh("browser transport test");
     let host = user.enrol("host", DeviceCapabilities::host());
     let a = user.enrol("browser-a", DeviceCapabilities::member());
@@ -41,6 +33,9 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
             users: vec![hex::encode(user.user_pk)],
         },
         iroh_listen: (Ipv4Addr::LOCALHOST, 0).into(),
+        // The host reaches its browsers through the packet relay it runs
+        // itself: they hold no UDP socket of their own.
+        packet_relay: Some((Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
     let identity = RelayIdentity {
@@ -49,9 +44,20 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
         device_cert: host.cert.clone(),
         revocations: RevocationList::new(),
     };
-    let relay = Relay::start_with_relay_mode(config, identity, mode.clone())
-        .await
-        .unwrap();
+    let relay = Relay::start(config, identity).await.unwrap();
+    tilo_test_env::within(
+        "the host's own packet relay must become online",
+        relay.endpoint.online(),
+    )
+    .await;
+    let url = relay
+        .node_addr()
+        .relay_urls()
+        .next()
+        .expect("the host advertises its own packet relay")
+        .clone();
+    assert!(url.as_str().starts_with("http://127.0.0.1:"), "{url}");
+    let mode = RelayMode::Custom(RelayMap::from(url.clone()));
     tilo_test_env::within(
         "custom packet relay must become online",
         relay.endpoint.online(),
@@ -191,5 +197,4 @@ async fn certified_clients_use_only_the_injected_packet_relay() {
     first.close().await;
     second.close().await;
     relay.shutdown().await;
-    packet.shutdown().await.unwrap();
 }

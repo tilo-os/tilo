@@ -164,6 +164,9 @@ pub struct Relay {
     /// absent when its certificate does not let it own workspaces, and so it
     /// holds no channel keys.
     _channels: Option<Arc<crate::channels::Channels>>,
+    /// The packet relay this host runs for the pages it serves, when it runs
+    /// one ([`RelayConfig::packet_relay`]).
+    packet_server: Option<iroh_relay::server::Server>,
 }
 
 /// The relay state the browser carriers serve sessions with.
@@ -465,6 +468,19 @@ impl Relay {
             path: cfg.full_replica_status.clone(),
             clock: replica_clock,
         };
+        let (packet_relay, relay_mode) = match cfg.packet_relay {
+            Some(addr) if endpoint.is_none() && relay_mode.is_none() => {
+                let (server, url) = spawn_packet_relay(addr).await?;
+                tracing::info!(%addr, %url, "running this host's own packet relay");
+                (Some(server), Some(iroh::RelayMode::Custom(url.into())))
+            }
+            Some(_) => {
+                return Err(RelayError::Iroh(
+                    "a host runs its own packet relay or is given one, not both".into(),
+                ));
+            }
+            None => (None, relay_mode),
+        };
         let endpoint = match endpoint {
             Some(endpoint) => endpoint,
             None => bind_endpoint(&cfg, &identity.device_signing_key, relay_mode).await?,
@@ -593,6 +609,7 @@ impl Relay {
             web,
             workspaces: governed,
             _channels: channels,
+            packet_server: packet_relay,
         })
     }
 
@@ -618,7 +635,7 @@ impl Relay {
     /// queueing for store-and-forward. Deltas in that window are neither
     /// delivered nor queued. Closing the endpoint sends `CONNECTION_CLOSE`
     /// straight away, so peers drop the subscription and queue instead.
-    pub async fn shutdown(self) {
+    pub async fn shutdown(mut self) {
         // Stop reconnecting first: the dial loop would otherwise open a
         // fresh connection while the endpoint is closing.
         lock_background_tasks(&self.background_tasks).clear();
@@ -626,6 +643,11 @@ impl Relay {
             tracing::debug!(%error, "relay router shutdown task failed");
         }
         self.sessions.shutdown().await;
+        if let Some(packet_relay) = std::mem::take(&mut self.packet_server)
+            && let Err(error) = packet_relay.shutdown().await
+        {
+            tracing::debug!(%error, "packet relay shutdown task failed");
+        }
     }
 
     /// Cheap external handle.
@@ -836,6 +858,26 @@ impl RelayHandle {
 /// processes from publishing competing address records for one Iroh `NodeId`.
 pub fn relay_service_node_id(device_key: &ed25519_dalek::SigningKey) -> [u8; 32] {
     tilo_relay_protocol::relay_service_node_id(&device_key.to_bytes())
+}
+
+/// Run this host's own iroh packet relay on `addr`: the server, and the URL
+/// its peers dial. A page has no UDP socket, so it reaches this host only
+/// through a relay, and the host advertises this one in its signed address.
+async fn spawn_packet_relay(
+    addr: std::net::SocketAddr,
+) -> Result<(iroh_relay::server::Server, iroh_base::RelayUrl), RelayError> {
+    let mut config = iroh_relay::server::ServerConfig::default();
+    config.relay = Some(iroh_relay::server::RelayConfig::new(addr));
+    let server = iroh_relay::server::Server::spawn(config)
+        .await
+        .map_err(|error| RelayError::Iroh(format!("packet relay: {error}")))?;
+    let serving = server
+        .http_addr()
+        .ok_or_else(|| RelayError::Iroh("the packet relay serves no address".into()))?;
+    let url: iroh_base::RelayUrl = format!("http://{serving}")
+        .parse()
+        .map_err(|error| RelayError::Iroh(format!("packet relay URL: {error}")))?;
+    Ok((server, url))
 }
 
 /// Bind the relay plane with a domain-separated transport key. This is one
